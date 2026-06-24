@@ -1,13 +1,14 @@
 import httpx
 import logging
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from app import database
-from app.agents import orchestrator
 from app.config import PORT, PRISM_URL, VLLM_URL
+import json
+import uuid
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,12 +52,59 @@ class TranscribeRequest(BaseModel):
 @app.post("/session/message")
 async def send_message(req: MessageRequest):
     try:
-        result = await orchestrator.process_user_turn(
+        user_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+        database.save_chat_message(
+            message_id=user_msg_id,
             session_id=req.session_id,
-            user_input=req.message,
-            target_note_id=req.target_note_id
+            role="user",
+            content=req.message
         )
-        return result
+        
+        history = database.get_session_messages(req.session_id)
+        
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a UI component generator for an open HTML canvas. The user will ask you to build or show things. You must respond ONLY with raw HTML (with inline styles or basic CSS classes if needed) that will be directly injected into a <div> on the user's screen. Do not use markdown code blocks like ```html. Just return the raw HTML string."
+            }
+        ]
+        for h in history:
+            messages.append({"role": h["role"], "content": h["content"]})
+            
+        payload = {
+            "provider": "vllm-2",
+            "model": "cyankiwi/MiniMax-M2.7-AWQ-4bit",
+            "messages": messages,
+            "stream": True,
+            "project": "html-notes",
+            "username": "lazycat"
+        }
+        
+        async def stream_generator():
+            full_response = ""
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream("POST", f"{PRISM_URL}/agent", json=payload) as r:
+                    async for chunk in r.aiter_lines():
+                        if chunk:
+                            yield f"{chunk}\n\n"
+                            if chunk.startswith("data: "):
+                                try:
+                                    data = json.loads(chunk[6:])
+                                    if data.get("type") == "chunk":
+                                        full_response += data.get("content", "")
+                                except Exception:
+                                    pass
+            
+            if full_response:
+                asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+                database.save_chat_message(
+                    message_id=asst_msg_id,
+                    session_id=req.session_id,
+                    role="assistant",
+                    content=full_response
+                )
+                                
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
     except Exception as e:
         logger.error(f"Error processing session message: {e}")
         raise HTTPException(status_code=500, detail=str(e))

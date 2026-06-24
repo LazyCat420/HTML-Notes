@@ -137,7 +137,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Show loading indicator on canvas
         const loader = document.createElement("div");
-        loader.className = "loading-indicator";
+        loader.className = "loading-indicator pulse";
+        loader.innerText = "Thinking...";
         elements.canvasContainer.appendChild(loader);
         scrollToBottom();
 
@@ -153,13 +154,60 @@ document.addEventListener("DOMContentLoaded", () => {
 
             loader.remove();
 
-            if (res.ok) {
-                const data = await res.json();
-                renderResponse(data.message, data.intent);
-            } else {
+            if (!res.ok) {
                 console.error("Error from API:", await res.text());
                 renderError("Failed to process request. See console.");
+                return;
             }
+
+            const wrapper = document.createElement("div");
+            wrapper.className = "canvas-element";
+            const loadingIndicator = document.createElement("div");
+            loadingIndicator.className = "streaming-indicator pulse";
+            loadingIndicator.innerText = "Generating...";
+            wrapper.appendChild(loadingIndicator);
+            elements.canvasContainer.appendChild(wrapper);
+            scrollToBottom();
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let done = false;
+            let fullHtml = "";
+
+            while (!done) {
+                const { value, done: readerDone } = await reader.read();
+                done = readerDone;
+                if (value) {
+                    const chunk = decoder.decode(value, { stream: true });
+                    const lines = chunk.split("\n");
+                    for (const line of lines) {
+                        if (line.startsWith("data: ")) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                if (data.type === "chunk") {
+                                    fullHtml += data.content || "";
+                                    wrapper.innerHTML = DOMPurify.sanitize(fullHtml) + '<div class="streaming-indicator pulse">Generating...</div>';
+                                    scrollToBottom();
+                                } else if (data.type === "status") {
+                                    const indicator = wrapper.querySelector(".streaming-indicator");
+                                    if (indicator) {
+                                        indicator.innerText = "Working: " + (data.message || "Using tools...");
+                                    }
+                                } else if (data.type === "done") {
+                                    wrapper.innerHTML = DOMPurify.sanitize(fullHtml);
+                                }
+                            } catch (e) {
+                                // ignore parse errors on partial chunks
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Final cleanup
+            wrapper.innerHTML = DOMPurify.sanitize(fullHtml);
+            scrollToBottom();
+
         } catch (err) {
             loader.remove();
             console.error("Network error:", err);
@@ -167,18 +215,14 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function renderResponse(htmlContent, intent) {
-        if (!htmlContent) return;
-
-        // Sanitize incoming HTML
-        const cleanHTML = DOMPurify.sanitize(htmlContent);
-
-        // Create a wrapper for the new content
-        const wrapper = document.createElement("div");
-        wrapper.className = "canvas-element";
-        wrapper.innerHTML = cleanHTML;
-
-        elements.canvasContainer.appendChild(wrapper);
+    // Keep renderError for other uses
+    function renderError(msg) {
+        const errDiv = document.createElement("div");
+        errDiv.className = "canvas-element system-message";
+        errDiv.style.color = "var(--danger-color)";
+        errDiv.style.marginTop = "1rem";
+        errDiv.innerText = msg;
+        elements.canvasContainer.appendChild(errDiv);
         scrollToBottom();
     }
 
