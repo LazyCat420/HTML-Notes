@@ -206,6 +206,7 @@ document.addEventListener("DOMContentLoaded", () => {
             
             // Final cleanup
             wrapper.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+            renderDynamicComponents(wrapper);
             scrollToBottom();
 
         } catch (err) {
@@ -227,6 +228,38 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function scrollToBottom() {
         elements.canvasContainer.scrollTop = elements.canvasContainer.scrollHeight;
+    }
+
+    function renderDynamicComponents(container) {
+        const chartBlocks = container.querySelectorAll('pre code.language-chart');
+        chartBlocks.forEach((block) => {
+            try {
+                const config = JSON.parse(block.innerText);
+                
+                // Create canvas container
+                const canvasContainer = document.createElement('div');
+                canvasContainer.className = 'chart-container';
+                canvasContainer.style.position = 'relative';
+                canvasContainer.style.height = '400px';
+                canvasContainer.style.width = '100%';
+                canvasContainer.style.marginBottom = '1.5rem';
+                
+                const canvas = document.createElement('canvas');
+                canvasContainer.appendChild(canvas);
+                
+                // Replace the <pre> tag (parent of code block) with the canvas container
+                const pre = block.parentElement;
+                pre.parentNode.replaceChild(canvasContainer, pre);
+                
+                // Initialize Chart.js with dark mode defaults
+                Chart.defaults.color = '#c9d1d9';
+                Chart.defaults.borderColor = '#30363d';
+                
+                new Chart(canvas, config);
+            } catch (err) {
+                console.error("Failed to render chart component:", err);
+            }
+        });
     }
 
     // ─── UTILS ─────────────────────────────────────────────────
