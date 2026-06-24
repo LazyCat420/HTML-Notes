@@ -441,6 +441,15 @@ textarea::placeholder {
 .mb-4 { margin-bottom: 1rem; }
 .mt-4 { margin-top: 1rem; }
 
+.sidebar {
+    width: 250px;
+    flex-shrink: 0;
+}
+
+.main-content {
+    flex: 1;
+}
+
 /* Cards & Containers */
 .glass-card {
     background: rgba(22, 27, 34, 0.4);

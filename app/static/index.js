@@ -1,4 +1,9 @@
 document.addEventListener("DOMContentLoaded", () => {
+    // Configure DOMPurify to allow style attributes for custom layouts
+    if (window.DOMPurify) {
+        DOMPurify.setConfig({ ADD_ATTR: ['style'] });
+    }
+
     const state = {
         sessionId: localStorage.getItem("html_notes_session_id") || generateUUID(),
         mediaRecorder: null,

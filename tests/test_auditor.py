@@ -37,13 +37,36 @@ def test_auditor_invalid_tags():
 
 def test_auditor_invalid_attributes():
     invalid_html = """
-    <article class="main-note" style="color: red;">
+    <article onclick="alert('dangerous')">
         <p>Text</p>
     </article>
     """
     res = audit_html_fragment(invalid_html)
     assert res["is_valid"] is False
     assert any("Forbidden attribute" in err for err in res["errors"])
+
+def test_auditor_layout_elements():
+    layout_html = """
+    <div class="dashboard-grid flex-row">
+        <aside class="sidebar" style="width: 250px;">
+            <p>Sidebar content</p>
+        </aside>
+        <div class="main-content flex-col">
+            <h3 class="glass-card-title">Main Content</h3>
+            <table class="data-table">
+                <thead>
+                    <tr><th>Item</th><th>Value</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>A</td><td>10</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+    res = audit_html_fragment(layout_html)
+    assert res["is_valid"] is True
+    assert len(res["errors"]) == 0
 
 def test_auditor_invalid_links():
     invalid_html = """

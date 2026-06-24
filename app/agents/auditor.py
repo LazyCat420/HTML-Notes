@@ -3,11 +3,14 @@ from typing import List, Tuple, Dict, Any
 
 ALLOWED_TAGS = {
     "article", "section", "header", "p", "ul", "ol", "li", "blockquote", "hr",
-    "strong", "em", "code", "pre", "a", "mark", "small", "time", "data", "span"
+    "strong", "em", "code", "pre", "a", "mark", "small", "time", "data", "span",
+    "div", "aside", "table", "thead", "tbody", "tr", "th", "td",
+    "h1", "h2", "h3", "h4", "h5", "h6"
 }
 
 ALLOWED_ATTRIBUTES = {
-    "data-note-id", "data-tag", "data-source", "data-timestamp", "href"
+    "data-note-id", "data-tag", "data-source", "data-timestamp", "href",
+    "class", "style"
 }
 
 class NoteHTMLParser(HTMLParser):

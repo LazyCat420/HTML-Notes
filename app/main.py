@@ -93,42 +93,47 @@ async def send_message(req: MessageRequest):
         history = database.get_session_messages(req.session_id)
 
         # Build initial messages list
+        SYSTEM_PROMPT = (
+            "You are an autonomous web application interface. You control the entire visible HTML document. "
+            "Do NOT converse like a chatbot. DO NOT output conversational filler like 'Here is the dashboard...'. "
+            "Your output completely Replaces the entire HTML document on the user's screen. "
+            "When the user gives a command, you must rewrite the HTML to reflect the updated state of the dashboard, website, or notes. "
+            "We have injected a premium CSS Design System into the frontend. Use these exact classes to build your UI:\n\n"
+            "- Layouts: `dashboard-grid`, `flex-row`, `flex-col`, `items-center`, `justify-between`, `gap-2`, `gap-4`, `mb-4`, `mt-4`, `sidebar`, `main-content`\n"
+            "- Cards: `glass-card` (Use `glass-card-header` and `glass-card-title` inside it)\n"
+            "- Metrics: `metric-box` (Contains `metric-value` and `metric-label`)\n"
+            "- Badges: `status-badge` (Add `success`, `warning`, `danger`, or `info` modifiers)\n"
+            "- Tables: wrap in `data-table-container`, then use `data-table` class on the `<table>`\n"
+            "- Text: `text-gradient` for emphasis, `text-muted` for secondary info.\n\n"
+            "Example:\n"
+            "<div class=\"dashboard-grid\">\n"
+            "  <div class=\"glass-card\">\n"
+            "    <div class=\"glass-card-header\">\n"
+            "      <h3 class=\"glass-card-title\">Current Price</h3>\n"
+            "      <span class=\"status-badge success\">+2.4%</span>\n"
+            "    </div>\n"
+            "    <div class=\"metric-box\">\n"
+            "      <div class=\"metric-value\">$142.50</div>\n"
+            "      <div class=\"metric-label\">Updated just now</div>\n"
+            "    </div>\n"
+            "  </div>\n"
+            "</div>\n\n"
+            "Do NOT use inline styles. Always use these classes. When rendering charts, use ```chart ... ``` markdown blocks as before. "
+            "If the user asks to save a note, call html_notes_create_note(). "
+            "Remember: Output the FULL HTML needed for the current state of the application. Act as a live visual dashboard!"
+        )
+
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are an autonomous web application interface. You control the entire visible HTML document. "
-                    "Do NOT converse like a chatbot. DO NOT output conversational filler like 'Here is the dashboard...'. "
-                    "Your output completely Replaces the entire HTML document on the user's screen. "
-                    "When the user gives a command, you must rewrite the HTML to reflect the updated state of the dashboard, website, or notes. "
-                    "We have injected a premium CSS Design System into the frontend. Use these exact classes to build your UI:\n\n"
-                    "- Layouts: `dashboard-grid`, `flex-row`, `flex-col`, `items-center`, `justify-between`, `gap-2`, `gap-4`, `mb-4`, `mt-4`\n"
-                    "- Cards: `glass-card` (Use `glass-card-header` and `glass-card-title` inside it)\n"
-                    "- Metrics: `metric-box` (Contains `metric-value` and `metric-label`)\n"
-                    "- Badges: `status-badge` (Add `success`, `warning`, `danger`, or `info` modifiers)\n"
-                    "- Tables: wrap in `data-table-container`, then use `data-table` class on the `<table>`\n"
-                    "- Text: `text-gradient` for emphasis, `text-muted` for secondary info.\n\n"
-                    "Example:\n"
-                    "<div class=\"dashboard-grid\">\n"
-                    "  <div class=\"glass-card\">\n"
-                    "    <div class=\"glass-card-header\">\n"
-                    "      <h3 class=\"glass-card-title\">Current Price</h3>\n"
-                    "      <span class=\"status-badge success\">+2.4%</span>\n"
-                    "    </div>\n"
-                    "    <div class=\"metric-box\">\n"
-                    "      <div class=\"metric-value\">$142.50</div>\n"
-                    "      <div class=\"metric-label\">Updated just now</div>\n"
-                    "    </div>\n"
-                    "  </div>\n"
-                    "</div>\n\n"
-                    "Do NOT use inline styles. Always use these classes. When rendering charts, use ```chart ... ``` markdown blocks as before. "
-                    "If the user asks to save a note, call html_notes_create_note(). "
-                    "Remember: Output the FULL HTML needed for the current state of the application. Act as a live visual dashboard!"
-                )
+                "content": "You are a visual web application interface assistant."
             }
         ]
-        for h in history:
-            messages.append({"role": h["role"], "content": h["content"]})
+        for i, h in enumerate(history):
+            content = h["content"]
+            if h["role"] == "user" and i == len(history) - 1:
+                content = f"{SYSTEM_PROMPT}\n\nUser Command: {content}"
+            messages.append({"role": h["role"], "content": content})
 
         async def loop_and_stream():
             MAX_ITERATIONS = 10
@@ -144,6 +149,17 @@ async def send_message(req: MessageRequest):
                 payload = {
                     "provider": req.provider or "vllm-2",
                     "model": req.model or "cyankiwi/MiniMax-M2.7-AWQ-4bit",
+                    "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
+                    "workspaceEnabled": False,
+                    "enabledTools": [
+                        "html_notes_create_note",
+                        "html_notes_update_note",
+                        "html_notes_get_note",
+                        "html_notes_search_notes",
+                        "html_notes_link_notes",
+                        "html_notes_modify_dom",
+                        "render_component"
+                    ],
                     "messages": current_messages,
                     "maxTokens": 4096,
                     "tools": HTML_NOTES_TOOLS,
@@ -167,7 +183,7 @@ async def send_message(req: MessageRequest):
 
                 finish_reason = response_data.get("finish_reason") or response_data.get("finishReason", "stop")
                 tool_calls = response_data.get("tool_calls") or response_data.get("toolCalls") or []
-                assistant_content = response_data.get("content") or response_data.get("message") or ""
+                assistant_content = response_data.get("content") or response_data.get("message") or response_data.get("text") or ""
 
                 # Always append assistant turn verbatim
                 current_messages.append({
