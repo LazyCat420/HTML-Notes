@@ -1,4 +1,6 @@
-HTML_NOTES_TOOLS = \
+import json
+
+HTML_NOTES_TOOLS_JSON = """
 [
     {
         "name": "html_notes_create_note",
@@ -231,3 +233,5 @@ HTML_NOTES_TOOLS = \
         ]
     }
 ]
+"""
+HTML_NOTES_TOOLS = json.loads(HTML_NOTES_TOOLS_JSON)
