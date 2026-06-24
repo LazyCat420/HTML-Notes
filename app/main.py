@@ -177,7 +177,7 @@ async def send_message(req: MessageRequest):
                 })
 
                 # No tool calls → final answer
-                if not tool_calls or finish_reason == "stop":
+                if not tool_calls:
                     final_html = assistant_content
                     break
 
