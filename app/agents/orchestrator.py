@@ -99,7 +99,7 @@ async def process_user_turn(
                         rendered_html=html_fragment,
                         source_message=user_msg_id
                     )
-                    assistant_reply = f"Updated note **{proposed_note['title']}** (Version {proposed_note['version']})."
+                    assistant_reply = f"<div class='note-update'><h3>Updated Note: {proposed_note['title']}</h3>{html_fragment}</div>"
                 else:
                     # Create new note
                     new_id = f"note_{uuid.uuid4().hex[:8]}"
@@ -112,15 +112,15 @@ async def process_user_turn(
                         canonical_blocks=proposal.get("canonical_blocks", []),
                         rendered_html=html_fragment
                     )
-                    assistant_reply = f"Created new note **{proposed_note['title']}** (ID: {proposed_note['id']})."
+                    assistant_reply = f"<div class='note-create'><h3>Created Note: {proposed_note['title']}</h3>{html_fragment}</div>"
                 
                 # Propose further linkages using the Linker Agent
                 proposed_links = await propose_links(proposed_note, all_notes)
             else:
                 # Auditor caught violations
-                assistant_reply = "I proposed a note edit, but it failed the security audit checks:\n"
-                assistant_reply += "\n".join([f"- {err}" for err in audit_res["errors"]])
-                assistant_reply += "\n\nPlease revise your request to avoid custom styling, scripts, or external links."
+                assistant_reply = "<h3>Security Audit Failed</h3><p>I proposed a note edit, but it failed the security audit checks:</p><ul>"
+                assistant_reply += "".join([f"<li>{err}</li>" for err in audit_res["errors"]])
+                assistant_reply += "</ul><p>Please revise your request to avoid custom styling, scripts, or external links.</p>"
                 
         except Exception as e:
             logger.error(f"Error in note creation/update flow: {e}")
@@ -149,11 +149,11 @@ async def process_user_turn(
                         links_a.append(target_link_id)
                         database.update_note(note_id=classified_note_id, links=links_a)
                         
-                    assistant_reply = f"Linked note **{note_a['title']}** to **{note_b['title']}** successfully."
+                    assistant_reply = f"<p>Linked note <strong>{note_a['title']}</strong> to <strong>{note_b['title']}</strong> successfully.</p>"
                 else:
-                    assistant_reply = "Could not locate one or both of the target notes for linking."
+                    assistant_reply = "<p>Could not locate one or both of the target notes for linking.</p>"
             else:
-                assistant_reply = "I couldn't identify the secondary note you want to link to. Please mention its ID or title clearly."
+                assistant_reply = "<p>I couldn't identify the secondary note you want to link to. Please mention its ID or title clearly.</p>"
         except Exception as e:
             assistant_reply = f"Failed to link notes: {str(e)}"
             
@@ -162,32 +162,36 @@ async def process_user_turn(
         query = classification.get("query", user_input)
         results = database.search_notes(query)
         if results:
-            assistant_reply = f"Found {len(results)} notes matching **'{query}'**:\n"
-            assistant_reply += "\n".join([f"- **{n['title']}** (ID: {n['id']})" for n in results])
+            assistant_reply = f"<h3>Search Results for '{query}'</h3><ul style='list-style: none; padding: 0;'>"
+            for n in results:
+                assistant_reply += f"<li style='margin-bottom: 0.5rem;'><a href='#' onclick='return false;'><strong>{n['title']}</strong></a> (ID: {n['id']})</li>"
+            assistant_reply += "</ul>"
         else:
-            assistant_reply = f"No journal notes found matching **'{query}'**."
+            assistant_reply = f"<p>No journal notes found matching <strong>'{query}'</strong>.</p>"
             
     elif intent == "SUMMARIZE":
         # Summarize note index
         if all_notes:
-            assistant_reply = f"Summary of your journal notes ({len(all_notes)} entries total):\n"
-            # Return list of recent notes with tags
-            assistant_reply += "\n".join([f"- **{n['title']}** | Tags: {', '.join(n['tags'])}" for n in all_notes[:5]])
+            assistant_reply = f"<h3>Journal Summary ({len(all_notes)} entries)</h3><ul style='list-style: none; padding: 0;'>"
+            for n in all_notes[:5]:
+                assistant_reply += f"<li style='margin-bottom: 0.5rem;'><strong>{n['title']}</strong><br><small>Tags: {', '.join(n['tags'])}</small></li>"
+            assistant_reply += "</ul>"
         else:
-            assistant_reply = "You don't have any journal notes saved yet."
+            assistant_reply = "<p>You don't have any journal notes saved yet.</p>"
             
     else:
         # CHAT or general conversation
         # Call LLM directly as conversational agent
+        # Call LLM directly as conversational agent but instruct it to output HTML for the canvas
         messages = [
-            {"role": "system", "content": "You are a conversational knowledge assistant for an HTML Note Journal. Help the user search, structure, or brainstorm notes."}
+            {"role": "system", "content": "You are a UI component generator for an open HTML canvas. The user will ask you to build or show things. You must respond ONLY with raw HTML (with inline styles or basic CSS classes if needed) that will be directly injected into a <div> on the user's screen. Do not use markdown code blocks like ```html. Just return the raw HTML string."}
         ]
         messages.extend(history_payload)
         messages.append({"role": "user", "content": user_input})
         
         from app.agents.llm_client import call_llm
         try:
-            assistant_reply = await call_llm(messages, temperature=0.7, max_tokens=512)
+            assistant_reply = await call_llm(messages, temperature=0.7, max_tokens=2048)
         except Exception as e:
             assistant_reply = f"Hello! I am ready to help you edit your notes. (vLLM error: {str(e)})"
             

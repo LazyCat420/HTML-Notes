@@ -3,109 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HTML-Notes — Local AI Knowledge Journal</title>
-    <meta name="description" content="Local-first AI knowledge journal with constrained HTML rendering engine and multi-agent coordination.">
+    <title>HTML-Notes Canvas</title>
+    <meta name="description" content="LLM-driven HTML canvas.">
     <link rel="stylesheet" href="index.css">
-    <!-- Load local whitelisted library assets -->
     <script src="lib/dompurify.min.js"></script>
-    <script src="lib/cytoscape.min.js"></script>
+    <!-- Add Google Fonts for typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="app-container">
-        <!-- 1. LEFT PANEL: Sidebar Note Index -->
-        <aside class="sidebar-panel">
-            <header class="sidebar-header">
-                <h2>📝 Journal Notes</h2>
-                <div class="search-box">
-                    <input type="text" id="search-input" placeholder="Search notes by keyword or tag..." />
-                </div>
-                <div class="tag-filters" id="tag-filters-container">
-                    <!-- Dynamic tag filter chips here -->
-                </div>
-            </header>
-            <div class="notes-list" id="notes-list-container">
-                <!-- Notes list items loaded here -->
-            </div>
-            <footer class="sidebar-footer">
-                <button id="btn-new-note" class="btn btn-secondary">New Note</button>
-                <button id="btn-show-graph" class="btn btn-secondary">View Graph</button>
-            </footer>
-        </aside>
-
-        <!-- 2. CENTER PANEL: Note Display / Editor -->
-        <main class="editor-panel">
-            <header class="editor-header">
-                <div class="note-meta-info">
-                    <h1 id="note-title" class="editable-title" contenteditable="false">Select or create a note</h1>
-                    <span id="note-version-badge" class="badge">v1</span>
-                    <span id="note-updated-time" class="timestamp"></span>
-                </div>
-                <div class="editor-actions">
-                    <button id="btn-edit-note" class="btn btn-primary">Edit Content</button>
-                    <button id="btn-save-note" class="btn btn-success" style="display: none;">Save Changes</button>
-                </div>
-            </header>
-            
-            <section class="editor-body">
-                <div id="note-tags-container" class="note-tags">
-                    <!-- Note tags list -->
-                </div>
-                
-                <!-- Constrained HTML View Area -->
-                <div id="rendered-note-view" class="rendered-content" contenteditable="false">
-                    <article>
-                        <p>Welcome to your local AI Knowledge Journal. You can type message in the assistant chat on the right or click record to narrate your thoughts.</p>
-                        <p>The AI will propose formatted HTML notes, build tag networks, and suggest backlinks automatically.</p>
-                    </article>
-                </div>
-                
-                <!-- Proposed Links Footer -->
-                <div id="proposed-links-panel" class="proposed-links" style="display: none;">
-                    <h3>Suggested Note Links</h3>
-                    <div id="proposed-links-container" class="links-grid"></div>
-                </div>
-            </section>
-        </main>
-
-        <!-- 3. RIGHT PANEL: Chat Companion -->
-        <section class="chat-panel">
-            <header class="chat-header">
-                <h3>💬 Journal Assistant</h3>
-                <span id="health-indicator" class="health-dot offline" title="vLLM Inference Status"></span>
-            </header>
-            
-            <div class="chat-history" id="chat-history-container">
-                <div class="chat-message assistant">
-                    <p>Hello! How can I help you organize or create notes today?</p>
-                </div>
-            </div>
-            
-            <div class="chat-input-area">
-                <div class="input-row">
-                    <textarea id="chat-input" placeholder="Say something or start dictating..." rows="2"></textarea>
-                    <button id="btn-send-message" class="btn btn-primary" title="Send message">Send</button>
-                </div>
-                <div class="audio-controls">
-                    <button id="btn-mic" class="btn-mic" title="Click to Record Voice">
-                        <svg class="mic-icon" viewBox="0 0 24 24">
-                            <path d="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M17.3,11C17.3,14 14.76,16.2 12,16.2C9.24,16.2 6.7,14 6.7,11H5C5,14.41 7.72,17.23 11,17.72V21H13V17.72C16.28,17.23 19,14.41 19,11H17.3Z"/>
-                        </svg>
-                        <span id="recording-status" class="recording-label">Record</span>
-                    </button>
-                </div>
-            </div>
-        </section>
-    </div>
-
-    <!-- 4. MODAL: Network Graph View -->
-    <div id="graph-modal" class="modal-overlay" style="display: none;">
-        <div class="modal-content">
-            <header class="modal-header">
-                <h2>Notes Relationship Graph</h2>
-                <button id="btn-close-graph" class="btn btn-close">&times;</button>
-            </header>
-            <div id="cy-graph-container" class="graph-viewport"></div>
+    <div id="canvas-container" class="canvas-container">
+        <div id="welcome-message" class="system-message">
+            <h1>Canvas Ready</h1>
+            <p>Tell the LLM what components to build and render here.</p>
         </div>
     </div>
+
+    <!-- Fixed Chat Bar at Bottom -->
+    <div class="chat-bar">
+        <div class="input-row">
+            <button id="btn-mic" class="btn-mic" title="Record Voice">
+                <svg class="mic-icon" viewBox="0 0 24 24">
+                    <path d="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M17.3,11C17.3,14 14.76,16.2 12,16.2C9.24,16.2 6.7,14 6.7,11H5C5,14.41 7.72,17.23 11,17.72V21H13V17.72C16.28,17.23 19,14.41 19,11H17.3Z"/>
+                </svg>
+            </button>
+            <textarea id="chat-input" placeholder="Type instructions or dictate..." rows="1"></textarea>
+            <button id="btn-send-message" class="btn-send" title="Send message">
+                <svg viewBox="0 0 24 24">
+                    <path fill="currentColor" d="M2,21L23,12L2,3V10L17,12L2,14V21Z"/>
+                </svg>
+            </button>
+        </div>
+        <div id="recording-status" class="recording-status" style="display: none;">
+            <span class="pulse"></span> Recording...
+        </div>
+        <div id="health-indicator" class="health-dot offline" title="System Status"></div>
+    </div>
+    
+    <script src="index.js"></script>
 </body>
 </html>
