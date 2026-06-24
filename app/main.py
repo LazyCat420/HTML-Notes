@@ -76,6 +76,7 @@ async def send_message(req: MessageRequest):
             "model": "cyankiwi/MiniMax-M2.7-AWQ-4bit",
             "messages": messages,
             "stream": True,
+            "max_tokens": 4096,
             "project": "html-notes",
             "username": "lazycat"
         }
