@@ -98,7 +98,6 @@ async def send_message(req: MessageRequest):
                     "provider": "vllm-2",
                     "model": "cyankiwi/MiniMax-M2.7-AWQ-4bit",
                     "messages": current_messages,
-                    "stream": False,                    # <-- non-streaming during loop
                     "maxTokens": 4096,
                     "tools": HTML_NOTES_TOOLS,
                     "project": "html-notes-client",
@@ -109,7 +108,7 @@ async def send_message(req: MessageRequest):
 
                 try:
                     async with httpx.AsyncClient(timeout=600.0) as client:
-                        resp = await client.post(f"{PRISM_URL}/agent", json=payload)
+                        resp = await client.post(f"{PRISM_URL}/agent?stream=false", json=payload)
                         if resp.status_code != 200:
                             yield f'data: {json.dumps({"type": "error", "message": f"Prism error: {resp.status_code}"})}\n\n'
                             return
