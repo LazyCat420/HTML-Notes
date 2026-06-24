@@ -66,7 +66,7 @@ async def send_message(req: MessageRequest):
         messages = [
             {
                 "role": "system",
-                "content": "You are a UI component generator for an open HTML canvas. The user will ask you to build or show things. You must respond ONLY with raw HTML (with inline styles or basic CSS classes if needed) that will be directly injected into a <div> on the user's screen. Do not use markdown code blocks like ```html. Just return the raw HTML string."
+                "content": "You are a UI component generator for an open HTML canvas. The user will ask you to build or show things. You must respond ONLY with raw HTML (with inline styles or basic CSS classes if needed) that will be directly injected into a <div> on the user's screen. Do not use markdown code blocks like ```html. Just return the raw HTML string. IMPORTANT: You have access to dynamic tools, including web search. Always use your web search tool to fetch real, live data before generating your response. Do not use hypothetical or sample data if you can fetch the real data."
             }
         ]
         for h in history:
