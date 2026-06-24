@@ -6,10 +6,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, VLLM_URL
+from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL
 from app.tools_schema import HTML_NOTES_TOOLS
 import json
 import uuid
+import asyncio
+from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ class TranscribeRequest(BaseModel):
 @app.post("/session/message")
 async def send_message(req: MessageRequest):
     try:
+        # Save user message
         user_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
         database.save_chat_message(
             message_id=user_msg_id,
@@ -60,56 +63,139 @@ async def send_message(req: MessageRequest):
             role="user",
             content=req.message
         )
-        
+
         history = database.get_session_messages(req.session_id)
-        
+
+        # Build initial messages list
         messages = [
             {
                 "role": "system",
-                "content": "You are a UI component generator for an open HTML canvas. The user will ask you to build or show things. You must respond ONLY with raw HTML (with inline styles or basic CSS classes if needed) that will be directly injected into a <div> on the user's screen. Do not use markdown code blocks like ```html. Just return the raw HTML string. IMPORTANT: You have access to dynamic tools, including web search. Always use your web search tool to fetch real, live data before generating your response. Do not use hypothetical or sample data if you can fetch the real data."
+                "content": (
+                    "You are a UI component renderer for an open HTML canvas. "
+                    "When you have data to display, you MUST call render_component() — "
+                    "never output raw JSON or plain text. "
+                    "When the user asks to save or note something, call html_notes_create_note(). "
+                    "Use dark theme inline styles: bg #0d1117, accent #00ff88, text #e6edf3. "
+                    "After all tool calls complete, respond with a short plain HTML confirmation string only."
+                )
             }
         ]
         for h in history:
             messages.append({"role": h["role"], "content": h["content"]})
-            
-        payload = {
-            "provider": "vllm-2",
-            "model": "cyankiwi/MiniMax-M2.7-AWQ-4bit",
-            "messages": messages,
-            "stream": True,
-            "maxTokens": 4096,
-            "tools": HTML_NOTES_TOOLS,
-            "project": "html-notes-client",
-            "username": "lazycat",
-            "webSearch": True,
-            "webFetch": True
-        }
-        
-        async def stream_generator():
-            full_response = ""
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                async with client.stream("POST", f"{PRISM_URL}/agent", json=payload) as r:
-                    async for chunk in r.aiter_lines():
-                        if chunk:
-                            yield f"{chunk}\n\n"
-                            if chunk.startswith("data: "):
-                                try:
-                                    data = json.loads(chunk[6:])
-                                    if data.get("type") == "chunk":
-                                        full_response += data.get("content", "")
-                                except Exception:
-                                    pass
-            
-            if full_response:
-                asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
-                database.save_chat_message(
-                    message_id=asst_msg_id,
-                    session_id=req.session_id,
-                    role="assistant",
-                    content=full_response
-                )
-                                
-        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+        async def loop_and_stream():
+            MAX_ITERATIONS = 10
+            current_messages = list(messages)
+            final_html = ""
+
+            for iteration in range(MAX_ITERATIONS):
+                # Status event to frontend
+                yield f'data: {json.dumps({"type": "status", "message": f"thinking (turn {iteration + 1})"})}\n\n'
+
+                # Call Prism — NON-STREAMING for loop turns
+                payload = {
+                    "provider": "vllm-2",
+                    "model": "cyankiwi/MiniMax-M2.7-AWQ-4bit",
+                    "messages": current_messages,
+                    "stream": False,                    # <-- non-streaming during loop
+                    "maxTokens": 4096,
+                    "tools": HTML_NOTES_TOOLS,
+                    "project": "html-notes-client",
+                    "username": "lazycat",
+                    "webSearch": True,
+                    "webFetch": True
+                }
+
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    resp = await client.post(f"{PRISM_URL}/agent", json=payload)
+                    if resp.status_code != 200:
+                        yield f'data: {json.dumps({"type": "error", "message": f"Prism error: {resp.status_code}"})}\n\n'
+                        return
+                    response_data = resp.json()
+
+                finish_reason = response_data.get("finish_reason") or response_data.get("finishReason", "stop")
+                tool_calls = response_data.get("tool_calls") or response_data.get("toolCalls") or []
+                assistant_content = response_data.get("content") or response_data.get("message") or ""
+
+                # Always append assistant turn verbatim
+                current_messages.append({
+                    "role": "assistant",
+                    "content": assistant_content,
+                    "tool_calls": tool_calls
+                })
+
+                # No tool calls → final answer
+                if not tool_calls or finish_reason == "stop":
+                    final_html = assistant_content
+                    break
+
+                # Notify frontend which tools are firing
+                for tc in tool_calls:
+                    fn = tc.get("function", {}).get("name", "unknown")
+                    yield f'data: {json.dumps({"type": "tool_call", "tool": fn})}\n\n'
+
+                # Execute all tool calls in PARALLEL
+                async def call_one_tool(tc):
+                    fn_name = tc["function"]["name"]
+                    try:
+                        fn_args = json.loads(tc["function"].get("arguments", "{}"))
+                    except Exception:
+                        fn_args = {}
+
+                    async with httpx.AsyncClient(timeout=30.0) as c:
+                        r = await c.post(
+                            f"{LAZY_TOOL_SERVICE_URL}/execute/{fn_name}",
+                            json=fn_args,
+                            headers={"x-agent": "html-notes", "x-conversation-id": req.session_id}
+                        )
+                        if r.status_code == 200:
+                            return {"tool_call_id": tc["id"], "result": r.json(), "is_error": False}
+                        else:
+                            return {"tool_call_id": tc["id"], "result": {"error": r.text}, "is_error": True}
+
+                results = await asyncio.gather(*[call_one_tool(tc) for tc in tool_calls])
+
+                # Collect render_component results to forward to frontend
+                render_results = []
+
+                # Append tool results as single user message
+                tool_result_messages = []
+                for res in results:
+                    content = json.dumps(res["result"])
+                    tool_result_messages.append({
+                        "role": "tool",
+                        "tool_call_id": res["tool_call_id"],
+                        "content": content,
+                        "is_error": res["is_error"]
+                    })
+                    # If this was a render_component call, capture the HTML
+                    result_data = res["result"]
+                    if isinstance(result_data, dict) and result_data.get("rendered_html"):
+                        render_results.append(result_data["rendered_html"])
+
+                current_messages.append({"role": "user", "content": tool_result_messages})
+
+                # Stream any rendered components immediately to frontend
+                for html_chunk in render_results:
+                    yield f'data: {json.dumps({"type": "component", "content": html_chunk})}\n\n'
+
+            # Stream final assistant reply
+            if final_html:
+                yield f'data: {json.dumps({"type": "chunk", "content": final_html})}\n\n'
+
+            # Save to DB
+            asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+            database.save_chat_message(
+                message_id=asst_msg_id,
+                session_id=req.session_id,
+                role="assistant",
+                content=final_html or "[tool-only turn]"
+            )
+
+            yield 'data: {"type": "done"}\n\n'
+
+        return StreamingResponse(loop_and_stream(), media_type="text/event-stream")
+
     except Exception as e:
         logger.error(f"Error processing session message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -269,6 +355,99 @@ async def health_model():
 @app.get("/health/app")
 async def health_app():
     return {"status": "ok", "service": "html-notes"}
+
+class InternalToolRequest(BaseModel):
+    tool: str
+    args: Dict[str, Any] = {}
+
+@app.post("/internal/execute")
+async def internal_tool_execute(req: InternalToolRequest):
+    """
+    Internal tool dispatcher. Called by lazy-tool-service when the model
+    fires an html_notes_* or render_component tool call.
+    """
+    t = req.tool
+    a = req.args
+
+    try:
+        if t == "html_notes_create_note":
+            from app.agents.auditor import audit_html_fragment
+            audit = audit_html_fragment(a.get("rendered_html", ""))
+            if not audit["is_valid"]:
+                return {"error": f"HTML audit failed: {audit['errors']}", "is_error": True}
+            note_id = f"note_{uuid.uuid4().hex[:8]}"
+            note = database.create_note(
+                note_id=note_id,
+                title=a["title"],
+                tags=a.get("tags", []),
+                links=a.get("links", []),
+                source_messages=["tool-call"],
+                canonical_blocks=[],
+                rendered_html=a["rendered_html"]
+            )
+            return {"success": True, "note_id": note["id"], "title": note["title"]}
+
+        elif t == "html_notes_update_note":
+            from app.agents.auditor import audit_html_fragment
+            if "rendered_html" in a:
+                audit = audit_html_fragment(a["rendered_html"])
+                if not audit["is_valid"]:
+                    return {"error": f"HTML audit failed: {audit['errors']}", "is_error": True}
+            note = database.update_note(note_id=a["note_id"], **{k: v for k, v in a.items() if k != "note_id"})
+            return {"success": True, "note_id": a["note_id"]} if note else {"error": "Note not found", "is_error": True}
+
+        elif t == "html_notes_get_note":
+            note = database.get_note_by_id(a["note_id"])
+            return note if note else {"error": "Note not found", "is_error": True}
+
+        elif t == "html_notes_search_notes":
+            results = database.search_notes(a["query"])
+            return {"results": results, "count": len(results)}
+
+        elif t == "html_notes_link_notes":
+            note_a = database.get_note_by_id(a["source_note_id"])
+            if not note_a:
+                return {"error": "Source note not found", "is_error": True}
+            links = note_a.get("links", [])
+            if a["target_note_id"] not in links:
+                links.append(a["target_note_id"])
+                database.update_note(note_id=a["source_note_id"], links=links)
+            return {"success": True}
+
+        elif t == "html_notes_modify_dom":
+            # fetch note, apply BeautifulSoup DOM operation, update
+            note = database.get_note_by_id(a["note_id"])
+            if not note:
+                return {"error": "Note not found", "is_error": True}
+            soup = BeautifulSoup(note["rendered_html"], "html.parser")
+            target = soup.select_one(a["css_selector"])
+            if not target:
+                return {"error": f"Selector '{a['css_selector']}' not found", "is_error": True}
+            snippet_soup = BeautifulSoup(a["html_snippet"], "html.parser")
+            action = a["action"]
+            if action == "append":      target.append(snippet_soup)
+            elif action == "prepend":   target.insert(0, snippet_soup)
+            elif action == "insert_before": target.insert_before(snippet_soup)
+            elif action == "insert_after":  target.insert_after(snippet_soup)
+            elif action == "replace":   target.replace_with(snippet_soup)
+            database.update_note(note_id=a["note_id"], rendered_html=str(soup))
+            return {"success": True}
+
+        elif t == "render_component":
+            # No DB write needed — just echo back so the loop can forward to frontend
+            return {
+                "success": True,
+                "rendered_html": a["rendered_html"],
+                "component_type": a.get("component_type"),
+                "title": a.get("title")
+            }
+
+        else:
+            return {"error": f"Unknown tool: {t}", "is_error": True}
+
+    except Exception as e:
+        logger.error(f"Internal tool execution error: {e}")
+        return {"error": str(e), "is_error": True}
 
 # Mount UI static files at root
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

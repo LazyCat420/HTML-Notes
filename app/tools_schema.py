@@ -231,6 +231,38 @@ HTML_NOTES_TOOLS_JSON = """
         "labels": [
             "tool"
         ]
+    },
+    {
+        "name": "render_component",
+        "description": "Render fetched or computed data as a styled HTML/CSS component injected into the canvas. Call this ANY time you have data to display — stock prices, news, tables, summaries, agent results. Never output raw JSON or plain text. Always render visually.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "component_type": {
+                    "type": "string",
+                    "enum": ["data_card", "data_table", "price_ticker", "summary_panel", "news_feed", "chart_embed", "alert_banner"],
+                    "description": "The visual layout to use for rendering"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Heading label for the component"
+                },
+                "data": {
+                    "type": "object",
+                    "description": "The raw structured data payload being rendered"
+                },
+                "rendered_html": {
+                    "type": "string",
+                    "description": "Complete self-contained HTML/CSS string. Use inline styles. Dark theme: bg #0d1117, accent #00ff88, text #e6edf3. No external URLs, no <script> tags."
+                }
+            },
+            "required": ["component_type", "title", "rendered_html"]
+        },
+        "tier": 0,
+        "permission": "read_only",
+        "concurrency_safe": true,
+        "domain": "Rendering",
+        "labels": ["tool"]
     }
 ]
 """

@@ -195,6 +195,20 @@ document.addEventListener("DOMContentLoaded", () => {
                                     }
                                 } else if (data.type === "done") {
                                     wrapper.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+                                } else if (data.type === "component") {
+                                    const compDiv = document.createElement("div");
+                                    compDiv.className = "canvas-element rendered-component";
+                                    // Bypassing DOMPurify here because this comes from our internal render_component tool
+                                    compDiv.innerHTML = data.content;
+                                    wrapper.parentElement.insertBefore(compDiv, wrapper);
+                                    scrollToBottom();
+                                } else if (data.type === "tool_call") {
+                                    const indicator = wrapper.querySelector(".streaming-indicator");
+                                    if (indicator) {
+                                        indicator.innerText = "🔧 Calling " + data.tool + "...";
+                                    }
+                                } else if (data.type === "error") {
+                                    renderError(data.message || "An error occurred.");
                                 }
                             } catch (e) {
                                 // ignore parse errors on partial chunks
