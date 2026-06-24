@@ -53,6 +53,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Initial check
     checkHealth();
+    fetchModels();
     setInterval(checkHealth, 30000);
 
     // Load history
@@ -311,6 +312,40 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ─── UTILS ─────────────────────────────────────────────────
+    async function fetchModels() {
+        if (!elements.modelSelect) return;
+        try {
+            const res = await fetch("/models");
+            if (res.ok) {
+                const data = await res.json();
+                elements.modelSelect.innerHTML = "";
+                let hasMinimax = false;
+                
+                data.models.forEach(m => {
+                    const option = document.createElement("option");
+                    option.value = JSON.stringify({ provider: m.provider, model: m.model });
+                    option.textContent = m.label;
+                    elements.modelSelect.appendChild(option);
+                    
+                    if (m.model.includes("MiniMax-M2.7")) {
+                        option.selected = true;
+                        hasMinimax = true;
+                    }
+                });
+                
+                if (!hasMinimax && data.models.length > 0) {
+                    elements.modelSelect.options[0].selected = true;
+                }
+            } else {
+                elements.modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+            }
+        } catch (e) {
+            console.error("Failed to load models", e);
+            elements.modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+        }
+    }
+
+
     async function checkHealth() {
         try {
             const res = await fetch("/health/model");

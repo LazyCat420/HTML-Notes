@@ -54,6 +54,30 @@ class TranscribeRequest(BaseModel):
 
 # API Endpoints
 
+@app.get("/models")
+async def get_models():
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{PRISM_URL}/config?includeLocal=true")
+            if resp.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to fetch models from Prism")
+            
+            data = resp.json()
+            models_map = data.get("textToText", {}).get("models", {})
+            
+            flat_models = []
+            for provider, provider_models in models_map.items():
+                for model in provider_models:
+                    flat_models.append({
+                        "provider": provider,
+                        "model": model.get("name"),
+                        "label": model.get("label") or model.get("name")
+                    })
+            return JSONResponse(content={"models": flat_models})
+    except Exception as e:
+        logger.error(f"Error fetching models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/session/message")
 async def send_message(req: MessageRequest):
     try:
