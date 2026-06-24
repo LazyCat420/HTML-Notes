@@ -196,9 +196,11 @@ async def send_message(req: MessageRequest):
                         args_raw = tc["function"].get("arguments", "{}")
                     else:
                         fn_name = tc.get("name")
-                        args_raw = tc.get("arguments", "{}")
+                        args_raw = tc.get("arguments")
                         if not args_raw and "args" in tc:
                             args_raw = tc["args"]
+                        if not args_raw:
+                            args_raw = "{}"
 
                     if isinstance(args_raw, dict):
                         fn_args = args_raw
