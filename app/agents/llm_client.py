@@ -7,6 +7,26 @@ from app.config import VLLM_URL
 
 logger = logging.getLogger(__name__)
 
+_cached_model = None
+
+async def _get_model_name(client: httpx.AsyncClient) -> str:
+    global _cached_model
+    if _cached_model:
+        return _cached_model
+        
+    url = f"{VLLM_URL}/v1/models"
+    try:
+        response = await client.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data and len(data["data"]) > 0:
+                _cached_model = data["data"][0]["id"]
+                return _cached_model
+    except Exception as e:
+        logger.error(f"Failed to fetch models from vLLM: {e}")
+        
+    return "minimax" # fallback to minimax/gold spark
+
 async def call_llm(
     messages: List[Dict[str, str]],
     temperature: float = 0.1,
@@ -18,18 +38,21 @@ async def call_llm(
     Returns the string content of the completion.
     """
     url = f"{VLLM_URL}/v1/chat/completions"
-    payload = {
-        "model": "Qwen/Qwen3.5-122B-A10B-FP8", # default vLLM model
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens
-    }
     
-    if response_format:
-        payload["response_format"] = response_format
-        
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
+            model_name = await _get_model_name(client)
+            
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+            
+            if response_format:
+                payload["response_format"] = response_format
+                
             response = await client.post(url, json=payload)
             if response.status_code != 200:
                 logger.error(f"vLLM API returned status {response.status_code}: {response.text}")
