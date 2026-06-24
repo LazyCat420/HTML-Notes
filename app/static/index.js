@@ -18,7 +18,8 @@ document.addEventListener("DOMContentLoaded", () => {
         welcomeMessage: document.getElementById("welcome-message"),
         execLogContainer: document.getElementById("execution-log-container"),
         execLogContent: document.getElementById("execution-log-content"),
-        btnToggleLog: document.getElementById("btn-toggle-log")
+        btnToggleLog: document.getElementById("btn-toggle-log"),
+        modelSelect: document.getElementById("model-select")
     };
 
     if (elements.btnToggleLog) {
@@ -164,9 +165,20 @@ document.addEventListener("DOMContentLoaded", () => {
         const text = elements.chatInput.value.trim();
         if (!text) return;
 
-        // Clear input
         elements.chatInput.value = "";
         elements.chatInput.style.height = 'auto';
+        
+        let provider = "vllm-2";
+        let model = "cyankiwi/MiniMax-M2.7-AWQ-4bit";
+        if (elements.modelSelect && elements.modelSelect.value) {
+            try {
+                const selected = JSON.parse(elements.modelSelect.value);
+                provider = selected.provider;
+                model = selected.model;
+            } catch (e) {
+                console.error("Failed to parse model select value", e);
+            }
+        }
 
         // Prepare Execution Log Overlay
         elements.execLogContent.innerHTML = "";
@@ -178,7 +190,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     session_id: state.sessionId,
-                    message: text
+                    message: text,
+                    provider: provider,
+                    model: model
                 })
             });
 

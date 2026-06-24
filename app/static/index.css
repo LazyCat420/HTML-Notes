@@ -160,14 +160,39 @@ textarea {
     flex: 1;
     background: transparent;
     border: none;
-    color: var(--text-color);
-    font-family: inherit;
-    font-size: 1rem;
+    outline: none;
     resize: none;
     padding: 0.5rem;
-    max-height: 150px;
+    font-size: 1rem;
+    color: var(--text-color);
+    line-height: 1.5;
+    font-family: inherit;
+    min-height: 24px;
+    max-height: 120px;
+}
+
+.model-select {
+    background: var(--bg-color);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.4rem;
+    font-size: 0.85rem;
+    font-family: inherit;
     outline: none;
-    line-height: 1.4;
+    cursor: pointer;
+    margin-right: 0.5rem;
+    max-width: 150px;
+    transition: border-color 0.2s ease;
+}
+
+.model-select:focus {
+    border-color: var(--accent-color);
+}
+
+.model-select option {
+    background: var(--bg-color);
+    color: var(--text-color);
 }
 
 textarea::placeholder {

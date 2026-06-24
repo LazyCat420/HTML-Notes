@@ -27,6 +27,8 @@ class MessageRequest(BaseModel):
     session_id: str
     message: str
     target_note_id: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 class CreateNoteRequest(BaseModel):
     title: str
@@ -116,8 +118,8 @@ async def send_message(req: MessageRequest):
 
                 # Call Prism — NON-STREAMING for loop turns
                 payload = {
-                    "provider": "vllm-2",
-                    "model": "cyankiwi/MiniMax-M2.7-AWQ-4bit",
+                    "provider": req.provider or "vllm-2",
+                    "model": req.model or "cyankiwi/MiniMax-M2.7-AWQ-4bit",
                     "messages": current_messages,
                     "maxTokens": 4096,
                     "tools": HTML_NOTES_TOOLS,
