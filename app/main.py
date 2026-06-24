@@ -84,10 +84,9 @@ async def send_message(req: MessageRequest):
             messages.append({"role": h["role"], "content": h["content"]})
 
         async def loop_and_stream():
-            try:
-                MAX_ITERATIONS = 10
-                current_messages = list(messages)
-                final_html = ""
+            MAX_ITERATIONS = 10
+            current_messages = list(messages)
+            final_html = ""
 
             for iteration in range(MAX_ITERATIONS):
                 # Status event to frontend
@@ -107,12 +106,17 @@ async def send_message(req: MessageRequest):
                     "webFetch": True
                 }
 
-                async with httpx.AsyncClient(timeout=600.0) as client:
-                    resp = await client.post(f"{PRISM_URL}/agent", json=payload)
-                    if resp.status_code != 200:
-                        yield f'data: {json.dumps({"type": "error", "message": f"Prism error: {resp.status_code}"})}\n\n'
-                        return
-                    response_data = resp.json()
+                try:
+                    async with httpx.AsyncClient(timeout=600.0) as client:
+                        resp = await client.post(f"{PRISM_URL}/agent", json=payload)
+                        if resp.status_code != 200:
+                            yield f'data: {json.dumps({"type": "error", "message": f"Prism error: {resp.status_code}"})}\n\n'
+                            return
+                        response_data = resp.json()
+                except Exception as e:
+                    logger.error(f"Prism network error: {e}")
+                    yield f'data: {json.dumps({"type": "error", "message": f"Prism network error: {str(e)}"})}\n\n'
+                    return
 
                 finish_reason = response_data.get("finish_reason") or response_data.get("finishReason", "stop")
                 tool_calls = response_data.get("tool_calls") or response_data.get("toolCalls") or []
@@ -194,10 +198,6 @@ async def send_message(req: MessageRequest):
             )
 
             yield 'data: {"type": "done"}\n\n'
-
-            except Exception as e:
-                logger.error(f"Error in loop_and_stream: {e}")
-                yield f'data: {json.dumps({"type": "error", "message": f"Server error: {str(e)}"})}\n\n'
 
         return StreamingResponse(loop_and_stream(), media_type="text/event-stream")
 
