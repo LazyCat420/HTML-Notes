@@ -9,14 +9,29 @@ document.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("html_notes_session_id", state.sessionId);
 
     const elements = {
-        canvasContainer: document.getElementById("canvas-container"),
+        liveCanvas: document.getElementById("live-canvas"),
         chatInput: document.getElementById("chat-input"),
         btnSendMessage: document.getElementById("btn-send-message"),
         btnMic: document.getElementById("btn-mic"),
         recordingStatus: document.getElementById("recording-status"),
         healthIndicator: document.getElementById("health-indicator"),
-        welcomeMessage: document.getElementById("welcome-message")
+        welcomeMessage: document.getElementById("welcome-message"),
+        execLogContainer: document.getElementById("execution-log-container"),
+        execLogContent: document.getElementById("execution-log-content"),
+        btnToggleLog: document.getElementById("btn-toggle-log")
     };
+
+    if (elements.btnToggleLog) {
+        elements.btnToggleLog.addEventListener("click", () => {
+            if (elements.execLogContent.style.display === "none") {
+                elements.execLogContent.style.display = "block";
+                elements.btnToggleLog.innerText = "▼";
+            } else {
+                elements.execLogContent.style.display = "none";
+                elements.btnToggleLog.innerText = "▶";
+            }
+        });
+    }
 
     // Auto-resize textarea
     elements.chatInput.addEventListener("input", function() {
@@ -131,32 +146,13 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!res.ok) return;
             const data = await res.json();
             if (data.messages && data.messages.length > 0) {
-                if (elements.welcomeMessage) elements.welcomeMessage.remove();
-                for (const msg of data.messages) {
-                    if (msg.role === "user") {
-                        // Create a simple user message block
-                        const wrapper = document.createElement("div");
-                        wrapper.className = "canvas-element user-message";
-                        wrapper.innerHTML = `<strong>You:</strong> ${DOMPurify.sanitize(msg.content)}`;
-                        elements.canvasContainer.appendChild(wrapper);
-                    } else if (msg.role === "assistant" && msg.content !== "[tool-only turn]") {
-                        const wrapper = document.createElement("div");
-                        wrapper.className = "canvas-element";
-                        
-                        // Because components are raw HTML and marked output is HTML,
-                        // we'll just parse the whole thing and inject it.
-                        // We bypass DOMPurify here ONLY for loaded history because it's our own database 
-                        // and we want the components to render untouched.
-                        
-                        // Wait, if it's text, it needs marked. If it's a component, it's already HTML.
-                        // Actually, since components are wrapped in <div class="canvas-element rendered-component">
-                        // we can just run marked on it. Marked will ignore block HTML!
-                        wrapper.innerHTML = marked.parse(msg.content);
-                        elements.canvasContainer.appendChild(wrapper);
-                        renderDynamicComponents(wrapper);
-                    }
+                // Find the last assistant message
+                const assistantMessages = data.messages.filter(m => m.role === "assistant" && m.content !== "[tool-only turn]");
+                if (assistantMessages.length > 0) {
+                    const lastMsg = assistantMessages[assistantMessages.length - 1];
+                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(lastMsg.content));
+                    renderDynamicComponents(elements.liveCanvas);
                 }
-                scrollToBottom();
             }
         } catch (err) {
             console.error("Failed to load history:", err);
@@ -172,17 +168,9 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.chatInput.value = "";
         elements.chatInput.style.height = 'auto';
 
-        // Remove welcome message if present
-        if (elements.welcomeMessage) {
-            elements.welcomeMessage.remove();
-        }
-
-        // Show loading indicator on canvas
-        const loader = document.createElement("div");
-        loader.className = "loading-indicator pulse";
-        loader.innerText = "Thinking...";
-        elements.canvasContainer.appendChild(loader);
-        scrollToBottom();
+        // Prepare Execution Log Overlay
+        elements.execLogContent.innerHTML = "";
+        elements.execLogContainer.style.display = "flex";
 
         try {
             const res = await fetch("/session/message", {
@@ -194,29 +182,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 })
             });
 
-            loader.remove();
-
             if (!res.ok) {
                 console.error("Error from API:", await res.text());
                 renderError("Failed to process request. See console.");
                 return;
             }
-
-            const wrapper = document.createElement("div");
-            wrapper.className = "canvas-element";
-            
-            // Create execution log container
-            const execLog = document.createElement("div");
-            execLog.className = "execution-log";
-            wrapper.appendChild(execLog);
-            
-            // Create text content container
-            const textContent = document.createElement("div");
-            textContent.className = "text-content";
-            wrapper.appendChild(textContent);
-
-            elements.canvasContainer.appendChild(wrapper);
-            scrollToBottom();
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder("utf-8");
@@ -227,8 +197,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 const step = document.createElement("div");
                 step.className = "log-step";
                 step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${text}</span>`;
-                execLog.appendChild(step);
-                scrollToBottom();
+                elements.execLogContent.appendChild(step);
+                elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
             }
 
             addLogStep("Connecting to agent...", "🔗");
@@ -245,22 +215,16 @@ document.addEventListener("DOMContentLoaded", () => {
                                 const data = JSON.parse(line.substring(6));
                                 if (data.type === "chunk") {
                                     fullHtml += data.content || "";
-                                    textContent.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
-                                    scrollToBottom();
+                                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
                                 } else if (data.type === "status") {
                                     addLogStep(data.message || "Thinking...", "🧠");
                                 } else if (data.type === "done") {
-                                    textContent.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+                                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
                                     addLogStep("Finished generation.", "✨");
-                                    execLog.classList.add("completed");
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
-                                    const compDiv = document.createElement("div");
-                                    compDiv.className = "canvas-element rendered-component";
-                                    compDiv.innerHTML = data.content;
-                                    // Insert BEFORE the text content container, but AFTER the exec log
-                                    wrapper.insertBefore(compDiv, textContent);
-                                    scrollToBottom();
+                                    fullHtml += `\n\n${data.content}\n\n`;
+                                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
                                 } else if (data.type === "tool_call") {
                                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
                                 } else if (data.type === "error") {
@@ -276,29 +240,28 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             // Final cleanup
-            textContent.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
-            renderDynamicComponents(textContent);
-            scrollToBottom();
+            elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+            renderDynamicComponents(elements.liveCanvas);
+
+            // Auto-hide log after 3 seconds
+            setTimeout(() => {
+                elements.execLogContainer.style.display = "none";
+            }, 3000);
 
         } catch (err) {
-            loader.remove();
             console.error("Network error:", err);
             renderError("Network error. Is the server running?");
         }
     }
 
     function renderError(msg) {
-        const errDiv = document.createElement("div");
-        errDiv.className = "canvas-element system-message";
-        errDiv.style.color = "var(--danger-color)";
-        errDiv.style.marginTop = "1rem";
-        errDiv.innerText = msg;
-        elements.canvasContainer.appendChild(errDiv);
-        scrollToBottom();
+        elements.liveCanvas.innerHTML = `<div class="system-message" style="color: var(--danger-color); margin-top: 1rem;">${msg}</div>`;
     }
 
     function scrollToBottom() {
-        elements.canvasContainer.scrollTop = elements.canvasContainer.scrollHeight;
+        if (elements.liveCanvas) {
+            elements.liveCanvas.scrollTop = elements.liveCanvas.scrollHeight;
+        }
     }
 
     function renderDynamicComponents(container) {

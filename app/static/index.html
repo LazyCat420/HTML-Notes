@@ -13,23 +13,33 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div id="canvas-container" class="canvas-container">
+    <!-- Live Canvas Area -->
+    <div id="live-canvas" class="live-canvas">
         <div id="welcome-message" class="system-message">
             <h1>Canvas Ready</h1>
-            <p>Tell the LLM what components to build and render here.</p>
+            <p>Tell the LLM what to build. It will replace this entire screen.</p>
         </div>
     </div>
 
-    <!-- Fixed Chat Bar at Bottom -->
-    <div class="chat-bar">
+    <!-- Floating Execution Log Overlay -->
+    <div id="execution-log-container" class="execution-log-container" style="display: none;">
+        <div class="execution-log-header">
+            <span>Agent Activity</span>
+            <button id="btn-toggle-log" class="btn-toggle-log" title="Toggle Log">▼</button>
+        </div>
+        <div id="execution-log-content" class="execution-log-content"></div>
+    </div>
+
+    <!-- Floating Command Palette -->
+    <div class="command-palette">
         <div class="input-row">
             <button id="btn-mic" class="btn-mic" title="Record Voice">
                 <svg class="mic-icon" viewBox="0 0 24 24">
                     <path d="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M17.3,11C17.3,14 14.76,16.2 12,16.2C9.24,16.2 6.7,14 6.7,11H5C5,14.41 7.72,17.23 11,17.72V21H13V17.72C16.28,17.23 19,14.41 19,11H17.3Z"/>
                 </svg>
             </button>
-            <textarea id="chat-input" placeholder="Type instructions or dictate..." rows="1"></textarea>
-            <button id="btn-send-message" class="btn-send" title="Send message">
+            <textarea id="chat-input" placeholder="Type a command to update the canvas..." rows="1"></textarea>
+            <button id="btn-send-message" class="btn-send" title="Send command">
                 <svg viewBox="0 0 24 24">
                     <path fill="currentColor" d="M2,21L23,12L2,3V10L17,12L2,14V21Z"/>
                 </svg>
