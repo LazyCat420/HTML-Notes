@@ -4,6 +4,7 @@ services:
   html-notes:
     image: html-notes:latest
     container_name: html-notes
+    user: ""
     ports:
       - "8035:8035"
     environment:
