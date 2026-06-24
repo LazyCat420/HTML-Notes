@@ -79,8 +79,10 @@ async def send_message(req: MessageRequest):
             "stream": True,
             "maxTokens": 4096,
             "tools": HTML_NOTES_TOOLS,
-            "project": "html-notes",
-            "username": "lazycat"
+            "project": "html-notes-client",
+            "username": "lazycat",
+            "webSearch": True,
+            "webFetch": True
         }
         
         async def stream_generator():
