@@ -87,6 +87,7 @@ async def send_message(req: MessageRequest):
             MAX_ITERATIONS = 10
             current_messages = list(messages)
             final_html = ""
+            all_rendered_components_html = ""
 
             for iteration in range(MAX_ITERATIONS):
                 # Status event to frontend
@@ -182,6 +183,7 @@ async def send_message(req: MessageRequest):
 
                 # Stream any rendered components immediately to frontend
                 for html_chunk in render_results:
+                    all_rendered_components_html += f'<div class="canvas-element rendered-component">{html_chunk}</div>'
                     yield f'data: {json.dumps({"type": "component", "content": html_chunk})}\n\n'
 
             # Stream final assistant reply
@@ -190,11 +192,16 @@ async def send_message(req: MessageRequest):
 
             # Save to DB
             asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+            
+            saved_content = all_rendered_components_html + (final_html or "")
+            if not saved_content:
+                saved_content = "[tool-only turn]"
+                
             database.save_chat_message(
                 message_id=asst_msg_id,
                 session_id=req.session_id,
                 role="assistant",
-                content=final_html or "[tool-only turn]"
+                content=saved_content
             )
 
             yield 'data: {"type": "done"}\n\n'
@@ -453,6 +460,15 @@ async def internal_tool_execute(req: InternalToolRequest):
     except Exception as e:
         logger.error(f"Internal tool execution error: {e}")
         return {"error": str(e), "is_error": True}
+
+@app.get("/session/{session_id}/history")
+async def get_session_history(session_id: str):
+    try:
+        history = database.get_session_messages(session_id)
+        return {"messages": history}
+    except Exception as e:
+        logger.error(f"Error fetching history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Mount UI static files at root
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

@@ -327,3 +327,84 @@ textarea::placeholder {
 .canvas-container li {
     margin-bottom: 0.5rem;
 }
+
+/* User Message Block */
+.user-message {
+    background-color: rgba(88, 166, 255, 0.1);
+    border: 1px solid rgba(88, 166, 255, 0.3);
+    border-radius: 12px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    align-self: flex-end;
+    max-width: 80% !important;
+    color: #ffffff;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.user-message strong {
+    color: var(--accent-color);
+    margin-right: 0.5rem;
+}
+
+/* Execution Log UI (Glassmorphic) */
+.execution-log {
+    background: rgba(22, 27, 34, 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--accent-color);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    transition: opacity 0.5s ease;
+}
+
+.execution-log.completed {
+    opacity: 0.6;
+}
+
+.execution-log.completed:hover {
+    opacity: 1;
+}
+
+.log-step {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    font-size: 0.95rem;
+    color: #8b949e;
+    animation: slideIn 0.3s ease forwards;
+    opacity: 0;
+    transform: translateX(-10px);
+}
+
+@keyframes slideIn {
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.step-icon {
+    font-size: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+}
+
+.step-text {
+    color: #c9d1d9;
+}
+
+.step-text strong {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.text-content {
+    animation: fadeIn 0.4s ease forwards;
+}
