@@ -253,3 +253,77 @@ textarea::placeholder {
     50% { opacity: 1; }
     100% { opacity: 0.5; }
 }
+
+/* Markdown Element Styles */
+.canvas-container table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+    background-color: var(--panel-bg);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.canvas-container th, .canvas-container td {
+    padding: 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.canvas-container th {
+    background-color: rgba(255, 255, 255, 0.05);
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.canvas-container tr:last-child td {
+    border-bottom: none;
+}
+
+.canvas-container tr:hover td {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+.canvas-container pre {
+    background-color: #010409;
+    padding: 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.9rem;
+}
+
+.canvas-container code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    background-color: rgba(110, 118, 129, 0.4);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+.canvas-container pre code {
+    background-color: transparent;
+    padding: 0;
+    font-size: 1em;
+}
+
+.canvas-container blockquote {
+    border-left: 4px solid var(--accent-color);
+    padding: 0.5rem 0 0.5rem 1rem;
+    margin: 1.5rem 0;
+    color: #8b949e;
+    background-color: rgba(88, 166, 255, 0.05);
+    border-radius: 0 8px 8px 0;
+}
+
+.canvas-container ul, .canvas-container ol {
+    margin: 1rem 0 1rem 2rem;
+    line-height: 1.6;
+}
+
+.canvas-container li {
+    margin-bottom: 0.5rem;
+}

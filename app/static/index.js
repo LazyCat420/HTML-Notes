@@ -186,7 +186,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                 const data = JSON.parse(line.substring(6));
                                 if (data.type === "chunk") {
                                     fullHtml += data.content || "";
-                                    wrapper.innerHTML = DOMPurify.sanitize(fullHtml) + '<div class="streaming-indicator pulse">Generating...</div>';
+                                    wrapper.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml)) + '<div class="streaming-indicator pulse">Generating...</div>';
                                     scrollToBottom();
                                 } else if (data.type === "status") {
                                     const indicator = wrapper.querySelector(".streaming-indicator");
@@ -194,7 +194,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                         indicator.innerText = "Working: " + (data.message || "Using tools...");
                                     }
                                 } else if (data.type === "done") {
-                                    wrapper.innerHTML = DOMPurify.sanitize(fullHtml);
+                                    wrapper.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
                                 }
                             } catch (e) {
                                 // ignore parse errors on partial chunks
@@ -205,7 +205,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             // Final cleanup
-            wrapper.innerHTML = DOMPurify.sanitize(fullHtml);
+            wrapper.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
             scrollToBottom();
 
         } catch (err) {
@@ -213,17 +213,6 @@ document.addEventListener("DOMContentLoaded", () => {
             console.error("Network error:", err);
             renderError("Network error. Is the server running?");
         }
-    }
-
-    // Keep renderError for other uses
-    function renderError(msg) {
-        const errDiv = document.createElement("div");
-        errDiv.className = "canvas-element system-message";
-        errDiv.style.color = "var(--danger-color)";
-        errDiv.style.marginTop = "1rem";
-        errDiv.innerText = msg;
-        elements.canvasContainer.appendChild(errDiv);
-        scrollToBottom();
     }
 
     function renderError(msg) {
