@@ -234,13 +234,13 @@ HTML_NOTES_TOOLS_JSON = """
     },
     {
         "name": "render_component",
-        "description": "Render fetched or computed data as a styled HTML/CSS component injected into the canvas. Call this ANY time you have data to display — stock prices, news, tables, summaries, agent results. Never output raw JSON or plain text. Always render visually.",
+        "description": "Render fetched or computed data as a styled HTML/CSS component injected into the canvas. Provide raw structured data, the system will apply a template. Never output raw HTML.",
         "parameters": {
             "type": "object",
             "properties": {
                 "component_type": {
                     "type": "string",
-                    "enum": ["data_card", "data_table", "price_ticker", "summary_panel", "news_feed", "chart_embed", "alert_banner"],
+                    "enum": ["calendar_widget", "task_checklist", "reminder_banner", "kanban_board", "habit_tracker", "data_card", "data_table", "price_ticker", "summary_panel", "news_feed", "chart_embed", "alert_banner"],
                     "description": "The visual layout to use for rendering"
                 },
                 "title": {
@@ -249,14 +249,10 @@ HTML_NOTES_TOOLS_JSON = """
                 },
                 "data": {
                     "type": "object",
-                    "description": "The raw structured data payload being rendered"
-                },
-                "rendered_html": {
-                    "type": "string",
-                    "description": "Complete self-contained HTML/CSS string. Use inline styles. Dark theme: bg #0d1117, accent #00ff88, text #e6edf3. No external URLs, no <script> tags."
+                    "description": "The raw structured data payload being rendered. Example for task_checklist: {'tasks': [{'text': '...', 'done': false, 'due': '...'}]}."
                 }
             },
-            "required": ["component_type", "title", "rendered_html"]
+            "required": ["component_type", "title", "data"]
         },
         "tier": 0,
         "permission": "read_only",

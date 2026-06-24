@@ -94,36 +94,20 @@ async def send_message(req: MessageRequest):
 
         # Build initial messages list
         SYSTEM_PROMPT = (
-            "You are an autonomous web application interface. You control the entire visible HTML document. "
-            "Do NOT converse like a chatbot. DO NOT output conversational filler like 'Here is the dashboard...'. "
-            "Your output completely Replaces the entire HTML document on the user's screen. "
-            "When the user gives a command, you must rewrite the HTML to reflect the updated state of the dashboard, website, or notes. "
-            "We have injected a premium CSS Design System into the frontend. Use these exact classes to build your UI:\n\n"
-            "- Layouts: `dashboard-grid`, `flex-row`, `flex-col`, `items-center`, `justify-between`, `gap-2`, `gap-4`, `mb-4`, `mt-4`, `sidebar`, `main-content`\n"
-            "- Cards: `glass-card` (Use `glass-card-header` and `glass-card-title` inside it)\n"
-            "- Metrics: `metric-box` (Contains `metric-value` and `metric-label`)\n"
-            "- Badges: `status-badge` (Add `success`, `warning`, `danger`, or `info` modifiers)\n"
-            "- Tables: wrap in `data-table-container`, then use `data-table` class on the `<table>`\n"
-            "- Text: `text-gradient` for emphasis, `text-muted` for secondary info.\n\n"
-            "Example:\n"
-            "<div class=\"dashboard-grid\">\n"
-            "  <div class=\"glass-card\">\n"
-            "    <div class=\"glass-card-header\">\n"
-            "      <h3 class=\"glass-card-title\">Current Price</h3>\n"
-            "      <span class=\"status-badge success\">+2.4%</span>\n"
-            "    </div>\n"
-            "    <div class=\"metric-box\">\n"
-            "      <div class=\"metric-value\">$142.50</div>\n"
-            "      <div class=\"metric-label\">Updated just now</div>\n"
-            "    </div>\n"
-            "  </div>\n"
-            "</div>\n\n"
-            "You are an HTML component generator. Always respond with valid, complete HTML only. "
-            "Never use markdown. Never use code fences. Output raw HTML directly. "
-            "Use inline styles. Make it visually impressive. No explanations.\n\n"
-            "When rendering charts, use `<pre><code class=\"language-chart\">...</code></pre>` instead of markdown blocks.\n\n"
-            "If the user asks to save a note, call html_notes_create_note(). "
-            "Remember: Output the FULL HTML needed for the current state of the application. Act as a live visual dashboard!"
+            "You are an agentic notes assistant. Your job is to understand the user's intent "
+            "and call the right tools — never output raw HTML directly.\n\n"
+            "INTENT CLASSIFICATION:\n"
+            "- User wants to remember something → call html_notes_create_note()\n"
+            "- User wants to track tasks/todos → call render_component(component_type='task_checklist')\n"
+            "- User wants a calendar/schedule → call render_component(component_type='calendar_widget')\n"
+            "- User wants a reminder/alert → call render_component(component_type='reminder_banner')\n"
+            "- User wants to see existing notes → call html_notes_search_notes() then render_component()\n"
+            "- User wants to update something → call html_notes_get_note() then html_notes_update_note()\n"
+            "- User wants to view a Kanban board → call render_component(component_type='kanban_board')\n"
+            "- User wants to see a data table → call render_component(component_type='data_table')\n\n"
+            "When calling render_component, put all data in the 'data' field as structured JSON matching the component's needs. "
+            "The system will render it using pre-built templates. "
+            "Always respond with a tool call, never plain text."
         )
 
         messages = [
@@ -511,12 +495,19 @@ async def internal_tool_execute(req: InternalToolRequest):
             return {"success": True}
 
         elif t == "render_component":
-            # No DB write needed — just echo back so the loop can forward to frontend
+            from app.templates import TEMPLATES
+            ctype = a.get("component_type")
+            data = a.get("data", {})
+            if ctype in TEMPLATES:
+                html = TEMPLATES[ctype](data)
+            else:
+                html = a.get("rendered_html", "")
+            
             return {
                 "success": True,
-                "rendered_html": a["rendered_html"],
-                "component_type": a.get("component_type"),
-                "title": a.get("title")
+                "rendered_html": html,
+                "component_type": ctype,
+                "title": a.get("title", "Component")
             }
 
         else:

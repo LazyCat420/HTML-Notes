@@ -150,7 +150,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const isHTML = /<[a-z][\s\S]*>/i.test(html);
         if (isHTML) {
             elements.liveCanvas.innerHTML = DOMPurify.sanitize(html, {
-                ADD_ATTR: ['style', 'class', 'onclick'],
+                ADD_ATTR: ['style', 'class', 'onclick', 'type', 'checked'],
                 FORCE_BODY: true
             });
         } else {
