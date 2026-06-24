@@ -186,16 +186,27 @@ async def send_message(req: MessageRequest):
 
                 # Notify frontend which tools are firing
                 for tc in tool_calls:
-                    fn = tc.get("function", {}).get("name", "unknown")
+                    fn = tc.get("function", {}).get("name") or tc.get("name", "unknown")
                     yield f'data: {json.dumps({"type": "tool_call", "tool": fn})}\n\n'
 
                 # Execute all tool calls in PARALLEL
                 async def call_one_tool(tc):
-                    fn_name = tc["function"]["name"]
-                    try:
-                        fn_args = json.loads(tc["function"].get("arguments", "{}"))
-                    except Exception:
-                        fn_args = {}
+                    if "function" in tc:
+                        fn_name = tc["function"]["name"]
+                        args_raw = tc["function"].get("arguments", "{}")
+                    else:
+                        fn_name = tc.get("name")
+                        args_raw = tc.get("arguments", "{}")
+                        if not args_raw and "args" in tc:
+                            args_raw = tc["args"]
+
+                    if isinstance(args_raw, dict):
+                        fn_args = args_raw
+                    else:
+                        try:
+                            fn_args = json.loads(args_raw)
+                        except Exception:
+                            fn_args = {}
 
                     async with httpx.AsyncClient(timeout=30.0) as c:
                         r = await c.post(
@@ -203,10 +214,11 @@ async def send_message(req: MessageRequest):
                             json=fn_args,
                             headers={"x-agent": "html-notes", "x-conversation-id": req.session_id}
                         )
+                        tc_id = tc.get("id", f"call_{fn_name}")
                         if r.status_code == 200:
-                            return {"tool_call_id": tc["id"], "result": r.json(), "is_error": False}
+                            return {"tool_call_id": tc_id, "result": r.json(), "is_error": False}
                         else:
-                            return {"tool_call_id": tc["id"], "result": {"error": r.text}, "is_error": True}
+                            return {"tool_call_id": tc_id, "result": {"error": r.text}, "is_error": True}
 
                 results = await asyncio.gather(*[call_one_tool(tc) for tc in tool_calls])
 
