@@ -146,6 +146,18 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.recordingStatus.style.display = "none";
     }
 
+    function renderContent(html) {
+        const isHTML = /<[a-z][\s\S]*>/i.test(html);
+        if (isHTML) {
+            elements.liveCanvas.innerHTML = DOMPurify.sanitize(html, {
+                ADD_ATTR: ['style', 'class', 'onclick'],
+                FORCE_BODY: true
+            });
+        } else {
+            elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(html));
+        }
+    }
+
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
     async function loadHistory() {
         try {
@@ -157,7 +169,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const assistantMessages = data.messages.filter(m => m.role === "assistant" && m.content !== "[tool-only turn]");
                 if (assistantMessages.length > 0) {
                     const lastMsg = assistantMessages[assistantMessages.length - 1];
-                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(lastMsg.content));
+                    renderContent(lastMsg.content);
                     renderDynamicComponents(elements.liveCanvas);
                 }
             }
@@ -235,16 +247,16 @@ document.addEventListener("DOMContentLoaded", () => {
                                 const data = JSON.parse(line.substring(6));
                                 if (data.type === "chunk") {
                                     fullHtml += data.content || "";
-                                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+                                    renderContent(fullHtml);
                                 } else if (data.type === "status") {
                                     addLogStep(data.message || "Thinking...", "🧠");
                                 } else if (data.type === "done") {
-                                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+                                    renderContent(fullHtml);
                                     addLogStep("Finished generation.", "✨");
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
                                     fullHtml += `\n\n${data.content}\n\n`;
-                                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+                                    renderContent(fullHtml);
                                 } else if (data.type === "tool_call") {
                                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
                                 } else if (data.type === "error") {
@@ -260,7 +272,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             // Final cleanup
-            elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(fullHtml));
+            renderContent(fullHtml);
             renderDynamicComponents(elements.liveCanvas);
 
             // Auto-hide log after 3 seconds

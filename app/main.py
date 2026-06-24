@@ -118,7 +118,10 @@ async def send_message(req: MessageRequest):
             "    </div>\n"
             "  </div>\n"
             "</div>\n\n"
-            "Do NOT use inline styles. Always use these classes. When rendering charts, use ```chart ... ``` markdown blocks as before. "
+            "You are an HTML component generator. Always respond with valid, complete HTML only. "
+            "Never use markdown. Never use code fences. Output raw HTML directly. "
+            "Use inline styles. Make it visually impressive. No explanations.\n\n"
+            "When rendering charts, use `<pre><code class=\"language-chart\">...</code></pre>` instead of markdown blocks.\n\n"
             "If the user asks to save a note, call html_notes_create_note(). "
             "Remember: Output the FULL HTML needed for the current state of the application. Act as a live visual dashboard!"
         )
