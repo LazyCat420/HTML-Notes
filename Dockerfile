@@ -21,8 +21,8 @@ RUN mkdir -p /app/data /app/logs && chown -R appusr:appgrp /app
 COPY --from=deps /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install curl for health check
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+# Install curl and openssl for health check and HTTPS
+RUN apt-get update && apt-get install -y --no-install-recommends curl openssl && rm -rf /var/lib/apt/lists/*
 
 # Copy app code
 COPY app/ ./app/
@@ -39,6 +39,6 @@ USER appusr
 EXPOSE 8035
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -f http://localhost:8035/health/app || exit 1
+  CMD curl -k -f https://localhost:8035/health/app || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8035"]
+CMD ["sh", "-c", "if [ ! -f /app/data/cert.pem ]; then openssl req -x509 -newkey rsa:4096 -nodes -out /app/data/cert.pem -keyout /app/data/key.pem -days 365 -subj '/CN=localhost'; fi; exec uvicorn app.main:app --host 0.0.0.0 --port 8035 --ssl-keyfile /app/data/key.pem --ssl-certfile /app/data/cert.pem"]
