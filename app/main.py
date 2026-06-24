@@ -87,7 +87,7 @@ async def send_message(req: MessageRequest):
         
         async def stream_generator():
             full_response = ""
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=600.0) as client:
                 async with client.stream("POST", f"{PRISM_URL}/agent", json=payload) as r:
                     async for chunk in r.aiter_lines():
                         if chunk:
