@@ -84,9 +84,10 @@ async def send_message(req: MessageRequest):
             messages.append({"role": h["role"], "content": h["content"]})
 
         async def loop_and_stream():
-            MAX_ITERATIONS = 10
-            current_messages = list(messages)
-            final_html = ""
+            try:
+                MAX_ITERATIONS = 10
+                current_messages = list(messages)
+                final_html = ""
 
             for iteration in range(MAX_ITERATIONS):
                 # Status event to frontend
@@ -106,7 +107,7 @@ async def send_message(req: MessageRequest):
                     "webFetch": True
                 }
 
-                async with httpx.AsyncClient(timeout=120.0) as client:
+                async with httpx.AsyncClient(timeout=600.0) as client:
                     resp = await client.post(f"{PRISM_URL}/agent", json=payload)
                     if resp.status_code != 200:
                         yield f'data: {json.dumps({"type": "error", "message": f"Prism error: {resp.status_code}"})}\n\n'
@@ -193,6 +194,10 @@ async def send_message(req: MessageRequest):
             )
 
             yield 'data: {"type": "done"}\n\n'
+
+            except Exception as e:
+                logger.error(f"Error in loop_and_stream: {e}")
+                yield f'data: {json.dumps({"type": "error", "message": f"Server error: {str(e)}"})}\n\n'
 
         return StreamingResponse(loop_and_stream(), media_type="text/event-stream")
 
