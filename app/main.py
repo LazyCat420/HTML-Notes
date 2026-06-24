@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from app import database
 from app.config import PORT, PRISM_URL, VLLM_URL
+from app.tools_schema import HTML_NOTES_TOOLS
 import json
 import uuid
 
@@ -76,7 +77,8 @@ async def send_message(req: MessageRequest):
             "model": "cyankiwi/MiniMax-M2.7-AWQ-4bit",
             "messages": messages,
             "stream": True,
-            "max_tokens": 4096,
+            "maxTokens": 4096,
+            "tools": HTML_NOTES_TOOLS,
             "project": "html-notes",
             "username": "lazycat"
         }
