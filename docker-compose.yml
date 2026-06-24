@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  html-notes:
+    image: html-notes:latest
+    container_name: html-notes
+    ports:
+      - "8035:8035"
+    environment:
+      - PORT=8035
+      - DATABASE_URL=/app/data/notes.db
+      - VLLM_URL=http://10.0.0.141:8000
+      - PRISM_URL=http://10.0.0.16:7777
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8035/health/app"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,209 @@
+import uuid
+import logging
+from typing import Dict, Any, List, Optional
+from app import database
+from app.agents.intake import classify_intent
+from app.agents.writer import write_note
+from app.agents.linker import propose_links
+from app.agents.librarian import organize_note_metadata
+from app.agents.auditor import audit_html_fragment
+
+logger = logging.getLogger(__name__)
+
+async def process_user_turn(
+    session_id: str,
+    user_input: str,
+    target_note_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Orchestrates the multi-agent turn processing loop:
+    1. Classifies intent (Intake)
+    2. Gathers metadata/context (Librarian/DB)
+    3. Generates note changes (Writer)
+    4. Validates changes against contract (Auditor)
+    5. Saves changes (DB)
+    6. Identifies potential links (Linker)
+    """
+    # 1. Save user message to database
+    user_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+    database.save_chat_message(
+        message_id=user_msg_id,
+        session_id=session_id,
+        role="user",
+        content=user_input
+    )
+    
+    # Get conversation history for intent classification
+    history = database.get_session_messages(session_id)
+    history_payload = [{"role": h["role"], "content": h["content"]} for h in history[:-1]]
+    
+    # 2. Classify intent
+    classification = await classify_intent(user_input, history_payload)
+    intent = classification.get("intent", "CHAT")
+    classified_note_id = classification.get("note_id") or target_note_id
+    
+    # 3. Retrieve note context
+    existing_note = None
+    if classified_note_id:
+        existing_note = database.get_note_by_id(classified_note_id)
+        
+    # Get all tags for Librarian
+    all_notes = database.list_all_notes()
+    all_tags = list(set([t for n in all_notes for t in n.get("tags", [])]))
+    
+    # Let Librarian extract search ideas & suggested tags
+    lib_meta = await organize_note_metadata(user_input, all_tags)
+    
+    # Pull related search context if needed
+    search_context = ""
+    search_queries = lib_meta.get("search_queries", [])
+    if search_queries:
+        search_results = database.search_notes(search_queries[0])
+        if search_results:
+            search_context = "\n".join([
+                f"Note ID: {n['id']}, Title: {n['title']}, Tags: {n.get('tags')}"
+                for n in search_results[:3]
+            ])
+            
+    # Initialize response fields
+    assistant_reply = ""
+    proposed_note = None
+    audit_res = {"is_valid": True, "errors": []}
+    proposed_links = []
+    
+    # 4. Handle intents
+    if intent in ["CREATE", "APPEND", "REVISE"]:
+        try:
+            # Note Writer proposes changes
+            proposal = await write_note(
+                user_request=user_input,
+                intent=intent,
+                existing_note=existing_note,
+                related_context=search_context
+            )
+            
+            # Auditor validates the generated HTML fragment
+            html_fragment = proposal.get("html_fragment", "")
+            audit_res = audit_html_fragment(html_fragment)
+            
+            if audit_res["is_valid"]:
+                # Commit note to database
+                if existing_note:
+                    # Update note
+                    proposed_note = database.update_note(
+                        note_id=existing_note["id"],
+                        title=proposal.get("title"),
+                        tags=proposal.get("tags"),
+                        links=proposal.get("links_to_add"),
+                        canonical_blocks=proposal.get("canonical_blocks"),
+                        rendered_html=html_fragment,
+                        source_message=user_msg_id
+                    )
+                    assistant_reply = f"Updated note **{proposed_note['title']}** (Version {proposed_note['version']})."
+                else:
+                    # Create new note
+                    new_id = f"note_{uuid.uuid4().hex[:8]}"
+                    proposed_note = database.create_note(
+                        note_id=new_id,
+                        title=proposal.get("title", "Untitled Note"),
+                        tags=proposal.get("tags", []),
+                        links=proposal.get("links_to_add", []),
+                        source_messages=[user_msg_id],
+                        canonical_blocks=proposal.get("canonical_blocks", []),
+                        rendered_html=html_fragment
+                    )
+                    assistant_reply = f"Created new note **{proposed_note['title']}** (ID: {proposed_note['id']})."
+                
+                # Propose further linkages using the Linker Agent
+                proposed_links = await propose_links(proposed_note, all_notes)
+            else:
+                # Auditor caught violations
+                assistant_reply = "I proposed a note edit, but it failed the security audit checks:\n"
+                assistant_reply += "\n".join([f"- {err}" for err in audit_res["errors"]])
+                assistant_reply += "\n\nPlease revise your request to avoid custom styling, scripts, or external links."
+                
+        except Exception as e:
+            logger.error(f"Error in note creation/update flow: {e}")
+            assistant_reply = f"Failed to process note edit request: {str(e)}"
+            audit_res = {"is_valid": False, "errors": [str(e)]}
+            
+    elif intent == "LINK" and classified_note_id:
+        # User wants to link two notes. Let's inspect target link
+        try:
+            # Simple link extraction or Linker
+            # We look for a secondary note mentioned in the input
+            target_link_id = None
+            for n in all_notes:
+                if n["id"] != classified_note_id and (n["id"] in user_input or n["title"].lower() in user_input.lower()):
+                    target_link_id = n["id"]
+                    break
+            
+            if target_link_id:
+                # Update link arrays
+                note_a = database.get_note_by_id(classified_note_id)
+                note_b = database.get_note_by_id(target_link_id)
+                
+                if note_a and note_b:
+                    links_a = note_a.get("links", [])
+                    if target_link_id not in links_a:
+                        links_a.append(target_link_id)
+                        database.update_note(note_id=classified_note_id, links=links_a)
+                        
+                    assistant_reply = f"Linked note **{note_a['title']}** to **{note_b['title']}** successfully."
+                else:
+                    assistant_reply = "Could not locate one or both of the target notes for linking."
+            else:
+                assistant_reply = "I couldn't identify the secondary note you want to link to. Please mention its ID or title clearly."
+        except Exception as e:
+            assistant_reply = f"Failed to link notes: {str(e)}"
+            
+    elif intent == "SEARCH":
+        # Return search results
+        query = classification.get("query", user_input)
+        results = database.search_notes(query)
+        if results:
+            assistant_reply = f"Found {len(results)} notes matching **'{query}'**:\n"
+            assistant_reply += "\n".join([f"- **{n['title']}** (ID: {n['id']})" for n in results])
+        else:
+            assistant_reply = f"No journal notes found matching **'{query}'**."
+            
+    elif intent == "SUMMARIZE":
+        # Summarize note index
+        if all_notes:
+            assistant_reply = f"Summary of your journal notes ({len(all_notes)} entries total):\n"
+            # Return list of recent notes with tags
+            assistant_reply += "\n".join([f"- **{n['title']}** | Tags: {', '.join(n['tags'])}" for n in all_notes[:5]])
+        else:
+            assistant_reply = "You don't have any journal notes saved yet."
+            
+    else:
+        # CHAT or general conversation
+        # Call LLM directly as conversational agent
+        messages = [
+            {"role": "system", "content": "You are a conversational knowledge assistant for an HTML Note Journal. Help the user search, structure, or brainstorm notes."}
+        ]
+        messages.extend(history_payload)
+        messages.append({"role": "user", "content": user_input})
+        
+        from app.agents.llm_client import call_llm
+        try:
+            assistant_reply = await call_llm(messages, temperature=0.7, max_tokens=512)
+        except Exception as e:
+            assistant_reply = f"Hello! I am ready to help you edit your notes. (vLLM error: {str(e)})"
+            
+    # 5. Save assistant reply to database
+    asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+    database.save_chat_message(
+        message_id=asst_msg_id,
+        session_id=session_id,
+        role="assistant",
+        content=assistant_reply
+    )
+    
+    return {
+        "intent": intent,
+        "note": proposed_note,
+        "message": assistant_reply,
+        "audit": audit_res,
+        "proposed_links": proposed_links
+    }

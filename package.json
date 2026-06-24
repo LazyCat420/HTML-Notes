@@ -1,0 +1,11 @@
+{
+  "name": "html-notes",
+  "version": "0.1.0",
+  "description": "Local-first AI knowledge journal with constrained HTML rendering",
+  "main": "app/main.py",
+  "scripts": {
+    "dev": ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8035 --reload",
+    "start": ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8035",
+    "deploy": "./deploy.sh"
+  }
+}
