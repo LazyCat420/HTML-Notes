@@ -358,7 +358,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
                 
                 if (data.models.length > 0) {
-                    elements.modelSelect.options[0].selected = true;
+                    let defaultIndex = 0;
+                    const vllmIndex = Array.from(elements.modelSelect.options).findIndex(opt => {
+                        try {
+                            const val = JSON.parse(opt.value);
+                            return val.provider === "vllm";
+                        } catch(e) {
+                            return false;
+                        }
+                    });
+                    if (vllmIndex !== -1) {
+                        defaultIndex = vllmIndex;
+                    }
+                    elements.modelSelect.options[defaultIndex].selected = true;
                 }
             } else {
                 elements.modelSelect.innerHTML = '<option value="">Failed to load models</option>';
