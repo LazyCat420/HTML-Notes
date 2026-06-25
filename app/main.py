@@ -1,16 +1,15 @@
 import httpx
 import logging
+import re
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
 from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL
-from app.tools_schema import HTML_NOTES_TOOLS
 import json
 import uuid
-import asyncio
 from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
@@ -95,7 +94,7 @@ async def send_message(req: MessageRequest):
 
         canvas_html = req.current_canvas[:3000] + "..." if req.current_canvas and len(req.current_canvas) > 3000 else (req.current_canvas or "Canvas is empty.")
 
-        # Build initial messages list
+        # Build system prompt with canvas context
         SYSTEM_PROMPT = (
             "You are an agentic notes assistant. Your job is to understand the user's intent "
             "and call the right tools — never output raw HTML directly.\n\n"
@@ -116,162 +115,155 @@ async def send_message(req: MessageRequest):
             "Always respond with a tool call, never plain text."
         )
 
+        # Build messages array — only system/user/assistant with string content
         messages = [
             {
                 "role": "system",
-                "content": "You are a visual web application interface assistant."
+                "content": SYSTEM_PROMPT
             }
         ]
-        import re
-        for i, h in enumerate(history):
+
+
+        # Only include recent history to avoid context overflow (last 10 messages)
+        recent_history = history[-10:]
+        for h in recent_history:
             content = h["content"]
-            
-            # Compress large HTML chunks in history so context doesn't blow up
+
+            # Compress large HTML chunks in history
             if h["role"] == "assistant":
-                content = re.sub(r'<div class="canvas-element rendered-component">.*?</div>', '[Rendered Component History Omitted]', content, flags=re.DOTALL)
-                
-            if h["role"] == "user" and i == len(history) - 1:
-                content = f"{SYSTEM_PROMPT}\n\nUser Command: {content}"
+                content = re.sub(r'<div class="canvas-element rendered-component">.*?</div>', '[Component]', content, flags=re.DOTALL)
+                # Truncate very long assistant messages
+                if len(content) > 2000:
+                    content = content[:2000] + "... [truncated]"
+
+            # Skip tool-only placeholder messages
+            if content == "[tool-only turn]":
+                continue
+
             messages.append({"role": h["role"], "content": content})
 
-        async def loop_and_stream():
-            MAX_ITERATIONS = 10
-            current_messages = list(messages)
-            final_html = ""
-            all_rendered_components_html = ""
+        # Build Prism /agent payload — NO tools array (Prism uses its own catalog)
+        payload = {
+            "provider": req.provider or "vllm-2",
+            "model": req.model or "cyankiwi/MiniMax-M2.7-AWQ-4bit",
+            "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
+            "workspaceEnabled": False,
+            "enabledTools": [
+                "html_notes_create_note",
+                "html_notes_update_note",
+                "html_notes_get_note",
+                "html_notes_search_notes",
+                "html_notes_link_notes",
+                "html_notes_modify_dom",
+                "render_component"
+            ],
+            "messages": messages,
+            "maxTokens": 4096,
+            "project": "html-notes-client",
+            "username": "lazycat",
+            "skipConversation": True,
+            "autoApprove": True
+        }
 
-            for iteration in range(MAX_ITERATIONS):
-                # Status event to frontend
-                yield f'data: {json.dumps({"type": "status", "message": f"thinking (turn {iteration + 1})"})}\n\n'
+        async def proxy_prism_sse():
+            """
+            Stream Prism's /agent SSE events to the frontend.
+            Prism handles the full agentic loop (tool calls, execution, re-prompting).
+            We just proxy events and extract render_component results for the canvas.
+            """
+            final_text = ""
+            all_rendered_html = ""
 
-                # Call Prism — NON-STREAMING for loop turns
-                payload = {
-                    "provider": req.provider or "vllm-2",
-                    "model": req.model or "cyankiwi/MiniMax-M2.7-AWQ-4bit",
-                    "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
-                    "workspaceEnabled": False,
-                    "enabledTools": [
-                        "html_notes_create_note",
-                        "html_notes_update_note",
-                        "html_notes_get_note",
-                        "html_notes_search_notes",
-                        "html_notes_link_notes",
-                        "html_notes_modify_dom",
-                        "render_component"
-                    ],
-                    "messages": current_messages,
-                    "maxTokens": 4096,
-                    "tools": HTML_NOTES_TOOLS,
-                    "project": "html-notes-client",
-                    "username": "lazycat",
-                    "webSearch": True,
-                    "webFetch": True
-                }
+            try:
+                yield f'data: {json.dumps({"type": "status", "message": "connecting to agent..."})}\n\n'
 
-                try:
-                    async with httpx.AsyncClient(timeout=600.0) as client:
-                        resp = await client.post(f"{PRISM_URL}/agent?stream=false", json=payload)
+                async with httpx.AsyncClient(timeout=600.0) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{PRISM_URL}/agent",
+                        json=payload,
+                        headers={"Accept": "text/event-stream"}
+                    ) as resp:
                         if resp.status_code != 200:
-                            yield f'data: {json.dumps({"type": "error", "message": f"Prism error: {resp.status_code}"})}\n\n'
+                            error_body = ""
+                            async for chunk in resp.aiter_text():
+                                error_body += chunk
+                            yield f'data: {json.dumps({"type": "error", "message": f"Prism error {resp.status_code}: {error_body[:500]}"})}\n\n'
                             return
-                        response_data = resp.json()
-                except Exception as e:
-                    logger.error(f"Prism network error: {e}")
-                    yield f'data: {json.dumps({"type": "error", "message": f"Prism network error: {str(e)}"})}\n\n'
-                    return
 
-                finish_reason = response_data.get("finish_reason") or response_data.get("finishReason", "stop")
-                tool_calls = response_data.get("tool_calls") or response_data.get("toolCalls") or []
-                assistant_content = response_data.get("content") or response_data.get("message") or response_data.get("text") or ""
+                        buffer = ""
+                        async for chunk in resp.aiter_text():
+                            buffer += chunk
+                            while "\n" in buffer:
+                                line, buffer = buffer.split("\n", 1)
+                                line = line.strip()
 
-                # Always append assistant turn verbatim
-                current_messages.append({
-                    "role": "assistant",
-                    "content": assistant_content,
-                    "tool_calls": tool_calls
-                })
+                                if not line.startswith("data: "):
+                                    continue
 
-                # No tool calls → final answer
-                if not tool_calls:
-                    final_html = assistant_content
-                    break
+                                try:
+                                    event = json.loads(line[6:])
+                                except json.JSONDecodeError:
+                                    continue
 
-                # Notify frontend which tools are firing
-                for tc in tool_calls:
-                    fn = tc.get("function", {}).get("name") or tc.get("name", "unknown")
-                    yield f'data: {json.dumps({"type": "tool_call", "tool": fn})}\n\n'
+                                event_type = event.get("type", "")
 
-                # Execute all tool calls in PARALLEL
-                async def call_one_tool(tc):
-                    if "function" in tc:
-                        fn_name = tc["function"]["name"]
-                        args_raw = tc["function"].get("arguments", "{}")
-                    else:
-                        fn_name = tc.get("name")
-                        args_raw = tc.get("arguments")
-                        if not args_raw and "args" in tc:
-                            args_raw = tc["args"]
-                        if not args_raw:
-                            args_raw = "{}"
+                                if event_type == "chunk":
+                                    # Text token from LLM
+                                    token = event.get("content", "")
+                                    final_text += token
+                                    yield f'data: {json.dumps({"type": "chunk", "content": token})}\n\n'
 
-                    if isinstance(args_raw, dict):
-                        fn_args = args_raw
-                    else:
-                        try:
-                            fn_args = json.loads(args_raw)
-                        except Exception:
-                            fn_args = {}
+                                elif event_type == "tool_execution":
+                                    status = event.get("status", "")
+                                    tool_info = event.get("tool", {})
+                                    tool_name = tool_info.get("name", "unknown")
 
-                    async with httpx.AsyncClient(timeout=30.0) as c:
-                        r = await c.post(
-                            f"{LAZY_TOOL_SERVICE_URL}/execute/{fn_name}",
-                            json=fn_args,
-                            headers={"x-agent": "html-notes", "x-conversation-id": req.session_id}
-                        )
-                        tc_id = tc.get("id", f"call_{fn_name}")
-                        if r.status_code == 200:
-                            return {"tool_call_id": tc_id, "result": r.json(), "is_error": False}
-                        else:
-                            return {"tool_call_id": tc_id, "result": {"error": r.text}, "is_error": True}
+                                    if status == "calling":
+                                        yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name})}\n\n'
+                                        yield f'data: {json.dumps({"type": "status", "message": f"executing {tool_name}..."})}\n\n'
 
-                results = await asyncio.gather(*[call_one_tool(tc) for tc in tool_calls])
+                                    elif status in ("done", "success"):
+                                        # Check if this is a render_component result with HTML
+                                        result = tool_info.get("result", {})
+                                        if isinstance(result, str):
+                                            try:
+                                                result = json.loads(result)
+                                            except (json.JSONDecodeError, TypeError):
+                                                result = {}
 
-                # Collect render_component results to forward to frontend
-                render_results = []
+                                        rendered_html = None
+                                        if isinstance(result, dict):
+                                            rendered_html = result.get("rendered_html")
 
-                # Append tool results as single user message
-                tool_result_messages = []
-                for res in results:
-                    content = json.dumps(res["result"])
-                    tool_result_messages.append({
-                        "role": "tool",
-                        "tool_call_id": res["tool_call_id"],
-                        "content": content,
-                        "is_error": res["is_error"]
-                    })
-                    # If this was a render_component call, capture the HTML
-                    result_data = res["result"]
-                    if isinstance(result_data, dict) and result_data.get("rendered_html"):
-                        render_results.append(result_data["rendered_html"])
+                                        if rendered_html and tool_name == "render_component":
+                                            all_rendered_html += rendered_html
+                                            yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
 
-                current_messages.append({"role": "user", "content": tool_result_messages})
+                                    elif status == "error":
+                                        error_msg = tool_info.get("result", "Unknown tool error")
+                                        yield f'data: {json.dumps({"type": "status", "message": f"tool error: {tool_name}: {str(error_msg)[:200]}"})}\n\n'
 
-                # Stream any rendered components immediately to frontend
-                for html_chunk in render_results:
-                    all_rendered_components_html += f'<div class="canvas-element rendered-component">{html_chunk}</div>'
-                    yield f'data: {json.dumps({"type": "component", "content": html_chunk})}\n\n'
+                                elif event_type == "thinking":
+                                    yield f'data: {json.dumps({"type": "status", "message": "reasoning..."})}\n\n'
 
-            # Stream final assistant reply
-            if final_html:
-                yield f'data: {json.dumps({"type": "chunk", "content": final_html})}\n\n'
+                                elif event_type == "done":
+                                    # Prism finished the full agentic loop
+                                    pass
 
-            # Save to DB
+                                elif event_type == "error":
+                                    yield f'data: {json.dumps({"type": "error", "message": event.get("message", "Agent error")})}\n\n'
+
+            except Exception as e:
+                logger.error(f"Prism SSE proxy error: {e}")
+                yield f'data: {json.dumps({"type": "error", "message": f"Connection error: {str(e)}"})}\n\n'
+
+            # Save assistant response to DB
             asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
-            
-            saved_content = all_rendered_components_html + (final_html or "")
+            saved_content = all_rendered_html + final_text
             if not saved_content:
                 saved_content = "[tool-only turn]"
-                
+
             database.save_chat_message(
                 message_id=asst_msg_id,
                 session_id=req.session_id,
@@ -281,7 +273,7 @@ async def send_message(req: MessageRequest):
 
             yield 'data: {"type": "done"}\n\n'
 
-        return StreamingResponse(loop_and_stream(), media_type="text/event-stream")
+        return StreamingResponse(proxy_prism_sse(), media_type="text/event-stream")
 
     except Exception as e:
         logger.error(f"Error processing session message: {e}")

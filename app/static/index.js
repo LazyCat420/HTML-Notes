@@ -146,11 +146,22 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.recordingStatus.style.display = "none";
     }
 
-    function renderContent(html) {
-        elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(html), {
-            ADD_ATTR: ['style', 'class', 'onclick', 'type', 'checked'],
-            FORCE_BODY: true
-        });
+    function renderContent(textContent, componentHtml) {
+        // Render text through markdown, then append raw component HTML
+        let output = "";
+        if (textContent) {
+            output += DOMPurify.sanitize(marked.parse(textContent), {
+                ADD_ATTR: ['style', 'class', 'type', 'checked'],
+                FORCE_BODY: true
+            });
+        }
+        if (componentHtml) {
+            output += DOMPurify.sanitize(componentHtml, {
+                ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component'],
+                FORCE_BODY: true
+            });
+        }
+        elements.liveCanvas.innerHTML = output || "";
     }
 
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
@@ -164,7 +175,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 const assistantMessages = data.messages.filter(m => m.role === "assistant" && m.content !== "[tool-only turn]");
                 if (assistantMessages.length > 0) {
                     const lastMsg = assistantMessages[assistantMessages.length - 1];
-                    renderContent(lastMsg.content);
+                    // History content is mixed text+HTML, render as raw HTML
+                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(lastMsg.content, {
+                        ADD_ATTR: ['style', 'class', 'type', 'checked'],
+                        FORCE_BODY: true
+                    });
                     renderDynamicComponents(elements.liveCanvas);
                 }
             }
@@ -219,7 +234,8 @@ document.addEventListener("DOMContentLoaded", () => {
             const reader = res.body.getReader();
             const decoder = new TextDecoder("utf-8");
             let done = false;
-            let fullHtml = "";
+            let fullText = "";
+            let fullComponentHtml = "";
 
             function addLogStep(text, icon) {
                 const step = document.createElement("div");
@@ -242,17 +258,18 @@ document.addEventListener("DOMContentLoaded", () => {
                             try {
                                 const data = JSON.parse(line.substring(6));
                                 if (data.type === "chunk") {
-                                    fullHtml += data.content || "";
-                                    renderContent(fullHtml);
+                                    fullText += data.content || "";
+                                    renderContent(fullText, fullComponentHtml);
                                 } else if (data.type === "status") {
                                     addLogStep(data.message || "Thinking...", "🧠");
                                 } else if (data.type === "done") {
-                                    renderContent(fullHtml);
+                                    renderContent(fullText, fullComponentHtml);
+                                    renderDynamicComponents(elements.liveCanvas);
                                     addLogStep("Finished generation.", "✨");
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
-                                    fullHtml += `\n\n${data.content}\n\n`;
-                                    renderContent(fullHtml);
+                                    fullComponentHtml += data.content || "";
+                                    renderContent(fullText, fullComponentHtml);
                                 } else if (data.type === "tool_call") {
                                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
                                 } else if (data.type === "error") {
@@ -268,7 +285,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             // Final cleanup
-            renderContent(fullHtml);
+            renderContent(fullText, fullComponentHtml);
             renderDynamicComponents(elements.liveCanvas);
 
             // Auto-hide log after 3 seconds
