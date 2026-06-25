@@ -183,21 +183,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function renderContent(textContent, componentHtml) {
-        // Render text through markdown, then append raw component HTML
-        let output = "";
-        if (textContent) {
-            output += DOMPurify.sanitize(marked.parse(textContent), {
-                ADD_ATTR: ['style', 'class', 'type', 'checked'],
-                FORCE_BODY: true
-            });
-        }
+        // The text content goes to TTS and Chat History.
+        // We ONLY render the HTML component to the live canvas.
         if (componentHtml) {
-            output += DOMPurify.sanitize(componentHtml, {
+            elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, {
                 ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component'],
                 FORCE_BODY: true
             });
         }
-        elements.liveCanvas.innerHTML = output || "";
     }
 
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
@@ -219,12 +212,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 const assistantMessages = data.messages.filter(m => m.role === "assistant" && m.content !== "[tool-only turn]");
                 if (assistantMessages.length > 0) {
                     const lastMsg = assistantMessages[assistantMessages.length - 1];
-                    // History content is mixed text+HTML, render as raw HTML
-                    elements.liveCanvas.innerHTML = DOMPurify.sanitize(lastMsg.content, {
-                        ADD_ATTR: ['style', 'class', 'type', 'checked'],
-                        FORCE_BODY: true
-                    });
-                    renderDynamicComponents(elements.liveCanvas);
+                    // History content is mixed text+HTML, extract only the visual components
+                    let temp = document.createElement("div");
+                    temp.innerHTML = lastMsg.content;
+                    let components = temp.querySelectorAll(".glass-card, .canvas-element, .rendered-component");
+                    let htmlOnly = "";
+                    components.forEach(c => htmlOnly += c.outerHTML);
+                    
+                    if (htmlOnly) {
+                        elements.liveCanvas.innerHTML = DOMPurify.sanitize(htmlOnly, {
+                            ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component'],
+                            FORCE_BODY: true
+                        });
+                        renderDynamicComponents(elements.liveCanvas);
+                    }
                 }
             }
         } catch (err) {
@@ -507,10 +508,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function formatAssistantChatBubble(content) {
-        let hasComponent = /<div[^>]*class="[^"]*(rendered-component|canvas-element)[^"]*"[^>]*>([\s\S]*?)<\/div>/.test(content) || /class=['"][^'"]*rendered-component[^'"]*['"]/.test(content);
+        let temp = document.createElement("div");
+        temp.innerHTML = content;
         
-        let cleaned = content.replace(/<div[^>]*class="[^"]*(rendered-component|canvas-element)[^"]*"[^>]*>([\s\S]*?)<\/div>/g, '');
-        cleaned = cleaned.replace(/<div[^>]*class="[^"]*chart-container[^"]*"[^>]*>([\s\S]*?)<\/div>/g, '');
+        let components = temp.querySelectorAll(".glass-card, .canvas-element, .rendered-component, .chart-container");
+        let hasComponent = components.length > 0;
+        
+        components.forEach(el => el.remove());
+        let cleaned = temp.innerHTML;
         
         let htmlText = "";
         if (cleaned.trim()) {
@@ -530,7 +535,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function handleIncomingChunk(textToken) {
         sentenceBuffer += textToken;
         let match;
-        const sentenceRegex = /[^.!?]+[.!?]+(?=\s|$)/g;
+        const sentenceRegex = /[^.!?:]+[.!?:]+(?=\s|$)/g;
         
         while ((match = sentenceRegex.exec(sentenceBuffer)) !== null) {
             const sentence = match[0].trim();
