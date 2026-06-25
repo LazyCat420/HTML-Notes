@@ -256,7 +256,7 @@ async def send_message(req: MessageRequest):
                                         if isinstance(result, dict):
                                             rendered_html = result.get("rendered_html")
 
-                                        if rendered_html and tool_name == "render_component":
+                                        if rendered_html and tool_name in ("render_component", "canvas_modify_dom"):
                                             all_rendered_html += rendered_html
                                             yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
 
