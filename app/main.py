@@ -178,6 +178,7 @@ async def send_message(req: MessageRequest):
                         for provider_id, models in models_map.items():
                             if models:
                                 model_name = models[0].get("name")
+                                req.provider = provider_id
                                 break
             except Exception as e:
                 logger.error(f"Failed to fetch dynamic fallback model: {e}")
