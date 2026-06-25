@@ -648,15 +648,17 @@ textarea::placeholder {
     background: rgba(255, 255, 255, 0.02);
 }
 
-.btn-clear-history {
+.btn-clear-history, .btn-toggle-history {
     background: none;
     border: none;
     cursor: pointer;
     font-size: 0.9rem;
     opacity: 0.6;
     transition: opacity 0.2s ease;
+    margin-left: 0.5rem;
+    color: var(--text-color);
 }
-.btn-clear-history:hover {
+.btn-clear-history:hover, .btn-toggle-history:hover {
     opacity: 1;
 }
 
@@ -707,7 +709,7 @@ textarea::placeholder {
     bottom: 110px;
     left: 50%;
     transform: translateX(-50%);
-    width: 90%;
+    width: fit-content;
     max-width: 600px;
     font-size: 1.6rem;
     font-weight: 600;
@@ -731,6 +733,10 @@ textarea::placeholder {
     animation: wordFadeIn 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
     display: inline-block;
     margin-right: 0.4rem;
+}
+
+.word:last-child {
+    margin-right: 0;
 }
 
 @keyframes wordFadeIn {

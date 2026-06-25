@@ -30,7 +30,17 @@
         <div id="execution-log-content" class="execution-log-content"></div>
     </div>
 
-
+    <!-- Floating Chat History Panel -->
+    <div id="chat-history-panel" class="chat-history-panel collapsed">
+        <div class="chat-history-header" id="chat-history-header" style="cursor: pointer;" title="Toggle Chat History">
+            <span>Chat History</span>
+            <div>
+                <button id="btn-clear-history" class="btn-clear-history" title="Clear Chat History">🗑️</button>
+                <button id="btn-toggle-history" class="btn-toggle-history">▲</button>
+            </div>
+        </div>
+        <div id="chat-history-messages" class="chat-history-messages" style="display: none;"></div>
+    </div>
 
     <!-- Speech Overlay for live TTS / Word animation -->
     <div id="speech-overlay" class="speech-overlay"></div>

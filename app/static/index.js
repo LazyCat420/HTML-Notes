@@ -26,7 +26,12 @@ document.addEventListener("DOMContentLoaded", () => {
         execLogContent: document.getElementById("execution-log-content"),
         btnToggleLog: document.getElementById("btn-toggle-log"),
         modelSelect: document.getElementById("model-select"),
-        btnMute: document.getElementById("btn-mute")
+        btnMute: document.getElementById("btn-mute"),
+        chatHistoryPanel: document.getElementById("chat-history-panel"),
+        chatHistoryMessages: document.getElementById("chat-history-messages"),
+        btnClearHistory: document.getElementById("btn-clear-history"),
+        btnToggleHistory: document.getElementById("btn-toggle-history"),
+        chatHistoryHeader: document.getElementById("chat-history-header")
     };
 
     if (elements.btnToggleLog) {
@@ -79,7 +84,40 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    // Toggle history listener
+    if (elements.chatHistoryHeader && elements.chatHistoryMessages && elements.btnToggleHistory) {
+        elements.chatHistoryHeader.addEventListener("click", (e) => {
+            // Prevent toggle if clicking the clear button
+            if (e.target.closest('#btn-clear-history')) return;
+            
+            const isHidden = elements.chatHistoryMessages.style.display === "none";
+            if (isHidden) {
+                elements.chatHistoryMessages.style.display = "flex";
+                elements.btnToggleHistory.innerText = "▼";
+            } else {
+                elements.chatHistoryMessages.style.display = "none";
+                elements.btnToggleHistory.innerText = "▲";
+            }
+        });
+    }
 
+    // Clear history listener
+    if (elements.btnClearHistory) {
+        elements.btnClearHistory.addEventListener("click", () => {
+            if (confirm("Are you sure you want to clear chat history and start a new canvas?")) {
+                state.sessionId = generateUUID();
+                localStorage.setItem("html_notes_session_id", state.sessionId);
+                elements.chatHistoryMessages.innerHTML = "";
+                elements.liveCanvas.innerHTML = `
+                    <div id="welcome-message" class="system-message">
+                        <h1>Canvas Ready</h1>
+                        <p>Tell the LLM what to build. It will replace this entire screen.</p>
+                    </div>
+                `;
+                clearSpeechQueue();
+            }
+        });
+    }
 
     // ─── RECORDING LOGIC ───────────────────────────────────────
     async function toggleRecording() {
@@ -181,6 +219,13 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!res.ok) return;
             const data = await res.json();
             if (data.messages && data.messages.length > 0) {
+                // Populate chat history panel
+                elements.chatHistoryMessages.innerHTML = "";
+                data.messages.forEach(msg => {
+                    if (msg.content !== "[tool-only turn]") {
+                        appendChatMessageToHistory(msg.role, msg.content);
+                    }
+                });
 
                 // Find the last assistant message
                 const assistantMessages = data.messages.filter(m => m.role === "assistant" && m.content !== "[tool-only turn]");
@@ -216,6 +261,7 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.chatInput.style.height = 'auto';
 
         clearSpeechQueue();
+        appendChatMessageToHistory("user", text);
         
         let provider = "vllm-2";
         let model = "";
@@ -297,6 +343,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                     renderDynamicComponents(elements.liveCanvas);
                                     addLogStep("Finished generation.", "✨");
                                     flushSentenceBuffer();
+                                    appendChatMessageToHistory("assistant", fullText + fullComponentHtml);
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
                                     fullComponentHtml += data.content || "";
@@ -463,7 +510,53 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function appendChatMessageToHistory(role, content) {
+        if (!elements.chatHistoryMessages) return;
+        
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `chat-message ${role}`;
+        
+        if (role === "user") {
+            messageDiv.textContent = content;
+        } else {
+            messageDiv.innerHTML = formatAssistantChatBubble(content);
+        }
+        
+        elements.chatHistoryMessages.appendChild(messageDiv);
+        
+        // Auto-expand on new message
+        if (elements.chatHistoryMessages.style.display === "none") {
+            elements.chatHistoryMessages.style.display = "flex";
+            if (elements.btnToggleHistory) elements.btnToggleHistory.innerText = "▼";
+        }
+        
+        elements.chatHistoryMessages.scrollTop = elements.chatHistoryMessages.scrollHeight;
+    }
 
+    function formatAssistantChatBubble(content) {
+        let temp = document.createElement("div");
+        temp.innerHTML = content;
+        
+        let components = temp.querySelectorAll(".glass-card, .canvas-element, .rendered-component, .chart-container");
+        let hasComponent = components.length > 0;
+        
+        components.forEach(el => el.remove());
+        let cleaned = temp.innerHTML;
+        
+        let htmlText = "";
+        if (cleaned.trim()) {
+            htmlText = DOMPurify.sanitize(marked.parse(cleaned), {
+                ADD_ATTR: ['style', 'class'],
+                FORCE_BODY: true
+            });
+        }
+        
+        if (hasComponent) {
+            htmlText += `<div class="chat-component-placeholder">🎨 Generated visual component on canvas</div>`;
+        }
+        
+        return htmlText || `<div class="chat-component-placeholder">🎨 Generated visual component on canvas</div>`;
+    }
 
     function handleIncomingChunk(textToken) {
         sentenceBuffer += textToken;
