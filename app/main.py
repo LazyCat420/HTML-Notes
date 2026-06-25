@@ -134,13 +134,18 @@ async def send_message(req: MessageRequest):
         )
 
         # Build messages array — only system/user/assistant with string content
+        # Workaround for Prism + Qwen 3.6: Do not use 'system' role to avoid 
+        # "System message must be at the beginning" crash when Prism prepends its own system prompt.
         messages = [
             {
-                "role": "system",
-                "content": SYSTEM_PROMPT
+                "role": "user",
+                "content": f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n[/SYSTEM INSTRUCTIONS]"
+            },
+            {
+                "role": "assistant",
+                "content": "Understood. I will follow these instructions and use tools to update the canvas."
             }
         ]
-
 
         # Only include recent history to avoid context overflow (last 10 messages)
         recent_history = history[-10:]
