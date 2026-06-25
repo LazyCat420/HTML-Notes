@@ -96,23 +96,41 @@ async def send_message(req: MessageRequest):
 
         # Build system prompt with canvas context
         SYSTEM_PROMPT = (
-            "You are an agentic notes assistant. Your job is to understand the user's intent "
-            "and call the right tools — never output raw HTML directly.\n\n"
+            "You are an agentic notes assistant that builds visual UI on a live canvas. "
+            "Your job is to understand the user's intent and call the right tools. "
+            "Never output raw HTML directly — always use tool calls.\n\n"
             f"CURRENT CANVAS STATE:\n```html\n{canvas_html}\n```\n\n"
-            "INTENT CLASSIFICATION:\n"
-            "- User wants to remember something → call html_notes_create_note()\n"
-            "- User wants to track tasks/todos → call render_component(component_type='task_checklist')\n"
-            "- User wants a calendar/schedule → call render_component(component_type='calendar_widget')\n"
-            "- User wants a reminder/alert → call render_component(component_type='reminder_banner')\n"
-            "- User wants to see existing notes → call html_notes_search_notes() then render_component()\n"
-            "- User wants to update something → call html_notes_get_note() then html_notes_update_note()\n"
-            "- User wants to view a Kanban board → call render_component(component_type='kanban_board')\n"
-            "- User wants to see a data table → call render_component(component_type='data_table')\n"
-            "- User wants custom HTML/CSS UI → call render_component(component_type='custom_html', rendered_html='<your html>')\n\n"
-            "When calling render_component, put all data in the 'data' field as structured JSON matching the component's needs. "
-            "For custom_html, put the raw HTML in the 'rendered_html' field. "
-            "The system will render it using pre-built templates or inject your custom HTML directly. "
-            "Always respond with a tool call, never plain text."
+            "INTENT → TOOL MAPPING:\n"
+            "- Create a note/reminder → html_notes_create_note(title, rendered_html)\n"
+            "- Track tasks/todos → render_component(component_type='task_checklist', title, data)\n"
+            "- Show a calendar → render_component(component_type='calendar_widget', title, data)\n"
+            "- Show a reminder → render_component(component_type='reminder_banner', title, data)\n"
+            "- Show a kanban board → render_component(component_type='kanban_board', title, data)\n"
+            "- Show a data table → render_component(component_type='data_table', title, data)\n"
+            "- Show a metric/stat → render_component(component_type='data_card', title, data)\n"
+            "- Show a summary → render_component(component_type='summary_panel', title, data)\n"
+            "- Show an alert → render_component(component_type='alert_banner', title, data)\n"
+            "- Show a habit tracker → render_component(component_type='habit_tracker', title, data)\n"
+            "- Custom HTML/CSS → render_component(component_type='custom_html', title, rendered_html='<html>')\n"
+            "- Inspect what's on screen → canvas_read_dom(canvas_html)\n"
+            "- Modify/remove existing element → canvas_modify_dom(canvas_html, css_selector, action)\n"
+            "- Search notes → html_notes_search_notes(query)\n"
+            "- Update a note → html_notes_get_note(note_id) then html_notes_update_note()\n\n"
+            "DATA FORMAT REFERENCE (use these exact field names in the 'data' parameter):\n"
+            "- calendar_widget: {\"days\": [{\"day\": \"Mon\", \"events\": [\"Meeting 9am\"]}, {\"day\": \"Tue\", \"events\": []}]}\n"
+            "- task_checklist: {\"tasks\": [{\"text\": \"Buy groceries\", \"done\": false, \"due\": \"Tomorrow\"}]}\n"
+            "- reminder_banner: {\"title\": \"Meeting\", \"message\": \"Team standup at 10am\", \"time\": \"10:00 AM\"}\n"
+            "- data_table: {\"headers\": [\"Name\", \"Score\"], \"rows\": [[\"Alice\", \"95\"], [\"Bob\", \"87\"]]}\n"
+            "- kanban_board: {\"columns\": [{\"name\": \"Todo\", \"cards\": [{\"title\": \"Design\"}]}, {\"name\": \"Done\", \"cards\": []}]}\n"
+            "- habit_tracker: {\"habits\": [{\"name\": \"Exercise\", \"history\": [true, true, false, true]}]}\n"
+            "- data_card: {\"value\": \"$1,234\", \"label\": \"Revenue\", \"icon\": \"💰\", \"progress\": 75, \"description\": \"Up 12% from last month\"}\n"
+            "- summary_panel: {\"sections\": [{\"heading\": \"Overview\", \"content\": \"Project is on track.\"}]}\n"
+            "- alert_banner: {\"severity\": \"warning\", \"message\": \"Deadline approaching\", \"action\": \"Review now\"}\n\n"
+            "RULES:\n"
+            "1. Always use tool calls, never plain text responses.\n"
+            "2. For render_component, always include both 'title' and 'data' with the correct structure.\n"
+            "3. Use canvas_read_dom first if you need to understand what's on the canvas before modifying it.\n"
+            "4. Use canvas_modify_dom to update/remove existing elements instead of re-rendering everything."
         )
 
         # Build messages array — only system/user/assistant with string content
@@ -155,7 +173,9 @@ async def send_message(req: MessageRequest):
                 "html_notes_search_notes",
                 "html_notes_link_notes",
                 "html_notes_modify_dom",
-                "render_component"
+                "render_component",
+                "canvas_read_dom",
+                "canvas_modify_dom"
             ],
             "messages": messages,
             "maxTokens": 4096,
@@ -526,6 +546,110 @@ async def internal_tool_execute(req: InternalToolRequest):
                 "rendered_html": html,
                 "component_type": ctype,
                 "title": a.get("title", "Component")
+            }
+
+        elif t == "canvas_read_dom":
+            canvas_html = a.get("canvas_html", "")
+            css_selector = a.get("css_selector")
+            
+            if not canvas_html or canvas_html.strip() == "":
+                return {"elements": [], "element_count": 0, "summary": "Canvas is empty."}
+            
+            soup = BeautifulSoup(canvas_html, "html.parser")
+            
+            if css_selector:
+                # Return specific element(s)
+                matches = soup.select(css_selector)
+                if not matches:
+                    return {"error": f"No elements matched selector '{css_selector}'", "matched": 0}
+                return {
+                    "matched": len(matches),
+                    "elements": [
+                        {
+                            "tag": el.name,
+                            "classes": el.get("class", []),
+                            "text": el.get_text(strip=True)[:300],
+                            "html": str(el)[:1000],
+                            "children_count": len(list(el.children))
+                        }
+                        for el in matches[:10]
+                    ]
+                }
+            
+            # Full canvas summary
+            components = []
+            for card in soup.select(".glass-card"):
+                title_el = card.select_one(".glass-card-title")
+                classes = card.get("class", [])
+                comp_type = "unknown"
+                for cls in classes:
+                    if cls != "glass-card":
+                        comp_type = cls
+                        break
+                components.append({
+                    "type": comp_type,
+                    "title": title_el.get_text(strip=True) if title_el else "",
+                    "text_preview": card.get_text(strip=True)[:200]
+                })
+            
+            all_text = soup.get_text(strip=True)[:500]
+            all_tags = [el.name for el in soup.find_all(True)]
+            tag_counts = {}
+            for tag in all_tags:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            
+            return {
+                "element_count": len(all_tags),
+                "tag_counts": tag_counts,
+                "components": components,
+                "component_count": len(components),
+                "text_preview": all_text,
+                "has_content": bool(all_text.strip())
+            }
+
+        elif t == "canvas_modify_dom":
+            canvas_html = a.get("canvas_html", "")
+            css_selector = a.get("css_selector")
+            action = a.get("action")
+            html_snippet = a.get("html_snippet", "")
+            
+            if not canvas_html:
+                return {"error": "Canvas is empty, nothing to modify", "is_error": True}
+            if not css_selector:
+                return {"error": "css_selector is required", "is_error": True}
+            if not action:
+                return {"error": "action is required", "is_error": True}
+            
+            soup = BeautifulSoup(canvas_html, "html.parser")
+            target = soup.select_one(css_selector)
+            
+            if not target:
+                return {"error": f"No element matched selector '{css_selector}'", "is_error": True}
+            
+            if action == "remove":
+                target.decompose()
+            elif action in ("append", "prepend", "replace", "insert_before", "insert_after"):
+                if not html_snippet:
+                    return {"error": f"html_snippet is required for action '{action}'", "is_error": True}
+                snippet_soup = BeautifulSoup(html_snippet, "html.parser")
+                if action == "append":
+                    target.append(snippet_soup)
+                elif action == "prepend":
+                    target.insert(0, snippet_soup)
+                elif action == "replace":
+                    target.replace_with(snippet_soup)
+                elif action == "insert_before":
+                    target.insert_before(snippet_soup)
+                elif action == "insert_after":
+                    target.insert_after(snippet_soup)
+            else:
+                return {"error": f"Unknown action: {action}", "is_error": True}
+            
+            return {
+                "success": True,
+                "rendered_html": str(soup),
+                "action_performed": action,
+                "selector": css_selector
             }
 
         else:
