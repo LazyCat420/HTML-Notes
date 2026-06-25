@@ -197,14 +197,21 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.chatInput.style.height = 'auto';
         
         let provider = "vllm-2";
-        let model = "cyankiwi/MiniMax-M2.7-AWQ-4bit";
-        if (elements.modelSelect && elements.modelSelect.value) {
-            try {
-                const selected = JSON.parse(elements.modelSelect.value);
-                provider = selected.provider;
-                model = selected.model;
-            } catch (e) {
-                console.error("Failed to parse model select value", e);
+        let model = "";
+        if (elements.modelSelect) {
+            let selectValue = elements.modelSelect.value;
+            if (!selectValue && elements.modelSelect.options.length > 0) {
+                // Default to the first available model in the dropdown if none selected
+                selectValue = elements.modelSelect.options[0].value;
+            }
+            if (selectValue) {
+                try {
+                    const selected = JSON.parse(selectValue);
+                    provider = selected.provider;
+                    model = selected.model;
+                } catch (e) {
+                    console.error("Failed to parse model select value", e);
+                }
             }
         }
 
