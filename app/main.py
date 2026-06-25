@@ -101,21 +101,21 @@ async def send_message(req: MessageRequest):
             "Never output raw HTML directly — always use tool calls.\n\n"
             f"CURRENT CANVAS STATE:\n```html\n{canvas_html}\n```\n\n"
             "INTENT → TOOL MAPPING:\n"
-            "- Create a note/reminder → html_notes_create_note(title, rendered_html)\n"
-            "- Track tasks/todos → render_component(component_type='task_checklist', title, data)\n"
-            "- Show a calendar → render_component(component_type='calendar_widget', title, data)\n"
-            "- Show a reminder → render_component(component_type='reminder_banner', title, data)\n"
-            "- Show a kanban board → render_component(component_type='kanban_board', title, data)\n"
-            "- Show a data table → render_component(component_type='data_table', title, data)\n"
-            "- Show a metric/stat → render_component(component_type='data_card', title, data)\n"
-            "- Show a summary → render_component(component_type='summary_panel', title, data)\n"
-            "- Show an alert → render_component(component_type='alert_banner', title, data)\n"
-            "- Show a habit tracker → render_component(component_type='habit_tracker', title, data)\n"
-            "- Custom HTML/CSS → render_component(component_type='custom_html', title, rendered_html='<html>')\n"
-            "- Inspect what's on screen → canvas_read_dom(canvas_html)\n"
-            "- Modify/remove existing element → canvas_modify_dom(canvas_html, css_selector, action)\n"
-            "- Search notes → html_notes_search_notes(query)\n"
-            "- Update a note → html_notes_get_note(note_id) then html_notes_update_note()\n\n"
+            "- Create a note/reminder → mcp__lazy-tool-service__html_notes_create_note(title, rendered_html)\n"
+            "- Track tasks/todos → mcp__lazy-tool-service__render_component(component_type='task_checklist', title, data)\n"
+            "- Show a calendar → mcp__lazy-tool-service__render_component(component_type='calendar_widget', title, data)\n"
+            "- Show a reminder → mcp__lazy-tool-service__render_component(component_type='reminder_banner', title, data)\n"
+            "- Show a kanban board → mcp__lazy-tool-service__render_component(component_type='kanban_board', title, data)\n"
+            "- Show a data table → mcp__lazy-tool-service__render_component(component_type='data_table', title, data)\n"
+            "- Show a metric/stat → mcp__lazy-tool-service__render_component(component_type='data_card', title, data)\n"
+            "- Show a summary → mcp__lazy-tool-service__render_component(component_type='summary_panel', title, data)\n"
+            "- Show an alert → mcp__lazy-tool-service__render_component(component_type='alert_banner', title, data)\n"
+            "- Show a habit tracker → mcp__lazy-tool-service__render_component(component_type='habit_tracker', title, data)\n"
+            "- Custom HTML/CSS → mcp__lazy-tool-service__render_component(component_type='custom_html', title, rendered_html='<html>')\n"
+            "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom(canvas_html)\n"
+            "- Modify/remove existing element → mcp__lazy-tool-service__canvas_modify_dom(canvas_html, css_selector, action)\n"
+            "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
+            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n\n"
             "DATA FORMAT REFERENCE (use these exact field names in the 'data' parameter):\n"
             "- calendar_widget: {\"days\": [{\"day\": \"Mon\", \"events\": [\"Meeting 9am\"]}, {\"day\": \"Tue\", \"events\": []}]}\n"
             "- task_checklist: {\"tasks\": [{\"text\": \"Buy groceries\", \"done\": false, \"due\": \"Tomorrow\"}]}\n"
@@ -128,9 +128,9 @@ async def send_message(req: MessageRequest):
             "- alert_banner: {\"severity\": \"warning\", \"message\": \"Deadline approaching\", \"action\": \"Review now\"}\n\n"
             "RULES:\n"
             "1. Always use tool calls, never plain text responses.\n"
-            "2. For render_component, always include both 'title' and 'data' with the correct structure.\n"
-            "3. Use canvas_read_dom first if you need to understand what's on the canvas before modifying it.\n"
-            "4. Use canvas_modify_dom to update/remove existing elements instead of re-rendering everything."
+            "2. For mcp__lazy-tool-service__render_component, always include both 'title' and 'data' with the correct structure.\n"
+            "3. Use mcp__lazy-tool-service__canvas_read_dom first if you need to understand what's on the canvas before modifying it.\n"
+            "4. Use mcp__lazy-tool-service__canvas_modify_dom to update/remove existing elements instead of re-rendering everything."
         )
 
         # Build messages array — only system/user/assistant with string content
@@ -172,15 +172,15 @@ async def send_message(req: MessageRequest):
             "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
             "workspaceEnabled": False,
             "enabledTools": [
-                "html_notes_create_note",
-                "html_notes_update_note",
-                "html_notes_get_note",
-                "html_notes_search_notes",
-                "html_notes_link_notes",
-                "html_notes_modify_dom",
-                "render_component",
-                "canvas_read_dom",
-                "canvas_modify_dom"
+                "mcp__lazy-tool-service__html_notes_create_note",
+                "mcp__lazy-tool-service__html_notes_update_note",
+                "mcp__lazy-tool-service__html_notes_get_note",
+                "mcp__lazy-tool-service__html_notes_search_notes",
+                "mcp__lazy-tool-service__html_notes_link_notes",
+                "mcp__lazy-tool-service__html_notes_modify_dom",
+                "mcp__lazy-tool-service__render_component",
+                "mcp__lazy-tool-service__canvas_read_dom",
+                "mcp__lazy-tool-service__canvas_modify_dom"
             ],
             "messages": messages,
             "maxTokens": 4096,
@@ -261,7 +261,7 @@ async def send_message(req: MessageRequest):
                                         if isinstance(result, dict):
                                             rendered_html = result.get("rendered_html")
 
-                                        if rendered_html and tool_name in ("render_component", "canvas_modify_dom"):
+                                        if rendered_html and tool_name in ("mcp__lazy-tool-service__render_component", "mcp__lazy-tool-service__canvas_modify_dom"):
                                             all_rendered_html += rendered_html
                                             yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
 
