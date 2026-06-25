@@ -29,6 +29,7 @@ class MessageRequest(BaseModel):
     target_note_id: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    current_canvas: Optional[str] = None
 
 class CreateNoteRequest(BaseModel):
     title: str
@@ -92,10 +93,13 @@ async def send_message(req: MessageRequest):
 
         history = database.get_session_messages(req.session_id)
 
+        canvas_html = req.current_canvas[:3000] + "..." if req.current_canvas and len(req.current_canvas) > 3000 else (req.current_canvas or "Canvas is empty.")
+
         # Build initial messages list
         SYSTEM_PROMPT = (
             "You are an agentic notes assistant. Your job is to understand the user's intent "
             "and call the right tools — never output raw HTML directly.\n\n"
+            f"CURRENT CANVAS STATE:\n```html\n{canvas_html}\n```\n\n"
             "INTENT CLASSIFICATION:\n"
             "- User wants to remember something → call html_notes_create_note()\n"
             "- User wants to track tasks/todos → call render_component(component_type='task_checklist')\n"
@@ -104,9 +108,11 @@ async def send_message(req: MessageRequest):
             "- User wants to see existing notes → call html_notes_search_notes() then render_component()\n"
             "- User wants to update something → call html_notes_get_note() then html_notes_update_note()\n"
             "- User wants to view a Kanban board → call render_component(component_type='kanban_board')\n"
-            "- User wants to see a data table → call render_component(component_type='data_table')\n\n"
+            "- User wants to see a data table → call render_component(component_type='data_table')\n"
+            "- User wants custom HTML/CSS UI → call render_component(component_type='custom_html', rendered_html='<your html>')\n\n"
             "When calling render_component, put all data in the 'data' field as structured JSON matching the component's needs. "
-            "The system will render it using pre-built templates. "
+            "For custom_html, put the raw HTML in the 'rendered_html' field. "
+            "The system will render it using pre-built templates or inject your custom HTML directly. "
             "Always respond with a tool call, never plain text."
         )
 
@@ -116,8 +122,14 @@ async def send_message(req: MessageRequest):
                 "content": "You are a visual web application interface assistant."
             }
         ]
+        import re
         for i, h in enumerate(history):
             content = h["content"]
+            
+            # Compress large HTML chunks in history so context doesn't blow up
+            if h["role"] == "assistant":
+                content = re.sub(r'<div class="canvas-element rendered-component">.*?</div>', '[Rendered Component History Omitted]', content, flags=re.DOTALL)
+                
             if h["role"] == "user" and i == len(history) - 1:
                 content = f"{SYSTEM_PROMPT}\n\nUser Command: {content}"
             messages.append({"role": h["role"], "content": content})

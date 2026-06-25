@@ -147,15 +147,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function renderContent(html) {
-        const isHTML = /<[a-z][\s\S]*>/i.test(html);
-        if (isHTML) {
-            elements.liveCanvas.innerHTML = DOMPurify.sanitize(html, {
-                ADD_ATTR: ['style', 'class', 'onclick', 'type', 'checked'],
-                FORCE_BODY: true
-            });
-        } else {
-            elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(html));
-        }
+        elements.liveCanvas.innerHTML = DOMPurify.sanitize(marked.parse(html), {
+            ADD_ATTR: ['style', 'class', 'onclick', 'type', 'checked'],
+            FORCE_BODY: true
+        });
     }
 
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
@@ -210,7 +205,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     session_id: state.sessionId,
                     message: text,
                     provider: provider,
-                    model: model
+                    model: model,
+                    current_canvas: elements.liveCanvas.innerHTML
                 })
             });
 

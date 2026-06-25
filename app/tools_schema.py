@@ -234,14 +234,14 @@ HTML_NOTES_TOOLS_JSON = """
     },
     {
         "name": "render_component",
-        "description": "Render fetched or computed data as a styled HTML/CSS component injected into the canvas. Provide raw structured data, the system will apply a template. Never output raw HTML.",
+        "description": "Render fetched or computed data as a styled HTML/CSS component injected into the canvas. Provide raw structured data, the system will apply a template. For custom HTML, use component_type='custom_html' and provide the HTML in 'rendered_html'.",
         "parameters": {
             "type": "object",
             "properties": {
                 "component_type": {
                     "type": "string",
-                    "enum": ["calendar_widget", "task_checklist", "reminder_banner", "kanban_board", "habit_tracker", "data_card", "data_table", "price_ticker", "summary_panel", "news_feed", "chart_embed", "alert_banner"],
-                    "description": "The visual layout to use for rendering"
+                    "enum": ["calendar_widget", "task_checklist", "reminder_banner", "kanban_board", "habit_tracker", "data_card", "data_table", "price_ticker", "summary_panel", "news_feed", "chart_embed", "alert_banner", "custom_html"],
+                    "description": "The visual layout to use for rendering. Use custom_html for arbitrary HTML."
                 },
                 "title": {
                     "type": "string",
@@ -250,9 +250,13 @@ HTML_NOTES_TOOLS_JSON = """
                 "data": {
                     "type": "object",
                     "description": "The raw structured data payload being rendered. Example for task_checklist: {'tasks': [{'text': '...', 'done': false, 'due': '...'}]}."
+                },
+                "rendered_html": {
+                    "type": "string",
+                    "description": "Raw HTML string. Only use this if component_type is 'custom_html'."
                 }
             },
-            "required": ["component_type", "title", "data"]
+            "required": ["component_type", "title"]
         },
         "tier": 0,
         "permission": "read_only",
