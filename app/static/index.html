@@ -30,12 +30,29 @@
         <div id="execution-log-content" class="execution-log-content"></div>
     </div>
 
+    <!-- Floating Chat History Panel -->
+    <div id="chat-history-panel" class="chat-history-panel">
+        <div class="chat-history-header">
+            <span>Chat History</span>
+            <button id="btn-clear-history" class="btn-clear-history" title="Clear Chat History">🗑️</button>
+        </div>
+        <div id="chat-history-messages" class="chat-history-messages"></div>
+    </div>
+
+    <!-- Speech Overlay for live TTS / Word animation -->
+    <div id="speech-overlay" class="speech-overlay"></div>
+
     <!-- Floating Command Palette -->
     <div class="command-palette">
         <div class="input-row">
             <button id="btn-mic" class="btn-mic" title="Record Voice">
                 <svg class="mic-icon" viewBox="0 0 24 24">
                     <path d="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M17.3,11C17.3,14 14.76,16.2 12,16.2C9.24,16.2 6.7,14 6.7,11H5C5,14.41 7.72,17.23 11,17.72V21H13V17.72C16.28,17.23 19,14.41 19,11H17.3Z"/>
+                </svg>
+            </button>
+            <button id="btn-mute" class="btn-mic" title="Toggle Mute">
+                <svg class="mute-icon" viewBox="0 0 24 24">
+                    <path fill="currentColor" d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.85 14,18.71V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.77 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>
                 </svg>
             </button>
             <textarea id="chat-input" placeholder="Type a command to update the canvas..." rows="1"></textarea>

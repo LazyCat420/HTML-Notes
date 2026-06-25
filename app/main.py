@@ -1,16 +1,17 @@
 import httpx
 import logging
 import re
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL
+from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL
 import json
 import uuid
 from bs4 import BeautifulSoup
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,6 +52,9 @@ class LinkNotesRequest(BaseModel):
 
 class TranscribeRequest(BaseModel):
     audio: str # Base64 audio payload
+
+class TTSSynthesizeRequest(BaseModel):
+    text: str
 
 # API Endpoints
 
@@ -461,6 +465,25 @@ async def transcribe_audio(req: TranscribeRequest):
     except Exception as e:
         logger.error(f"Failed proxying to STT service: {e}")
         raise HTTPException(status_code=500, detail=f"Transcription service unavailable: {str(e)}")
+
+@app.post("/tts/synthesize")
+async def tts_synthesize(req: TTSSynthesizeRequest):
+    """
+    Proxies TTS synthesis request to tts-service.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{TTS_SERVICE_URL}/api/v1/tts/synthesize",
+                json={"text": req.text}
+            )
+            if resp.status_code != 200:
+                logger.error(f"TTS service returned status code {resp.status_code}: {resp.text}")
+                raise HTTPException(status_code=503, detail="TTS service failure")
+            return Response(content=resp.content, media_type="audio/wav")
+    except Exception as e:
+        logger.error(f"Failed proxying to TTS service: {e}")
+        raise HTTPException(status_code=503, detail=f"TTS service unavailable: {str(e)}")
 
 @app.get("/health/model")
 async def health_model():

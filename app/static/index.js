@@ -8,7 +8,8 @@ document.addEventListener("DOMContentLoaded", () => {
         sessionId: localStorage.getItem("html_notes_session_id") || generateUUID(),
         mediaRecorder: null,
         audioChunks: [],
-        isRecording: false
+        isRecording: false,
+        isMuted: localStorage.getItem("html_notes_is_muted") === "true"
     };
 
     localStorage.setItem("html_notes_session_id", state.sessionId);
@@ -24,7 +25,11 @@ document.addEventListener("DOMContentLoaded", () => {
         execLogContainer: document.getElementById("execution-log-container"),
         execLogContent: document.getElementById("execution-log-content"),
         btnToggleLog: document.getElementById("btn-toggle-log"),
-        modelSelect: document.getElementById("model-select")
+        modelSelect: document.getElementById("model-select"),
+        btnMute: document.getElementById("btn-mute"),
+        chatHistoryPanel: document.getElementById("chat-history-panel"),
+        chatHistoryMessages: document.getElementById("chat-history-messages"),
+        btnClearHistory: document.getElementById("btn-clear-history")
     };
 
     if (elements.btnToggleLog) {
@@ -60,9 +65,40 @@ document.addEventListener("DOMContentLoaded", () => {
     checkHealth();
     fetchModels();
     setInterval(checkHealth, 30000);
+    updateMuteButtonUI();
 
     // Load history
     loadHistory();
+
+    // Mute Button listener
+    if (elements.btnMute) {
+        elements.btnMute.addEventListener("click", () => {
+            state.isMuted = !state.isMuted;
+            localStorage.setItem("html_notes_is_muted", state.isMuted);
+            updateMuteButtonUI();
+            if (state.isMuted) {
+                clearSpeechQueue();
+            }
+        });
+    }
+
+    // Clear history listener
+    if (elements.btnClearHistory) {
+        elements.btnClearHistory.addEventListener("click", () => {
+            if (confirm("Are you sure you want to clear chat history and start a new canvas?")) {
+                state.sessionId = generateUUID();
+                localStorage.setItem("html_notes_session_id", state.sessionId);
+                elements.chatHistoryMessages.innerHTML = "";
+                elements.liveCanvas.innerHTML = `
+                    <div id="welcome-message" class="system-message">
+                        <h1>Canvas Ready</h1>
+                        <p>Tell the LLM what to build. It will replace this entire screen.</p>
+                    </div>
+                `;
+                clearSpeechQueue();
+            }
+        });
+    }
 
     // ─── RECORDING LOGIC ───────────────────────────────────────
     async function toggleRecording() {
@@ -171,6 +207,14 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!res.ok) return;
             const data = await res.json();
             if (data.messages && data.messages.length > 0) {
+                // Populate chat history panel
+                elements.chatHistoryMessages.innerHTML = "";
+                data.messages.forEach(msg => {
+                    if (msg.content !== "[tool-only turn]") {
+                        appendChatMessageToHistory(msg.role, msg.content);
+                    }
+                });
+
                 // Find the last assistant message
                 const assistantMessages = data.messages.filter(m => m.role === "assistant" && m.content !== "[tool-only turn]");
                 if (assistantMessages.length > 0) {
@@ -195,6 +239,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         elements.chatInput.value = "";
         elements.chatInput.style.height = 'auto';
+
+        clearSpeechQueue();
+        appendChatMessageToHistory("user", text);
         
         let provider = "vllm-2";
         let model = "";
@@ -265,14 +312,18 @@ document.addEventListener("DOMContentLoaded", () => {
                             try {
                                 const data = JSON.parse(line.substring(6));
                                 if (data.type === "chunk") {
-                                    fullText += data.content || "";
+                                    const token = data.content || "";
+                                    fullText += token;
                                     renderContent(fullText, fullComponentHtml);
+                                    handleIncomingChunk(token);
                                 } else if (data.type === "status") {
                                     addLogStep(data.message || "Thinking...", "🧠");
                                 } else if (data.type === "done") {
                                     renderContent(fullText, fullComponentHtml);
                                     renderDynamicComponents(elements.liveCanvas);
                                     addLogStep("Finished generation.", "✨");
+                                    flushSentenceBuffer();
+                                    appendChatMessageToHistory("assistant", fullText + fullComponentHtml);
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
                                     fullComponentHtml += data.content || "";
@@ -410,5 +461,232 @@ document.addEventListener("DOMContentLoaded", () => {
             var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
             return v.toString(16);
         });
+    }
+
+    // ─── TTS & CHAT HISTORY UTILS ─────────────────────────────
+    let sentenceBuffer = "";
+    const ttsQueue = [];
+    let isProcessingQueue = false;
+    let currentAudio = null;
+
+    function updateMuteButtonUI() {
+        if (!elements.btnMute) return;
+        if (state.isMuted) {
+            elements.btnMute.classList.add("muted");
+            elements.btnMute.title = "Unmute Voice";
+            elements.btnMute.innerHTML = `
+                <svg class="mute-icon" viewBox="0 0 24 24">
+                    <path fill="currentColor" d="M12,4L9.91,6.09L12,8.18M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.52C15.58,18.04 14.83,18.45 14,18.7V20.76C15.38,20.45 16.63,19.78 17.68,18.9L20.73,21.95L22,20.68M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.63,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.48,12.43 16.5,12.22 16.5,12Z"/>
+                </svg>
+            `;
+        } else {
+            elements.btnMute.classList.remove("muted");
+            elements.btnMute.title = "Mute Voice";
+            elements.btnMute.innerHTML = `
+                <svg class="mute-icon" viewBox="0 0 24 24">
+                    <path fill="currentColor" d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.85 14,18.71V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.77 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>
+                </svg>
+            `;
+        }
+    }
+
+    function appendChatMessageToHistory(role, content) {
+        if (!elements.chatHistoryMessages) return;
+        
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `chat-message ${role}`;
+        
+        if (role === "user") {
+            messageDiv.textContent = content;
+        } else {
+            messageDiv.innerHTML = formatAssistantChatBubble(content);
+        }
+        
+        elements.chatHistoryMessages.appendChild(messageDiv);
+        elements.chatHistoryMessages.scrollTop = elements.chatHistoryMessages.scrollHeight;
+    }
+
+    function formatAssistantChatBubble(content) {
+        let hasComponent = /<div[^>]*class="[^"]*(rendered-component|canvas-element)[^"]*"[^>]*>([\s\S]*?)<\/div>/.test(content) || /class=['"][^'"]*rendered-component[^'"]*['"]/.test(content);
+        
+        let cleaned = content.replace(/<div[^>]*class="[^"]*(rendered-component|canvas-element)[^"]*"[^>]*>([\s\S]*?)<\/div>/g, '');
+        cleaned = cleaned.replace(/<div[^>]*class="[^"]*chart-container[^"]*"[^>]*>([\s\S]*?)<\/div>/g, '');
+        
+        let htmlText = "";
+        if (cleaned.trim()) {
+            htmlText = DOMPurify.sanitize(marked.parse(cleaned), {
+                ADD_ATTR: ['style', 'class'],
+                FORCE_BODY: true
+            });
+        }
+        
+        if (hasComponent) {
+            htmlText += `<div class="chat-component-placeholder">🎨 Generated visual component on canvas</div>`;
+        }
+        
+        return htmlText || `<div class="chat-component-placeholder">🎨 Generated visual component on canvas</div>`;
+    }
+
+    function handleIncomingChunk(textToken) {
+        sentenceBuffer += textToken;
+        let match;
+        const sentenceRegex = /[^.!?]+[.!?]+(?=\s|$)/g;
+        
+        while ((match = sentenceRegex.exec(sentenceBuffer)) !== null) {
+            const sentence = match[0].trim();
+            if (sentence) {
+                enqueueTTS(sentence);
+            }
+            sentenceBuffer = sentenceBuffer.substring(match.index + match[0].length);
+            sentenceRegex.lastIndex = 0;
+        }
+    }
+
+    function flushSentenceBuffer() {
+        const remaining = sentenceBuffer.trim();
+        if (remaining) {
+            enqueueTTS(remaining);
+        }
+        sentenceBuffer = "";
+    }
+
+    function enqueueTTS(sentence) {
+        ttsQueue.push(sentence);
+        processTTSQueue();
+    }
+
+    function clearSpeechQueue() {
+        ttsQueue.length = 0;
+        if (currentAudio) {
+            currentAudio.pause();
+            currentAudio = null;
+        }
+        const overlay = document.getElementById("speech-overlay");
+        if (overlay) {
+            overlay.style.display = "none";
+            overlay.innerHTML = "";
+            overlay.classList.remove("sentence-fade-out");
+        }
+        isProcessingQueue = false;
+        sentenceBuffer = "";
+    }
+
+    function cleanTextForTTS(text) {
+        let cleaned = text.replace(/<[^>]*>/g, "");
+        cleaned = cleaned.replace(/[\*_#`~]/g, "");
+        cleaned = cleaned.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
+        cleaned = cleaned.replace(/\s+/g, " ").trim();
+        return cleaned;
+    }
+
+    async function processTTSQueue() {
+        if (isProcessingQueue) return;
+        if (ttsQueue.length === 0) {
+            hideSpeechOverlay();
+            return;
+        }
+        
+        isProcessingQueue = true;
+        const sentence = ttsQueue.shift();
+        
+        try {
+            await playSentenceTTS(sentence);
+        } catch (err) {
+            console.error("Error playing sentence TTS:", err);
+        } finally {
+            isProcessingQueue = false;
+            setTimeout(processTTSQueue, 50);
+        }
+    }
+
+    function playSentenceTTS(sentence) {
+        return new Promise((resolve) => {
+            const overlay = document.getElementById("speech-overlay");
+            const cleanText = cleanTextForTTS(sentence);
+            
+            if (!cleanText) {
+                resolve();
+                return;
+            }
+
+            const words = sentence.split(/\s+/).filter(w => w.length > 0);
+            
+            overlay.innerHTML = "";
+            overlay.style.display = "block";
+            overlay.classList.remove("sentence-fade-out");
+            
+            words.forEach((word, index) => {
+                const span = document.createElement("span");
+                span.className = "word";
+                span.textContent = word;
+                span.style.animationDelay = `${index * 0.08}s`;
+                overlay.appendChild(span);
+            });
+
+            if (state.isMuted) {
+                const simulationDuration = Math.max(1500, words.length * 300);
+                setTimeout(fadeAndFinish, simulationDuration);
+            } else {
+                fetch("/tts/synthesize", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: cleanText })
+                })
+                .then(res => {
+                    if (!res.ok) throw new Error("TTS proxy error");
+                    return res.blob();
+                })
+                .then(blob => {
+                    const audioUrl = URL.createObjectURL(blob);
+                    const audio = new Audio(audioUrl);
+                    currentAudio = audio;
+                    
+                    audio.onended = () => {
+                        URL.revokeObjectURL(audioUrl);
+                        currentAudio = null;
+                        fadeAndFinish();
+                    };
+                    
+                    audio.onerror = (err) => {
+                        console.error("Audio playback error:", err);
+                        URL.revokeObjectURL(audioUrl);
+                        currentAudio = null;
+                        const fallbackDuration = Math.max(1500, words.length * 300);
+                        setTimeout(fadeAndFinish, fallbackDuration);
+                    };
+                    
+                    audio.play().catch(err => {
+                        console.error("Audio play failed:", err);
+                        const fallbackDuration = Math.max(1500, words.length * 300);
+                        setTimeout(fadeAndFinish, fallbackDuration);
+                    });
+                })
+                .catch(err => {
+                    console.error("TTS fetch failed, falling back to silent visualization:", err);
+                    const fallbackDuration = Math.max(1500, words.length * 300);
+                    setTimeout(fadeAndFinish, fallbackDuration);
+                });
+            }
+            
+            function fadeAndFinish() {
+                overlay.classList.add("sentence-fade-out");
+                setTimeout(() => {
+                    overlay.style.display = "none";
+                    overlay.innerHTML = "";
+                    resolve();
+                }, 400);
+            }
+        });
+    }
+
+    function hideSpeechOverlay() {
+        const overlay = document.getElementById("speech-overlay");
+        if (overlay && overlay.style.display !== "none") {
+            overlay.classList.add("sentence-fade-out");
+            setTimeout(() => {
+                overlay.style.display = "none";
+                overlay.innerHTML = "";
+            }, 400);
+        }
     }
 });
