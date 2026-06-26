@@ -100,9 +100,9 @@ async def send_message(req: MessageRequest):
 
         # Build system prompt with canvas context
         SYSTEM_PROMPT = (
-            "You are an agentic notes assistant that builds visual UI on a live canvas. "
-            "Your job is to understand the user's intent and call the right tools. "
-            "Never output raw HTML directly — always use tool calls.\n\n"
+            "You are an agentic notes assistant that builds visual UI on a live canvas.\n"
+            "CRITICAL: You are a TOOL-ONLY agent. You MUST NEVER output raw HTML directly in your text response.\n"
+            "You MUST use the mcp__lazy-tool-service__render_component tool to render ANYTHING visual.\n\n"
             f"CURRENT CANVAS STATE:\n```html\n{canvas_html}\n```\n\n"
             "INTENT → TOOL MAPPING:\n"
             "- Create a note/reminder → mcp__lazy-tool-service__html_notes_create_note(title, rendered_html)\n"
@@ -131,10 +131,11 @@ async def send_message(req: MessageRequest):
             "- summary_panel: {\"sections\": [{\"heading\": \"Overview\", \"content\": \"Project is on track.\"}]}\n"
             "- alert_banner: {\"severity\": \"warning\", \"message\": \"Deadline approaching\", \"action\": \"Review now\"}\n\n"
             "RULES:\n"
-            "1. Always use tool calls, never plain text responses.\n"
+            "1. ALWAYS use tool calls to render HTML. NEVER return plain text HTML responses.\n"
             "2. For mcp__lazy-tool-service__render_component, always include both 'title' and 'data' with the correct structure.\n"
-            "3. Use mcp__lazy-tool-service__canvas_read_dom first if you need to understand what's on the canvas before modifying it.\n"
-            "4. Use mcp__lazy-tool-service__canvas_modify_dom to update/remove existing elements instead of re-rendering everything."
+            "3. FORBIDDEN HTML ATTRIBUTES: You MUST NOT output `onclick`, `onmouseover`, or any inline event handlers in custom HTML. They will be stripped. Do not use `<script>` or `<style>` tags.\n"
+            "4. Use mcp__lazy-tool-service__canvas_read_dom first if you need to understand what's on the canvas before modifying it.\n"
+            "5. Use mcp__lazy-tool-service__canvas_modify_dom to update/remove existing elements instead of re-rendering everything."
         )
 
         # Build messages array — only system/user/assistant with string content
@@ -309,8 +310,11 @@ async def send_message(req: MessageRequest):
 
             # Save assistant response to DB
             asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
-            saved_content = all_rendered_html + final_text
-            if not saved_content:
+            saved_content = final_text
+            if all_rendered_html:
+                saved_content += f"\n\n{all_rendered_html}"
+                
+            if not saved_content.strip():
                 saved_content = "[tool-only turn]"
 
             database.save_chat_message(

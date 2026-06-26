@@ -164,7 +164,7 @@ async def process_user_turn(
         if results:
             assistant_reply = f"<h3>Search Results for '{query}'</h3><ul style='list-style: none; padding: 0;'>"
             for n in results:
-                assistant_reply += f"<li style='margin-bottom: 0.5rem;'><a href='#' onclick='return false;'><strong>{n['title']}</strong></a> (ID: {n['id']})</li>"
+                assistant_reply += f"<li style='margin-bottom: 0.5rem;'><a href='#note_{n['id']}'><strong>{n['title']}</strong></a> (ID: {n['id']})</li>"
             assistant_reply += "</ul>"
         else:
             assistant_reply = f"<p>No journal notes found matching <strong>'{query}'</strong>.</p>"
