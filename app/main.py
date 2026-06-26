@@ -173,26 +173,11 @@ async def send_message(req: MessageRequest):
         # Build Prism /agent payload — NO tools array (Prism uses its own catalog)
         model_name = req.model
         if not model_name:
-            # Dynamically fetch the first available model from Prism instead of hardcoding
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(f"{PRISM_URL}/config?includeLocal=true")
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        models_map = data.get("textToText", {}).get("models", {})
-                        for provider_id, models in models_map.items():
-                            if models:
-                                model_name = models[0].get("name")
-                                req.provider = provider_id
-                                break
-            except Exception as e:
-                logger.error(f"Failed to fetch dynamic fallback model: {e}")
-            if not model_name:
-                # If still empty, send an empty string or generic fallback (Prism will fail if required)
-                model_name = ""
+            model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
+            req.provider = "vllm"
 
         payload = {
-            "provider": req.provider or "vllm-2",
+            "provider": req.provider,
             "model": model_name,
             "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
             "workspaceEnabled": False,
@@ -212,7 +197,8 @@ async def send_message(req: MessageRequest):
             "project": "html-notes-client",
             "username": "lazycat",
             "skipConversation": True,
-            "autoApprove": True
+            "autoApprove": True,
+            "memoryEnabled": False
         }
 
         async def proxy_prism_sse():
