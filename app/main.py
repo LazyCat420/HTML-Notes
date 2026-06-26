@@ -147,8 +147,12 @@ async def send_message(req: MessageRequest):
 
             # Compress large HTML chunks in history
             if h["role"] == "assistant":
-                content = re.sub(r'<div class="canvas-element rendered-component">.*?</div>', '[Component]', content, flags=re.DOTALL)
-                # Truncate very long assistant messages
+                # Strip out the new wrapped HTML
+                content = re.sub(r'<!--CANVAS_HTML_START-->.*?<!--CANVAS_HTML_END-->', '[Visual Component Rendered]', content, flags=re.DOTALL)
+                # Fallback for old history: strip common classes
+                content = re.sub(r'<div class="[^"]*(glass-card|canvas-element|rendered-component)[^"]*">.*?</div>', '[Component]', content, flags=re.DOTALL)
+                
+                # Truncate very long assistant messages just in case
                 if len(content) > 2000:
                     content = content[:2000] + "... [truncated]"
 
@@ -286,7 +290,7 @@ async def send_message(req: MessageRequest):
             asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
             saved_content = final_text
             if all_rendered_html:
-                saved_content += f"\n\n{all_rendered_html}"
+                saved_content += f"\n\n<!--CANVAS_HTML_START-->\n{all_rendered_html}\n<!--CANVAS_HTML_END-->"
                 
             if not saved_content.strip():
                 saved_content = "[tool-only turn]"
