@@ -47,6 +47,33 @@ def render_notes(widget_id: str, config: dict) -> str:
     </div>
     """
 
+def render_iframe_app(widget_id: str, config: dict) -> str:
+    url = config.get("url", "about:blank")
+    title = config.get("title", "App Window")
+    icon = config.get("icon", "🌐")
+    
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-2 glass-card rounded-xl shadow-lg bg-slate-800/80 flex flex-col overflow-hidden h-[500px]" x-data>
+        <!-- Title Bar -->
+        <div class="flex items-center justify-between bg-slate-900/80 p-3 border-b border-slate-700">
+            <div class="flex items-center gap-2">
+                <span class="text-xl">{icon}</span>
+                <h3 class="font-bold text-white tracking-wide">{title}</h3>
+            </div>
+            <div class="flex items-center gap-3">
+                <a href="{url}" target="_blank" class="text-slate-400 hover:text-blue-400 transition-colors" title="Open Full App">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                </a>
+                <button @click="$el.closest('.widget-container').remove()" class="text-slate-400 hover:text-red-400 transition-colors" title="Close Widget">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+        </div>
+        <!-- Iframe Content -->
+        <iframe src="{url}" class="w-full flex-grow border-none bg-slate-950" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+    </div>
+    """
+
 def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
     """Factory function to route widget creation."""
     if widget_type == "checklist":
@@ -55,6 +82,8 @@ def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
         return render_clock(widget_id, config)
     elif widget_type == "notes":
         return render_notes(widget_id, config)
+    elif widget_type == "iframe_app":
+        return render_iframe_app(widget_id, config)
     else:
         # Fallback for unknown widgets
         return f'<div id="{widget_id}" class="widget-container glass-card p-4"><p class="text-red-400">Unknown widget type: {widget_type}</p></div>'
