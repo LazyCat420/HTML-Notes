@@ -74,6 +74,48 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
     </div>
     """
 
+def render_mini_music_player(widget_id: str, config: dict) -> str:
+    genre = config.get("genre", "")
+    autoplay = str(config.get("autoplay", False)).lower()
+    
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-1 glass-card p-5 rounded-2xl shadow-xl bg-slate-800/90 backdrop-blur-md flex flex-col gap-4 border border-slate-700/50" x-data="musicPlayerWidget('{genre}', {autoplay})">
+        <!-- Title Bar -->
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2 text-indigo-400">
+                <span class="material-symbols-outlined text-lg">music_note</span>
+                <span class="text-sm font-semibold tracking-wider uppercase">Mini Player</span>
+            </div>
+            <button @click="destroy(); $el.closest('.widget-container').remove()" class="text-slate-500 hover:text-red-400 transition-colors">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+
+        <!-- Track Info -->
+        <div class="flex flex-col items-center text-center mt-2">
+            <div class="w-16 h-16 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 mb-3 flex items-center justify-center shadow-lg" :class="{{'animate-pulse': isPlaying}}">
+                <span class="material-symbols-outlined text-3xl text-white">music_cast</span>
+            </div>
+            <h4 class="text-lg font-bold text-white leading-tight truncate w-full px-2" x-text="currentTrack ? currentTrack.title : 'Loading Tracks...'"></h4>
+            <p class="text-sm text-slate-400 truncate w-full px-2 mt-1" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
+            <p class="text-xs text-indigo-400 mt-1 font-mono" x-show="genreFilter">Filter: <span x-text="genreFilter"></span></p>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex items-center justify-center gap-4 mt-2">
+            <button @click="playPause()" class="w-12 h-12 rounded-full bg-indigo-500 hover:bg-indigo-400 text-white flex items-center justify-center shadow-md transition-all active:scale-95 disabled:opacity-50" :disabled="!currentTrack">
+                <span class="material-symbols-outlined text-2xl" x-text="isPlaying ? 'pause' : 'play_arrow'"></span>
+            </button>
+            <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 text-white flex items-center justify-center shadow-md transition-all active:scale-95 disabled:opacity-50" :disabled="!currentTrack">
+                <span class="material-symbols-outlined text-xl">skip_next</span>
+            </button>
+        </div>
+        
+        <!-- Error State -->
+        <div x-show="error" class="text-xs text-red-400 text-center mt-2" x-text="error"></div>
+    </div>
+    """
+
 def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
     """Factory function to route widget creation."""
     if widget_type == "checklist":
@@ -84,6 +126,8 @@ def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
         return render_notes(widget_id, config)
     elif widget_type == "iframe_app":
         return render_iframe_app(widget_id, config)
+    elif widget_type == "mini_music_player":
+        return render_mini_music_player(widget_id, config)
     else:
         # Fallback for unknown widgets
         return f'<div id="{widget_id}" class="widget-container glass-card p-4"><p class="text-red-400">Unknown widget type: {widget_type}</p></div>'
