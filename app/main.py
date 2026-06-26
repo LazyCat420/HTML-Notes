@@ -182,7 +182,6 @@ async def send_message(req: MessageRequest):
                 "mcp__lazy-tool-service__html_notes_link_notes",
                 "mcp__lazy-tool-service__html_notes_modify_dom",
                 "mcp__lazy-tool-service__render_component",
-                "mcp__lazy-tool-service__canvas_read_dom",
                 "mcp__lazy-tool-service__canvas_modify_dom"
             ],
             "messages": messages,
@@ -252,6 +251,29 @@ async def send_message(req: MessageRequest):
                                         yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name})}\n\n'
                                         yield f'data: {json.dumps({"type": "status", "message": f"executing {tool_name}..."})}\n\n'
 
+                                        if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
+                                            try:
+                                                args = tool_info.get("arguments", {})
+                                                css_selector = args.get("css_selector", "")
+                                                action = args.get("action", "")
+                                                html_snippet = args.get("html_snippet", "")
+                                                
+                                                soup = BeautifulSoup(req.current_canvas, 'html.parser')
+                                                target = soup.select_one(css_selector)
+                                                if target:
+                                                    if action == "append":
+                                                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                        target.append(new_elem)
+                                                    elif action == "replace":
+                                                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                        target.replace_with(new_elem)
+                                                    elif action == "remove":
+                                                        target.decompose()
+                                                    all_rendered_html = str(soup)
+                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                            except Exception as e:
+                                                logger.error(f"Local canvas modification failed: {e}")
+
                                     elif status in ("done", "success"):
                                         # Check if this is a render_component result with HTML
                                         result = tool_info.get("result", {})
@@ -266,8 +288,9 @@ async def send_message(req: MessageRequest):
                                             rendered_html = result.get("rendered_html")
 
                                         if rendered_html and tool_name in ("mcp__lazy-tool-service__render_component", "mcp__lazy-tool-service__canvas_modify_dom"):
-                                            all_rendered_html = rendered_html
-                                            yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
+                                            if tool_name != "mcp__lazy-tool-service__canvas_modify_dom":
+                                                all_rendered_html = rendered_html
+                                                yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
 
                                     elif status == "error":
                                         error_msg = tool_info.get("result", "Unknown tool error")
