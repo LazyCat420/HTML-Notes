@@ -11,6 +11,7 @@ from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SER
 import json
 import uuid
 from bs4 import BeautifulSoup
+from app.widgets.factory import generate_widget_html
 
 
 logging.basicConfig(level=logging.INFO)
@@ -112,16 +113,10 @@ async def send_message(req: MessageRequest):
             "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
             "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n\n"
             "AGENTIC UI GENERATION RULES:\n"
-            "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid). You MUST wrap every distinct component in a widget container: `<div id=\"widget-[UUID]\" class=\"widget-container col-span-1\">...</div>`. Use Tailwind classes like `col-span-1` or `col-span-2` to size them.\n"
-            "2. ADDING WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` to add new widgets. NEVER use render_component to place things on the canvas.\n"
-            "3. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `action='replace'` or `action='remove'`.\n"
-            "4. STYLING & INTERACTIVITY: ALWAYS use TailwindCSS. Use Alpine.js for interactivity. NEVER use raw CSS or inline event handlers.\n"
-            "5. Make sure your designs look modern, using Tailwind's `rounded-xl`, `shadow-lg`, `bg-slate-800/80 backdrop-blur-md`, and smooth transitions.\n"
-            "6. Ensure all interactive components (like checklists) are FULLY FUNCTIONAL by default. Include input fields so the user can add data.\n\n"
-            "COMPONENT EXAMPLES (Use these as reference for syntax):\n"
-            "Modal: `<div x-data=\"{ open: false }\"><button @click=\"open = true\" class=\"px-4 py-2 bg-blue-500 rounded\">Open</button><div x-show=\"open\" x-cloak class=\"fixed inset-0 bg-black/50 flex items-center justify-center\"><div class=\"bg-slate-800 p-6 rounded-xl\"><h2 class=\"text-xl\">Modal</h2><button @click=\"open = false\">Close</button></div></div></div>`\n"
-            "Tabs: `<div x-data=\"{ tab: 1 }\"><div class=\"flex gap-2\"><button @click=\"tab = 1\" :class=\"{'bg-blue-500': tab === 1}\" class=\"px-4 py-2 rounded\">Tab 1</button><button @click=\"tab = 2\" :class=\"{'bg-blue-500': tab === 2}\" class=\"px-4 py-2 rounded\">Tab 2</button></div><div x-show=\"tab === 1\">Content 1</div><div x-show=\"tab === 2\">Content 2</div></div>`\n"
-            "Checklist: `<div x-data=\"{ items: [{text: 'Task 1', done: false}, {text: 'Task 2', done: true}], newItem: '' }\" class=\"glass-card p-4 rounded-xl shadow-lg bg-slate-800/80\"><h3 class=\"text-lg font-bold mb-2\">Checklist</h3><div class=\"flex gap-2 mb-3\"><input x-model=\"newItem\" @keydown.enter=\"if(newItem.trim()) { items.push({text: newItem.trim(), done: false}); newItem = '' }\" type=\"text\" placeholder=\"Add task...\" class=\"px-2 py-1 rounded bg-slate-700 text-white flex-grow\"><button @click=\"if(newItem.trim()) { items.push({text: newItem.trim(), done: false}); newItem = '' }\" class=\"px-3 py-1 bg-blue-500 rounded text-white font-bold\">+</button></div><ul class=\"space-y-2\"><template x-for=\\\"(item, idx) in items\\\" :key=\\\"idx\\\"><li class=\"flex items-center gap-2\"><input type=\"checkbox\" x-model=\"item.done\" class=\"rounded text-blue-500\"><span :class=\\\"{'line-through opacity-50': item.done}\\\" x-text=\"item.text\"></span></li></template></ul></div>`\n\n"
+            "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid). You MUST wrap every custom component in a widget container: `<div id=\"widget-[UUID]\" class=\"widget-container col-span-1\">...</div>`. Use Tailwind classes like `col-span-1` or `col-span-2` to size them.\n"
+            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes'). Provide a unique `widget_id` and standard config (e.g., `{\"title\": \"My Tasks\"}`). NEVER try to generate the raw Alpine.js HTML yourself for these standard widgets.\n"
+            "3. ADDING CUSTOM WIDGETS: If the user asks for something custom (not in the Lego library), use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` and write Tailwind/Alpine.js HTML.\n"
+            "4. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\n\n"
             "CANVAS DOM MODIFICATION RULES:\n"
             "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID."
         )
@@ -273,6 +268,32 @@ async def send_message(req: MessageRequest):
                                                     yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
                                             except Exception as e:
                                                 logger.error(f"Local canvas modification failed: {e}")
+
+                                        elif tool_name == "mcp__lazy-tool-service__canvas_add_widget":
+                                            try:
+                                                args = tool_info.get("arguments", {})
+                                                widget_type = args.get("widget_type", "")
+                                                widget_id = args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
+                                                config = args.get("config", {})
+                                                
+                                                html_snippet = generate_widget_html(widget_type, widget_id, config)
+                                                
+                                                current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                                                soup = BeautifulSoup(current_html, 'html.parser')
+                                                target = soup.select_one('#dashboard-grid')
+                                                
+                                                if target:
+                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                    target.append(new_elem)
+                                                    all_rendered_html = str(soup)
+                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                                else:
+                                                    # Fallback if dashboard-grid missing
+                                                    soup.append(BeautifulSoup(html_snippet, 'html.parser'))
+                                                    all_rendered_html = str(soup)
+                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                            except Exception as e:
+                                                logger.error(f"Local canvas_add_widget failed: {e}")
 
                                     elif status in ("done", "success"):
                                         # Check if this is a render_component result with HTML
