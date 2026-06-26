@@ -615,6 +615,11 @@ textarea::placeholder {
     to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes slideUpCentered {
+    from { opacity: 0; transform: translate(-50%, 15px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+}
+
 /* ─── CHAT HISTORY & SPEECH OVERLAY FEATURES ────────────────── */
 
 .chat-history-panel {
@@ -711,7 +716,7 @@ textarea::placeholder {
     transform: translateX(-50%);
     width: fit-content;
     max-width: 600px;
-    font-size: 1.6rem;
+    font-size: 0.8rem;
     font-weight: 600;
     color: #ffffff;
     text-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
@@ -725,7 +730,7 @@ textarea::placeholder {
     -webkit-backdrop-filter: blur(8px);
     border: 1px solid rgba(255, 255, 255, 0.05);
     display: none; /* Controlled via JS */
-    animation: slideUp 0.3s ease forwards;
+    animation: slideUpCentered 0.3s ease forwards;
 }
 
 .word {
@@ -757,11 +762,11 @@ textarea::placeholder {
 @keyframes sentenceFadeOut {
     from {
         opacity: 1;
-        transform: scale(1);
+        transform: translate(-50%, 0) scale(1);
     }
     to {
         opacity: 0;
-        transform: scale(0.95);
+        transform: translate(-50%, 0) scale(0.95);
     }
 }
 
