@@ -54,8 +54,20 @@ def audit_html_fragment(html_content: str) -> Dict[str, Any]:
             "tags": []
         }
         
+    is_valid = len(parser.errors) == 0
+    errors = parser.errors.copy()
+    
+    try:
+        from lazycat.html_auditor import audit_functional_html
+        func_audit = audit_functional_html(html_content)
+        if not func_audit["is_valid"]:
+            is_valid = False
+            errors.extend(func_audit["errors"])
+    except ImportError:
+        pass
+        
     return {
-        "is_valid": len(parser.errors) == 0,
-        "errors": parser.errors,
+        "is_valid": is_valid,
+        "errors": errors,
         "tags": list(set(parser.found_tags))
     }

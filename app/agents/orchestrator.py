@@ -181,17 +181,35 @@ async def process_user_turn(
             
     else:
         # CHAT or general conversation
-        # Call LLM directly as conversational agent
-        # Call LLM directly as conversational agent but instruct it to output HTML for the canvas
+        from lazycat.html_skills import COMPONENT_SKILL_LIBRARY
+        
+        system_prompt = (
+            "You are a UI component generator for an open HTML canvas. "
+            "The user will ask you to build or show things. You must respond ONLY with raw HTML. "
+            "Do not use markdown code blocks like ```html. Just return the raw HTML string.\n\n"
+            "RULES:\n"
+            "1. Interactivity: All interactivity MUST use inline <script> tags (e.g., buttons, sorting, filtering, navigation must all work via vanilla JS embedded in the output HTML).\n"
+            "2. No Dead Links: NEVER use `onclick=\"return false\"`, it kills button functionality.\n"
+            "3. Self-Contained Elements: Every interactive element must be fully self-contained with its JS in the same HTML blob.\n"
+            "4. Namespaced IDs: Use unique IDs to avoid conflicts with the outer app.\n\n"
+            f"{COMPONENT_SKILL_LIBRARY}"
+        )
+        
         messages = [
-            {"role": "system", "content": "You are a UI component generator for an open HTML canvas. The user will ask you to build or show things. You must respond ONLY with raw HTML (with inline styles or basic CSS classes if needed) that will be directly injected into a <div> on the user's screen. Do not use markdown code blocks like ```html. Just return the raw HTML string."}
+            {"role": "system", "content": system_prompt}
         ]
         messages.extend(history_payload)
         messages.append({"role": "user", "content": user_input})
         
         from app.agents.llm_client import call_llm
         try:
-            assistant_reply = await call_llm(messages, temperature=0.7, max_tokens=2048)
+            raw_html = await call_llm(messages, temperature=0.7, max_tokens=4096)
+            
+            # Apply self-review loop from lazycat SDK
+            from lazycat.validators import Validator
+            from lazycat.llm import prism_client
+            assistant_reply = await Validator.self_review_html(raw_html, prism_client)
+            
         except Exception as e:
             assistant_reply = f"Hello! I am ready to help you edit your notes. (vLLM error: {str(e)})"
             
