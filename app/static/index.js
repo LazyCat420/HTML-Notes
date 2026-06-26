@@ -346,7 +346,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                     appendChatMessageToHistory("assistant", fullText + fullComponentHtml);
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
-                                    fullComponentHtml += data.content || "";
+                                    fullComponentHtml = data.content || "";
                                     renderContent(fullText, fullComponentHtml);
                                 } else if (data.type === "tool_call") {
                                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");

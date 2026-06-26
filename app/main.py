@@ -106,19 +106,18 @@ async def send_message(req: MessageRequest):
             f"CURRENT CANVAS STATE:\n```html\n{canvas_html}\n```\n\n"
             "INTENT → TOOL MAPPING:\n"
             "- Create a note/reminder → mcp__lazy-tool-service__html_notes_create_note(title, rendered_html)\n"
-            "- Show a calendar, task list, kanban, or table → mcp__lazy-tool-service__render_component(component_type='custom_html', title, rendered_html='<html>')\n"
-            "- Custom HTML/CSS → mcp__lazy-tool-service__render_component(component_type='custom_html', title, rendered_html='<html>')\n"
+            "- Show a new widget (calendar, task list, kanban, table) → mcp__lazy-tool-service__canvas_modify_dom(canvas_html, css_selector='#dashboard-grid', action='append', html_snippet='<div id=\"widget-UUID\" class=\"widget-container ...\">...</div>')\n"
             "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom(canvas_html)\n"
-            "- Modify/remove existing element → mcp__lazy-tool-service__canvas_modify_dom(canvas_html, css_selector, action)\n"
+            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(canvas_html, css_selector='#widget-UUID', action='replace' or 'remove')\n"
             "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
             "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n\n"
             "AGENTIC UI GENERATION RULES:\n"
-            "1. ALWAYS use tool calls to render HTML. NEVER return plain text HTML responses.\n"
-            "2. For mcp__lazy-tool-service__render_component with custom_html, ALWAYS use TailwindCSS utility classes for styling. NEVER write raw CSS or use <style> tags.\n"
-            "3. Use Alpine.js for ALL interactivity (e.g., `x-data`, `@click`, `x-show`, `x-model`). NEVER use `<script>`, `onclick`, or inline event handlers.\n"
-            "4. When generating components, wrap them in a modern layout structure (e.g., `<div class=\"flex flex-col gap-4 p-4\">`) to ensure they fit correctly on the canvas and do not overwrite each other.\n"
-            "5. Make sure your designs look modern, using Tailwind's `rounded-xl`, `shadow-lg`, `bg-white/10 backdrop-blur-md`, and smooth transitions.\n"
-            "6. Ensure all interactive components (like checklists, forms, and planners) are FULLY FUNCTIONAL by default. Always include the necessary input fields (`<input type=\"text\">`, `<textarea>`, etc.) so the user can actively add data to the component without having to ask for the inputs.\n\n"
+            "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid). You MUST wrap every distinct component in a widget container: `<div id=\"widget-[UUID]\" class=\"widget-container col-span-1\">...</div>`. Use Tailwind classes like `col-span-1` or `col-span-2` to size them.\n"
+            "2. ADDING WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` to add new widgets. NEVER use render_component to place things on the canvas.\n"
+            "3. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `action='replace'` or `action='remove'`.\n"
+            "4. STYLING & INTERACTIVITY: ALWAYS use TailwindCSS. Use Alpine.js for interactivity. NEVER use raw CSS or inline event handlers.\n"
+            "5. Make sure your designs look modern, using Tailwind's `rounded-xl`, `shadow-lg`, `bg-slate-800/80 backdrop-blur-md`, and smooth transitions.\n"
+            "6. Ensure all interactive components (like checklists) are FULLY FUNCTIONAL by default. Include input fields so the user can add data.\n\n"
             "COMPONENT EXAMPLES (Use these as reference for syntax):\n"
             "Modal: `<div x-data=\"{ open: false }\"><button @click=\"open = true\" class=\"px-4 py-2 bg-blue-500 rounded\">Open</button><div x-show=\"open\" x-cloak class=\"fixed inset-0 bg-black/50 flex items-center justify-center\"><div class=\"bg-slate-800 p-6 rounded-xl\"><h2 class=\"text-xl\">Modal</h2><button @click=\"open = false\">Close</button></div></div></div>`\n"
             "Tabs: `<div x-data=\"{ tab: 1 }\"><div class=\"flex gap-2\"><button @click=\"tab = 1\" :class=\"{'bg-blue-500': tab === 1}\" class=\"px-4 py-2 rounded\">Tab 1</button><button @click=\"tab = 2\" :class=\"{'bg-blue-500': tab === 2}\" class=\"px-4 py-2 rounded\">Tab 2</button></div><div x-show=\"tab === 1\">Content 1</div><div x-show=\"tab === 2\">Content 2</div></div>`\n"
@@ -267,7 +266,7 @@ async def send_message(req: MessageRequest):
                                             rendered_html = result.get("rendered_html")
 
                                         if rendered_html and tool_name in ("mcp__lazy-tool-service__render_component", "mcp__lazy-tool-service__canvas_modify_dom"):
-                                            all_rendered_html += rendered_html
+                                            all_rendered_html = rendered_html
                                             yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
 
                                     elif status == "error":

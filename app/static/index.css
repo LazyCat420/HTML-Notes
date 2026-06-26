@@ -35,6 +35,22 @@ body {
     width: 100%;
 }
 
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.5rem;
+    width: 100%;
+    align-items: start;
+}
+
+.widget-container {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+}
+
 /* Base styles for LLM generated content */
 .live-canvas h1, .live-canvas h2, .live-canvas h3 {
     color: #ffffff;

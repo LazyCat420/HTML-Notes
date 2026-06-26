@@ -174,7 +174,7 @@ HTML_NOTES_TOOLS_JSON = """
     },
     {
         "name": "render_component",
-        "description": "Render structured data as a styled HTML/CSS component on the canvas. Pass data matching the component_type format. For arbitrary HTML use component_type='custom_html' with rendered_html field.",
+        "description": "DEPRECATED FOR LIVE CANVAS UPDATES. This only formats raw data into HTML. DO NOT use this to add elements to the live canvas. To add, remove, or modify widgets on the dashboard grid, you MUST use canvas_modify_dom instead.",
         "parameters": {
             "type": "object",
             "properties": {
