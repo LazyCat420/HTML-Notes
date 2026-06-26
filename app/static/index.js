@@ -201,10 +201,13 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.recordingStatus.style.display = "none";
     }
 
+    let lastRenderedComponentHtml = null;
+
     function renderContent(textContent, componentHtml) {
         // The text content goes to TTS and Chat History.
         // We ONLY render the HTML component to the live canvas.
-        if (componentHtml) {
+        if (componentHtml && componentHtml !== lastRenderedComponentHtml) {
+            lastRenderedComponentHtml = componentHtml;
             elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, {
                 ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component', 'x-data', 'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', ':style', 'id', 'placeholder', 'value'],
                 FORCE_BODY: true

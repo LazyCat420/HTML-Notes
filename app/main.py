@@ -123,8 +123,7 @@ async def send_message(req: MessageRequest):
             "Tabs: `<div x-data=\"{ tab: 1 }\"><div class=\"flex gap-2\"><button @click=\"tab = 1\" :class=\"{'bg-blue-500': tab === 1}\" class=\"px-4 py-2 rounded\">Tab 1</button><button @click=\"tab = 2\" :class=\"{'bg-blue-500': tab === 2}\" class=\"px-4 py-2 rounded\">Tab 2</button></div><div x-show=\"tab === 1\">Content 1</div><div x-show=\"tab === 2\">Content 2</div></div>`\n"
             "Checklist: `<div x-data=\"{ items: [{text: 'Task 1', done: false}, {text: 'Task 2', done: true}], newItem: '' }\" class=\"glass-card p-4 rounded-xl shadow-lg bg-slate-800/80\"><h3 class=\"text-lg font-bold mb-2\">Checklist</h3><div class=\"flex gap-2 mb-3\"><input x-model=\"newItem\" @keydown.enter=\"if(newItem.trim()) { items.push({text: newItem.trim(), done: false}); newItem = '' }\" type=\"text\" placeholder=\"Add task...\" class=\"px-2 py-1 rounded bg-slate-700 text-white flex-grow\"><button @click=\"if(newItem.trim()) { items.push({text: newItem.trim(), done: false}); newItem = '' }\" class=\"px-3 py-1 bg-blue-500 rounded text-white font-bold\">+</button></div><ul class=\"space-y-2\"><template x-for=\\\"(item, idx) in items\\\" :key=\\\"idx\\\"><li class=\"flex items-center gap-2\"><input type=\"checkbox\" x-model=\"item.done\" class=\"rounded text-blue-500\"><span :class=\\\"{'line-through opacity-50': item.done}\\\" x-text=\"item.text\"></span></li></template></ul></div>`\n\n"
             "CANVAS DOM MODIFICATION RULES:\n"
-            "1. Use mcp__lazy-tool-service__canvas_read_dom first to see the canvas.\n"
-            "2. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Avoid completely re-rendering the whole canvas unless asked."
+            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID."
         )
 
         # Build messages array — only system/user/assistant with string content
@@ -200,7 +199,7 @@ async def send_message(req: MessageRequest):
             We just proxy events and extract render_component results for the canvas.
             """
             final_text = ""
-            all_rendered_html = ""
+            all_rendered_html = req.current_canvas or ""
 
             try:
                 yield f'data: {json.dumps({"type": "status", "message": "connecting to agent..."})}\n\n'
@@ -258,7 +257,8 @@ async def send_message(req: MessageRequest):
                                                 action = args.get("action", "")
                                                 html_snippet = args.get("html_snippet", "")
                                                 
-                                                soup = BeautifulSoup(req.current_canvas, 'html.parser')
+                                                current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                                                soup = BeautifulSoup(current_html, 'html.parser')
                                                 target = soup.select_one(css_selector)
                                                 if target:
                                                     if action == "append":
