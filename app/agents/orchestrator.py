@@ -208,7 +208,11 @@ async def process_user_turn(
             # Apply self-review loop from lazycat SDK
             from lazycat.validators import Validator
             from lazycat.llm import prism_client
-            assistant_reply = await Validator.self_review_html(raw_html, prism_client)
+            assistant_reply = await Validator.self_review_html(
+                raw_html, 
+                prism_client, 
+                project="HTML-Notes"
+            )
             
         except Exception as e:
             assistant_reply = f"Hello! I am ready to help you edit your notes. (vLLM error: {str(e)})"
