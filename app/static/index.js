@@ -306,23 +306,39 @@ document.addEventListener("DOMContentLoaded", () => {
                     // History content is mixed text+HTML, extract only the visual components
                     let temp = document.createElement("div");
                     temp.innerHTML = lastMsg.content;
-                    let components = temp.querySelectorAll(".glass-card, .canvas-element, .rendered-component");
-                    let htmlOnly = "";
-                    components.forEach(c => {
-                        // Drop known errors permanently
-                        if (c.textContent.includes("Unknown widget type:")) return;
-                        // Drop permanently dismissed widgets
-                        if (c.id && window.WidgetManager.isDismissed(c.id)) return;
-                        
-                        htmlOnly += c.outerHTML;
-                    });
                     
-                    if (htmlOnly) {
-                        elements.liveCanvas.innerHTML = DOMPurify.sanitize(htmlOnly, {
+                    let gridElement = temp.querySelector("#dashboard-grid");
+                    
+                    if (gridElement) {
+                        // Apply filters inside the grid
+                        let widgets = gridElement.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component");
+                        widgets.forEach(c => {
+                            if (c.textContent.includes("Unknown widget type:")) c.remove();
+                            if (c.id && window.WidgetManager && window.WidgetManager.isDismissed(c.id)) c.remove();
+                        });
+                        
+                        elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, {
                             ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component', 'x-data', 'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', ':style', 'id', 'placeholder', 'value'],
                             FORCE_BODY: true
                         });
                         renderDynamicComponents(elements.liveCanvas);
+                    } else {
+                        // Fallback for older saved history without #dashboard-grid
+                        let components = temp.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component");
+                        let htmlOnly = "";
+                        components.forEach(c => {
+                            if (c.textContent.includes("Unknown widget type:")) return;
+                            if (c.id && window.WidgetManager && window.WidgetManager.isDismissed(c.id)) return;
+                            htmlOnly += c.outerHTML;
+                        });
+                        
+                        if (htmlOnly) {
+                            elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, {
+                                ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component', 'x-data', 'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', ':style', 'id', 'placeholder', 'value'],
+                                FORCE_BODY: true
+                            })}</div>`;
+                            renderDynamicComponents(elements.liveCanvas);
+                        }
                     }
                 }
             }

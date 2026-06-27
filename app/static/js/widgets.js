@@ -41,9 +41,14 @@ document.addEventListener('alpine:init', () => {
             const optionsTime = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
             const optionsDate = { weekday: 'short', month: 'short', day: 'numeric' };
             
-            if (timezone !== 'local') {
-                optionsTime.timeZone = timezone;
-                optionsDate.timeZone = timezone;
+            if (timezone && timezone !== 'local' && timezone !== 'None' && timezone !== 'null') {
+                try {
+                    Intl.DateTimeFormat(undefined, { timeZone: timezone });
+                    optionsTime.timeZone = timezone;
+                    optionsDate.timeZone = timezone;
+                } catch (e) {
+                    console.warn(`Invalid timezone provided: ${timezone}. Falling back to local time.`);
+                }
             }
             
             this.time = now.toLocaleTimeString([], optionsTime);
