@@ -97,19 +97,18 @@ document.addEventListener('alpine:init', () => {
             try {
                 // The music-player backend is hosted on port 8002 of the current host
                 const host = window.location.hostname;
-                const url = `http://${host}:8002/api/tracks`;
-                console.log(`[MusicPlayer] Fetching tracks from: ${url}`);
+                const localUrl = `http://${host}:8002/api/tracks`;
                 
-                const response = await fetch(url);
-                console.log(`[MusicPlayer] Fetch response status: ${response.status}`);
-                
-                if (!response.ok) throw new Error(`Failed to fetch tracks. HTTP Status: ${response.status}`);
-                
-                const data = await response.json();
-                let loadedTracks = data.tracks || [];
-                console.log(`[MusicPlayer] Successfully loaded ${loadedTracks.length} total tracks from backend.`);
+                // Fetch local tracks
+                const localRes = await fetch(localUrl);
+                let loadedTracks = [];
+                if (localRes.ok) {
+                    const data = await localRes.json();
+                    loadedTracks = data.tracks || [];
+                }
 
                 // Apply genre filter if specified
+                let ytGenre = this.genreFilter || "lo-fi"; // fallback genre
                 if (this.genreFilter) {
                     const term = this.genreFilter.toLowerCase();
                     loadedTracks = loadedTracks.filter(t => 
@@ -117,11 +116,31 @@ document.addEventListener('alpine:init', () => {
                         (t.title && t.title.toLowerCase().includes(term)) ||
                         (t.artist && t.artist.toLowerCase().includes(term))
                     );
-                    console.log(`[MusicPlayer] Filtered to ${loadedTracks.length} tracks matching "${term}".`);
+                }
+
+                // Fetch YouTube mix concurrently
+                const ytUrl = `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=genre`;
+                try {
+                    const ytRes = await fetch(ytUrl);
+                    if (ytRes.ok) {
+                        const ytData = await ytRes.json();
+                        const ytVideos = ytData.videos || [];
+                        // Normalize YT tracks to match local track structure
+                        const normalizedYt = ytVideos.map(v => ({
+                            id: v.id,
+                            title: v.title,
+                            artist: v.artist || v.uploader || "YouTube Music",
+                            path: v.id, 
+                            isYoutube: true
+                        }));
+                        loadedTracks = [...loadedTracks, ...normalizedYt];
+                    }
+                } catch (ytErr) {
+                    console.warn('[MusicPlayer] Failed to load YouTube tracks:', ytErr);
                 }
 
                 if (loadedTracks.length === 0) {
-                    console.warn('[MusicPlayer] No tracks found after filtering.');
+                    console.warn('[MusicPlayer] No tracks found after filtering and fetching.');
                     this.error = 'No tracks found for this genre.';
                     return;
                 }
@@ -148,8 +167,12 @@ document.addEventListener('alpine:init', () => {
         loadTrack() {
             if (!this.currentTrack) return;
             const host = window.location.hostname;
-            const encodedPath = encodeURIComponent(this.currentTrack.path);
-            this.audio.src = `http://${host}:8002/api/music/stream?path=${encodedPath}`;
+            if (this.currentTrack.isYoutube) {
+                this.audio.src = `http://${host}:8002/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
+            } else {
+                const encodedPath = encodeURIComponent(this.currentTrack.path);
+                this.audio.src = `http://${host}:8002/api/music/stream?path=${encodedPath}`;
+            }
         },
 
         playPause() {

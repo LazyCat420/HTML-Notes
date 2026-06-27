@@ -130,8 +130,8 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                         <span class="material-symbols-outlined">skip_previous</span>
                     </button>
                     
-                    <button @click="playPause()" class="w-16 h-16 rounded-[2rem] bg-purple-300 hover:bg-purple-200 text-purple-950 flex items-center justify-center shadow-[0_0_20px_rgba(216,180,254,0.2)] hover:shadow-[0_0_25px_rgba(216,180,254,0.4)] transition-all active:scale-95" :disabled="!currentTrack">
-                        <span class="material-symbols-outlined text-4xl" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;"></span>
+                    <button @click="playPause()" class="w-16 h-16 rounded-[2rem] bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-[0_0_20px_rgba(216,180,254,0.2)] hover:shadow-[0_0_25px_rgba(216,180,254,0.4)] transition-all active:scale-95" :disabled="!currentTrack">
+                        <span class="material-symbols-outlined text-4xl" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
                     </button>
                     
                     <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
