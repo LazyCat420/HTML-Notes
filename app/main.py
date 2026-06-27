@@ -226,6 +226,7 @@ async def send_message(req: MessageRequest):
                                     continue
 
                                 event_type = event.get("type", "")
+                                logger.info(f"[SSE_PROXY] Received event_type: '{event_type}'")
 
                                 if event_type == "chunk":
                                     # Text token from LLM
