@@ -31,7 +31,7 @@ def render_clock(widget_id: str, config: dict) -> str:
     return f"""
     <div id="{widget_id}" class="widget-container col-span-1 glass-card p-6 rounded-xl shadow-lg bg-slate-800/80 flex flex-col relative group" x-data="clockWidget('{timezone}')">
         <!-- Close Button -->
-        <button @click="destroy(); window.WidgetManager.dismiss($el.closest('.widget-container'))" class="absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity" title="Close Widget">
+        <button @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity" title="Close Widget">
             <span class="material-symbols-outlined text-sm">close</span>
         </button>
         

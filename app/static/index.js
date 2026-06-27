@@ -515,6 +515,98 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.error("Failed to render chart component:", err);
             }
         });
+
+        // ─── POST-PROCESS WIDGET CONSOLE / CONTROLS ───
+        const widgets = container.querySelectorAll('.widget-container');
+        widgets.forEach(widget => {
+            // 1. Ensure close button exists (especially for legacy widgets stored in DB)
+            if (!widget.querySelector('.close-widget-btn') && !widget.querySelector('button[title="Close Widget"]')) {
+                widget.classList.add('group');
+                
+                const btn = document.createElement('button');
+                btn.className = 'close-widget-btn absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity';
+                btn.setAttribute('title', 'Close Widget');
+                btn.innerHTML = '<span class="material-symbols-outlined text-sm">close</span>';
+                
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (window.WidgetManager) {
+                        window.WidgetManager.dismiss(widget);
+                    } else {
+                        widget.remove();
+                    }
+                });
+                
+                if (widget.style.position !== 'absolute' && getComputedStyle(widget).position === 'static') {
+                    widget.style.position = 'relative';
+                }
+                widget.appendChild(btn);
+            }
+            
+            // 2. Ensure clock widget has timezone selector if it's a clock and lacks one
+            const isClock = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('clockWidget');
+            if (isClock && !widget.querySelector('select')) {
+                const selectContainer = document.createElement('div');
+                selectContainer.className = 'mt-4 opacity-0 group-hover:opacity-100 transition-opacity w-full';
+                selectContainer.innerHTML = `
+                    <select class="w-full bg-slate-900/50 text-slate-300 text-xs rounded border border-slate-700/50 px-2 py-1.5 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer appearance-none text-center">
+                        <option value="local">Local Time</option>
+                        <option value="UTC">UTC</option>
+                        <option value="America/New_York">New York (EST/EDT)</option>
+                        <option value="America/Chicago">Chicago (CST/CDT)</option>
+                        <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
+                        <option value="Europe/London">London (GMT/BST)</option>
+                        <option value="Europe/Paris">Paris (CET/CEST)</option>
+                        <option value="Asia/Tokyo">Tokyo (JST)</option>
+                        <option value="Asia/Shanghai">Shanghai (CST)</option>
+                        <option value="Australia/Sydney">Sydney (AEST/AEDT)</option>
+                    </select>
+                `;
+                widget.appendChild(selectContainer);
+                
+                const select = selectContainer.querySelector('select');
+                
+                const updateSelectFromAlpine = () => {
+                    if (window.Alpine) {
+                        try {
+                            const alpineData = window.Alpine.$data(widget);
+                            if (alpineData) {
+                                select.value = alpineData.selectedTimezone || 'local';
+                                select.addEventListener('change', (e) => {
+                                    alpineData.selectedTimezone = e.target.value;
+                                    if (typeof alpineData.updateTime === 'function') {
+                                        alpineData.updateTime();
+                                    }
+                                });
+                                return true;
+                            }
+                        } catch (err) {
+                            console.warn("Failed to get Alpine data for clock widget:", err);
+                        }
+                    }
+                    return false;
+                };
+                
+                if (!updateSelectFromAlpine()) {
+                    let retries = 0;
+                    const timer = setInterval(() => {
+                        retries++;
+                        if (updateSelectFromAlpine() || retries > 20) {
+                            clearInterval(timer);
+                        }
+                    }, 200);
+                }
+            }
+        });
+
+        // Force Alpine to initialize any uninitialized nodes inside container
+        if (window.Alpine && typeof window.Alpine.initTree === 'function') {
+            try {
+                window.Alpine.initTree(container);
+            } catch (err) {
+                console.warn("Failed to execute Alpine.initTree:", err);
+            }
+        }
     }
 
     // ─── UTILS ─────────────────────────────────────────────────
