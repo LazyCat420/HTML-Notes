@@ -570,7 +570,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             // 2. Self-heal music player widgets that lost Alpine attributes or are empty
-            if (id.includes('music') || id.includes('player')) {
+            if ((id.includes('music') || id.includes('player')) && !id.includes('youtube') && !id.includes('video')) {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('musicPlayerWidget');
                 const hasPlayButton = widget.querySelector('.material-symbols-outlined');
                 
