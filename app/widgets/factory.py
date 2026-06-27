@@ -115,7 +115,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                     <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
                     <span class="text-xs font-semibold tracking-wider text-purple-200 uppercase" x-text="genreFilter || 'Radio'"></span>
                 </div>
-                <button @click="destroy(); window.WidgetManager.dismiss($el.closest('.widget-container'))" class="text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1.5 backdrop-blur-sm transition-all shadow-sm">
+                <button @click="destroy(); window.WidgetManager.dismiss($el.closest('.widget-container'))" title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1.5 backdrop-blur-sm transition-all shadow-sm">
                     <span class="material-symbols-outlined text-[1rem]">close</span>
                 </button>
             </div>

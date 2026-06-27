@@ -569,7 +569,97 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             }
             
-            // 2. Ensure close button exists and attach vanilla fallback click listener
+            // 2. Self-heal music player widgets that lost Alpine attributes or are empty
+            if (id.includes('music') || id.includes('player')) {
+                const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('musicPlayerWidget');
+                const hasPlayButton = widget.querySelector('.material-symbols-outlined');
+                
+                if (!hasXData || !hasPlayButton || widget.children.length === 0) {
+                    let genre = 'jazz';
+                    const genreSpan = widget.querySelector('.text-purple-200');
+                    if (genreSpan && genreSpan.textContent && genreSpan.textContent.trim() !== 'Radio') {
+                        genre = genreSpan.textContent.trim().toLowerCase();
+                    }
+                    
+                    const newWidget = document.createElement('div');
+                    newWidget.id = widget.id;
+                    newWidget.className = widget.className;
+                    newWidget.setAttribute('x-data', `musicPlayerWidget('${genre}', true)`);
+                    newWidget.innerHTML = `
+                        <!-- Background Blur/Glow effect -->
+                        <div class="absolute inset-0 bg-cover bg-center opacity-30 mix-blend-overlay" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
+                        <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/60 to-transparent"></div>
+                        
+                        <!-- Content Container -->
+                        <div class="relative z-10 p-5 flex flex-col h-full justify-between">
+                            <!-- Top Bar: Genre / Icon -->
+                            <div class="flex justify-between items-start mb-2">
+                                <div class="bg-black/40 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
+                                    <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
+                                    <span class="text-xs font-semibold tracking-wider text-purple-200 uppercase" x-text="genreFilter || 'Radio'"></span>
+                                </div>
+                                <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1.5 backdrop-blur-sm transition-all shadow-sm">
+                                    <span class="material-symbols-outlined text-[1rem]">close</span>
+                                </button>
+                            </div>
+                            
+                            <!-- Track Info -->
+                            <div class="flex items-center gap-4 mt-2">
+                                <!-- Album Art Mock -->
+                                <div class="w-16 h-16 shrink-0 rounded-2xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
+                                    <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}"></div>
+                                    <span class="material-symbols-outlined text-3xl text-white relative z-10">album</span>
+                                </div>
+                                
+                                <div class="flex-grow min-w-0 flex flex-col justify-center">
+                                    <h4 class="text-lg font-bold text-white truncate leading-tight drop-shadow-md" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
+                                    <p class="text-sm text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
+                                </div>
+                            </div>
+
+                            <!-- Progress Bar -->
+                            <div class="w-full mt-5 relative group-hover:opacity-100 opacity-80 transition-opacity">
+                                <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner">
+                                    <div class="h-full bg-gradient-to-r from-purple-400 to-fuchsia-400 rounded-full relative shadow-[0_0_10px_rgba(216,180,254,0.5)] transition-all duration-300" :class="{'w-1/3 animate-[slideRight_10s_linear_infinite]': isPlaying, 'w-0': !isPlaying}"></div>
+                                </div>
+                            </div>
+                            
+                            <!-- Controls -->
+                            <div class="flex items-center justify-between mt-5 px-1">
+                                <button class="text-white/50 hover:text-white transition-colors p-2" title="Shuffle">
+                                    <span class="material-symbols-outlined text-xl">shuffle</span>
+                                </button>
+                                
+                                <div class="flex items-center gap-4">
+                                    <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                                        <span class="material-symbols-outlined">skip_previous</span>
+                                    </button>
+                                    
+                                    <button @click="playPause()" class="w-16 h-16 rounded-[2rem] bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-[0_0_20px_rgba(216,180,254,0.2)] hover:shadow-[0_0_25px_rgba(216,180,254,0.4)] transition-all active:scale-95" :disabled="!currentTrack">
+                                        <span class="material-symbols-outlined text-4xl" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+                                    </button>
+                                    
+                                    <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                                        <span class="material-symbols-outlined">skip_next</span>
+                                    </button>
+                                </div>
+                                
+                                <button class="text-white/50 hover:text-white transition-colors p-2" title="Repeat">
+                                    <span class="material-symbols-outlined text-xl">repeat</span>
+                                </button>
+                            </div>
+                            
+                            <!-- Error State -->
+                            <div x-show="error" x-transition class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-md whitespace-nowrap shadow-lg" x-text="error" style="display: none;"></div>
+                        </div>
+                    `;
+                    
+                    widget.parentNode.replaceChild(newWidget, widget);
+                    widget = newWidget;
+                }
+            }
+            
+            // 3. Ensure close button exists and attach vanilla fallback click listener
             let closeBtn = widget.querySelector('.close-widget-btn') || widget.querySelector('button[title="Close Widget"]');
             if (!closeBtn) {
                 widget.classList.add('group');
