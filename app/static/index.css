@@ -807,3 +807,16 @@ textarea::placeholder {
     filter: drop-shadow(0 0 2px var(--danger-color));
 }
 
+/* Drag and Drop styles */
+.dragging-widget {
+    opacity: 0.4;
+    cursor: move;
+}
+
+.drag-over-widget {
+    border: 2px dashed rgba(99, 102, 241, 0.6) !important;
+    transform: scale(0.98);
+    transition: all 0.2s ease;
+}
+
+

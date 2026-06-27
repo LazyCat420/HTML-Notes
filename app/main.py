@@ -274,21 +274,40 @@ async def send_message(req: MessageRequest):
                                             widget_id = active_tool_args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
                                             config = active_tool_args.get("config", {})
                                             
-                                            html_snippet = generate_widget_html(widget_type, widget_id, config)
-                                            
                                             current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
                                             soup = BeautifulSoup(current_html, 'html.parser')
-                                            target = soup.select_one('#dashboard-grid')
                                             
-                                            if target:
-                                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                target.append(new_elem)
+                                            # If it's a youtube player, check if we already have one on the canvas
+                                            replaced = False
+                                            if widget_type == "youtube_player":
+                                                for div in soup.find_all("div", class_="widget-container"):
+                                                    xdata = div.get("x-data", "")
+                                                    div_id = div.get("id", "")
+                                                    if "youtubePlayerWidget" in xdata or "youtube" in div_id or "video" in div_id:
+                                                        existing_id = div.get("id", widget_id)
+                                                        html_snippet = generate_widget_html(widget_type, existing_id, config)
+                                                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                        div.replace_with(new_elem)
+                                                        replaced = True
+                                                        break
+                                            
+                                            if replaced:
                                                 all_rendered_html = str(soup)
                                                 yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                                logger.info("[WIDGET INJECTOR] Replaced existing youtube_player widget in-place")
                                             else:
-                                                soup.append(BeautifulSoup(html_snippet, 'html.parser'))
-                                                all_rendered_html = str(soup)
-                                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                                html_snippet = generate_widget_html(widget_type, widget_id, config)
+                                                target = soup.select_one('#dashboard-grid')
+                                                if target:
+                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                    target.append(new_elem)
+                                                    all_rendered_html = str(soup)
+                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                                else:
+                                                    soup.append(BeautifulSoup(html_snippet, 'html.parser'))
+                                                    all_rendered_html = str(soup)
+                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                                logger.info(f"[WIDGET INJECTOR] Appended new {widget_type} widget")
                                                 
                                             logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
                                             active_tool_name = None

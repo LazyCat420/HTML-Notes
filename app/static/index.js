@@ -900,7 +900,85 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.warn("Failed to execute Alpine.initTree:", err);
             }
         }
+        initDragAndDrop(container);
     }
+
+    function initDragAndDrop(container) {
+        const grid = container.querySelector('#dashboard-grid');
+        if (!grid) return;
+
+        const items = grid.querySelectorAll('.widget-container, .glass-card, .canvas-element, .rendered-component');
+        items.forEach(item => {
+            if (!item.id) {
+                item.id = 'item-' + Math.random().toString(36).substr(2, 9);
+            }
+            item.setAttribute('draggable', 'true');
+
+            // Disable drag on controls inside widgets so they function normally
+            const controls = item.querySelectorAll('input, textarea, button, select, iframe, a');
+            controls.forEach(control => {
+                control.addEventListener('mousedown', () => {
+                    item.setAttribute('draggable', 'false');
+                });
+                control.addEventListener('mouseup', () => {
+                    item.setAttribute('draggable', 'true');
+                });
+                control.addEventListener('touchstart', () => {
+                    item.setAttribute('draggable', 'false');
+                });
+                control.addEventListener('touchend', () => {
+                    item.setAttribute('draggable', 'true');
+                });
+            });
+
+            item.addEventListener('dragstart', (e) => {
+                e.dataTransfer.setData('text/plain', item.id);
+                e.dataTransfer.effectAllowed = 'move';
+                item.classList.add('dragging-widget');
+                setTimeout(() => item.classList.add('dragging-placeholder'), 0);
+            });
+
+            item.addEventListener('dragend', () => {
+                item.classList.remove('dragging-widget', 'dragging-placeholder');
+                items.forEach(it => it.classList.remove('drag-over-widget'));
+                item.setAttribute('draggable', 'true');
+            });
+
+            item.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                
+                const draggingItem = grid.querySelector('.dragging-widget');
+                if (draggingItem && draggingItem !== item) {
+                    item.classList.add('drag-over-widget');
+                }
+            });
+
+            item.addEventListener('dragleave', () => {
+                item.classList.remove('drag-over-widget');
+            });
+
+            item.addEventListener('drop', (e) => {
+                e.preventDefault();
+                item.classList.remove('drag-over-widget');
+                
+                const draggedId = e.dataTransfer.getData('text/plain');
+                const draggedElement = grid.querySelector(`#${draggedId}`);
+                
+                if (draggedElement && draggedElement !== item) {
+                    const rect = item.getBoundingClientRect();
+                    const next = (e.clientY - rect.top) > (rect.height / 2);
+                    
+                    if (next) {
+                        grid.insertBefore(draggedElement, item.nextSibling);
+                    } else {
+                        grid.insertBefore(draggedElement, item);
+                    }
+                }
+            });
+        });
+    }
+
 
     // ─── UTILS ─────────────────────────────────────────────────
     async function fetchModels() {
