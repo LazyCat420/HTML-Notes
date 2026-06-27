@@ -240,11 +240,18 @@ async def send_message(req: MessageRequest):
 
                                     if status == "calling":
                                         yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name})}\n\n'
+                                        yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}..."})}\n\n'
+
+                                elif event_type == "tool_call":
+                                    status = event.get("status", "")
+                                    tool_name = event.get("name", "unknown")
+                                    args = event.get("args", {})
+
+                                    if status == "calling":
                                         yield f'data: {json.dumps({"type": "status", "message": f"executing {tool_name}..."})}\n\n'
 
                                         if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
                                             try:
-                                                args = tool_info.get("arguments", {})
                                                 css_selector = args.get("css_selector", "")
                                                 action = args.get("action", "")
                                                 html_snippet = args.get("html_snippet", "")
@@ -268,8 +275,7 @@ async def send_message(req: MessageRequest):
 
                                         elif tool_name == "mcp__lazy-tool-service__canvas_add_widget":
                                             try:
-                                                args = tool_info.get("arguments", {})
-                                                logger.info(f"[WIDGET INJECTOR] Intercepted canvas_add_widget. Raw args: {args}")
+                                                logger.info(f"[WIDGET INJECTOR] Intercepted canvas_add_widget fully populated. Raw args: {args}")
                                                 
                                                 if isinstance(args, str):
                                                     try:
@@ -305,7 +311,7 @@ async def send_message(req: MessageRequest):
 
                                     elif status in ("done", "success"):
                                         # Check if this is a render_component result with HTML
-                                        result = tool_info.get("result", {})
+                                        result = event.get("result", {})
                                         if isinstance(result, str):
                                             try:
                                                 result = json.loads(result)
@@ -322,7 +328,7 @@ async def send_message(req: MessageRequest):
                                                 yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
 
                                     elif status == "error":
-                                        error_msg = tool_info.get("result", "Unknown tool error")
+                                        error_msg = event.get("result", "Unknown tool error")
                                         yield f'data: {json.dumps({"type": "status", "message": f"tool error: {tool_name}: {str(error_msg)[:200]}"})}\n\n'
 
                                 elif event_type == "thinking":
