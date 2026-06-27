@@ -74,11 +74,22 @@ document.addEventListener('alpine:init', () => {
         },
 
         async init() {
+            console.log(`[MusicPlayer] Initializing widget. Genre Filter: "${this.genreFilter}", Autoplay: ${autoplay}`);
             this.audio = new Audio();
-            this.audio.addEventListener('ended', () => this.nextTrack());
-            this.audio.addEventListener('play', () => this.isPlaying = true);
-            this.audio.addEventListener('pause', () => this.isPlaying = false);
+            this.audio.addEventListener('ended', () => {
+                console.log('[MusicPlayer] Track ended. Moving to next track.');
+                this.nextTrack();
+            });
+            this.audio.addEventListener('play', () => {
+                console.log('[MusicPlayer] Audio playing.');
+                this.isPlaying = true;
+            });
+            this.audio.addEventListener('pause', () => {
+                console.log('[MusicPlayer] Audio paused.');
+                this.isPlaying = false;
+            });
             this.audio.addEventListener('error', (e) => {
+                console.error('[MusicPlayer] Native audio playback error:', e);
                 this.error = 'Audio playback error.';
                 this.isPlaying = false;
             });
@@ -86,11 +97,17 @@ document.addEventListener('alpine:init', () => {
             try {
                 // The music-player backend is hosted on port 8002 of the current host
                 const host = window.location.hostname;
-                const response = await fetch(`http://${host}:8002/api/tracks`);
-                if (!response.ok) throw new Error('Failed to fetch tracks');
+                const url = `http://${host}:8002/api/tracks`;
+                console.log(`[MusicPlayer] Fetching tracks from: ${url}`);
+                
+                const response = await fetch(url);
+                console.log(`[MusicPlayer] Fetch response status: ${response.status}`);
+                
+                if (!response.ok) throw new Error(`Failed to fetch tracks. HTTP Status: ${response.status}`);
                 
                 const data = await response.json();
                 let loadedTracks = data.tracks || [];
+                console.log(`[MusicPlayer] Successfully loaded ${loadedTracks.length} total tracks from backend.`);
 
                 // Apply genre filter if specified
                 if (this.genreFilter) {
@@ -100,9 +117,11 @@ document.addEventListener('alpine:init', () => {
                         (t.title && t.title.toLowerCase().includes(term)) ||
                         (t.artist && t.artist.toLowerCase().includes(term))
                     );
+                    console.log(`[MusicPlayer] Filtered to ${loadedTracks.length} tracks matching "${term}".`);
                 }
 
                 if (loadedTracks.length === 0) {
+                    console.warn('[MusicPlayer] No tracks found after filtering.');
                     this.error = 'No tracks found for this genre.';
                     return;
                 }
@@ -110,17 +129,19 @@ document.addEventListener('alpine:init', () => {
                 // Shuffle array slightly
                 this.tracks = loadedTracks.sort(() => Math.random() - 0.5);
                 this.currentIndex = 0;
+                console.log(`[MusicPlayer] Loading first track: ${this.currentTrack.title}`);
                 this.loadTrack();
 
                 if (autoplay) {
+                    console.log('[MusicPlayer] Autoplay is true. Attempting to play automatically...');
                     this.audio.play().catch(e => {
-                        console.warn('Autoplay prevented by browser', e);
+                        console.warn('[MusicPlayer] Autoplay prevented by browser policy.', e);
                         this.isPlaying = false;
                     });
                 }
             } catch (err) {
-                this.error = 'Could not connect to music server.';
-                console.error(err);
+                this.error = 'Could not connect to music server. (CORS or Network Error)';
+                console.error('[MusicPlayer] Fatal initialization error:', err);
             }
         },
 
