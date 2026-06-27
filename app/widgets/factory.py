@@ -3,25 +3,41 @@ import json
 def render_checklist(widget_id: str, config: dict) -> str:
     title = config.get("title", "Checklist")
     items = config.get("items", [])
-    # Safely dump items for Alpine.js injection
-    items_json = json.dumps(items).replace('"', '&quot;')
+    
+    # Normalize items to objects {text: str, done: bool} if LLM passed list of strings
+    normalized_items = []
+    for item in items:
+        if isinstance(item, str):
+            normalized_items.append({"text": item, "done": False})
+        elif isinstance(item, dict):
+            normalized_items.append({
+                "text": item.get("text", ""),
+                "done": item.get("done", False)
+            })
+    items_json = json.dumps(normalized_items).replace('"', '&quot;')
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-1 glass-card p-4 rounded-xl shadow-lg bg-slate-800/80" x-data="checklistWidget('{title}', {items_json})">
-        <h3 class="text-lg font-bold mb-2 text-white" x-text="title"></h3>
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] group" x-data="checklistWidget('{title}', {items_json})">
+        <!-- Close Button -->
+        <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+            <span class="material-symbols-outlined text-[1.2rem]">close</span>
+        </button>
+        
+        <h3 class="text-lg font-bold mb-3 text-white truncate pr-6" x-text="title"></h3>
         <div class="flex gap-2 mb-3">
-            <input x-model="newItem" @keydown.enter="addTask" type="text" placeholder="Add task..." class="px-2 py-1 rounded bg-slate-700 text-white flex-grow border border-slate-600 focus:outline-none focus:border-blue-500">
-            <button @click="addTask" class="px-3 py-1 bg-blue-500 hover:bg-blue-600 transition-colors rounded text-white font-bold shadow">+</button>
+            <input x-model="newItem" @keydown.enter="addTask" type="text" placeholder="Add task..." class="px-3 py-1.5 rounded-xl bg-white/5 text-white flex-grow border border-white/10 focus:outline-none focus:border-purple-500 text-sm">
+            <button @click="addTask" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 transition-colors rounded-xl text-white font-bold shadow">+</button>
         </div>
-        <ul class="space-y-2">
+        <ul class="space-y-2 overflow-y-auto flex-grow pr-1 custom-scrollbar">
             <template x-for="(item, idx) in items" :key="idx">
-                <li class="flex items-center gap-3 p-2 hover:bg-slate-700/50 rounded transition-colors group">
-                    <input type="checkbox" x-model="item.done" class="rounded text-blue-500 w-4 h-4 cursor-pointer">
-                    <span :class="{{'line-through opacity-50': item.done}}" x-text="item.text" class="text-slate-200 flex-grow cursor-pointer" @click="item.done = !item.done"></span>
-                    <button @click="removeTask(idx)" class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-opacity">×</button>
+                <li class="flex items-center gap-3 p-2 rounded-xl transition-all duration-300 group/item border border-transparent"
+                    :class="{'bg-green-500/10 border-green-500/20 text-green-300': item.done, 'hover:bg-white/5': !item.done}">
+                    <input type="checkbox" x-model="item.done" class="rounded border-white/10 text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer">
+                    <span :class="{'line-through opacity-50': item.done}" x-text="item.text" class="text-sm flex-grow cursor-pointer" @click="item.done = !item.done"></span>
+                    <button @click="removeTask(idx)" class="opacity-0 group-hover/item:opacity-100 text-red-400 hover:text-red-300 transition-opacity">×</button>
                 </li>
             </template>
-            <li x-show="items.length === 0" class="text-slate-400 text-sm italic text-center py-2">No tasks yet</li>
+            <li x-show="items.length === 0" class="text-slate-400 text-xs italic text-center py-4">No tasks yet</li>
         </ul>
     </div>
     """
@@ -29,19 +45,19 @@ def render_checklist(widget_id: str, config: dict) -> str:
 def render_clock(widget_id: str, config: dict) -> str:
     timezone = config.get("timezone") or "local"
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-1 glass-card p-6 rounded-xl shadow-lg bg-slate-800/80 flex flex-col relative group" x-data="clockWidget('{timezone}')">
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="clockWidget('{timezone}')">
         <!-- Close Button -->
-        <button @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity" title="Close Widget">
-            <span class="material-symbols-outlined text-sm">close</span>
+        <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+            <span class="material-symbols-outlined text-[1.2rem]">close</span>
         </button>
         
-        <div class="flex-grow flex flex-col items-center justify-center mt-2">
-            <div class="text-4xl font-light text-white tracking-widest" x-text="time">--:--:--</div>
-            <div class="text-sm text-slate-400 uppercase tracking-wider mt-1" x-text="date">---</div>
+        <div class="flex-grow flex flex-col items-center justify-center">
+            <div class="text-4xl font-light text-white tracking-widest font-mono" x-text="time">--:--:--</div>
+            <div class="text-xs text-purple-300 uppercase tracking-widest mt-2 font-semibold" x-text="date">---</div>
         </div>
         
-        <div class="mt-4 opacity-0 group-hover:opacity-100 transition-opacity w-full">
-            <select x-model="selectedTimezone" class="w-full bg-slate-900/50 text-slate-300 text-xs rounded border border-slate-700/50 px-2 py-1.5 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer appearance-none text-center">
+        <div class="opacity-0 group-hover:opacity-100 transition-opacity w-full mt-2">
+            <select x-model="selectedTimezone" class="w-full bg-black/30 text-slate-300 text-xs rounded-xl border border-white/10 px-3 py-2 focus:outline-none focus:border-purple-500 transition-colors cursor-pointer appearance-none text-center">
                 <option value="local">Local Time</option>
                 <option value="UTC">UTC</option>
                 <option value="America/New_York">New York (EST/EDT)</option>
@@ -63,9 +79,14 @@ def render_notes(widget_id: str, config: dict) -> str:
     content_json = json.dumps(content).replace('"', '&quot;')
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 glass-card p-4 rounded-xl shadow-lg bg-slate-800/80 flex flex-col" x-data="notesWidget('{title}', {content_json})">
-        <h3 class="text-lg font-bold mb-2 text-white" x-text="title"></h3>
-        <textarea x-model="content" class="w-full h-32 bg-slate-700/50 text-slate-200 p-3 rounded-lg border border-slate-600 focus:outline-none focus:border-blue-500 resize-none flex-grow shadow-inner" placeholder="Type your notes here..."></textarea>
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] group" x-data="notesWidget('{title}', {content_json})">
+        <!-- Close Button -->
+        <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+            <span class="material-symbols-outlined text-[1.2rem]">close</span>
+        </button>
+        
+        <h3 class="text-lg font-bold mb-2 text-white pr-6 truncate" x-text="title"></h3>
+        <textarea x-model="content" class="w-full bg-white/5 text-slate-200 p-3.5 rounded-2xl border border-white/10 focus:outline-none focus:border-purple-500 resize-none flex-grow shadow-inner text-sm leading-relaxed" placeholder="Type your notes here..."></textarea>
     </div>
     """
 
@@ -75,19 +96,19 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
     icon = config.get("icon", "🌐")
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 glass-card rounded-xl shadow-lg bg-slate-800/80 flex flex-col overflow-hidden h-[500px]" x-data>
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
         <!-- Title Bar -->
-        <div class="flex items-center justify-between bg-slate-900/80 p-3 border-b border-slate-700">
+        <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
             <div class="flex items-center gap-2">
                 <span class="text-xl">{icon}</span>
-                <h3 class="font-bold text-white tracking-wide">{title}</h3>
+                <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]">{title}</h3>
             </div>
             <div class="flex items-center gap-3">
-                <a href="{url}" target="_blank" class="text-slate-400 hover:text-blue-400 transition-colors" title="Open Full App">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                <a href="{url}" target="_blank" class="text-white/50 hover:text-white transition-colors" title="Open Full App">
+                    <span class="material-symbols-outlined text-[1.2rem]">open_in_new</span>
                 </a>
-                <button @click="$el.closest('.widget-container').remove()" class="text-slate-400 hover:text-red-400 transition-colors" title="Close Widget">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
+                    <span class="material-symbols-outlined text-[1.2rem]">close</span>
                 </button>
             </div>
         </div>
@@ -101,73 +122,117 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
     autoplay = str(config.get("autoplay", False)).lower()
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-900 via-indigo-900 to-slate-900 text-white border border-white/10 group" x-data="musicPlayerWidget('{genre}', {autoplay})">
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="musicPlayerWidget('{genre}', {autoplay})">
         <!-- Background Blur/Glow effect -->
-        <div class="absolute inset-0 bg-cover bg-center opacity-30 mix-blend-overlay" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
-        <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/60 to-transparent"></div>
+        <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
+        <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/40 to-transparent pointer-events-none"></div>
         
-        <!-- Content Container -->
-        <div class="relative z-10 p-5 flex flex-col h-full justify-between">
-            
-            <!-- Top Bar: Genre / Icon -->
-            <div class="flex justify-between items-start mb-2">
-                <div class="bg-black/40 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
-                    <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
-                    <span class="text-xs font-semibold tracking-wider text-purple-200 uppercase" x-text="genreFilter || 'Radio'"></span>
-                </div>
-                <button @click="destroy(); window.WidgetManager.dismiss($el.closest('.widget-container'))" title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1.5 backdrop-blur-sm transition-all shadow-sm">
-                    <span class="material-symbols-outlined text-[1rem]">close</span>
-                </button>
+        <!-- Top Bar: Genre / Close -->
+        <div class="relative z-10 flex justify-between items-start">
+            <div class="bg-black/40 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
+                <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
+                <span class="text-xs font-semibold tracking-wider text-purple-200 uppercase" x-text="genreFilter || 'Radio'"></span>
             </div>
-            
-            <!-- Track Info -->
-            <div class="flex items-center gap-4 mt-2">
-                <!-- Album Art Mock -->
-                <div class="w-16 h-16 shrink-0 rounded-2xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
-                    <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}}"></div>
-                    <span class="material-symbols-outlined text-3xl text-white relative z-10">album</span>
-                </div>
-                
-                <div class="flex-grow min-w-0 flex flex-col justify-center">
-                    <h4 class="text-lg font-bold text-white truncate leading-tight drop-shadow-md" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
-                    <p class="text-sm text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
-                </div>
+            <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1.5 backdrop-blur-sm transition-all shadow-sm z-20">
+                <span class="material-symbols-outlined text-[1rem]">close</span>
+            </button>
+        </div>
+        
+        <!-- Track Info -->
+        <div class="relative z-10 flex items-center gap-4 mt-2">
+            <div class="w-14 h-14 shrink-0 rounded-2xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
+                <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}}"></div>
+                <span class="material-symbols-outlined text-2xl text-white relative z-10">album</span>
             </div>
+            <div class="flex-grow min-w-0 flex flex-col justify-center">
+                <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
+                <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
+            </div>
+        </div>
 
-            <!-- Progress Bar -->
-            <div class="w-full mt-5 relative group-hover:opacity-100 opacity-80 transition-opacity">
-                <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner">
-                    <div class="h-full bg-gradient-to-r from-purple-400 to-fuchsia-400 rounded-full relative shadow-[0_0_10px_rgba(216,180,254,0.5)] transition-all duration-300" :class="{{'w-1/3 animate-[slideRight_10s_linear_infinite]': isPlaying, 'w-0': !isPlaying}}"></div>
+        <!-- Progress Bar & Time -->
+        <div class="relative z-10 w-full mt-2">
+            <div class="w-full relative group/progress cursor-pointer py-1" @click="handleSeek($event)">
+                <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner relative">
+                    <div class="h-full bg-gradient-to-r from-purple-400 to-fuchsia-400 rounded-full shadow-[0_0_10px_rgba(216,180,254,0.5)] transition-all duration-100" :style="'width: ' + progress + '%'"></div>
                 </div>
             </div>
+            <div class="flex justify-between text-[10px] text-purple-300 font-mono mt-1 px-0.5">
+                <span x-text="formatTime(currentTime)">0:00</span>
+                <span x-text="formatTime(duration)">0:00</span>
+            </div>
+        </div>
+        
+        <!-- Controls -->
+        <div class="relative z-10 flex items-center justify-between px-1 mt-1">
+            <button @click="toggleShuffle()" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isShuffle, 'text-white/50 hover:text-white': !isShuffle}}" title="Shuffle">
+                <span class="material-symbols-outlined text-lg">shuffle</span>
+            </button>
             
-            <!-- Controls -->
-            <div class="flex items-center justify-between mt-5 px-1">
-                <button class="text-white/50 hover:text-white transition-colors p-2" title="Shuffle">
-                    <span class="material-symbols-outlined text-xl">shuffle</span>
+            <!-- Volume Slider -->
+            <div class="flex items-center gap-1 group/volume">
+                <button @click="toggleMute()" class="text-white/50 hover:text-white transition-colors p-1" title="Mute">
+                    <span class="material-symbols-outlined text-lg" x-text="isMuted ? 'volume_off' : (volume > 0.5 ? 'volume_up' : 'volume_down')">volume_up</span>
+                </button>
+                <input type="range" min="0" max="1" step="0.05" x-model="volume" @input="setVolume(volume)" class="w-10 h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-purple-400 group-hover/volume:w-16 transition-all duration-200">
+            </div>
+            
+            <div class="flex items-center gap-2">
+                <button @click="prevTrack()" class="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                    <span class="material-symbols-outlined text-base">skip_previous</span>
                 </button>
                 
-                <div class="flex items-center gap-4">
-                    <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
-                        <span class="material-symbols-outlined">skip_previous</span>
-                    </button>
-                    
-                    <button @click="playPause()" class="w-16 h-16 rounded-[2rem] bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-[0_0_20px_rgba(216,180,254,0.2)] hover:shadow-[0_0_25px_rgba(216,180,254,0.4)] transition-all active:scale-95" :disabled="!currentTrack">
-                        <span class="material-symbols-outlined text-4xl" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
-                    </button>
-                    
-                    <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
-                        <span class="material-symbols-outlined">skip_next</span>
-                    </button>
-                </div>
+                <button @click="playPause()" class="w-10 h-10 rounded-2xl bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-lg transition-all active:scale-95" :disabled="!currentTrack">
+                    <span class="material-symbols-outlined text-xl" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+                </button>
                 
-                <button class="text-white/50 hover:text-white transition-colors p-2" title="Repeat">
-                    <span class="material-symbols-outlined text-xl">repeat</span>
+                <button @click="nextTrack()" class="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                    <span class="material-symbols-outlined text-base">skip_next</span>
                 </button>
             </div>
             
-            <!-- Error State -->
-            <div x-show="error" x-transition class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-md whitespace-nowrap shadow-lg" x-text="error" style="display: none;"></div>
+            <button @click="toggleRepeat()" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isRepeat, 'text-white/50 hover:text-white': !isRepeat}}" title="Repeat">
+                <span class="material-symbols-outlined text-lg">repeat</span>
+            </button>
+        </div>
+        
+        <div x-show="error" x-transition class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-md whitespace-nowrap shadow-lg z-20" x-text="error" style="display: none;"></div>
+    </div>
+    """
+
+def render_youtube_player(widget_id: str, config: dict) -> str:
+    video_id = config.get("video_id", "")
+    title = config.get("title", "YouTube Player")
+    
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group" x-data="youtubePlayerWidget('{video_id}', '{title}')">
+        <!-- Title Bar -->
+        <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
+            <div class="flex items-center gap-2">
+                <span class="text-xl text-red-500">📺</span>
+                <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]" x-text="title"></h3>
+                <span x-show="isLoading" class="text-xs text-slate-400 italic animate-pulse">Resolving stream...</span>
+            </div>
+            <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
+                <span class="material-symbols-outlined text-[1.2rem]">close</span>
+            </button>
+        </div>
+        <!-- Video Embed -->
+        <div class="w-full flex-grow bg-black relative flex items-center justify-center">
+            <!-- Loading state overlay -->
+            <div x-show="isLoading" class="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center z-10">
+                <span class="material-symbols-outlined text-4xl text-purple-400 animate-spin mb-2">sync</span>
+                <span class="text-sm text-slate-300">Searching YouTube...</span>
+            </div>
+            <!-- Error state overlay -->
+            <div x-show="error" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center z-10">
+                <span class="material-symbols-outlined text-4xl text-red-500 mb-2">error</span>
+                <span class="text-sm text-slate-200" x-text="error"></span>
+            </div>
+            <!-- Iframe player -->
+            <template x-if="embedUrl">
+                <iframe :src="embedUrl" class="w-full h-full border-none" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+            </template>
         </div>
     </div>
     """
@@ -184,6 +249,8 @@ def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
         return render_iframe_app(widget_id, config)
     elif widget_type == "mini_music_player":
         return render_mini_music_player(widget_id, config)
+    elif widget_type == "youtube_player":
+        return render_youtube_player(widget_id, config)
     else:
         # Fallback for unknown widgets
         return f'<div id="{widget_id}" class="widget-container glass-card p-4"><p class="text-red-400">Unknown widget type: {widget_type}</p></div>'

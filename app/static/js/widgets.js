@@ -29,7 +29,6 @@ document.addEventListener('alpine:init', () => {
         selectedTimezone: initialTimezone || 'local',
         
         init() {
-            // validate initialTimezone
             if (this.selectedTimezone && this.selectedTimezone !== 'local' && this.selectedTimezone !== 'None' && this.selectedTimezone !== 'null') {
                 try {
                     Intl.DateTimeFormat(undefined, { timeZone: this.selectedTimezone });
@@ -83,6 +82,13 @@ document.addEventListener('alpine:init', () => {
         audio: null,
         error: '',
         genreFilter: genreFilter,
+        currentTime: 0,
+        duration: 0,
+        isShuffle: false,
+        isRepeat: false,
+        volume: 1.0,
+        isMuted: false,
+        prevVolume: 1.0,
 
         get currentTrack() {
             if (this.currentIndex >= 0 && this.currentIndex < this.tracks.length) {
@@ -91,20 +97,37 @@ document.addEventListener('alpine:init', () => {
             return null;
         },
 
+        get progress() {
+            return this.duration ? (this.currentTime / this.duration) * 100 : 0;
+        },
+
         async init() {
             console.log(`[MusicPlayer] Initializing widget. Genre Filter: "${this.genreFilter}", Autoplay: ${autoplay}`);
             this.audio = new Audio();
+            this.audio.volume = this.volume;
+            
+            // Audio Event Listeners
             this.audio.addEventListener('ended', () => {
-                console.log('[MusicPlayer] Track ended. Moving to next track.');
-                this.nextTrack();
+                console.log('[MusicPlayer] Track ended.');
+                if (this.isRepeat) {
+                    console.log('[MusicPlayer] Repeating single track.');
+                    this.audio.currentTime = 0;
+                    this.audio.play();
+                } else {
+                    this.nextTrack();
+                }
             });
             this.audio.addEventListener('play', () => {
-                console.log('[MusicPlayer] Audio playing.');
                 this.isPlaying = true;
             });
             this.audio.addEventListener('pause', () => {
-                console.log('[MusicPlayer] Audio paused.');
                 this.isPlaying = false;
+            });
+            this.audio.addEventListener('timeupdate', () => {
+                this.currentTime = this.audio.currentTime;
+            });
+            this.audio.addEventListener('durationchange', () => {
+                this.duration = this.audio.duration || 0;
             });
             this.audio.addEventListener('error', (e) => {
                 console.error('[MusicPlayer] Native audio playback error:', e);
@@ -113,11 +136,9 @@ document.addEventListener('alpine:init', () => {
             });
 
             try {
-                // The music-player backend is hosted on port 8002 of the current host
                 const host = window.location.hostname;
                 const localUrl = `http://${host}:8002/api/tracks`;
                 
-                // Fetch local tracks
                 const localRes = await fetch(localUrl);
                 let loadedTracks = [];
                 if (localRes.ok) {
@@ -125,8 +146,7 @@ document.addEventListener('alpine:init', () => {
                     loadedTracks = data.tracks || [];
                 }
 
-                // Apply genre filter if specified
-                let ytGenre = this.genreFilter || "lo-fi"; // fallback genre
+                let ytGenre = this.genreFilter || "lo-fi";
                 if (this.genreFilter) {
                     const term = this.genreFilter.toLowerCase();
                     loadedTracks = loadedTracks.filter(t => 
@@ -136,14 +156,12 @@ document.addEventListener('alpine:init', () => {
                     );
                 }
 
-                // Fetch YouTube mix concurrently
                 const ytUrl = `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=genre`;
                 try {
                     const ytRes = await fetch(ytUrl);
                     if (ytRes.ok) {
                         const ytData = await ytRes.json();
                         const ytVideos = ytData.videos || [];
-                        // Normalize YT tracks to match local track structure
                         const normalizedYt = ytVideos.map(v => ({
                             id: v.id,
                             title: v.title,
@@ -158,26 +176,28 @@ document.addEventListener('alpine:init', () => {
                 }
 
                 if (loadedTracks.length === 0) {
-                    console.warn('[MusicPlayer] No tracks found after filtering and fetching.');
                     this.error = 'No tracks found for this genre.';
                     return;
                 }
 
-                // Shuffle array slightly
-                this.tracks = loadedTracks.sort(() => Math.random() - 0.5);
+                this.tracks = loadedTracks;
+                
+                // Shuffle array initially if isShuffle is on, else keep order
+                if (this.isShuffle) {
+                    this.tracks = [...loadedTracks].sort(() => Math.random() - 0.5);
+                }
+                
                 this.currentIndex = 0;
-                console.log(`[MusicPlayer] Loading first track: ${this.currentTrack.title}`);
                 this.loadTrack();
 
                 if (autoplay) {
-                    console.log('[MusicPlayer] Autoplay is true. Attempting to play automatically...');
                     this.audio.play().catch(e => {
                         console.warn('[MusicPlayer] Autoplay prevented by browser policy.', e);
                         this.isPlaying = false;
                     });
                 }
             } catch (err) {
-                this.error = 'Could not connect to music server. (CORS or Network Error)';
+                this.error = 'Could not connect to music server.';
                 console.error('[MusicPlayer] Fatal initialization error:', err);
             }
         },
@@ -185,9 +205,9 @@ document.addEventListener('alpine:init', () => {
         loadTrack() {
             if (!this.currentTrack) return;
             if (!this.audio) {
-                console.warn('[MusicPlayer] Audio element was null in loadTrack. Re-initializing.');
                 this.audio = new Audio();
             }
+            this.audio.volume = this.isMuted ? 0 : this.volume;
             const host = window.location.hostname;
             if (this.currentTrack.isYoutube) {
                 this.audio.src = `http://${host}:8002/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
@@ -208,9 +228,73 @@ document.addEventListener('alpine:init', () => {
 
         nextTrack() {
             if (this.tracks.length === 0) return;
-            this.currentIndex = (this.currentIndex + 1) % this.tracks.length;
+            if (this.isShuffle) {
+                this.currentIndex = Math.floor(Math.random() * this.tracks.length);
+            } else {
+                this.currentIndex = (this.currentIndex + 1) % this.tracks.length;
+            }
             this.loadTrack();
             if (this.isPlaying) this.audio.play();
+        },
+
+        prevTrack() {
+            if (this.tracks.length === 0) return;
+            if (this.isShuffle) {
+                this.currentIndex = Math.floor(Math.random() * this.tracks.length);
+            } else {
+                this.currentIndex = (this.currentIndex - 1 + this.tracks.length) % this.tracks.length;
+            }
+            this.loadTrack();
+            if (this.isPlaying) this.audio.play();
+        },
+
+        seek(percent) {
+            if (this.audio && this.duration) {
+                this.audio.currentTime = (percent / 100) * this.duration;
+            }
+        },
+
+        handleSeek(e) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const percent = ((e.clientX - rect.left) / rect.width) * 100;
+            this.seek(percent);
+        },
+
+        setVolume(vol) {
+            this.volume = parseFloat(vol);
+            this.isMuted = (this.volume === 0);
+            if (this.audio) {
+                this.audio.volume = this.isMuted ? 0 : this.volume;
+            }
+        },
+
+        toggleMute() {
+            if (this.isMuted) {
+                this.isMuted = false;
+                this.volume = this.prevVolume || 1.0;
+            } else {
+                this.prevVolume = this.volume;
+                this.isMuted = true;
+                this.volume = 0;
+            }
+            if (this.audio) {
+                this.audio.volume = this.isMuted ? 0 : this.volume;
+            }
+        },
+
+        toggleShuffle() {
+            this.isShuffle = !this.isShuffle;
+        },
+
+        toggleRepeat() {
+            this.isRepeat = !this.isRepeat;
+        },
+
+        formatTime(sec) {
+            if (!sec || isNaN(sec)) return '0:00';
+            const m = Math.floor(sec / 60);
+            const s = Math.floor(sec % 60);
+            return `${m}:${s < 10 ? '0' : ''}${s}`;
         },
 
         destroy() {
@@ -219,6 +303,80 @@ document.addEventListener('alpine:init', () => {
                 this.audio.src = '';
                 this.audio = null;
             }
+        }
+    }));
+
+    // 5. YouTube Player Widget
+    Alpine.data('youtubePlayerWidget', (initialVideoId = '', title = 'YouTube Player') => ({
+        videoId: initialVideoId,
+        embedUrl: '',
+        isLoading: false,
+        error: '',
+        title: title || 'YouTube Player',
+        
+        init() {
+            if (this.videoId) {
+                this.resolveVideo();
+            }
+        },
+        
+        async resolveVideo() {
+            let query = this.videoId;
+            if (query.startsWith('query:')) {
+                query = query.substring(6);
+            }
+            
+            const isYtId = /^[a-zA-Z0-9_-]{11}$/.test(query);
+            const isUrl = query.includes('youtube.com') || query.includes('youtu.be');
+            
+            if (isYtId) {
+                this.updateEmbedUrl(query);
+                return;
+            }
+            
+            if (isUrl) {
+                const extracted = this.extractYoutubeId(query);
+                if (extracted) {
+                    this.updateEmbedUrl(extracted);
+                    return;
+                }
+            }
+            
+            if (query && query.trim() !== '') {
+                this.isLoading = true;
+                this.error = '';
+                try {
+                    const res = await fetch(`/api/youtube/search?query=${encodeURIComponent(query)}`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.id) {
+                            this.updateEmbedUrl(data.id);
+                            if (data.title) {
+                                this.title = data.title;
+                            }
+                        } else {
+                            this.error = 'No videos found for this search.';
+                        }
+                    } else {
+                        this.error = 'Failed to find video.';
+                    }
+                } catch (err) {
+                    this.error = 'Search connection error.';
+                } finally {
+                    this.isLoading = false;
+                }
+            }
+        },
+        
+        updateEmbedUrl(id) {
+            this.videoId = id;
+            this.embedUrl = `https://www.youtube.com/embed/${id}?autoplay=1`;
+        },
+        
+        extractYoutubeId(url) {
+            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const match = url.match(regExp);
+            return (match && match[2].length === 11) ? match[2] : null;
         }
     }));
     

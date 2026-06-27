@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL
+from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL
 import json
 import uuid
 from bs4 import BeautifulSoup
@@ -106,13 +106,13 @@ async def send_message(req: MessageRequest):
             f"CURRENT CANVAS STATE:\n```html\n{canvas_html}\n```\n\n"
             "CANVAS TOOLS:\n"
             "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\n"
-            "- Add a Lego Widget (Checklist, Clock, Notes, Music Player) → mcp__lazy-tool-service__canvas_add_widget()\n"
+            "- Add a Lego Widget (Checklist, Clock, Notes, Music Player, YouTube Player) → mcp__lazy-tool-service__canvas_add_widget()\n"
             "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-UUID', action='replace' or 'remove')\n"
             "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
             "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n\n"
             "AGENTIC UI GENERATION RULES:\n"
             "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\n"
-            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\"url\": \"http://nas:3000\", \"title\": \"App\", \"icon\": \"🌐\"}`. For 'mini_music_player', use config `{\"genre\": \"jazz\", \"autoplay\": true}`. NEVER try to generate the raw HTML yourself for these standard widgets.\n"
+            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\"url\": \"http://nas:3000\", \"title\": \"App\", \"icon\": \"🌐\"}`. For 'mini_music_player', use config `{\"genre\": \"jazz\", \"autoplay\": true}`. For 'youtube_player', use config `{\"video_id\": \"bloomberg news live\", \"title\": \"Bloomberg News\"}` (video_id can be a general search query, a youtube video ID, or a URL). NEVER try to generate the raw HTML yourself for these standard widgets.\n"
             "3. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom (not in the Lego library), use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` and write Tailwind/Alpine.js HTML.\n"
             "4. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\n\n"
             "CANVAS DOM MODIFICATION RULES:\n"
@@ -444,6 +444,19 @@ async def get_note(id: str):
         raise HTTPException(status_code=404, detail="Note not found")
     history = database.get_note_history(id)
     return {"note": note, "history": history}
+
+@app.get("/api/youtube/search")
+async def api_youtube_search(query: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{MUSIC_PLAYER_URL}/api/youtube/search", params={"query": query}, timeout=10.0)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    except Exception as e:
+        logger.error(f"Failed to proxy YouTube search: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/search")
 async def api_search(q: str):
