@@ -83,6 +83,15 @@ async def get_models():
         logger.error(f"Error fetching models: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def is_valid_tool_args(tool_name: str, args: dict) -> bool:
+    if not args:
+        return False
+    if tool_name == "mcp__lazy-tool-service__canvas_add_widget":
+        return bool(args.get("widget_type") and args.get("widget_id"))
+    if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
+        return bool(args.get("css_selector") and args.get("action"))
+    return False
+
 @app.post("/session/message")
 async def send_message(req: MessageRequest):
     try:
@@ -194,6 +203,83 @@ async def send_message(req: MessageRequest):
             """
             final_text = ""
             all_rendered_html = req.current_canvas or ""
+            executed_active_tool = False
+
+            async def execute_mutation(tool_name, tool_args):
+                nonlocal all_rendered_html
+                logger.info(f"[WIDGET INJECTOR] Executing mutation for {tool_name} with args: {tool_args}")
+                yield f'data: {json.dumps({"type": "status", "message": f"executing {tool_name}..."})}\n\n'
+                try:
+                    if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
+                        css_selector = tool_args.get("css_selector", "")
+                        action = tool_args.get("action", "")
+                        html_snippet = tool_args.get("html_snippet", "")
+                        
+                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                        soup = BeautifulSoup(current_html, 'html.parser')
+                        target = soup.select_one(css_selector)
+                        if target:
+                            if action == "append":
+                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                target.append(new_elem)
+                            elif action == "replace":
+                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                target.replace_with(new_elem)
+                            elif action == "remove":
+                                target.decompose()
+                            all_rendered_html = str(soup)
+                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                            
+                        logger.info("[FAST LOOP] Terminating early after canvas_modify_dom to save latency")
+                            
+                    elif tool_name == "mcp__lazy-tool-service__canvas_add_widget":
+                        if isinstance(tool_args, str):
+                            try:
+                                tool_args = json.loads(tool_args)
+                            except Exception:
+                                tool_args = {}
+
+                        widget_type = tool_args.get("widget_type", "")
+                        widget_id = tool_args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
+                        config = tool_args.get("config", {})
+                        
+                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                        soup = BeautifulSoup(current_html, 'html.parser')
+                        
+                        replaced = False
+                        if widget_type == "youtube_player":
+                            for div in soup.find_all("div", class_="widget-container"):
+                                xdata = div.get("x-data", "")
+                                div_id = div.get("id", "")
+                                if "youtubePlayerWidget" in xdata or "youtube" in div_id or "video" in div_id:
+                                    existing_id = div.get("id", widget_id)
+                                    html_snippet = generate_widget_html(widget_type, existing_id, config)
+                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                    div.replace_with(new_elem)
+                                    replaced = True
+                                    break
+                                    
+                        if replaced:
+                            all_rendered_html = str(soup)
+                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                            logger.info("[WIDGET INJECTOR] Replaced existing youtube_player widget in-place")
+                        else:
+                            html_snippet = generate_widget_html(widget_type, widget_id, config)
+                            target = soup.select_one('#dashboard-grid')
+                            if target:
+                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                target.append(new_elem)
+                                all_rendered_html = str(soup)
+                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                            else:
+                                soup.append(BeautifulSoup(html_snippet, 'html.parser'))
+                                all_rendered_html = str(soup)
+                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                            logger.info(f"[WIDGET INJECTOR] Appended new {widget_type} widget")
+                            
+                        logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
+                except Exception as ex:
+                    logger.error(f"Failed to execute canvas mutation: {ex}")
 
             try:
                 yield f'data: {json.dumps({"type": "status", "message": "connecting to agent..."})}\n\n'
@@ -234,91 +320,12 @@ async def send_message(req: MessageRequest):
                                 logger.info(f"[SSE_PROXY] Received event_type: '{event_type}'")
 
                                 if event_type in ("chunk", "done") and active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
-                                    logger.info(f"[WIDGET INJECTOR] Tool stream finished. Executing {active_tool_name} with args: {active_tool_args}")
-                                    yield f'data: {json.dumps({"type": "status", "message": f"executing {active_tool_name}..."})}\n\n'
-                                    
-                                    try:
-                                        if active_tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
-                                            css_selector = active_tool_args.get("css_selector", "")
-                                            action = active_tool_args.get("action", "")
-                                            html_snippet = active_tool_args.get("html_snippet", "")
-                                            
-                                            current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                                            soup = BeautifulSoup(current_html, 'html.parser')
-                                            target = soup.select_one(css_selector)
-                                            if target:
-                                                if action == "append":
-                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                    target.append(new_elem)
-                                                elif action == "replace":
-                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                    target.replace_with(new_elem)
-                                                elif action == "remove":
-                                                    target.decompose()
-                                                all_rendered_html = str(soup)
-                                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                                                
-                                            logger.info("[FAST LOOP] Terminating early after canvas_modify_dom to save latency")
-                                            active_tool_name = None
-                                            active_tool_args = {}
-                                            break
-                                                
-                                        elif active_tool_name == "mcp__lazy-tool-service__canvas_add_widget":
-                                            if isinstance(active_tool_args, str):
-                                                try:
-                                                    active_tool_args = json.loads(active_tool_args)
-                                                except Exception:
-                                                    active_tool_args = {}
-
-                                            widget_type = active_tool_args.get("widget_type", "")
-                                            widget_id = active_tool_args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
-                                            config = active_tool_args.get("config", {})
-                                            
-                                            current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                                            soup = BeautifulSoup(current_html, 'html.parser')
-                                            
-                                            # If it's a youtube player, check if we already have one on the canvas
-                                            replaced = False
-                                            if widget_type == "youtube_player":
-                                                for div in soup.find_all("div", class_="widget-container"):
-                                                    xdata = div.get("x-data", "")
-                                                    div_id = div.get("id", "")
-                                                    if "youtubePlayerWidget" in xdata or "youtube" in div_id or "video" in div_id:
-                                                        existing_id = div.get("id", widget_id)
-                                                        html_snippet = generate_widget_html(widget_type, existing_id, config)
-                                                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                        div.replace_with(new_elem)
-                                                        replaced = True
-                                                        break
-                                            
-                                            if replaced:
-                                                all_rendered_html = str(soup)
-                                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                                                logger.info("[WIDGET INJECTOR] Replaced existing youtube_player widget in-place")
-                                            else:
-                                                html_snippet = generate_widget_html(widget_type, widget_id, config)
-                                                target = soup.select_one('#dashboard-grid')
-                                                if target:
-                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                    target.append(new_elem)
-                                                    all_rendered_html = str(soup)
-                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                                                else:
-                                                    soup.append(BeautifulSoup(html_snippet, 'html.parser'))
-                                                    all_rendered_html = str(soup)
-                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                                                logger.info(f"[WIDGET INJECTOR] Appended new {widget_type} widget")
-                                                
-                                            logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
-                                            active_tool_name = None
-                                            active_tool_args = {}
-                                            break
-                                            
-                                    except Exception as e:
-                                        logger.error(f"Failed to execute {active_tool_name}: {e}")
-                                    
-                                    active_tool_name = None
-                                    active_tool_args = {}
+                                    if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args):
+                                        async for evt in execute_mutation(active_tool_name, active_tool_args):
+                                            yield evt
+                                        executed_active_tool = True
+                                        active_tool_name = None
+                                        active_tool_args = {}
 
                                 if event_type == "chunk":
                                     # Text token from LLM
@@ -332,17 +339,24 @@ async def send_message(req: MessageRequest):
                                     tool_name = tool_info.get("name", "unknown")
                                     args = tool_info.get("args", {})
                                     
-                                    # Update the active tool's state
                                     if active_tool_name != tool_name:
                                         active_tool_name = tool_name
                                         active_tool_args = {}
+                                        executed_active_tool = False
                                         yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name})}\n\n'
                                         yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}..."})}\n\n'
                                     
                                     active_tool_args = args
 
                                     if status in ("done", "success"):
-                                        if tool_name not in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
+                                        if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
+                                            if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args):
+                                                async for evt in execute_mutation(active_tool_name, active_tool_args):
+                                                    yield evt
+                                                executed_active_tool = True
+                                                active_tool_name = None
+                                                active_tool_args = {}
+                                        else:
                                             active_tool_name = None
                                             active_tool_args = {}
                                     elif status == "error":

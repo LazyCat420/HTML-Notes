@@ -280,7 +280,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let lastRenderedComponentHtml = null;
 
     const CANVAS_DOMPURIFY_CONFIG = {
-        ADD_TAGS: ['iframe'],
+        ADD_TAGS: ['iframe', 'template'],
         ADD_ATTR: [
             'style', 'class', 'type', 'checked', 'data-component', 'x-data', 
             'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 
