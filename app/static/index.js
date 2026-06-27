@@ -26,9 +26,14 @@ window.WidgetManager = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-    // Configure DOMPurify to allow style attributes for custom layouts
+    // Configure DOMPurify globally to allow Alpine.js attributes and event listeners
     if (window.DOMPurify) {
-        DOMPurify.setConfig({ ADD_ATTR: ['style'] });
+        DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+            const name = data.attrName;
+            if (name.startsWith('x-') || name.startsWith('@') || name.startsWith(':')) {
+                data.forceKeepAttr = true;
+            }
+        });
     }
 
     const state = {
