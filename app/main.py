@@ -172,9 +172,8 @@ async def send_message(req: MessageRequest):
                 "mcp__lazy-tool-service__html_notes_get_note",
                 "mcp__lazy-tool-service__html_notes_search_notes",
                 "mcp__lazy-tool-service__html_notes_link_notes",
-                "mcp__lazy-tool-service__html_notes_modify_dom",
-                "mcp__lazy-tool-service__render_component",
-                "mcp__lazy-tool-service__canvas_modify_dom"
+                "mcp__lazy-tool-service__canvas_read_dom",
+                "mcp__lazy-tool-service__canvas_add_widget"
             ],
             "messages": messages,
             "maxTokens": 4096,
