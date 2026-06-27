@@ -233,7 +233,7 @@ async def send_message(req: MessageRequest):
                                 event_type = event.get("type", "")
                                 logger.info(f"[SSE_PROXY] Received event_type: '{event_type}'")
 
-                                if event_type in ("chunk", "done") and active_tool_name:
+                                if event_type in ("chunk", "done") and active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
                                     logger.info(f"[WIDGET INJECTOR] Tool stream finished. Executing {active_tool_name} with args: {active_tool_args}")
                                     yield f'data: {json.dumps({"type": "status", "message": f"executing {active_tool_name}..."})}\n\n'
                                     
@@ -323,8 +323,9 @@ async def send_message(req: MessageRequest):
                                     active_tool_args = args
 
                                     if status in ("done", "success"):
-                                        # Not emitted for unorchestrated tools, but handled just in case
-                                        pass
+                                        if tool_name not in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
+                                            active_tool_name = None
+                                            active_tool_args = {}
                                     elif status == "error":
                                         error_msg = event.get("result", "Unknown tool error")
                                         yield f'data: {json.dumps({"type": "status", "message": f"tool error: {tool_name}: {str(error_msg)[:200]}"})}\n\n'

@@ -419,16 +419,17 @@ document.addEventListener("DOMContentLoaded", () => {
             let lastStatusStep = null;
             function addLogStep(text, icon) {
                 if (icon === "🧠") {
+                    const cleanText = text.replace(/\.+$/, "");
                     if (lastStatusStep) {
                         const stepText = lastStatusStep.querySelector(".step-text");
                         if (stepText) {
-                            stepText.innerHTML = text;
+                            stepText.innerHTML = cleanText;
                         }
                         return;
                     }
                     const step = document.createElement("div");
                     step.className = "log-step status-step";
-                    step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${text}</span><span class="dot-flashing ml-2 inline-block"></span>`;
+                    step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${cleanText}</span><span class="dot-flashing ml-2 inline-block"></span>`;
                     elements.execLogContent.appendChild(step);
                     lastStatusStep = step;
                     elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
