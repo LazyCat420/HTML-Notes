@@ -178,9 +178,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 localStorage.setItem("html_notes_session_id", state.sessionId);
                 elements.chatHistoryMessages.innerHTML = "";
                 elements.liveCanvas.innerHTML = `
-                    <div id="welcome-message" class="system-message">
-                        <h1>Canvas Ready</h1>
-                        <p>Tell the LLM what to build. It will replace this entire screen.</p>
+                    <div id="dashboard-grid" class="dashboard-grid">
+                        <div id="welcome-message" class="system-message col-span-full">
+                            <h1>Canvas Ready</h1>
+                            <p>Tell the LLM what to build. It will be added as a widget to the dashboard.</p>
+                        </div>
                     </div>
                 `;
                 clearSpeechQueue();
