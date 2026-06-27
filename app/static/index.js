@@ -279,15 +279,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let lastRenderedComponentHtml = null;
 
+    const CANVAS_DOMPURIFY_CONFIG = {
+        ADD_TAGS: ['iframe'],
+        ADD_ATTR: [
+            'style', 'class', 'type', 'checked', 'data-component', 'x-data', 
+            'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 
+            'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', 
+            ':style', 'id', 'placeholder', 'value', 'x-if', ':src', ':key', 
+            ':disabled', 'allow', 'allowfullscreen', 'sandbox'
+        ],
+        FORCE_BODY: true
+    };
+
     function renderContent(textContent, componentHtml) {
         // The text content goes to TTS and Chat History.
         // We ONLY render the HTML component to the live canvas.
         if (componentHtml && componentHtml !== lastRenderedComponentHtml) {
             lastRenderedComponentHtml = componentHtml;
-            elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, {
-                ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component', 'x-data', 'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', ':style', 'id', 'placeholder', 'value'],
-                FORCE_BODY: true
-            });
+            elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, CANVAS_DOMPURIFY_CONFIG);
         }
     }
 
@@ -324,10 +333,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             if (c.id && window.WidgetManager && window.WidgetManager.isDismissed(c.id)) c.remove();
                         });
                         
-                        elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, {
-                            ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component', 'x-data', 'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', ':style', 'id', 'placeholder', 'value'],
-                            FORCE_BODY: true
-                        });
+                        elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, CANVAS_DOMPURIFY_CONFIG);
                         renderDynamicComponents(elements.liveCanvas);
                     } else {
                         // Fallback for older saved history without #dashboard-grid
@@ -340,10 +346,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         });
                         
                         if (htmlOnly) {
-                            elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, {
-                                ADD_ATTR: ['style', 'class', 'type', 'checked', 'data-component', 'x-data', 'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', ':style', 'id', 'placeholder', 'value'],
-                                FORCE_BODY: true
-                            })}</div>`;
+                            elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, CANVAS_DOMPURIFY_CONFIG)}</div>`;
                             renderDynamicComponents(elements.liveCanvas);
                         }
                     }
