@@ -211,6 +211,9 @@ async def send_message(req: MessageRequest):
                             return
 
                         buffer = ""
+                        active_tool_name = None
+                        active_tool_args = {}
+
                         async for chunk in resp.aiter_text():
                             buffer += chunk
                             while "\n" in buffer:
@@ -228,6 +231,63 @@ async def send_message(req: MessageRequest):
                                 event_type = event.get("type", "")
                                 logger.info(f"[SSE_PROXY] Received event_type: '{event_type}'")
 
+                                if event_type in ("chunk", "done") and active_tool_name:
+                                    logger.info(f"[WIDGET INJECTOR] Tool stream finished. Executing {active_tool_name} with args: {active_tool_args}")
+                                    yield f'data: {json.dumps({"type": "status", "message": f"executing {active_tool_name}..."})}\n\n'
+                                    
+                                    try:
+                                        if active_tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
+                                            css_selector = active_tool_args.get("css_selector", "")
+                                            action = active_tool_args.get("action", "")
+                                            html_snippet = active_tool_args.get("html_snippet", "")
+                                            
+                                            current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                                            soup = BeautifulSoup(current_html, 'html.parser')
+                                            target = soup.select_one(css_selector)
+                                            if target:
+                                                if action == "append":
+                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                    target.append(new_elem)
+                                                elif action == "replace":
+                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                    target.replace_with(new_elem)
+                                                elif action == "remove":
+                                                    target.decompose()
+                                                all_rendered_html = str(soup)
+                                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                                
+                                        elif active_tool_name == "mcp__lazy-tool-service__canvas_add_widget":
+                                            if isinstance(active_tool_args, str):
+                                                try:
+                                                    active_tool_args = json.loads(active_tool_args)
+                                                except Exception:
+                                                    active_tool_args = {}
+
+                                            widget_type = active_tool_args.get("widget_type", "")
+                                            widget_id = active_tool_args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
+                                            config = active_tool_args.get("config", {})
+                                            
+                                            html_snippet = generate_widget_html(widget_type, widget_id, config)
+                                            
+                                            current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                                            soup = BeautifulSoup(current_html, 'html.parser')
+                                            target = soup.select_one('#dashboard-grid')
+                                            
+                                            if target:
+                                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                                                target.append(new_elem)
+                                                all_rendered_html = str(soup)
+                                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                            else:
+                                                soup.append(BeautifulSoup(html_snippet, 'html.parser'))
+                                                all_rendered_html = str(soup)
+                                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                    except Exception as e:
+                                        logger.error(f"Failed to execute {active_tool_name}: {e}")
+                                    
+                                    active_tool_name = None
+                                    active_tool_args = {}
+
                                 if event_type == "chunk":
                                     # Text token from LLM
                                     token = event.get("content", "")
@@ -238,96 +298,20 @@ async def send_message(req: MessageRequest):
                                     status = event.get("status", "")
                                     tool_info = event.get("tool", {})
                                     tool_name = tool_info.get("name", "unknown")
-
-                                    if status == "calling":
+                                    args = tool_info.get("args", {})
+                                    
+                                    # Update the active tool's state
+                                    if active_tool_name != tool_name:
+                                        active_tool_name = tool_name
+                                        active_tool_args = {}
                                         yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name})}\n\n'
                                         yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}..."})}\n\n'
+                                    
+                                    active_tool_args = args
 
-                                elif event_type == "tool_call":
-                                    status = event.get("status", "")
-                                    tool_name = event.get("name", "unknown")
-                                    args = event.get("args", {})
-
-                                    if status == "calling":
-                                        yield f'data: {json.dumps({"type": "status", "message": f"executing {tool_name}..."})}\n\n'
-
-                                        if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
-                                            try:
-                                                css_selector = args.get("css_selector", "")
-                                                action = args.get("action", "")
-                                                html_snippet = args.get("html_snippet", "")
-                                                
-                                                current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                                                soup = BeautifulSoup(current_html, 'html.parser')
-                                                target = soup.select_one(css_selector)
-                                                if target:
-                                                    if action == "append":
-                                                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                        target.append(new_elem)
-                                                    elif action == "replace":
-                                                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                        target.replace_with(new_elem)
-                                                    elif action == "remove":
-                                                        target.decompose()
-                                                    all_rendered_html = str(soup)
-                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                                            except Exception as e:
-                                                logger.error(f"Local canvas modification failed: {e}")
-
-                                        elif tool_name == "mcp__lazy-tool-service__canvas_add_widget":
-                                            try:
-                                                logger.info(f"[WIDGET INJECTOR] Intercepted canvas_add_widget fully populated. Raw args: {args}")
-                                                
-                                                if isinstance(args, str):
-                                                    try:
-                                                        args = json.loads(args)
-                                                    except Exception:
-                                                        logger.error("[WIDGET INJECTOR] Failed to parse args as JSON string.")
-                                                        args = {}
-
-                                                widget_type = args.get("widget_type", "")
-                                                widget_id = args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
-                                                config = args.get("config", {})
-                                                
-                                                logger.info(f"[WIDGET INJECTOR] Parsed -> type: '{widget_type}', id: '{widget_id}', config: {config}")
-                                                
-                                                html_snippet = generate_widget_html(widget_type, widget_id, config)
-                                                
-                                                current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                                                soup = BeautifulSoup(current_html, 'html.parser')
-                                                target = soup.select_one('#dashboard-grid')
-                                                
-                                                if target:
-                                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                                    target.append(new_elem)
-                                                    all_rendered_html = str(soup)
-                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                                                else:
-                                                    # Fallback if dashboard-grid missing
-                                                    soup.append(BeautifulSoup(html_snippet, 'html.parser'))
-                                                    all_rendered_html = str(soup)
-                                                    yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                                            except Exception as e:
-                                                logger.error(f"Local canvas_add_widget failed: {e}")
-
-                                    elif status in ("done", "success"):
-                                        # Check if this is a render_component result with HTML
-                                        result = event.get("result", {})
-                                        if isinstance(result, str):
-                                            try:
-                                                result = json.loads(result)
-                                            except (json.JSONDecodeError, TypeError):
-                                                result = {}
-
-                                        rendered_html = None
-                                        if isinstance(result, dict):
-                                            rendered_html = result.get("rendered_html")
-
-                                        if rendered_html and tool_name in ("mcp__lazy-tool-service__render_component", "mcp__lazy-tool-service__canvas_modify_dom"):
-                                            if tool_name != "mcp__lazy-tool-service__canvas_modify_dom":
-                                                all_rendered_html = rendered_html
-                                                yield f'data: {json.dumps({"type": "component", "content": rendered_html})}\n\n'
-
+                                    if status in ("done", "success"):
+                                        # Not emitted for unorchestrated tools, but handled just in case
+                                        pass
                                     elif status == "error":
                                         error_msg = event.get("result", "Unknown tool error")
                                         yield f'data: {json.dumps({"type": "status", "message": f"tool error: {tool_name}: {str(error_msg)[:200]}"})}\n\n'
