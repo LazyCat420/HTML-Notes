@@ -269,9 +269,20 @@ async def send_message(req: MessageRequest):
                                         elif tool_name == "mcp__lazy-tool-service__canvas_add_widget":
                                             try:
                                                 args = tool_info.get("arguments", {})
+                                                logger.info(f"[WIDGET INJECTOR] Intercepted canvas_add_widget. Raw args: {args}")
+                                                
+                                                if isinstance(args, str):
+                                                    try:
+                                                        args = json.loads(args)
+                                                    except Exception:
+                                                        logger.error("[WIDGET INJECTOR] Failed to parse args as JSON string.")
+                                                        args = {}
+
                                                 widget_type = args.get("widget_type", "")
                                                 widget_id = args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
                                                 config = args.get("config", {})
+                                                
+                                                logger.info(f"[WIDGET INJECTOR] Parsed -> type: '{widget_type}', id: '{widget_id}', config: {config}")
                                                 
                                                 html_snippet = generate_widget_html(widget_type, widget_id, config)
                                                 
@@ -723,6 +734,11 @@ async def internal_tool_execute(req: InternalToolRequest):
                 "action_performed": action,
                 "selector": css_selector
             }
+
+        elif t == "canvas_add_widget":
+            # The actual injection to the frontend is handled by the SSE interceptor during 'calling' phase.
+            # Here we just acknowledge success to the LLM so it doesn't think the tool failed.
+            return {"success": True, "message": f"Successfully added {a.get('widget_type', 'widget')} to canvas."}
 
         else:
             return {"error": f"Unknown tool: {t}", "is_error": True}
