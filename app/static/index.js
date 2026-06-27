@@ -1,3 +1,30 @@
+// ─── LEGO: WIDGET MANAGER ─────────────────────────────────────────
+window.WidgetManager = {
+    getDismissed() {
+        try {
+            return JSON.parse(localStorage.getItem('dismissed_widgets') || '[]');
+        } catch {
+            return [];
+        }
+    },
+    dismiss(widgetElement) {
+        if (!widgetElement) return;
+        const id = widgetElement.id;
+        if (id) {
+            const dismissed = this.getDismissed();
+            if (!dismissed.includes(id)) {
+                dismissed.push(id);
+                localStorage.setItem('dismissed_widgets', JSON.stringify(dismissed));
+            }
+        }
+        widgetElement.remove();
+    },
+    isDismissed(id) {
+        if (!id) return false;
+        return this.getDismissed().includes(id);
+    }
+};
+
 document.addEventListener("DOMContentLoaded", () => {
     // Configure DOMPurify to allow style attributes for custom layouts
     if (window.DOMPurify) {
@@ -239,7 +266,14 @@ document.addEventListener("DOMContentLoaded", () => {
                     temp.innerHTML = lastMsg.content;
                     let components = temp.querySelectorAll(".glass-card, .canvas-element, .rendered-component");
                     let htmlOnly = "";
-                    components.forEach(c => htmlOnly += c.outerHTML);
+                    components.forEach(c => {
+                        // Drop known errors permanently
+                        if (c.textContent.includes("Unknown widget type:")) return;
+                        // Drop permanently dismissed widgets
+                        if (c.id && window.WidgetManager.isDismissed(c.id)) return;
+                        
+                        htmlOnly += c.outerHTML;
+                    });
                     
                     if (htmlOnly) {
                         elements.liveCanvas.innerHTML = DOMPurify.sanitize(htmlOnly, {

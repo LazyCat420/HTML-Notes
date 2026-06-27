@@ -79,40 +79,74 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
     autoplay = str(config.get("autoplay", False)).lower()
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-1 glass-card p-5 rounded-2xl shadow-xl bg-slate-800/90 backdrop-blur-md flex flex-col gap-4 border border-slate-700/50" x-data="musicPlayerWidget('{genre}', {autoplay})">
-        <!-- Title Bar -->
-        <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2 text-indigo-400">
-                <span class="material-symbols-outlined text-lg">music_note</span>
-                <span class="text-sm font-semibold tracking-wider uppercase">Mini Player</span>
-            </div>
-            <button @click="destroy(); $el.closest('.widget-container').remove()" class="text-slate-500 hover:text-red-400 transition-colors">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-            </button>
-        </div>
-
-        <!-- Track Info -->
-        <div class="flex flex-col items-center text-center mt-2">
-            <div class="w-16 h-16 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 mb-3 flex items-center justify-center shadow-lg" :class="{{'animate-pulse': isPlaying}}">
-                <span class="material-symbols-outlined text-3xl text-white">music_cast</span>
-            </div>
-            <h4 class="text-lg font-bold text-white leading-tight truncate w-full px-2" x-text="currentTrack ? currentTrack.title : 'Loading Tracks...'"></h4>
-            <p class="text-sm text-slate-400 truncate w-full px-2 mt-1" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
-            <p class="text-xs text-indigo-400 mt-1 font-mono" x-show="genreFilter">Filter: <span x-text="genreFilter"></span></p>
-        </div>
-
-        <!-- Controls -->
-        <div class="flex items-center justify-center gap-4 mt-2">
-            <button @click="playPause()" class="w-12 h-12 rounded-full bg-indigo-500 hover:bg-indigo-400 text-white flex items-center justify-center shadow-md transition-all active:scale-95 disabled:opacity-50" :disabled="!currentTrack">
-                <span class="material-symbols-outlined text-2xl" x-text="isPlaying ? 'pause' : 'play_arrow'"></span>
-            </button>
-            <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 text-white flex items-center justify-center shadow-md transition-all active:scale-95 disabled:opacity-50" :disabled="!currentTrack">
-                <span class="material-symbols-outlined text-xl">skip_next</span>
-            </button>
-        </div>
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-900 via-indigo-900 to-slate-900 text-white border border-white/10 group" x-data="musicPlayerWidget('{genre}', {autoplay})">
+        <!-- Background Blur/Glow effect -->
+        <div class="absolute inset-0 bg-cover bg-center opacity-30 mix-blend-overlay" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
+        <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/60 to-transparent"></div>
         
-        <!-- Error State -->
-        <div x-show="error" class="text-xs text-red-400 text-center mt-2" x-text="error"></div>
+        <!-- Content Container -->
+        <div class="relative z-10 p-5 flex flex-col h-full justify-between">
+            
+            <!-- Top Bar: Genre / Icon -->
+            <div class="flex justify-between items-start mb-2">
+                <div class="bg-black/40 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
+                    <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
+                    <span class="text-xs font-semibold tracking-wider text-purple-200 uppercase" x-text="genreFilter || 'Radio'"></span>
+                </div>
+                <button @click="destroy(); window.WidgetManager.dismiss($el.closest('.widget-container'))" class="text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1.5 backdrop-blur-sm transition-all shadow-sm">
+                    <span class="material-symbols-outlined text-[1rem]">close</span>
+                </button>
+            </div>
+            
+            <!-- Track Info -->
+            <div class="flex items-center gap-4 mt-2">
+                <!-- Album Art Mock -->
+                <div class="w-16 h-16 shrink-0 rounded-2xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
+                    <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}}"></div>
+                    <span class="material-symbols-outlined text-3xl text-white relative z-10">album</span>
+                </div>
+                
+                <div class="flex-grow min-w-0 flex flex-col justify-center">
+                    <h4 class="text-lg font-bold text-white truncate leading-tight drop-shadow-md" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
+                    <p class="text-sm text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
+                </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="w-full mt-5 relative group-hover:opacity-100 opacity-80 transition-opacity">
+                <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner">
+                    <div class="h-full bg-gradient-to-r from-purple-400 to-fuchsia-400 rounded-full relative shadow-[0_0_10px_rgba(216,180,254,0.5)] transition-all duration-300" :class="{{'w-1/3 animate-[slideRight_10s_linear_infinite]': isPlaying, 'w-0': !isPlaying}}"></div>
+                </div>
+            </div>
+            
+            <!-- Controls -->
+            <div class="flex items-center justify-between mt-5 px-1">
+                <button class="text-white/50 hover:text-white transition-colors p-2" title="Shuffle">
+                    <span class="material-symbols-outlined text-xl">shuffle</span>
+                </button>
+                
+                <div class="flex items-center gap-4">
+                    <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                        <span class="material-symbols-outlined">skip_previous</span>
+                    </button>
+                    
+                    <button @click="playPause()" class="w-16 h-16 rounded-[2rem] bg-purple-300 hover:bg-purple-200 text-purple-950 flex items-center justify-center shadow-[0_0_20px_rgba(216,180,254,0.2)] hover:shadow-[0_0_25px_rgba(216,180,254,0.4)] transition-all active:scale-95" :disabled="!currentTrack">
+                        <span class="material-symbols-outlined text-4xl" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;"></span>
+                    </button>
+                    
+                    <button @click="nextTrack()" class="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                        <span class="material-symbols-outlined">skip_next</span>
+                    </button>
+                </div>
+                
+                <button class="text-white/50 hover:text-white transition-colors p-2" title="Repeat">
+                    <span class="material-symbols-outlined text-xl">repeat</span>
+                </button>
+            </div>
+            
+            <!-- Error State -->
+            <div x-show="error" x-transition class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-md whitespace-nowrap shadow-lg" x-text="error" style="display: none;"></div>
+        </div>
     </div>
     """
 
