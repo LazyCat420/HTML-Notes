@@ -135,6 +135,19 @@ body {
     color: #8b949e;
 }
 
+.dot-flashing::after {
+    content: '...';
+    display: inline-block;
+    animation: dotFlashing 1.4s infinite both;
+    font-weight: bold;
+}
+
+@keyframes dotFlashing {
+    0% { opacity: 0.2; }
+    20% { opacity: 1; }
+    100% { opacity: 0.2; }
+}
+
 .step-text strong {
     color: var(--accent-color);
 }

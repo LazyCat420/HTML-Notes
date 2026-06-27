@@ -109,10 +109,11 @@ async def send_message(req: MessageRequest):
             "- Add a Lego Widget (Checklist, Clock, Notes, Music Player, YouTube Player) → mcp__lazy-tool-service__canvas_add_widget()\n"
             "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-UUID', action='replace' or 'remove')\n"
             "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
-            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n\n"
+            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n"
+            "- Search YouTube for videos → mcp__lazy-tool-service__youtube_search(query, limit)\n\n"
             "AGENTIC UI GENERATION RULES:\n"
             "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\n"
-            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\"url\": \"http://nas:3000\", \"title\": \"App\", \"icon\": \"🌐\"}`. For 'mini_music_player', use config `{\"genre\": \"jazz\", \"autoplay\": true}`. For 'youtube_player', use config `{\"video_id\": \"bloomberg news live\", \"title\": \"Bloomberg News\"}` (video_id can be a general search query, a youtube video ID, or a URL). NEVER try to generate the raw HTML yourself for these standard widgets.\n"
+            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\"url\": \"http://nas:3000\", \"title\": \"App\", \"icon\": \"🌐\"}`. For 'mini_music_player', use config `{\"genre\": \"jazz\", \"autoplay\": true}`. For 'youtube_player', you MUST first search YouTube using `mcp__lazy-tool-service__youtube_search` to find the exact 11-character video ID, then pass that video_id in the config (e.g. `{\"video_id\": \"_D3tz9TpPJs\", \"title\": \"Bloomberg News\"}`). Never pass raw search queries directly to `canvas_add_widget`. NEVER try to generate the raw HTML yourself for standard widgets.\n"
             "3. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom (not in the Lego library), use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` and write Tailwind/Alpine.js HTML.\n"
             "4. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\n\n"
             "CANVAS DOM MODIFICATION RULES:\n"
@@ -173,7 +174,8 @@ async def send_message(req: MessageRequest):
                 "mcp__lazy-tool-service__html_notes_search_notes",
                 "mcp__lazy-tool-service__html_notes_link_notes",
                 "mcp__lazy-tool-service__canvas_read_dom",
-                "mcp__lazy-tool-service__canvas_add_widget"
+                "mcp__lazy-tool-service__canvas_add_widget",
+                "mcp__lazy-tool-service__youtube_search"
             ],
             "messages": messages,
             "maxTokens": 4096,
