@@ -523,29 +523,79 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // ─── POST-PROCESS WIDGET CONSOLE / CONTROLS ───
         const widgets = container.querySelectorAll('.widget-container');
-        widgets.forEach(widget => {
-            // 1. Ensure close button exists (especially for legacy widgets stored in DB)
-            if (!widget.querySelector('.close-widget-btn') && !widget.querySelector('button[title="Close Widget"]')) {
+        widgets.forEach(origWidget => {
+            let widget = origWidget;
+            const id = widget.id || "";
+            
+            // 1. Self-heal clock widgets that lost Alpine attributes or are empty
+            if (id.includes('clock')) {
+                const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('clockWidget');
+                const hasTime = widget.querySelector('.text-4xl');
+                
+                if (!hasXData || !hasTime || widget.children.length === 0) {
+                    const newWidget = document.createElement('div');
+                    newWidget.id = widget.id;
+                    newWidget.className = widget.className;
+                    newWidget.setAttribute('x-data', "clockWidget('local')");
+                    newWidget.innerHTML = `
+                        <!-- Close Button -->
+                        <button title="Close Widget" class="close-widget-btn absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <span class="material-symbols-outlined text-sm">close</span>
+                        </button>
+                        
+                        <div class="flex-grow flex flex-col items-center justify-center mt-2">
+                            <div class="text-4xl font-light text-white tracking-widest" x-text="time">--:--:--</div>
+                            <div class="text-sm text-slate-400 uppercase tracking-wider mt-1" x-text="date">---</div>
+                        </div>
+                        
+                        <div class="mt-4 opacity-0 group-hover:opacity-100 transition-opacity w-full">
+                            <select x-model="selectedTimezone" class="w-full bg-slate-900/50 text-slate-300 text-xs rounded border border-slate-700/50 px-2 py-1.5 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer appearance-none text-center">
+                                <option value="local">Local Time</option>
+                                <option value="UTC">UTC</option>
+                                <option value="America/New_York">New York (EST/EDT)</option>
+                                <option value="America/Chicago">Chicago (CST/CDT)</option>
+                                <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
+                                <option value="Europe/London">London (GMT/BST)</option>
+                                <option value="Europe/Paris">Paris (CET/CEST)</option>
+                                <option value="Asia/Tokyo">Tokyo (JST)</option>
+                                <option value="Asia/Shanghai">Shanghai (CST)</option>
+                                <option value="Australia/Sydney">Sydney (AEST/AEDT)</option>
+                            </select>
+                        </div>
+                    `;
+                    
+                    widget.parentNode.replaceChild(newWidget, widget);
+                    widget = newWidget;
+                }
+            }
+            
+            // 2. Ensure close button exists and attach vanilla fallback click listener
+            let closeBtn = widget.querySelector('.close-widget-btn') || widget.querySelector('button[title="Close Widget"]');
+            if (!closeBtn) {
                 widget.classList.add('group');
                 
-                const btn = document.createElement('button');
-                btn.className = 'close-widget-btn absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity';
-                btn.setAttribute('title', 'Close Widget');
-                btn.innerHTML = '<span class="material-symbols-outlined text-sm">close</span>';
+                closeBtn = document.createElement('button');
+                closeBtn.className = 'close-widget-btn absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity';
+                closeBtn.setAttribute('title', 'Close Widget');
+                closeBtn.innerHTML = '<span class="material-symbols-outlined text-sm">close</span>';
                 
-                btn.addEventListener('click', (e) => {
+                if (widget.style.position !== 'absolute' && getComputedStyle(widget).position === 'static') {
+                    widget.style.position = 'relative';
+                }
+                widget.appendChild(closeBtn);
+            }
+            
+            if (closeBtn && !closeBtn.dataset.hasListener) {
+                closeBtn.dataset.hasListener = "true";
+                closeBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    e.preventDefault();
                     if (window.WidgetManager) {
                         window.WidgetManager.dismiss(widget);
                     } else {
                         widget.remove();
                     }
                 });
-                
-                if (widget.style.position !== 'absolute' && getComputedStyle(widget).position === 'static') {
-                    widget.style.position = 'relative';
-                }
-                widget.appendChild(btn);
             }
             
             // 2. Ensure clock widget has timezone selector if it's a clock and lacks one
