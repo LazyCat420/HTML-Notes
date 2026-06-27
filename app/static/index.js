@@ -617,7 +617,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let temp = document.createElement("div");
         temp.innerHTML = content;
         
-        let components = temp.querySelectorAll(".glass-card, .canvas-element, .rendered-component, .chart-container");
+        let components = temp.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component, .chart-container");
         let hasComponent = components.length > 0;
         
         components.forEach(el => el.remove());
