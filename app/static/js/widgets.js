@@ -22,14 +22,30 @@ document.addEventListener('alpine:init', () => {
     }));
 
     // 2. Clock Widget
-    Alpine.data('clockWidget', (timezone = 'local') => ({
+    Alpine.data('clockWidget', (initialTimezone = 'local') => ({
         time: '--:--:--',
         date: '---',
         interval: null,
+        selectedTimezone: initialTimezone || 'local',
         
         init() {
+            // validate initialTimezone
+            if (this.selectedTimezone && this.selectedTimezone !== 'local' && this.selectedTimezone !== 'None' && this.selectedTimezone !== 'null') {
+                try {
+                    Intl.DateTimeFormat(undefined, { timeZone: this.selectedTimezone });
+                } catch(e) {
+                    this.selectedTimezone = 'local';
+                }
+            } else {
+                this.selectedTimezone = 'local';
+            }
+            
             this.updateTime();
             this.interval = setInterval(() => this.updateTime(), 1000);
+            
+            this.$watch('selectedTimezone', () => {
+                this.updateTime();
+            });
         },
         
         destroy() {
@@ -41,14 +57,11 @@ document.addEventListener('alpine:init', () => {
             const optionsTime = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
             const optionsDate = { weekday: 'short', month: 'short', day: 'numeric' };
             
-            if (timezone && timezone !== 'local' && timezone !== 'None' && timezone !== 'null') {
+            if (this.selectedTimezone !== 'local') {
                 try {
-                    Intl.DateTimeFormat(undefined, { timeZone: timezone });
-                    optionsTime.timeZone = timezone;
-                    optionsDate.timeZone = timezone;
-                } catch (e) {
-                    console.warn(`Invalid timezone provided: ${timezone}. Falling back to local time.`);
-                }
+                    optionsTime.timeZone = this.selectedTimezone;
+                    optionsDate.timeZone = this.selectedTimezone;
+                } catch (e) {}
             }
             
             this.time = now.toLocaleTimeString([], optionsTime);

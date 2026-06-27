@@ -27,11 +27,33 @@ def render_checklist(widget_id: str, config: dict) -> str:
     """
 
 def render_clock(widget_id: str, config: dict) -> str:
-    timezone = config.get("timezone", "local")
+    timezone = config.get("timezone") or "local"
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-1 glass-card p-6 rounded-xl shadow-lg bg-slate-800/80 flex flex-col items-center justify-center" x-data="clockWidget('{timezone}')">
-        <div class="text-4xl font-light text-white tracking-widest" x-text="time">--:--:--</div>
-        <div class="text-sm text-slate-400 uppercase tracking-wider mt-1" x-text="date">---</div>
+    <div id="{widget_id}" class="widget-container col-span-1 glass-card p-6 rounded-xl shadow-lg bg-slate-800/80 flex flex-col relative group" x-data="clockWidget('{timezone}')">
+        <!-- Close Button -->
+        <button @click="destroy(); window.WidgetManager.dismiss($el.closest('.widget-container'))" class="absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity" title="Close Widget">
+            <span class="material-symbols-outlined text-sm">close</span>
+        </button>
+        
+        <div class="flex-grow flex flex-col items-center justify-center mt-2">
+            <div class="text-4xl font-light text-white tracking-widest" x-text="time">--:--:--</div>
+            <div class="text-sm text-slate-400 uppercase tracking-wider mt-1" x-text="date">---</div>
+        </div>
+        
+        <div class="mt-4 opacity-0 group-hover:opacity-100 transition-opacity w-full">
+            <select x-model="selectedTimezone" class="w-full bg-slate-900/50 text-slate-300 text-xs rounded border border-slate-700/50 px-2 py-1.5 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer appearance-none text-center">
+                <option value="local">Local Time</option>
+                <option value="UTC">UTC</option>
+                <option value="America/New_York">New York (EST/EDT)</option>
+                <option value="America/Chicago">Chicago (CST/CDT)</option>
+                <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
+                <option value="Europe/London">London (GMT/BST)</option>
+                <option value="Europe/Paris">Paris (CET/CEST)</option>
+                <option value="Asia/Tokyo">Tokyo (JST)</option>
+                <option value="Asia/Shanghai">Shanghai (CST)</option>
+                <option value="Australia/Sydney">Sydney (AEST/AEDT)</option>
+            </select>
+        </div>
     </div>
     """
 
