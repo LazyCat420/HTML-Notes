@@ -256,6 +256,9 @@ async def send_message(req: MessageRequest):
                                                 all_rendered_html = str(soup)
                                                 yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
                                                 
+                                            logger.info("[FAST LOOP] Terminating early after canvas_modify_dom to save latency")
+                                            break
+                                                
                                         elif active_tool_name == "mcp__lazy-tool-service__canvas_add_widget":
                                             if isinstance(active_tool_args, str):
                                                 try:
@@ -282,6 +285,10 @@ async def send_message(req: MessageRequest):
                                                 soup.append(BeautifulSoup(html_snippet, 'html.parser'))
                                                 all_rendered_html = str(soup)
                                                 yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                                
+                                            logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
+                                            break
+                                            
                                     except Exception as e:
                                         logger.error(f"Failed to execute {active_tool_name}: {e}")
                                     
