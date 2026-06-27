@@ -257,6 +257,8 @@ async def send_message(req: MessageRequest):
                                                 yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
                                                 
                                             logger.info("[FAST LOOP] Terminating early after canvas_modify_dom to save latency")
+                                            active_tool_name = None
+                                            active_tool_args = {}
                                             break
                                                 
                                         elif active_tool_name == "mcp__lazy-tool-service__canvas_add_widget":
@@ -287,6 +289,8 @@ async def send_message(req: MessageRequest):
                                                 yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
                                                 
                                             logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
+                                            active_tool_name = None
+                                            active_tool_args = {}
                                             break
                                             
                                     except Exception as e:

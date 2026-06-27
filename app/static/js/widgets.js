@@ -184,6 +184,10 @@ document.addEventListener('alpine:init', () => {
 
         loadTrack() {
             if (!this.currentTrack) return;
+            if (!this.audio) {
+                console.warn('[MusicPlayer] Audio element was null in loadTrack. Re-initializing.');
+                this.audio = new Audio();
+            }
             const host = window.location.hostname;
             if (this.currentTrack.isYoutube) {
                 this.audio.src = `http://${host}:8002/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
