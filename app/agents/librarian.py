@@ -42,7 +42,8 @@ async def organize_note_metadata(
             messages=messages,
             temperature=0.1,
             max_tokens=256,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            tier=0
         )
         return extract_json_block(response)
     except Exception:

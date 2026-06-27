@@ -1,5 +1,6 @@
 import uuid
 import logging
+import asyncio
 from typing import Dict, Any, List, Optional
 from app import database
 from app.agents.intake import classify_intent
@@ -37,8 +38,16 @@ async def process_user_turn(
     history = database.get_session_messages(session_id)
     history_payload = [{"role": h["role"], "content": h["content"]} for h in history[:-1]]
     
-    # 2. Classify intent
-    classification = await classify_intent(user_input, history_payload)
+    # Get all tags for Librarian
+    all_notes = database.list_all_notes()
+    all_tags = list(set([t for n in all_notes for t in n.get("tags", [])]))
+
+    # 2. Run Intake (classify) and Librarian (metadata) concurrently
+    classification, lib_meta = await asyncio.gather(
+        classify_intent(user_input, history_payload),
+        organize_note_metadata(user_input, all_tags)
+    )
+
     intent = classification.get("intent", "CHAT")
     classified_note_id = classification.get("note_id") or target_note_id
     
@@ -46,13 +55,6 @@ async def process_user_turn(
     existing_note = None
     if classified_note_id:
         existing_note = database.get_note_by_id(classified_note_id)
-        
-    # Get all tags for Librarian
-    all_notes = database.list_all_notes()
-    all_tags = list(set([t for n in all_notes for t in n.get("tags", [])]))
-    
-    # Let Librarian extract search ideas & suggested tags
-    lib_meta = await organize_note_metadata(user_input, all_tags)
     
     # Pull related search context if needed
     search_context = ""

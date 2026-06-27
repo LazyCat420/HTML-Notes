@@ -42,7 +42,8 @@ async def classify_intent(user_input: str, conversation_history: List[Dict[str, 
         messages=messages,
         temperature=0.1,
         max_tokens=256,
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        tier=0
     )
     
     try:

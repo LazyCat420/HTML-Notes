@@ -36,7 +36,8 @@ document.addEventListener("DOMContentLoaded", () => {
         mediaRecorder: null,
         audioChunks: [],
         isRecording: false,
-        isMuted: localStorage.getItem("html_notes_is_muted") === "true"
+        isMuted: localStorage.getItem("html_notes_is_muted") === "true",
+        wakeWordActive: false
     };
 
     localStorage.setItem("html_notes_session_id", state.sessionId);
@@ -71,6 +72,47 @@ document.addEventListener("DOMContentLoaded", () => {
                 elements.btnToggleLog.innerText = "▶";
             }
         });
+    }
+
+    // ─── WAKE WORD ─────────────────────────────────────────
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.lang = 'en-US';
+
+        recognition.onresult = (event) => {
+            if (state.isMuted || state.isRecording) return;
+            const transcript = event.results[event.results.length - 1][0].transcript.trim().toLowerCase();
+            console.log("[WakeWord] Heard:", transcript);
+            
+            if (transcript.includes("hey canvas")) {
+                const command = transcript.split("hey canvas")[1].trim();
+                if (command.length > 0) {
+                    elements.chatInput.value = command;
+                    sendChatMessage();
+                } else {
+                    elements.chatInput.placeholder = "Listening...";
+                    state.wakeWordActive = true;
+                }
+            } else if (state.wakeWordActive) {
+                elements.chatInput.value = transcript;
+                sendChatMessage();
+                elements.chatInput.placeholder = "Type a command to update the canvas...";
+                state.wakeWordActive = false;
+            }
+        };
+
+        recognition.onend = () => {
+            if (!state.isRecording) {
+                try { recognition.start(); } catch (e) {}
+            }
+        };
+        
+        try { recognition.start(); } catch (e) {}
+    } else {
+        console.warn("SpeechRecognition not supported in this browser.");
     }
 
     // Auto-resize textarea
@@ -385,6 +427,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                     addLogStep("Rendered visual component", "🎨");
                                     fullComponentHtml = data.content || "";
                                     renderContent(fullText, fullComponentHtml);
+                                    scrollToBottom();
                                 } else if (data.type === "tool_call") {
                                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
                                 } else if (data.type === "error") {
