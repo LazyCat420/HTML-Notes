@@ -908,73 +908,118 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!grid) return;
 
         const items = grid.querySelectorAll('.widget-container, .glass-card, .canvas-element, .rendered-component');
+        
+        // 1. Arrange items using overlap-detection tiling flow algorithm
+        let nextLeft = 20;
+        let nextTop = 20;
+        let rowHeight = 0;
+        const margin = 20;
+        const maxCanvasWidth = grid.clientWidth || 1200;
+
         items.forEach(item => {
             if (!item.id) {
                 item.id = 'item-' + Math.random().toString(36).substr(2, 9);
             }
-            item.setAttribute('draggable', 'true');
+            
+            let width = item.classList.contains('col-span-2') ? 780 : 380;
+            let height = item.classList.contains('h-[380px]') ? 380 : 280;
 
-            // Disable drag on controls inside widgets so they function normally
-            const controls = item.querySelectorAll('input, textarea, button, select, iframe, a');
-            controls.forEach(control => {
-                control.addEventListener('mousedown', () => {
-                    item.setAttribute('draggable', 'false');
-                });
-                control.addEventListener('mouseup', () => {
-                    item.setAttribute('draggable', 'true');
-                });
-                control.addEventListener('touchstart', () => {
-                    item.setAttribute('draggable', 'false');
-                });
-                control.addEventListener('touchend', () => {
-                    item.setAttribute('draggable', 'true');
-                });
-            });
-
-            item.addEventListener('dragstart', (e) => {
-                e.dataTransfer.setData('text/plain', item.id);
-                e.dataTransfer.effectAllowed = 'move';
-                item.classList.add('dragging-widget');
-                setTimeout(() => item.classList.add('dragging-placeholder'), 0);
-            });
-
-            item.addEventListener('dragend', () => {
-                item.classList.remove('dragging-widget', 'dragging-placeholder');
-                items.forEach(it => it.classList.remove('drag-over-widget'));
-                item.setAttribute('draggable', 'true');
-            });
-
-            item.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-                
-                const draggingItem = grid.querySelector('.dragging-widget');
-                if (draggingItem && draggingItem !== item) {
-                    item.classList.add('drag-over-widget');
-                }
-            });
-
-            item.addEventListener('dragleave', () => {
-                item.classList.remove('drag-over-widget');
-            });
-
-            item.addEventListener('drop', (e) => {
-                e.preventDefault();
-                item.classList.remove('drag-over-widget');
-                
-                const draggedId = e.dataTransfer.getData('text/plain');
-                const draggedElement = grid.querySelector(`#${draggedId}`);
-                
-                if (draggedElement && draggedElement !== item) {
-                    const rect = item.getBoundingClientRect();
-                    const next = (e.clientY - rect.top) > (rect.height / 2);
+            const hasPosition = item.style.left && item.style.top;
+            if (!hasPosition) {
+                while (true) {
+                    let overlap = false;
+                    const rect = { left: nextLeft, top: nextTop, right: nextLeft + width, bottom: nextTop + height };
                     
-                    if (next) {
-                        grid.insertBefore(draggedElement, item.nextSibling);
-                    } else {
-                        grid.insertBefore(draggedElement, item);
+                    for (const other of items) {
+                        if (other === item) continue;
+                        if (other.style.left && other.style.top) {
+                            const oLeft = parseInt(other.style.left);
+                            const oTop = parseInt(other.style.top);
+                            const oWidth = other.classList.contains('col-span-2') ? 780 : 380;
+                            const oHeight = other.classList.contains('h-[380px]') ? 380 : 280;
+                            const oRect = { left: oLeft, top: oTop, right: oLeft + oWidth, bottom: oTop + oHeight };
+                            
+                            if (!(rect.right <= oRect.left || rect.left >= oRect.right || rect.bottom <= oRect.top || rect.top >= oRect.bottom)) {
+                                overlap = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (!overlap) {
+                        break;
+                    }
+                    
+                    nextLeft += 100;
+                    if (nextLeft + width > maxCanvasWidth) {
+                        nextLeft = 20;
+                        nextTop += 100;
                     }
                 }
+                
+                item.style.position = 'absolute';
+                item.style.left = nextLeft + 'px';
+                item.style.top = nextTop + 'px';
+                item.style.width = width + 'px';
+                item.style.height = height + 'px';
+                
+                nextLeft += width + margin;
+                rowHeight = Math.max(rowHeight, height);
+            }
+        });
+
+        // Update container height to fit the lowest widget
+        function updateContainerHeight() {
+            let maxBottom = 800;
+            items.forEach(it => {
+                if (it.style.top) {
+                    const topVal = parseInt(it.style.top) || 0;
+                    const heightVal = it.offsetHeight || (it.classList.contains('h-[380px]') ? 380 : 280);
+                    maxBottom = Math.max(maxBottom, topVal + heightVal + 40);
+                }
+            });
+            grid.style.minHeight = maxBottom + 'px';
+        }
+        updateContainerHeight();
+
+        // 2. Mouse-based drag events for absolute positioning
+        items.forEach(item => {
+            item.removeAttribute('draggable');
+
+            item.addEventListener('mousedown', (e) => {
+                const interactive = e.target.closest('input, textarea, button, select, iframe, a, option, [role="button"]');
+                if (interactive) return;
+
+                if (e.button !== 0) return;
+
+                e.preventDefault();
+
+                const startX = e.clientX;
+                const startY = e.clientY;
+                const startLeft = parseInt(item.style.left) || item.offsetLeft;
+                const startTop = parseInt(item.style.top) || item.offsetTop;
+
+                item.classList.add('dragging-widget');
+                item.style.zIndex = '1000';
+
+                function onMouseMove(moveEvent) {
+                    const dx = moveEvent.clientX - startX;
+                    const dy = moveEvent.clientY - startY;
+                    item.style.left = (startLeft + dx) + 'px';
+                    item.style.top = (startTop + dy) + 'px';
+                    updateContainerHeight();
+                }
+
+                function onMouseUp() {
+                    item.classList.remove('dragging-widget');
+                    item.style.zIndex = '';
+                    
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
             });
         });
     }

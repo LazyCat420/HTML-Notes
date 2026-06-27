@@ -36,11 +36,18 @@ body {
 }
 
 .dashboard-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 1.5rem;
+    position: relative;
     width: 100%;
-    align-items: start;
+    min-height: 800px;
+}
+
+.dashboard-grid > div {
+    position: absolute;
+}
+
+#welcome-message {
+    position: static !important;
+    width: 100%;
 }
 
 .widget-container {
@@ -48,7 +55,15 @@ body {
     border: 1px solid var(--border-color);
     border-radius: 12px;
     overflow: hidden;
-    position: relative;
+    position: absolute;
+}
+
+.widget-container.col-span-1 {
+    width: 380px;
+}
+
+.widget-container.col-span-2 {
+    width: 780px;
 }
 
 /* Base styles for LLM generated content */
@@ -444,9 +459,9 @@ textarea::placeholder {
 
 /* Layout Utilities */
 .dashboard-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1.5rem;
+    position: relative;
+    width: 100%;
+    min-height: 800px;
     margin: 1.5rem 0;
 }
 
