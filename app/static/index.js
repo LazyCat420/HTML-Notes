@@ -1046,7 +1046,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 
                 if (data.models.length > 0) {
                     let defaultIndex = 0;
-                    const vllmIndex = Array.from(elements.modelSelect.options).findIndex(opt => {
+                    const options = Array.from(elements.modelSelect.options);
+                    const vllm2Index = options.findIndex(opt => {
+                        try {
+                            const val = JSON.parse(opt.value);
+                            return val.provider === "vllm-2";
+                        } catch(e) {
+                            return false;
+                        }
+                    });
+                    const vllmIndex = options.findIndex(opt => {
                         try {
                             const val = JSON.parse(opt.value);
                             return val.provider === "vllm";
@@ -1054,7 +1063,9 @@ document.addEventListener("DOMContentLoaded", () => {
                             return false;
                         }
                     });
-                    if (vllmIndex !== -1) {
+                    if (vllm2Index !== -1) {
+                        defaultIndex = vllm2Index;
+                    } else if (vllmIndex !== -1) {
                         defaultIndex = vllmIndex;
                     }
                     elements.modelSelect.options[defaultIndex].selected = true;

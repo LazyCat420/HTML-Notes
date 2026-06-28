@@ -171,6 +171,18 @@ async def send_message(req: MessageRequest):
         if not model_name:
             model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
             req.provider = "vllm"
+            try:
+                # Query Prism to find if vllm-2/gemma-4 is online
+                with httpx.Client(timeout=3.0) as client:
+                    resp = client.get(f"{PRISM_URL}/config?includeLocal=true")
+                    if resp.status_code == 200:
+                        cfg_data = resp.json()
+                        models = cfg_data.get("textToText", {}).get("models", {})
+                        if "vllm-2" in models and any(m.get("name") == "google/gemma-4-26B-A4B-it" for m in models["vllm-2"]):
+                            model_name = "google/gemma-4-26B-A4B-it"
+                            req.provider = "vllm-2"
+            except Exception as e:
+                logger.warning(f"Failed to query Prism for default model fallback: {e}")
 
         payload = {
             "provider": req.provider,
