@@ -595,9 +595,10 @@ document.addEventListener("DOMContentLoaded", () => {
             // 2. Self-heal music player widgets that lost Alpine attributes or are empty
             if ((id.includes('music') || id.includes('player')) && !id.includes('youtube') && !id.includes('video')) {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('musicPlayerWidget');
+                const isOldFormat = hasXData && widget.getAttribute('x-data').includes("musicPlayerWidget('");
                 const hasPlayButton = widget.querySelector('.material-symbols-outlined');
                 
-                if (!hasXData || !hasPlayButton || widget.children.length === 0) {
+                if (!hasXData || isOldFormat || !hasPlayButton || widget.children.length === 0) {
                     let genre = 'jazz';
                     const genreSpan = widget.querySelector('.text-purple-200');
                     if (genreSpan && genreSpan.textContent && genreSpan.textContent.trim() !== 'Radio') {
@@ -693,8 +694,9 @@ document.addEventListener("DOMContentLoaded", () => {
             // 3. Self-heal youtube player widgets that lost Alpine attributes or are empty
             if (id.includes('youtube') || id.includes('video')) {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('youtubePlayerWidget');
+                const isOldFormat = hasXData && widget.getAttribute('x-data').includes("youtubePlayerWidget('");
                 
-                if (!hasXData || widget.children.length === 0) {
+                if (!hasXData || isOldFormat || widget.children.length === 0) {
                     let videoId = '';
                     let title = 'YouTube Player';
                     
@@ -753,8 +755,9 @@ document.addEventListener("DOMContentLoaded", () => {
             // 4. Self-heal checklist widgets that lost Alpine attributes or are empty
             if (id.includes('checklist') || id.includes('todo')) {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('checklistWidget');
+                const isOldFormat = hasXData && widget.getAttribute('x-data').includes("checklistWidget('");
                 
-                if (!hasXData || widget.children.length === 0) {
+                if (!hasXData || isOldFormat || widget.children.length === 0) {
                     let title = 'Checklist';
                     const header = widget.querySelector('h3');
                     if (header && header.textContent) {
