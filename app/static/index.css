@@ -834,4 +834,35 @@ textarea::placeholder {
     transition: all 0.2s ease;
 }
 
+/* Stop button */
+.btn-stop {
+    background: linear-gradient(135deg, #f85149, #da3633);
+    color: #ffffff;
+    border: none;
+    cursor: pointer;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 0 10px rgba(248, 81, 73, 0.3);
+}
+
+.btn-stop:hover {
+    background: linear-gradient(135deg, #ff6b6b, #f85149);
+    transform: scale(1.05);
+    box-shadow: 0 0 15px rgba(248, 81, 73, 0.5);
+}
+
+.btn-stop:active {
+    transform: scale(0.95);
+}
+
+.btn-stop svg {
+    width: 20px;
+    height: 20px;
+}
+
 

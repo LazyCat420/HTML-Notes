@@ -42,7 +42,8 @@ document.addEventListener("DOMContentLoaded", () => {
         audioChunks: [],
         isRecording: false,
         isMuted: localStorage.getItem("html_notes_is_muted") === "true",
-        wakeWordActive: false
+        wakeWordActive: false,
+        abortController: null
     };
 
     localStorage.setItem("html_notes_session_id", state.sessionId);
@@ -51,6 +52,7 @@ document.addEventListener("DOMContentLoaded", () => {
         liveCanvas: document.getElementById("live-canvas"),
         chatInput: document.getElementById("chat-input"),
         btnSendMessage: document.getElementById("btn-send-message"),
+        btnStopMessage: document.getElementById("btn-stop-message"),
         btnMic: document.getElementById("btn-mic"),
         recordingStatus: document.getElementById("recording-status"),
         healthIndicator: document.getElementById("health-indicator"),
@@ -132,6 +134,22 @@ document.addEventListener("DOMContentLoaded", () => {
         if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             sendChatMessage();
+        }
+    });
+
+    if (elements.btnStopMessage) {
+        elements.btnStopMessage.addEventListener("click", () => {
+            if (state.abortController) {
+                state.abortController.abort();
+                clearSpeechQueue();
+            }
+        });
+    }
+
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && state.abortController) {
+            state.abortController.abort();
+            clearSpeechQueue();
         }
     });
 
@@ -414,10 +432,46 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.execLogContent.innerHTML = "";
         elements.execLogContainer.style.display = "flex";
 
+        let lastStatusStep = null;
+        function addLogStep(text, icon) {
+            if (icon === "🧠") {
+                const cleanText = text.replace(/\.+$/, "");
+                if (lastStatusStep) {
+                    const stepText = lastStatusStep.querySelector(".step-text");
+                    if (stepText) {
+                        stepText.innerHTML = cleanText;
+                    }
+                    return;
+                }
+                const step = document.createElement("div");
+                step.className = "log-step status-step";
+                step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${cleanText}</span><span class="dot-flashing ml-2 inline-block"></span>`;
+                elements.execLogContent.appendChild(step);
+                lastStatusStep = step;
+                elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
+                return;
+            }
+            
+            lastStatusStep = null;
+            const step = document.createElement("div");
+            step.className = "log-step";
+            step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${text}</span>`;
+            elements.execLogContent.appendChild(step);
+            elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
+        }
+
+        addLogStep("Connecting to agent...", "🔗");
+
+        if (elements.btnSendMessage) elements.btnSendMessage.style.display = "none";
+        if (elements.btnStopMessage) elements.btnStopMessage.style.display = "flex";
+
+        state.abortController = new AbortController();
+
         try {
             const res = await fetch("/session/message", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                signal: state.abortController.signal,
                 body: JSON.stringify({
                     session_id: state.sessionId,
                     message: text,
@@ -438,36 +492,6 @@ document.addEventListener("DOMContentLoaded", () => {
             let done = false;
             let fullText = "";
             let fullComponentHtml = "";
-
-            let lastStatusStep = null;
-            function addLogStep(text, icon) {
-                if (icon === "🧠") {
-                    const cleanText = text.replace(/\.+$/, "");
-                    if (lastStatusStep) {
-                        const stepText = lastStatusStep.querySelector(".step-text");
-                        if (stepText) {
-                            stepText.innerHTML = cleanText;
-                        }
-                        return;
-                    }
-                    const step = document.createElement("div");
-                    step.className = "log-step status-step";
-                    step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${cleanText}</span><span class="dot-flashing ml-2 inline-block"></span>`;
-                    elements.execLogContent.appendChild(step);
-                    lastStatusStep = step;
-                    elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
-                    return;
-                }
-                
-                lastStatusStep = null;
-                const step = document.createElement("div");
-                step.className = "log-step";
-                step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${text}</span>`;
-                elements.execLogContent.appendChild(step);
-                elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
-            }
-
-            addLogStep("Connecting to agent...", "🔗");
 
             while (!done) {
                 const { value, done: readerDone } = await reader.read();
@@ -521,8 +545,21 @@ document.addEventListener("DOMContentLoaded", () => {
             }, 3000);
 
         } catch (err) {
-            console.error("Network error:", err);
-            renderError("Network error. Is the server running?");
+            if (err.name === 'AbortError') {
+                console.log("Request was aborted by user.");
+                addLogStep("Generation stopped by user.", "🛑");
+            } else {
+                console.error("Network error:", err);
+                renderError("Network error. Is the server running?");
+            }
+            // Auto-hide log after 3 seconds
+            setTimeout(() => {
+                elements.execLogContainer.style.display = "none";
+            }, 3000);
+        } finally {
+            if (elements.btnSendMessage) elements.btnSendMessage.style.display = "flex";
+            if (elements.btnStopMessage) elements.btnStopMessage.style.display = "none";
+            state.abortController = null;
         }
     }
 
