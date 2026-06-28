@@ -52,7 +52,7 @@ def render_clock(widget_id: str, config: dict) -> str:
     return f"""
     <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="clockWidget({json_escape(timezone)})">
         <!-- Close Button -->
-        <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+        <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
         </button>
         
@@ -217,7 +217,7 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
                 <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]" x-text="title"></h3>
                 <span x-show="isLoading" class="text-xs text-slate-400 italic animate-pulse">Resolving stream...</span>
             </div>
-            <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
+            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
                 <span class="material-symbols-outlined text-[1.2rem]">close</span>
             </button>
         </div>

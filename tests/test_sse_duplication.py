@@ -95,3 +95,69 @@ def test_sse_no_duplicate_widget(mock_stream):
     container_count = component_html.count('id="widget-music-player-1"')
     print(f"Container element count: {container_count}")
     assert container_count == 1, f"Expected widget container to be appended exactly once, got {container_count}"
+
+@patch("httpx.AsyncClient.stream")
+def test_youtube_widget_in_place_replacement(mock_stream):
+    session_id = "test-session-youtube-replacement"
+    
+    database.init_db()
+    
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+    cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+    cursor.execute("INSERT INTO chat_sessions (id, title, created_at) VALUES (?, ?, ?)", (session_id, "Youtube Test", "2026-06-27T11:00:00Z"))
+    conn.commit()
+    conn.close()
+
+    # Stream adding a youtube widget when one already exists with a different ID
+    mock_events = [
+        'data: {"type": "tool_execution", "status": "preparing", "tool": {"name": "mcp__lazy-tool-service__canvas_add_widget", "args": {"widget_type": "youtube_player", "widget_id": "fireship-video-latest", "config": {"video_id": "new_video_id", "title": "New Video Title"}}}}\n',
+        'data: {"type": "chunk", "content": "Updated "}\n',
+        'data: {"type": "done"}\n'
+    ]
+
+    mock_stream.return_value = MockAsyncResponse(200, mock_events)
+
+    # Note the custom ID 'widget-pokemon-30th' and the iframe
+    existing_canvas = '''
+    <div id="dashboard-grid" class="dashboard-grid">
+        <div class="widget-container col-span-2 relative overflow-hidden h-[380px]" id="widget-pokemon-30th" x-data="youtubePlayerWidget('old_video_id', 'Old Title')">
+            <iframe src="https://www.youtube.com/embed/old_video_id"></iframe>
+        </div>
+    </div>
+    '''
+
+    res = client.post("/session/message", json={
+        "session_id": session_id,
+        "message": "Add latest video",
+        "provider": "vllm",
+        "model": "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit",
+        "current_canvas": existing_canvas
+    })
+
+    assert res.status_code == 200
+    
+    lines = res.text.split("\n")
+    events = []
+    for line in lines:
+        if line.strip().startswith("data: "):
+            try:
+                events.append(json.loads(line.strip()[6:]))
+            except Exception:
+                pass
+
+    component_events = [e for e in events if e.get("type") == "component"]
+    assert len(component_events) == 1
+    
+    component_html = component_events[0]["content"]
+    
+    # Verify the old ID was reused/replaced, and the new details are injected
+    assert "widget-pokemon-30th" in component_html
+    assert "fireship-video-latest" not in component_html
+    assert "new_video_id" in component_html
+    assert "New Video Title" in component_html
+    
+    # And there shouldn't be two widget containers
+    container_count = component_html.count('id="widget-pokemon-30th"')
+    assert container_count == 1, f"Expected exactly 1 widget with ID widget-pokemon-30th, got {container_count}"

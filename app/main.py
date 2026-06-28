@@ -264,7 +264,12 @@ async def send_message(req: MessageRequest):
                             for div in soup.find_all("div", class_="widget-container"):
                                 xdata = div.get("x-data", "")
                                 div_id = div.get("id", "")
-                                if "youtubePlayerWidget" in xdata or "youtube" in div_id or "video" in div_id:
+                                has_iframe = div.find("iframe") is not None
+                                is_youtube = ("youtubePlayerWidget" in xdata or 
+                                              "youtube" in div_id.lower() or 
+                                              "video" in div_id.lower() or 
+                                              has_iframe)
+                                if is_youtube:
                                     existing_id = div.get("id", widget_id)
                                     html_snippet = generate_widget_html(widget_type, existing_id, config)
                                     new_elem = BeautifulSoup(html_snippet, 'html.parser')
