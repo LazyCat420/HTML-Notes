@@ -1,4 +1,9 @@
+import html
 import json
+from typing import Any
+
+def json_escape(val: Any) -> str:
+    return html.escape(json.dumps(val))
 
 def render_checklist(widget_id: str, config: dict) -> str:
     title = config.get("title", "Checklist")
@@ -14,10 +19,10 @@ def render_checklist(widget_id: str, config: dict) -> str:
                 "text": item.get("text", ""),
                 "done": item.get("done", False)
             })
-    items_json = json.dumps(normalized_items).replace('"', '&quot;')
+    items_json = json_escape(normalized_items)
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] group" x-data="checklistWidget('{title}', {items_json})">
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] group" x-data="checklistWidget({json_escape(title)}, {items_json})">
         <!-- Close Button -->
         <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
@@ -31,9 +36,9 @@ def render_checklist(widget_id: str, config: dict) -> str:
         <ul class="space-y-2 overflow-y-auto flex-grow pr-1 custom-scrollbar">
             <template x-for="(item, idx) in items" :key="idx">
                 <li class="flex items-center gap-3 p-2 rounded-xl transition-all duration-300 group/item border border-transparent"
-                    :class="{'bg-green-500/10 border-green-500/20 text-green-300': item.done, 'hover:bg-white/5': !item.done}">
+                    :class="{{'bg-green-500/10 border-green-500/20 text-green-300': item.done, 'hover:bg-white/5': !item.done}}">
                     <input type="checkbox" x-model="item.done" class="rounded border-white/10 text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer">
-                    <span :class="{'line-through opacity-50': item.done}" x-text="item.text" class="text-sm flex-grow cursor-pointer" @click="item.done = !item.done"></span>
+                    <span :class="{{'line-through opacity-50': item.done}}" x-text="item.text" class="text-sm flex-grow cursor-pointer" @click="item.done = !item.done"></span>
                     <button @click="removeTask(idx)" class="opacity-0 group-hover/item:opacity-100 text-red-400 hover:text-red-300 transition-opacity">×</button>
                 </li>
             </template>
@@ -45,7 +50,7 @@ def render_checklist(widget_id: str, config: dict) -> str:
 def render_clock(widget_id: str, config: dict) -> str:
     timezone = config.get("timezone") or "local"
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="clockWidget('{timezone}')">
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="clockWidget({json_escape(timezone)})">
         <!-- Close Button -->
         <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
@@ -76,10 +81,9 @@ def render_clock(widget_id: str, config: dict) -> str:
 def render_notes(widget_id: str, config: dict) -> str:
     title = config.get("title", "Quick Notes")
     content = config.get("content", "")
-    content_json = json.dumps(content).replace('"', '&quot;')
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] group" x-data="notesWidget('{title}', {content_json})">
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] group" x-data="notesWidget({json_escape(title)}, {json_escape(content)})">
         <!-- Close Button -->
         <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
@@ -122,7 +126,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
     autoplay = str(config.get("autoplay", False)).lower()
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="musicPlayerWidget('{genre}', {autoplay})">
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="musicPlayerWidget({json_escape(genre)}, {autoplay})">
         <!-- Background Blur/Glow effect -->
         <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
         <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/40 to-transparent pointer-events-none"></div>
@@ -205,7 +209,7 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
     title = config.get("title", "YouTube Player")
     
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group" x-data="youtubePlayerWidget('{video_id}', '{title}')">
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)})">
         <!-- Title Bar -->
         <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
             <div class="flex items-center gap-2">
