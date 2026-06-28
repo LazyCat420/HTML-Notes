@@ -372,6 +372,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 li.remove();
             }
         });
+
+        // Strip legacy dataset listener tags that were serialized to HTML
+        const allElements = temp.querySelectorAll('[data-has-listener]');
+        allElements.forEach(el => el.removeAttribute('data-has-listener'));
         
         return temp.innerHTML;
     }
@@ -845,8 +849,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 widget.appendChild(closeBtn);
             }
             
-            if (closeBtn && !closeBtn.dataset.hasListener) {
-                closeBtn.dataset.hasListener = "true";
+            if (closeBtn && !closeBtn._hasListener) {
+                closeBtn._hasListener = true;
                 closeBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     e.preventDefault();
@@ -858,58 +862,65 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
             }
             
-            // 2. Ensure clock widget has timezone selector if it's a clock and lacks one
+            // 2. Ensure clock widget has timezone selector if it's a clock and handles timezone updates
             const isClock = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('clockWidget');
-            if (isClock && !widget.querySelector('select')) {
-                const selectContainer = document.createElement('div');
-                selectContainer.className = 'mt-4 opacity-0 group-hover:opacity-100 transition-opacity w-full';
-                selectContainer.innerHTML = `
-                    <select class="w-full bg-slate-900/50 text-slate-300 text-xs rounded border border-slate-700/50 px-2 py-1.5 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer appearance-none text-center">
-                        <option value="local">Local Time</option>
-                        <option value="UTC">UTC</option>
-                        <option value="America/New_York">New York (EST/EDT)</option>
-                        <option value="America/Chicago">Chicago (CST/CDT)</option>
-                        <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
-                        <option value="Europe/London">London (GMT/BST)</option>
-                        <option value="Europe/Paris">Paris (CET/CEST)</option>
-                        <option value="Asia/Tokyo">Tokyo (JST)</option>
-                        <option value="Asia/Shanghai">Shanghai (CST)</option>
-                        <option value="Australia/Sydney">Sydney (AEST/AEDT)</option>
-                    </select>
-                `;
-                widget.appendChild(selectContainer);
+            if (isClock) {
+                let select = widget.querySelector('select');
+                if (!select) {
+                    const selectContainer = document.createElement('div');
+                    selectContainer.className = 'mt-4 opacity-0 group-hover:opacity-100 transition-opacity w-full';
+                    selectContainer.innerHTML = `
+                        <select class="w-full bg-slate-900/50 text-slate-300 text-xs rounded border border-slate-700/50 px-2 py-1.5 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer appearance-none text-center">
+                            <option value="local">Local Time</option>
+                            <option value="UTC">UTC</option>
+                            <option value="America/New_York">New York (EST/EDT)</option>
+                            <option value="America/Chicago">Chicago (CST/CDT)</option>
+                            <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
+                            <option value="Europe/London">London (GMT/BST)</option>
+                            <option value="Europe/Paris">Paris (CET/CEST)</option>
+                            <option value="Asia/Tokyo">Tokyo (JST)</option>
+                            <option value="Asia/Shanghai">Shanghai (CST)</option>
+                            <option value="Australia/Sydney">Sydney (AEST/AEDT)</option>
+                        </select>
+                    `;
+                    widget.appendChild(selectContainer);
+                    select = selectContainer.querySelector('select');
+                }
                 
-                const select = selectContainer.querySelector('select');
-                
-                const updateSelectFromAlpine = () => {
-                    if (window.Alpine) {
-                        try {
-                            const alpineData = window.Alpine.$data(widget);
-                            if (alpineData) {
-                                select.value = alpineData.selectedTimezone || 'local';
-                                select.addEventListener('change', (e) => {
-                                    alpineData.selectedTimezone = e.target.value;
-                                    if (typeof alpineData.updateTime === 'function') {
-                                        alpineData.updateTime();
+                if (select && !select._hasListener) {
+                    const updateSelectFromAlpine = () => {
+                        if (window.Alpine) {
+                            try {
+                                const alpineData = window.Alpine.$data(widget);
+                                if (alpineData) {
+                                    select.value = alpineData.selectedTimezone || 'local';
+                                    if (!select._hasListener) {
+                                        select._hasListener = true;
+                                        select.addEventListener('change', (e) => {
+                                            alpineData.selectedTimezone = e.target.value;
+                                            if (typeof alpineData.updateTime === 'function') {
+                                                alpineData.updateTime();
+                                            }
+                                        });
                                     }
-                                });
-                                return true;
+                                    return true;
+                                }
+                            } catch (err) {
+                                console.warn("Failed to get Alpine data for clock widget:", err);
                             }
-                        } catch (err) {
-                            console.warn("Failed to get Alpine data for clock widget:", err);
                         }
+                        return false;
+                    };
+                    
+                    if (!updateSelectFromAlpine()) {
+                        let retries = 0;
+                        const timer = setInterval(() => {
+                            retries++;
+                            if (updateSelectFromAlpine() || retries > 20) {
+                                clearInterval(timer);
+                            }
+                        }, 200);
                     }
-                    return false;
-                };
-                
-                if (!updateSelectFromAlpine()) {
-                    let retries = 0;
-                    const timer = setInterval(() => {
-                        retries++;
-                        if (updateSelectFromAlpine() || retries > 20) {
-                            clearInterval(timer);
-                        }
-                    }, 200);
                 }
             }
         });
