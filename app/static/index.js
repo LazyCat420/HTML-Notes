@@ -1202,14 +1202,62 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function enqueueTTS(sentence) {
-        ttsQueue.push(sentence);
+        const cleanText = cleanTextForTTS(sentence);
+        if (!cleanText) return;
+
+        const item = {
+            text: sentence,
+            cleanText: cleanText,
+            audioUrl: null,
+            audio: null,
+            status: 'pending',
+            fetchPromise: null
+        };
+
+        // Start background fetch immediately unless muted
+        if (!state.isMuted) {
+            item.status = 'fetching';
+            item.fetchPromise = (async () => {
+                try {
+                    const res = await fetch("/tts/synthesize", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ text: cleanText })
+                    });
+                    if (!res.ok) throw new Error("TTS proxy error");
+                    const blob = await res.blob();
+                    item.audioUrl = URL.createObjectURL(blob);
+                    item.audio = new Audio(item.audioUrl);
+                    item.status = 'ready';
+                } catch (e) {
+                    console.error("Background TTS fetch failed:", e);
+                    item.status = 'error';
+                }
+            })();
+        }
+
+        ttsQueue.push(item);
         processTTSQueue();
     }
 
     function clearSpeechQueue() {
+        ttsQueue.forEach(item => {
+            if (item.audio) {
+                try {
+                    item.audio.pause();
+                } catch(e) {}
+            }
+            if (item.audioUrl) {
+                try {
+                    URL.revokeObjectURL(item.audioUrl);
+                } catch(e) {}
+            }
+        });
         ttsQueue.length = 0;
         if (currentAudio) {
-            currentAudio.pause();
+            try {
+                currentAudio.pause();
+            } catch(e) {}
             currentAudio = null;
         }
         const overlay = document.getElementById("speech-overlay");
@@ -1238,10 +1286,10 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         
         isProcessingQueue = true;
-        const sentence = ttsQueue.shift();
+        const item = ttsQueue.shift();
         
         try {
-            await playSentenceTTS(sentence);
+            await playSentenceTTS(item);
         } catch (err) {
             console.error("Error playing sentence TTS:", err);
         } finally {
@@ -1250,17 +1298,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function playSentenceTTS(sentence) {
-        return new Promise((resolve) => {
+    function playSentenceTTS(item) {
+        return new Promise(async (resolve) => {
             const overlay = document.getElementById("speech-overlay");
-            const cleanText = cleanTextForTTS(sentence);
-            
-            if (!cleanText) {
-                resolve();
-                return;
-            }
-
-            const words = sentence.split(/\s+/).filter(w => w.length > 0);
+            const cleanText = item.cleanText;
+            const words = item.text.split(/\s+/).filter(w => w.length > 0);
             
             overlay.innerHTML = "";
             overlay.style.display = "block";
@@ -1274,58 +1316,60 @@ document.addEventListener("DOMContentLoaded", () => {
                 overlay.appendChild(span);
             });
 
-            if (state.isMuted) {
-                const simulationDuration = Math.max(1500, words.length * 300);
-                setTimeout(fadeAndFinish, simulationDuration);
-            } else {
-                fetch("/tts/synthesize", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ text: cleanText })
-                })
-                .then(res => {
-                    if (!res.ok) throw new Error("TTS proxy error");
-                    return res.blob();
-                })
-                .then(blob => {
-                    const audioUrl = URL.createObjectURL(blob);
-                    const audio = new Audio(audioUrl);
-                    currentAudio = audio;
-                    
-                    audio.onended = () => {
-                        URL.revokeObjectURL(audioUrl);
-                        currentAudio = null;
-                        fadeAndFinish();
-                    };
-                    
-                    audio.onerror = (err) => {
-                        console.error("Audio playback error:", err);
-                        URL.revokeObjectURL(audioUrl);
-                        currentAudio = null;
-                        const fallbackDuration = Math.max(1500, words.length * 300);
-                        setTimeout(fadeAndFinish, fallbackDuration);
-                    };
-                    
-                    audio.play().catch(err => {
-                        console.error("Audio play failed:", err);
-                        const fallbackDuration = Math.max(1500, words.length * 300);
-                        setTimeout(fadeAndFinish, fallbackDuration);
-                    });
-                })
-                .catch(err => {
-                    console.error("TTS fetch failed, falling back to silent visualization:", err);
-                    const fallbackDuration = Math.max(1500, words.length * 300);
-                    setTimeout(fadeAndFinish, fallbackDuration);
-                });
-            }
-            
-            function fadeAndFinish() {
+            const fadeAndFinish = () => {
                 overlay.classList.add("sentence-fade-out");
                 setTimeout(() => {
                     overlay.style.display = "none";
                     overlay.innerHTML = "";
                     resolve();
                 }, 400);
+            };
+
+            if (state.isMuted) {
+                const simulationDuration = Math.max(1500, words.length * 300);
+                setTimeout(fadeAndFinish, simulationDuration);
+            } else {
+                // Await background fetch to complete if it's still fetching
+                if (item.fetchPromise) {
+                    await item.fetchPromise;
+                }
+
+                if (item.status === 'ready' && item.audio) {
+                    currentAudio = item.audio;
+                    
+                    item.audio.onended = () => {
+                        URL.revokeObjectURL(item.audioUrl);
+                        if (currentAudio === item.audio) {
+                            currentAudio = null;
+                        }
+                        fadeAndFinish();
+                    };
+                    
+                    item.audio.onerror = (err) => {
+                        console.error("Audio playback error:", err);
+                        URL.revokeObjectURL(item.audioUrl);
+                        if (currentAudio === item.audio) {
+                            currentAudio = null;
+                        }
+                        const fallbackDuration = Math.max(1500, words.length * 300);
+                        setTimeout(fadeAndFinish, fallbackDuration);
+                    };
+                    
+                    item.audio.play().catch(err => {
+                        console.error("Audio play failed:", err);
+                        URL.revokeObjectURL(item.audioUrl);
+                        if (currentAudio === item.audio) {
+                            currentAudio = null;
+                        }
+                        const fallbackDuration = Math.max(1500, words.length * 300);
+                        setTimeout(fadeAndFinish, fallbackDuration);
+                    });
+                } else {
+                    // Fallback to silent simulation if fetch failed
+                    console.warn("Background fetch failed or was not initialized, falling back to silent visualization.");
+                    const fallbackDuration = Math.max(1500, words.length * 300);
+                    setTimeout(fadeAndFinish, fallbackDuration);
+                }
             }
         });
     }
