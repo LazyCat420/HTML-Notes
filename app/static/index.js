@@ -607,7 +607,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
                     newWidget.className = widget.className;
-                    newWidget.setAttribute('x-data', `musicPlayerWidget('${genre}', true)`);
+                    newWidget.setAttribute('x-data', `musicPlayerWidget(${JSON.stringify(genre)}, true)`);
                     newWidget.innerHTML = `
                         <!-- Background Blur/Glow effect -->
                         <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
@@ -714,7 +714,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
                     newWidget.className = widget.className;
-                    newWidget.setAttribute('x-data', `youtubePlayerWidget('${videoId}', '${title}')`);
+                    newWidget.setAttribute('x-data', `youtubePlayerWidget(${JSON.stringify(videoId)}, ${JSON.stringify(title)})`);
                     newWidget.innerHTML = `
                         <!-- Title Bar -->
                         <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
@@ -778,7 +778,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
                     newWidget.className = widget.className;
-                    newWidget.setAttribute('x-data', `checklistWidget('${title}', ${itemsJson})`);
+                    newWidget.setAttribute('x-data', `checklistWidget(${JSON.stringify(title)}, ${itemsJson})`);
                     newWidget.innerHTML = `
                         <!-- Close Button -->
                         <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
