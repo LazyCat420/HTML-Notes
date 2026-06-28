@@ -357,6 +357,25 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function getCleanedCanvasHtml() {
+        const temp = document.createElement("div");
+        temp.innerHTML = elements.liveCanvas.innerHTML;
+        
+        // Remove dynamically generated iframes inside youtube player widgets
+        const youtubeIframes = temp.querySelectorAll('[x-data*="youtubePlayerWidget"] iframe');
+        youtubeIframes.forEach(iframe => iframe.remove());
+        
+        // Remove dynamically generated list items in checklists (keep fallback text and close button)
+        const checklistItems = temp.querySelectorAll('[x-data*="checklistWidget"] ul li');
+        checklistItems.forEach(li => {
+            if (!li.getAttribute('x-show') && !li.classList.contains('close-widget-btn')) {
+                li.remove();
+            }
+        });
+        
+        return temp.innerHTML;
+    }
+
     // ─── CHAT & RENDERING LOGIC ────────────────────────────────
     async function sendChatMessage() {
         const text = elements.chatInput.value.trim();
@@ -400,7 +419,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     message: text,
                     provider: provider,
                     model: model,
-                    current_canvas: elements.liveCanvas.innerHTML
+                    current_canvas: getCleanedCanvasHtml()
                 })
             });
 
