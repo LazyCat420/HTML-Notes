@@ -326,9 +326,8 @@ async def send_message(req: MessageRequest):
         # Build system prompt with canvas context
         SYSTEM_PROMPT = (
             "You are an agentic OS assistant that manages a live dashboard canvas.\n"
-            "CRITICAL: You are a TOOL-ONLY agent. You MUST NEVER output raw HTML directly in your text response.\n"
-            "CRITICAL: DO NOT output any conversational text, thinking, or explanations. ONLY output tool calls.\n"
-            "CRITICAL: You are an agent. When using tools, emit the required tool call JSON format correctly.\\n\\n"
+            "CRITICAL: You are a strict TOOL-ONLY JSON agent. You MUST NEVER output any conversational text, thinking process, or explanations. You MUST START your response immediately with the tool call.\n"
+            "If you output any text that is not a tool call, the system will crash.\n\\n"
             f"CURRENT CANVAS STATE:\\n```markdown\\n{canvas_summary}\\n```\\n\\n"
             "CANVAS TOOLS:\\n"
             "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\\n"
@@ -340,17 +339,28 @@ async def send_message(req: MessageRequest):
             "AGENTIC UI GENERATION RULES:\\n"
             "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\\n"
             "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\\\"url\\\": \\\"http://nas:3000\\\", \\\"title\\\": \\\"App\\\", \\\"icon\\\": \\\"🌐\\\"}`. For 'mini_music_player', use config `{\\\"genre\\\": \\\"jazz\\\", \\\"autoplay\\\": true}`.\\n"
-            "3. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST search for it using `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the correct video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'` and `config={\\\"video_id\\\": \\\"...\\\"}`. DO NOT hallucinate video IDs.\\n"
-            "4. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom (not in the Lego library), use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` and write Tailwind/Alpine.js HTML.\\n"
-            "5. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\\n\\n"
+            "3. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST use `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'`. DO NOT explain your plan. Execute `html_notes_youtube_search` immediately.\\n"
+            "4. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom, use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'`.\\n"
+            "5. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\\n\\n"
             "CANVAS DOM MODIFICATION RULES:\\n"
             "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\\n\\n"
-            "2. VAGUE YOUTUBE REQUESTS: If the user asks generally to 'pull up a video' or 'play a youtube video' without specifying a topic or search term, you MUST choose a random search query from various rotating topics (e.g. 'lofi study beats', 'world news', 'machine learning street talk', 'relaxing nature 4k', 'tech reviews') to ensure variety. Do NOT ask for clarification; select a topic and execute immediately."
+            "2. VAGUE YOUTUBE REQUESTS: If the user asks generally to 'pull up a video' or 'play a youtube video' without specifying a topic or search term, choose a random search query and execute `html_notes_youtube_search` immediately. Do NOT ask for clarification."
         )
 
+        # Ensure all possible tools are enabled
+        enabled_tools = [
+            "mcp__lazy-tool-service__html_notes_create_note",
+            "mcp__lazy-tool-service__html_notes_update_note",
+            "mcp__lazy-tool-service__html_notes_get_note",
+            "mcp__lazy-tool-service__html_notes_search_notes",
+            "mcp__lazy-tool-service__html_notes_link_notes",
+            "mcp__lazy-tool-service__canvas_read_dom",
+            "mcp__lazy-tool-service__canvas_add_widget",
+            "mcp__lazy-tool-service__canvas_modify_dom",
+            "mcp__lazy-tool-service__html_notes_youtube_search"
+        ]
+
         # Build messages array — use system role at index 0.
-        # Prism will automatically append tool schemas to this system message or prepend its own agent prompt.
-        # This keeps the system prompt at the very beginning of the chat session, preventing vLLM crashes.
         messages = [
             {
                 "role": "system",
@@ -385,39 +395,25 @@ async def send_message(req: MessageRequest):
         # Build Prism /agent payload — NO tools array (Prism uses its own catalog)
         model_name = req.model
         if not model_name:
-            model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
             req.provider = "vllm"
             try:
-                # Query Prism to find if vllm-2 or vllm is online and use their models dynamically
-                with httpx.Client(timeout=3.0) as client:
-                    resp = client.get(f"{target_url}/config?includeLocal=true")
+                with httpx.Client(timeout=2.0) as client:
+                    resp = client.get(f"{VLLM_URL}/v1/models")
                     if resp.status_code == 200:
-                        cfg_data = resp.json()
-                        models = cfg_data.get("textToText", {}).get("models", {})
-                        if "vllm-2" in models and len(models["vllm-2"]) > 0:
-                            model_name = models["vllm-2"][0].get("name")
-                            req.provider = "vllm-2"
-                        elif "vllm" in models and len(models["vllm"]) > 0:
-                            model_name = models["vllm"][0].get("name")
-                            req.provider = "vllm"
+                        models_data = resp.json().get("data", [])
+                        if models_data:
+                            model_name = models_data[0].get("id")
             except Exception as e:
-                logger.warning(f"Failed to query {target_url} for default model fallback: {e}")
+                logger.warning(f"Failed to fetch dynamic model from {VLLM_URL}: {e}")
+            if not model_name:
+                model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
 
         payload = {
             "provider": req.provider,
             "model": model_name,
             "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
             "workspaceEnabled": False,
-            "enabledTools": [
-                "mcp__lazy-tool-service__html_notes_create_note",
-                "mcp__lazy-tool-service__html_notes_update_note",
-                "mcp__lazy-tool-service__html_notes_get_note",
-                "mcp__lazy-tool-service__html_notes_search_notes",
-                "mcp__lazy-tool-service__html_notes_link_notes",
-                "mcp__lazy-tool-service__canvas_read_dom",
-                "mcp__lazy-tool-service__canvas_add_widget",
-                "mcp__lazy-tool-service__html_notes_youtube_search"
-            ],
+            "enabledTools": enabled_tools,
             "messages": messages,
             "maxTokens": 512,
             "project": "html-notes-client",
