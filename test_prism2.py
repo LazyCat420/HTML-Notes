@@ -3,8 +3,8 @@ import httpx
 
 async def main():
     payload = {
-        "provider": "lm-studio",
-        "model": "qwen3-vl-8b-instruct-abliterated-v2.0",
+        "provider": "vllm",
+        "model": "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit",
         "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
         "workspaceEnabled": False,
         "enabledTools": [
@@ -18,7 +18,7 @@ async def main():
         "autoApprove": True
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream(
             "POST",
             "http://10.0.0.16:7777/agent",
