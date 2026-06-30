@@ -40,7 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL
+from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL
 import json
 import uuid
 from bs4 import BeautifulSoup
@@ -110,6 +110,7 @@ class MessageRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     current_canvas: Optional[str] = None
+    use_lazy_agent: bool = False
 
 class CreateNoteRequest(BaseModel):
     title: str
@@ -412,6 +413,8 @@ async def send_message(req: MessageRequest):
 
             messages.append({"role": h["role"], "content": content})
 
+        target_url = LAZY_AGENT_URL if req.use_lazy_agent else PRISM_URL
+
         # Build Prism /agent payload — NO tools array (Prism uses its own catalog)
         model_name = req.model
         if not model_name:
@@ -420,7 +423,7 @@ async def send_message(req: MessageRequest):
             try:
                 # Query Prism to find if vllm-2 or vllm is online and use their models dynamically
                 with httpx.Client(timeout=3.0) as client:
-                    resp = client.get(f"{PRISM_URL}/config?includeLocal=true")
+                    resp = client.get(f"{target_url}/config?includeLocal=true")
                     if resp.status_code == 200:
                         cfg_data = resp.json()
                         models = cfg_data.get("textToText", {}).get("models", {})
@@ -431,7 +434,7 @@ async def send_message(req: MessageRequest):
                             model_name = models["vllm"][0].get("name")
                             req.provider = "vllm"
             except Exception as e:
-                logger.warning(f"Failed to query Prism for default model fallback: {e}")
+                logger.warning(f"Failed to query {target_url} for default model fallback: {e}")
 
         payload = {
             "provider": req.provider,
@@ -554,7 +557,7 @@ async def send_message(req: MessageRequest):
                 async with httpx.AsyncClient(timeout=600.0) as client:
                     async with client.stream(
                         "POST",
-                        f"{PRISM_URL}/agent",
+                        f"{target_url}/agent",
                         json=payload,
                         headers={"Accept": "text/event-stream"}
                     ) as resp:

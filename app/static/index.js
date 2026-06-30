@@ -477,7 +477,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     message: text,
                     provider: provider,
                     model: model,
-                    current_canvas: getCleanedCanvasHtml()
+                    current_canvas: getCleanedCanvasHtml(),
+                    use_lazy_agent: document.getElementById('toggle-lazy-agent')?.checked || false
                 })
             });
 
