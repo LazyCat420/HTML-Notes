@@ -233,40 +233,6 @@ async def send_message(req: MessageRequest):
         text_lower = req.message.lower().strip()
         text_clean = text_lower.strip()
         
-        # 1. YouTube specific heuristic matching
-        is_youtube = "youtube" in text_clean or "yt" in text_clean
-        # Use our hybrid vague query parser to check if there are any meaningful search terms
-        is_vague_youtube = is_query_vague(req.message)
-        
-        if is_youtube and not is_vague_youtube:
-            query = req.message
-            for prefix in ("add a youtube widget for", "add youtube widget for", "add a youtube player for", "add youtube player for", "add a youtube player", "add youtube player", "add youtube widget", "add youtube", "youtube", "play on youtube", "play", "yt"):
-                if text_clean.startswith(prefix):
-                    extracted = req.message[len(prefix):].strip()
-                    if extracted:
-                        query = extracted
-                        break
-            
-            async def fast_path_stream():
-                yield f'data: {{"type": "status", "message": "heuristic-path: searching youtube for \\"{query}\\"..."}}\n\n'
-                video_id = await fast_youtube_search(query)
-                if video_id:
-                    widget_id = f"youtube-{uuid.uuid4().hex[:8]}"
-                    html_snippet = generate_widget_html("youtube_player", widget_id, {"video_id": video_id})
-                    
-                    global latest_canvas_html
-                    soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
-                    target = soup.select_one('#dashboard-grid')
-                    if target:
-                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                        target.append(new_elem)
-                        latest_canvas_html = str(soup)
-                    
-                    yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
-                    yield 'data: {"type": "done"}\n\n'
-                else:
-                    yield f'data: {{"type": "error", "message": "Failed to find video"}}\n\n'
-            return StreamingResponse(fast_path_stream(), media_type="text/event-stream")
 
         # 2. Clock heuristic matching
         is_clock = "clock" in text_clean
