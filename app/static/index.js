@@ -1273,9 +1273,10 @@ document.addEventListener("DOMContentLoaded", () => {
         
         if (hasComponent) {
             htmlText += `<div class="chat-component-placeholder">🎨 Generated visual component on canvas</div>`;
+            return htmlText;
         }
         
-        return htmlText || `<div class="chat-component-placeholder">🎨 Generated visual component on canvas</div>`;
+        return htmlText || `<div class="chat-message-empty text-white/30 text-xs italic">No text response</div>`;
     }
 
     function handleIncomingChunk(textToken) {

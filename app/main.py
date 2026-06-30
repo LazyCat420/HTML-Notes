@@ -1,6 +1,46 @@
 import httpx
 import logging
 import re
+
+import urllib.parse
+import httpx
+
+import urllib.parse
+import httpx
+
+async def search_youtube_videos(query: str, limit: int = 5) -> list:
+    """Search YouTube and return a list of video dicts containing video_id and title."""
+    try:
+        url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            html = resp.text
+            import re
+            matches = re.findall(r'"videoRenderer":\{.*?"videoId":"([a-zA-Z0-9_-]{11})",.*?"title":\{"runs":\[\{"text":"(.*?)"\}\]\}', html)
+            results = []
+            seen = set()
+            for vid, title in matches:
+                if vid not in seen:
+                    seen.add(vid)
+                    try:
+                        clean_title = json.loads('"' + title + '"')
+                    except Exception:
+                        clean_title = title
+                    results.append({"video_id": vid, "title": clean_title})
+                    if len(results) >= limit:
+                        break
+            return results
+    except Exception as e:
+        logger.error(f"search_youtube_videos error: {e}")
+    return []
+
+async def fast_youtube_search(query: str) -> str:
+    """Scrape youtube for the first video ID for a query."""
+    results = await search_youtube_videos(query, limit=1)
+    if results:
+        return results[0]["video_id"]
+    return ""
+
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +55,53 @@ from app.widgets.factory import generate_widget_html
 
 
 logging.basicConfig(level=logging.INFO)
+
+import logging
+
 logger = logging.getLogger(__name__)
+
+# Global cache to keep track of the latest active canvas HTML for DOM queries
+latest_canvas_html = ""
+
+def get_canvas_summary(html: str) -> str:
+    """Parses raw canvas HTML and extracts widget details into a tiny, token-efficient summary."""
+    if not html or html.strip() == "" or html == "Canvas is empty.":
+        return "Canvas is currently empty."
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        widgets = []
+        for card in soup.select(".glass-card, .widget-container"):
+            widget_id = card.get("id", "unknown")
+            xdata = card.get("x-data", "")
+            
+            # Find title
+            title_el = card.select_one(".glass-card-title, h3, h2")
+            title = title_el.get_text(strip=True) if title_el else "Untitled"
+            
+            # Identify widget type
+            wtype = "custom"
+            classes = card.get("class", [])
+            for cls in classes:
+                if cls in ("checklist", "clock", "notes", "iframe_app", "mini_music_player", "youtube_player"):
+                    wtype = cls
+                    break
+            if wtype == "custom" and xdata:
+                if "checklistWidget" in xdata: wtype = "checklist"
+                elif "clockWidget" in xdata: wtype = "clock"
+                elif "notesWidget" in xdata: wtype = "notes"
+                elif "musicPlayerWidget" in xdata: wtype = "mini_music_player"
+                elif "youtubePlayerWidget" in xdata: wtype = "youtube_player"
+                
+            widgets.append(f"- Widget ID: #{widget_id}, Type: {wtype}, Title: '{title}'")
+        
+        if not widgets:
+            return "Canvas contains no recognizable widgets."
+        return "\n".join(widgets)
+    except Exception as e:
+        logger.error(f"Error getting canvas summary: {e}")
+        return html[:2000]
+
 
 app = FastAPI(
     title="HTML-Notes Engine",
@@ -83,6 +169,51 @@ async def get_models():
         logger.error(f"Error fetching models: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+def extract_youtube_query(text: str) -> str:
+    text_lower = text.lower().strip()
+    # Strip common trigger prefixes
+    pattern = r'^(?:add|show|open|play|create|get)\s+(?:a\s+)?(?:youtube|yt)\s+(?:player\s+|widget\s+|video\s+)*(?:for\s+|with\s+|of\s+)*'
+    cleaned = re.sub(pattern, '', text_lower)
+    for prefix in ("youtube", "yt", "play"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+    quote_match = re.search(r'["\'“]([^"\'”]+)["\'”]', cleaned)
+    if quote_match:
+        return quote_match.group(1).strip()
+    return cleaned.strip()
+
+def is_query_vague(query_text: str) -> bool:
+    """
+    Checks if a query text contains meaningful content or is just conversational filler / general widget spawn commands.
+    """
+    if not query_text:
+        return True
+    
+    # Lowercase & strip punctuation
+    text = query_text.lower().strip()
+    text = re.sub(r'[^\w\s]', '', text)
+    
+    # Hybrid Catalog of filler words/synonyms
+    filler_words = {
+        # Action verbs
+        "add", "show", "open", "play", "create", "pull", "up", "get", "find", "search", "insert", "inject", "spawn", "display",
+        # Articles & prepositions
+        "a", "an", "the", "some", "any", "to", "on", "for", "with", "in", "at",
+        # Conversational filler
+        "please", "now", "here", "thanks", "thank", "you", "would", "like", "want", "need", "can", "could", "me", "us",
+        # Widget type descriptors (predefined categories)
+        "widget", "player", "video", "youtube", "yt", "channel", "clip", "stream", "online", "notes", "notepad", "scratchpad", 
+        "clock", "time", "checklist", "todo", "todolist", "task", "list", "music", "radio", "song", "audio", "lofi", "beats"
+    }
+    
+    words = text.split()
+    meaningful_words = [w for w in words if w not in filler_words]
+    
+    # Returns True if no meaningful words are left
+    return len(meaningful_words) == 0
+
 def is_valid_tool_args(tool_name: str, args: dict) -> bool:
     if not args:
         return False
@@ -104,48 +235,170 @@ async def send_message(req: MessageRequest):
             content=req.message
         )
 
+        
+        text_lower = req.message.lower().strip()
+        text_clean = text_lower.strip()
+        
+        # 1. YouTube specific heuristic matching
+        is_youtube = "youtube" in text_clean or "yt" in text_clean
+        # Use our hybrid vague query parser to check if there are any meaningful search terms
+        is_vague_youtube = is_query_vague(req.message)
+        
+        if is_youtube and not is_vague_youtube:
+            query = req.message
+            for prefix in ("add a youtube widget for", "add youtube widget for", "add a youtube player for", "add youtube player for", "add a youtube player", "add youtube player", "add youtube widget", "add youtube", "youtube", "play on youtube", "play", "yt"):
+                if text_clean.startswith(prefix):
+                    extracted = req.message[len(prefix):].strip()
+                    if extracted:
+                        query = extracted
+                        break
+            
+            async def fast_path_stream():
+                yield f'data: {{"type": "status", "message": "heuristic-path: searching youtube for \\"{query}\\"..."}}\n\n'
+                video_id = await fast_youtube_search(query)
+                if video_id:
+                    widget_id = f"youtube-{uuid.uuid4().hex[:8]}"
+                    html_snippet = generate_widget_html("youtube_player", widget_id, {"video_id": video_id})
+                    
+                    global latest_canvas_html
+                    soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
+                    target = soup.select_one('#dashboard-grid')
+                    if target:
+                        new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                        target.append(new_elem)
+                        latest_canvas_html = str(soup)
+                    
+                    yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                    yield 'data: {"type": "done"}\n\n'
+                else:
+                    yield f'data: {{"type": "error", "message": "Failed to find video"}}\n\n'
+            return StreamingResponse(fast_path_stream(), media_type="text/event-stream")
+
+        # 2. Clock heuristic matching
+        is_clock = "clock" in text_clean
+        has_timezone = any(tz in text_clean for tz in ("in ", "for ", "time ", "zone", "city", "york", "london", "tokyo", "paris", "sydney", "canada"))
+        if is_clock and not has_timezone:
+            async def clock_stream():
+                yield f'data: {{"type": "status", "message": "heuristic-path: spawning clock widget..."}}\n\n'
+                widget_id = f"clock-{uuid.uuid4().hex[:8]}"
+                html_snippet = generate_widget_html("clock", widget_id, {})
+                
+                global latest_canvas_html
+                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
+                target = soup.select_one('#dashboard-grid')
+                if target:
+                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                    target.append(new_elem)
+                    latest_canvas_html = str(soup)
+                
+                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                yield 'data: {"type": "done"}\n\n'
+            return StreamingResponse(clock_stream(), media_type="text/event-stream")
+
+        # 3. Checklist heuristic matching
+        if any(w in text_clean for w in ("checklist", "todo", "to-do", "task list")):
+            async def checklist_stream():
+                yield f'data: {{"type": "status", "message": "heuristic-path: spawning checklist widget..."}}\n\n'
+                widget_id = f"checklist-{uuid.uuid4().hex[:8]}"
+                html_snippet = generate_widget_html("checklist", widget_id, {})
+                
+                global latest_canvas_html
+                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
+                target = soup.select_one('#dashboard-grid')
+                if target:
+                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                    target.append(new_elem)
+                    latest_canvas_html = str(soup)
+                
+                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                yield 'data: {"type": "done"}\n\n'
+            return StreamingResponse(checklist_stream(), media_type="text/event-stream")
+
+        # 4. Music player heuristic matching
+        has_custom_url = "http" in text_clean or "www" in text_clean
+        if any(w in text_clean for w in ("music", "player", "radio")) and not has_custom_url:
+            async def music_stream():
+                yield f'data: {{"type": "status", "message": "heuristic-path: spawning music widget..."}}\n\n'
+                widget_id = f"music-{uuid.uuid4().hex[:8]}"
+                html_snippet = generate_widget_html("mini_music_player", widget_id, {"genre": "lofi"})
+                
+                global latest_canvas_html
+                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
+                target = soup.select_one('#dashboard-grid')
+                if target:
+                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                    target.append(new_elem)
+                    latest_canvas_html = str(soup)
+                
+                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                yield 'data: {"type": "done"}\n\n'
+            return StreamingResponse(music_stream(), media_type="text/event-stream")
+
+        # 5. Notes heuristic matching
+        is_searching_notes = "search" in text_clean or "find" in text_clean or "look for" in text_clean
+        if any(w in text_clean for w in ("notes", "notepad", "scratchpad")) and not is_searching_notes:
+            async def notes_stream():
+                yield f'data: {{"type": "status", "message": "heuristic-path: spawning notes widget..."}}\n\n'
+                widget_id = f"notes-{uuid.uuid4().hex[:8]}"
+                html_snippet = generate_widget_html("notes", widget_id, {})
+                
+                global latest_canvas_html
+                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
+                target = soup.select_one('#dashboard-grid')
+                if target:
+                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                    target.append(new_elem)
+                    latest_canvas_html = str(soup)
+                
+                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                yield 'data: {"type": "done"}\n\n'
+            return StreamingResponse(notes_stream(), media_type="text/event-stream")
+
+        # Start loading history
+
         history = database.get_session_messages(req.session_id)
 
-        canvas_html = req.current_canvas[:50000] + "..." if req.current_canvas and len(req.current_canvas) > 50000 else (req.current_canvas or "Canvas is empty.")
+        global latest_canvas_html
+        if req.current_canvas:
+            latest_canvas_html = req.current_canvas
+        canvas_summary = get_canvas_summary(req.current_canvas)
 
         # Build system prompt with canvas context
         SYSTEM_PROMPT = (
             "You are an agentic OS assistant that manages a live dashboard canvas.\n"
-            "CRITICAL: You are a TOOL-ONLY agent. You MUST NEVER output raw HTML directly in your text response.\n\n"
-            f"CURRENT CANVAS STATE:\n```html\n{canvas_html}\n```\n\n"
+            "CRITICAL: You are a TOOL-ONLY agent. You MUST NEVER output raw HTML directly in your text response.\n"
+            "CRITICAL: DO NOT output any text, reasoning, thinking, or confirmations. You must output ABSOLUTELY NOTHING but the tool call directly.\n\n"
+            f"CURRENT CANVAS STATE:\n```markdown\n{canvas_summary}\n```\n\n"
             "CANVAS TOOLS:\n"
             "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\n"
             "- Add a Lego Widget (Checklist, Clock, Notes, Music Player, YouTube Player) → mcp__lazy-tool-service__canvas_add_widget()\n"
-            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-UUID', action='replace' or 'remove')\n"
+            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-[UUID]', action='replace' or 'remove')\n"
             "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
             "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n"
-            "- Search YouTube for videos → mcp__lazy-tool-service__youtube_search(query, limit, sort)\n"
-            "  * Always use sort='date' if the user asks for the newest or latest videos.\n\n"
+            "- Search YouTube for videos → mcp__lazy-tool-service__html_notes_youtube_search(query, limit)\n"
+            "- Add a YouTube widget to canvas → mcp__lazy-tool-service__html_notes_add_youtube_widget(query)\n\n"
             "AGENTIC UI GENERATION RULES:\n"
             "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\n"
-            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\"url\": \"http://nas:3000\", \"title\": \"App\", \"icon\": \"🌐\"}`. For 'mini_music_player', use config `{\"genre\": \"jazz\", \"autoplay\": true}`. For 'youtube_player', you MUST first search YouTube using `mcp__lazy-tool-service__youtube_search` to find the exact 11-character video ID, then pass that video_id in the config (e.g. `{\"video_id\": \"_D3tz9TpPJs\", \"title\": \"Bloomberg News\"}`). Never pass raw search queries directly to `canvas_add_widget`. NEVER try to generate the raw HTML yourself for standard widgets.\n"
+            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\"url\": \"http://nas:3000\", \"title\": \"App\", \"icon\": \"🌐\"}`. For 'mini_music_player', use config `{\"genre\": \"jazz\", \"autoplay\": true}`. For YouTube videos, you MUST ALWAYS use `mcp__lazy-tool-service__html_notes_add_youtube_widget(query)` instead to automatically search and add the widget in one step. Never pass raw search queries directly to `canvas_add_widget`. NEVER try to generate the raw HTML yourself for standard widgets.\n"
             "3. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom (not in the Lego library), use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` and write Tailwind/Alpine.js HTML.\n"
             "4. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\n\n"
             "CANVAS DOM MODIFICATION RULES:\n"
-            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID."
+            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\n\n"
+            "2. VAGUE YOUTUBE REQUESTS: If the user asks generally to 'pull up a video' or 'play a youtube video' without specifying a topic or search term, you MUST choose a random search query from various rotating topics (e.g. 'lofi study beats', 'world news', 'machine learning street talk', 'relaxing nature 4k', 'tech reviews') to ensure variety. Do NOT ask for clarification; select a topic and execute immediately."
         )
 
-        # Build messages array — only system/user/assistant with string content
-        # Workaround for Prism + Qwen 3.6: Do not use 'system' role to avoid 
-        # "System message must be at the beginning" crash when Prism prepends its own system prompt.
+        # Build messages array — use system role at index 0.
+        # Prism will automatically append tool schemas to this system message or prepend its own agent prompt.
+        # This keeps the system prompt at the very beginning of the chat session, preventing vLLM crashes.
         messages = [
             {
-                "role": "user",
-                "content": f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n[/SYSTEM INSTRUCTIONS]"
-            },
-            {
-                "role": "assistant",
-                "content": "Understood. I will follow these instructions and use tools to update the canvas."
+                "role": "system",
+                "content": SYSTEM_PROMPT
             }
         ]
 
         # Only include recent history to avoid context overflow (last 10 messages)
-        recent_history = history[-10:]
+        recent_history = history[-3:]
         for h in recent_history:
             content = h["content"]
 
@@ -197,10 +450,11 @@ async def send_message(req: MessageRequest):
                 "mcp__lazy-tool-service__html_notes_link_notes",
                 "mcp__lazy-tool-service__canvas_read_dom",
                 "mcp__lazy-tool-service__canvas_add_widget",
-                "mcp__lazy-tool-service__youtube_search"
+                "mcp__lazy-tool-service__html_notes_youtube_search",
+                "mcp__lazy-tool-service__html_notes_add_youtube_widget"
             ],
             "messages": messages,
-            "maxTokens": 4096,
+            "maxTokens": 512,
             "project": "html-notes-client",
             "username": "lazycat",
             "skipConversation": True,
@@ -366,14 +620,29 @@ async def send_message(req: MessageRequest):
                                     
                                     active_tool_args = args
 
-                                    if status in ("done", "success"):
-                                        if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
-                                            if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args):
-                                                async for evt in execute_mutation(active_tool_name, active_tool_args):
+                                    # FAST PATH: Execute immediately when arguments are available!
+                                    if active_tool_name == "mcp__lazy-tool-service__html_notes_add_youtube_widget":
+                                        query = active_tool_args.get("query", "")
+                                        if query and not executed_active_tool and status in ("calling", "done", "success"):
+                                            video_id = await fast_youtube_search(query)
+                                            if video_id:
+                                                fake_args = {
+                                                    "widget_type": "youtube_player",
+                                                    "widget_id": f"youtube-{uuid.uuid4().hex[:8]}",
+                                                    "config": {"video_id": video_id}
+                                                }
+                                                async for evt in execute_mutation("mcp__lazy-tool-service__canvas_add_widget", fake_args):
                                                     yield evt
-                                                executed_active_tool = True
-                                                active_tool_name = None
-                                                active_tool_args = {}
+                                            executed_active_tool = True
+                                            active_tool_name = None
+                                            active_tool_args = {}
+                                    elif active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
+                                        if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args) and status in ("calling", "done", "success"):
+                                            async for evt in execute_mutation(active_tool_name, active_tool_args):
+                                                yield evt
+                                            executed_active_tool = True
+                                            active_tool_name = None
+                                            active_tool_args = {}
                                         else:
                                             active_tool_name = None
                                             active_tool_args = {}
@@ -701,7 +970,7 @@ async def internal_tool_execute(req: InternalToolRequest):
             }
 
         elif t == "canvas_read_dom":
-            canvas_html = a.get("canvas_html", "")
+            canvas_html = a.get("canvas_html") or latest_canvas_html
             css_selector = a.get("css_selector")
             
             if not canvas_html or canvas_html.strip() == "":
@@ -760,7 +1029,7 @@ async def internal_tool_execute(req: InternalToolRequest):
             }
 
         elif t == "canvas_modify_dom":
-            canvas_html = a.get("canvas_html", "")
+            canvas_html = a.get("canvas_html") or latest_canvas_html
             css_selector = a.get("css_selector")
             action = a.get("action")
             html_snippet = a.get("html_snippet", "")
@@ -803,6 +1072,16 @@ async def internal_tool_execute(req: InternalToolRequest):
                 "action_performed": action,
                 "selector": css_selector
             }
+
+        elif t == "html_notes_add_youtube_widget":
+            # Handled by the SSE interceptor on the streaming wrapper, but we return success here as well
+            return {"success": True, "message": "Successfully added YouTube widget to canvas."}
+
+        elif t == "html_notes_youtube_search":
+            query = a.get("query", "")
+            limit = int(a.get("limit", 5))
+            results = await search_youtube_videos(query, limit=limit)
+            return {"results": results, "count": len(results)}
 
         elif t == "canvas_add_widget":
             # The actual injection to the frontend is handled by the SSE interceptor during 'calling' phase.

@@ -4,8 +4,8 @@ import json
 
 async def main():
     payload = {
-        "provider": "vllm-2",
-        "model": "Qwen3.6 35B A3B AWQ 4bit",
+        "provider": "lm-studio",
+        "model": "qwen3-vl-8b-instruct-abliterated-v2.0",
         "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
         "workspaceEnabled": False,
         "enabledTools": [

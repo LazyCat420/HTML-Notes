@@ -2,7 +2,7 @@ import httpx
 import asyncio
 
 async def main():
-    PRISM_URL = "http://10.0.0.16:7778"
+    PRISM_URL = "http://10.0.0.16:7777"
     model_name = ""
     provider_val = ""
     try:
