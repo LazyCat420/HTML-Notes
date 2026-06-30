@@ -34,13 +34,6 @@ async def search_youtube_videos(query: str, limit: int = 5) -> list:
         logger.error(f"search_youtube_videos error: {e}")
     return []
 
-async def fast_youtube_search(query: str) -> str:
-    """Scrape youtube for the first video ID for a query."""
-    results = await search_youtube_videos(query, limit=1)
-    if results:
-        return results[0]["video_id"]
-    return ""
-
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -367,23 +360,23 @@ async def send_message(req: MessageRequest):
         SYSTEM_PROMPT = (
             "You are an agentic OS assistant that manages a live dashboard canvas.\n"
             "CRITICAL: You are a TOOL-ONLY agent. You MUST NEVER output raw HTML directly in your text response.\n"
-            "CRITICAL: DO NOT output any text, reasoning, thinking, or confirmations. You must output ABSOLUTELY NOTHING but the tool call directly.\n\n"
-            f"CURRENT CANVAS STATE:\n```markdown\n{canvas_summary}\n```\n\n"
-            "CANVAS TOOLS:\n"
-            "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\n"
-            "- Add a Lego Widget (Checklist, Clock, Notes, Music Player, YouTube Player) → mcp__lazy-tool-service__canvas_add_widget()\n"
-            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-[UUID]', action='replace' or 'remove')\n"
-            "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
-            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n"
-            "- Search YouTube for videos → mcp__lazy-tool-service__html_notes_youtube_search(query, limit)\n"
-            "- Add a YouTube widget to canvas → mcp__lazy-tool-service__html_notes_add_youtube_widget(query)\n\n"
-            "AGENTIC UI GENERATION RULES:\n"
-            "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\n"
-            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\"url\": \"http://nas:3000\", \"title\": \"App\", \"icon\": \"🌐\"}`. For 'mini_music_player', use config `{\"genre\": \"jazz\", \"autoplay\": true}`. For YouTube videos, you MUST ALWAYS use `mcp__lazy-tool-service__html_notes_add_youtube_widget(query)` instead to automatically search and add the widget in one step. Never pass raw search queries directly to `canvas_add_widget`. NEVER try to generate the raw HTML yourself for standard widgets.\n"
-            "3. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom (not in the Lego library), use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` and write Tailwind/Alpine.js HTML.\n"
-            "4. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\n\n"
-            "CANVAS DOM MODIFICATION RULES:\n"
-            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\n\n"
+            "CRITICAL: You are an agent. When using tools, emit the required tool call JSON format correctly.\\n\\n"
+            f"CURRENT CANVAS STATE:\\n```markdown\\n{canvas_summary}\\n```\\n\\n"
+            "CANVAS TOOLS:\\n"
+            "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\\n"
+            "- Add a Lego Widget (Checklist, Clock, Notes, Music Player, YouTube Player) → mcp__lazy-tool-service__canvas_add_widget()\\n"
+            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-[UUID]', action='replace' or 'remove')\\n"
+            "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\\n"
+            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\\n"
+            "- Search YouTube for videos → mcp__lazy-tool-service__html_notes_youtube_search(query, limit)\\n\\n"
+            "AGENTIC UI GENERATION RULES:\\n"
+            "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\\n"
+            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\\\"url\\\": \\\"http://nas:3000\\\", \\\"title\\\": \\\"App\\\", \\\"icon\\\": \\\"🌐\\\"}`. For 'mini_music_player', use config `{\\\"genre\\\": \\\"jazz\\\", \\\"autoplay\\\": true}`.\\n"
+            "3. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST search for it using `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the correct video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'` and `config={\\\"video_id\\\": \\\"...\\\"}`. DO NOT hallucinate video IDs.\\n"
+            "4. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom (not in the Lego library), use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'` and write Tailwind/Alpine.js HTML.\\n"
+            "5. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID (e.g. `css_selector='#widget-[UUID]'`) and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\\n\\n"
+            "CANVAS DOM MODIFICATION RULES:\\n"
+            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\\n\\n"
             "2. VAGUE YOUTUBE REQUESTS: If the user asks generally to 'pull up a video' or 'play a youtube video' without specifying a topic or search term, you MUST choose a random search query from various rotating topics (e.g. 'lofi study beats', 'world news', 'machine learning street talk', 'relaxing nature 4k', 'tech reviews') to ensure variety. Do NOT ask for clarification; select a topic and execute immediately."
         )
 
@@ -453,8 +446,7 @@ async def send_message(req: MessageRequest):
                 "mcp__lazy-tool-service__html_notes_link_notes",
                 "mcp__lazy-tool-service__canvas_read_dom",
                 "mcp__lazy-tool-service__canvas_add_widget",
-                "mcp__lazy-tool-service__html_notes_youtube_search",
-                "mcp__lazy-tool-service__html_notes_add_youtube_widget"
+                "mcp__lazy-tool-service__html_notes_youtube_search"
             ],
             "messages": messages,
             "maxTokens": 512,
@@ -624,22 +616,7 @@ async def send_message(req: MessageRequest):
                                     active_tool_args = args
 
                                     # FAST PATH: Execute immediately when arguments are available!
-                                    if active_tool_name == "mcp__lazy-tool-service__html_notes_add_youtube_widget":
-                                        query = active_tool_args.get("query", "")
-                                        if query and not executed_active_tool and status in ("calling", "done", "success"):
-                                            video_id = await fast_youtube_search(query)
-                                            if video_id:
-                                                fake_args = {
-                                                    "widget_type": "youtube_player",
-                                                    "widget_id": f"youtube-{uuid.uuid4().hex[:8]}",
-                                                    "config": {"video_id": video_id}
-                                                }
-                                                async for evt in execute_mutation("mcp__lazy-tool-service__canvas_add_widget", fake_args):
-                                                    yield evt
-                                            executed_active_tool = True
-                                            active_tool_name = None
-                                            active_tool_args = {}
-                                    elif active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
+                                    if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
                                         if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args) and status in ("calling", "done", "success"):
                                             async for evt in execute_mutation(active_tool_name, active_tool_args):
                                                 yield evt
