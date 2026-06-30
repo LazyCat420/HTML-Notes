@@ -212,7 +212,7 @@ def is_valid_tool_args(tool_name: str, args: dict) -> bool:
     if not args:
         return False
     if tool_name == "mcp__lazy-tool-service__canvas_add_widget":
-        return bool(args.get("widget_type") and args.get("widget_id"))
+        return bool(args.get("widget_type"))
     if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
         return bool(args.get("css_selector") and args.get("action"))
     return False
@@ -327,6 +327,7 @@ async def send_message(req: MessageRequest):
         SYSTEM_PROMPT = (
             "You are an agentic OS assistant that manages a live dashboard canvas.\n"
             "CRITICAL: You are a TOOL-ONLY agent. You MUST NEVER output raw HTML directly in your text response.\n"
+            "CRITICAL: DO NOT output any conversational text, thinking, or explanations. ONLY output tool calls.\n"
             "CRITICAL: You are an agent. When using tools, emit the required tool call JSON format correctly.\\n\\n"
             f"CURRENT CANVAS STATE:\\n```markdown\\n{canvas_summary}\\n```\\n\\n"
             "CANVAS TOOLS:\\n"
