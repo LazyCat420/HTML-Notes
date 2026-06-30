@@ -390,7 +390,7 @@ async def send_message(req: MessageRequest):
 
             messages.append({"role": h["role"], "content": content})
 
-        target_url = LAZY_AGENT_URL if req.use_lazy_agent else PRISM_URL
+        target_url = PRISM_URL
 
         # Build Prism /agent payload — NO tools array (Prism uses its own catalog)
         model_name = req.model
@@ -407,6 +407,16 @@ async def send_message(req: MessageRequest):
                 logger.warning(f"Failed to fetch dynamic model from {VLLM_URL}: {e}")
             if not model_name:
                 model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
+        # Sync Prism's settings dynamically so MemoryExtractor doesn't crash on outdated models
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                client.put(f"{PRISM_URL}/settings", json={
+                    "memory": {
+                        "extractionModel": model_name
+                    }
+                })
+        except Exception as e:
+            logger.warning(f"Failed to sync memory extraction model to Prism: {e}")
 
         payload = {
             "provider": req.provider,
