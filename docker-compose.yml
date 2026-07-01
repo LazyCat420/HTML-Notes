@@ -11,7 +11,7 @@ services:
       - PORT=8035
       - DATABASE_URL=/app/data/notes.db
       - VLLM_URL=http://10.0.0.141:8000
-      - PRISM_URL=http://10.0.0.16:7777
+      - PRISM_URL=http://10.0.0.16:7778
     volumes:
       - ./data:/app/data
     restart: unless-stopped
