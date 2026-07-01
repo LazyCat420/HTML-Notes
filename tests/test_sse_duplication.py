@@ -59,7 +59,7 @@ def test_sse_no_duplicate_widget(mock_stream):
     # Call the endpoint
     res = client.post("/session/message", json={
         "session_id": session_id,
-        "message": "Add a music widget please",
+        "message": "Add an audio box please",
         "provider": "vllm",
         "model": "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit",
         "current_canvas": '<div id="dashboard-grid" class="dashboard-grid"></div>'

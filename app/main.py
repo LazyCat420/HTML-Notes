@@ -599,7 +599,7 @@ async def send_message(req: MessageRequest):
                                             executed_active_tool = True
                                             active_tool_name = None
                                             active_tool_args = {}
-                                        else:
+                                        elif status in ("calling", "done", "success", "error"):
                                             active_tool_name = None
                                             active_tool_args = {}
                                     elif status == "error":
