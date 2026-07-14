@@ -1561,6 +1561,9 @@ async def send_message(req: MessageRequest):
                                 if not line.startswith("data: "):
                                     continue
 
+                                if canvas_settled:
+                                    break
+
                                 try:
                                     event = json.loads(line[6:])
                                 except json.JSONDecodeError:
@@ -1628,6 +1631,12 @@ async def send_message(req: MessageRequest):
 
                                 elif event_type == "error":
                                     yield f'data: {json.dumps({"type": "error", "message": event.get("message", "Agent error")})}\n\n'
+
+                            # The `break` above only escapes the inner line loop —
+                            # without this the outer chunk loop keeps pulling the
+                            # agent's stream and the turn runs to completion anyway.
+                            if canvas_settled:
+                                break
 
             except Exception as e:
                 logger.error(f"Prism SSE proxy error: {e}")
