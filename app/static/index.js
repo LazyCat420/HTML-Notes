@@ -329,22 +329,25 @@ document.addEventListener("DOMContentLoaded", () => {
         FORCE_BODY: true
     };
 
+    // Returns true if it actually painted, so the caller knows to (re)initialize
+    // the widgets it just injected.
     function renderContent(textContent, componentHtml, version) {
         // The text content goes to TTS and Chat History.
         // We ONLY render the HTML component to the live canvas.
-        if (!componentHtml || componentHtml === lastRenderedComponentHtml) return;
+        if (!componentHtml || componentHtml === lastRenderedComponentHtml) return false;
 
         // Server canvas commits are versioned and monotonic. With several turns
         // in flight, a slow turn's component event can arrive after a faster turn
         // already committed a newer canvas — painting the older one would quietly
         // delete the newer widget. Never go backwards.
         if (typeof version === "number") {
-            if (version < canvasVersion) return;
+            if (version < canvasVersion) return false;
             canvasVersion = version;
         }
 
         lastRenderedComponentHtml = componentHtml;
         elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, CANVAS_DOMPURIFY_CONFIG);
+        return true;
     }
 
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
@@ -622,7 +625,15 @@ document.addEventListener("DOMContentLoaded", () => {
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
                                     fullComponentHtml = data.content || "";
-                                    renderContent(fullText, fullComponentHtml, data.version);
+                                    if (renderContent(fullText, fullComponentHtml, data.version)) {
+                                        // Initialize the moment the widget lands, not on
+                                        // "done". A stock_card is entirely Alpine x-text, so
+                                        // painted-but-uninitialized is an EMPTY SHELL — and
+                                        // any turn whose "done" never arrives (abort, second
+                                        // turn, dropped connection) left it that way until
+                                        // the page was reloaded.
+                                        renderDynamicComponents(elements.liveCanvas);
+                                    }
                                     scrollToBottom();
                                 } else if (data.type === "tool_call") {
                                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
@@ -1199,7 +1210,13 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!poweredOnWidgets.has(item.id)) {
                 poweredOnWidgets.add(item.id);
                 item.classList.add('crt-on');
-                item.addEventListener('animationend', () => item.classList.remove('crt-on'), { once: true });
+                // crt-on starts at opacity 0 / scaleX 0 with fill-mode "both", so a
+                // widget whose animation never runs to completion stays INVISIBLE.
+                // animationend can be missed if the canvas is re-painted mid-flight,
+                // so the timeout guarantees the class comes off either way.
+                const settle = () => item.classList.remove('crt-on');
+                item.addEventListener('animationend', settle, { once: true });
+                setTimeout(settle, 900);
             }
         });
 

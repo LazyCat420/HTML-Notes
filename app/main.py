@@ -493,9 +493,11 @@ from app import database
 from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL
 import asyncio
 import datetime
+import hashlib
 import itertools
 import json
 import os
+import pathlib
 import time
 import uuid
 from bs4 import BeautifulSoup
@@ -2202,8 +2204,32 @@ async def get_session_history(session_id: str):
 # Mount UI static files at root
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
+_CACHE_BUSTED_ASSETS = ("index.js", "index.css", "js/widgets.js")
+_ASSET_QUERY_RE = re.compile(r'(index\.js|index\.css|js/widgets\.js)\?v=[^"\']*')
+
+
+def _asset_version() -> str:
+    """Fingerprint the frontend assets by mtime.
+
+    The ?v= tokens in index.html were hand-written and never got bumped, so a
+    returning browser kept running whichever index.js it had cached from an
+    earlier deploy — new server behaviour talking to old client code. Deriving
+    the token from the files themselves means it can't drift again.
+    """
+    stamps = []
+    for name in _CACHE_BUSTED_ASSETS:
+        try:
+            stamps.append(str(os.path.getmtime(os.path.join("app/static", name))))
+        except OSError:
+            pass
+    return hashlib.sha1("|".join(stamps).encode()).hexdigest()[:10]
+
+
 @app.get("/")
 def read_root():
-    # Redirect base URL to static client UI
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/static/index.html")
+    html = pathlib.Path("app/static/index.html").read_text()
+    html = _ASSET_QUERY_RE.sub(rf'\1?v={_asset_version()}', html)
+    # The shell itself must never be cached, or the browser keeps serving an old
+    # copy carrying the old ?v= tokens and the whole scheme is pointless.
+    return Response(content=html, media_type="text/html",
+                    headers={"Cache-Control": "no-store, must-revalidate"})
