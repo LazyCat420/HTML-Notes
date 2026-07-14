@@ -1456,6 +1456,17 @@ async def send_message(req: MessageRequest):
         payload = {
             "provider": req.provider,
             "model": model_name,
+            # Tailor-made persona in the gateway (personas/clients/
+            # HtmlNotesPersona.ts): scopes the run to the widget tool set with
+            # no forced core/orchestrator tools in the system prompt, and
+            # defaults thinking off. Without it this ran as the generic "Omni
+            # Agent" — ~35 unrelated tools documented into every turn and ~180
+            # <think> chunks streamed before the first tool call.
+            "agent": "HTML_NOTES",
+            # Belt and braces with the persona's thinkingDefault: a widget
+            # router gains nothing from chain-of-thought and the user is
+            # watching a spinner while it streams.
+            "thinkingEnabled": False,
             "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
             "workspaceEnabled": False,
             "enabledTools": enabled_tools,
