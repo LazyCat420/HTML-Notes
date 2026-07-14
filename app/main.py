@@ -444,6 +444,36 @@ async def sports_scores(league: str) -> dict:
     }
 
 
+# Results of the data tools, so a widget can reference data the model just
+# fetched instead of re-typing it.
+#
+# stock_card's config IS the whole snapshot — labels, values, volumes, technicals,
+# fundamentals — and the model was hand-typing all ~2000 tokens of it back into
+# canvas_add_widget's arguments. That single re-emission was most of the turn: the
+# data tool answered at ~10s and the widget call didn't land until ~65s. Now the
+# model passes {"symbol": "AMZN"} and the server rehydrates the rest.
+#
+# Keyed by content (not session) so it stays correct with concurrent turns.
+_TOOL_RESULT_TTL = 300.0
+_tool_results: Dict[str, tuple] = {}
+
+
+def cache_tool_result(key: str, value: dict) -> None:
+    now = time.time()
+    for k, (stamp, _) in list(_tool_results.items()):
+        if now - stamp > _TOOL_RESULT_TTL:
+            _tool_results.pop(k, None)
+    _tool_results[key.lower().strip()] = (now, value)
+
+
+def get_cached_tool_result(key: str) -> Optional[dict]:
+    entry = _tool_results.get((key or "").lower().strip())
+    if not entry:
+        return None
+    stamp, value = entry
+    return value if time.time() - stamp <= _TOOL_RESULT_TTL else None
+
+
 async def read_web_page(url: str, max_chars: int = 6000) -> dict:
     """Fetch and return the readable text of a page."""
     content = await _scrape(url, engine="crawl4ai")
@@ -1097,7 +1127,7 @@ async def send_message(req: MessageRequest):
             "STEP 1 — CLASSIFY INTENT. Every request maps to exactly one output shape:\n"
             "- Play/watch a VIDEO (mentions video, youtube, watch, clip — even combined with other nouns like 'clock video') → html_notes_youtube_search then canvas_add_widget(widget_type='youtube_player')\n"
             "- Watch something LIVE ('cnn live news', 'live stream of X', 'watch bbc live') → html_notes_youtube_search(query, order='live') then canvas_add_widget(widget_type='youtube_player'). This is a VIDEO request even though it says 'news' — the user wants a stream to watch, NOT a data_card of headlines. order='live' is required; a plain search returns recorded clips instead of the stream.\n"
-            "- SPORTS scores/fixtures/results/standings ('fifa scores', 'ufc card', \"who's playing in the nba\") → mcp__lazy-tool-service__html_notes_sports_scores(league) then canvas_add_widget(widget_type='scoreboard', config=<THE WHOLE TOOL RESULT, verbatim>). league takes a friendly name: fifa, world cup, premier league, champions league, la liga, mls, ufc, mma, nba, nfl, mlb, nhl, college football. NEVER web-search for scores and never render them as a data_card — a scoreboard has to show who is playing whom.\n"
+            "- SPORTS scores/fixtures/results/standings ('fifa scores', 'ufc card', \"who's playing in the nba\") → mcp__lazy-tool-service__html_notes_sports_scores(league) then canvas_add_widget(widget_type='scoreboard', widget_id='scores-<league>', config={\"league\": \"<league>\"}) — config is JUST the league; do NOT copy the events back, the server fills them in. league takes a friendly name: fifa, world cup, premier league, champions league, la liga, mls, ufc, mma, nba, nfl, mlb, nhl, college football. NEVER web-search for scores and never render them as a data_card — a scoreboard has to show who is playing whom.\n"
             "- A NEWS video ('fifa news video', 'latest X video') → html_notes_youtube_search(query, order='date') — order='date' is required, because a relevance search returns an old most-watched clip instead of the newest one. Drop words like 'video'/'watch' from the query: search 'fifa news', not 'fifa news video'.\n"
             "- Show DATA (news, recipes, weather, search results, facts, lists) → fetch with data tools, then canvas_add_widget(widget_type='data_card')\n"
             "- Show NUMBERS OVER TIME/CATEGORIES (stock price, trends, comparisons) → fetch data, then canvas_add_widget(widget_type='chart')\n"
@@ -1108,8 +1138,8 @@ async def send_message(req: MessageRequest):
             "WIDGET CONTRACTS for canvas_add_widget(widget_type, widget_id, config):\n"
             "- data_card: config={title, subtitle?, icon?, image?, items:[{title, description?, image?, url?, badge?, meta?}]} — one item per headline/recipe/result. Include an item image URL whenever the source data has one. Use config.content (plain text) instead of items for prose answers.\n"
             "- chart: config={title, type:'line'|'bar'|'pie', labels:[...], values:[...]} — for generic numbers ONLY, never for a stock ticker\n"
-            "- stock_card: config = the entire result of html_notes_stock_history, passed through unchanged\n"
-            "- scoreboard: config = the entire result of html_notes_sports_scores, passed through unchanged\n"
+            "- stock_card: config={symbol} only — the server fills in prices/technicals/fundamentals from the tool result\n"
+            "- scoreboard: config={league} only — the server fills in the fixtures from the tool result\n"
             "- image: config={title, url, caption?} or {title, images:[{url, caption?}]}\n"
             "- youtube_player: config={video_id, title} — video_id MUST come from html_notes_youtube_search results\n"
             "- clock: config={timezone}. checklist: config={title, items:[str]}. notes: config={title, content}. iframe_app: config={url, title}. mini_music_player: config={genre, autoplay} e.g. {\"genre\": \"reggae\", \"autoplay\": true}\n"
@@ -1123,7 +1153,7 @@ async def send_message(req: MessageRequest):
             "- Custom one-off widgets (ONLY when no pre-built type fits) → plan_widget then create_widget(widgetType, title, htmlContent, cssContent, jsContent). All data must be baked into htmlContent — jsContent may only do cosmetic DOM work, never fetching.\n\n"
             "LIVE DATA TOOLS (these are the ONLY data tools that exist — never call any other):\n"
             "- Stock/crypto → mcp__lazy-tool-service__html_notes_stock_history(symbol, range) — range is 1d/5d/1mo/3mo/6mo/1y/5y/10y/max. Returns the FULL snapshot: {symbol, name, price, currency, change_pct, labels, values, technicals, fundamentals}. Answers in under a second.\n"
-            "  Then call canvas_add_widget(widget_type='stock_card', config=<THE WHOLE TOOL RESULT, verbatim>). Pass the entire object through — do not pick out fields, do not rebuild it, and do NOT use widget_type='chart' for a ticker. The stock_card renders the chart, the technicals and the fundamentals, and its own range tabs re-fetch without you.\n"
+            "  Then call canvas_add_widget(widget_type='stock_card', widget_id='stock-<sym>', config={\"symbol\": \"<SYM>\"}) — config is JUST the symbol. Do NOT copy the labels, values, technicals or fundamentals back into the config: the server already has them and will fill the widget in for you. Re-typing that data costs about a minute and changes nothing. Never use widget_type='chart' for a ticker.\n"
             "  For ANY ticker, stock, share price or 'chart X' request use this — NEVER web-search for prices, it is slow and returns no usable numbers.\n"
             "- Web search → mcp__lazy-tool-service__html_notes_web_search(query, limit) — returns [{title, url, snippet}]. Use it for ANY question about facts, history, news, recipes, weather, or 'what/when/who/which is...'. It takes 20-60s; that is expected, so wait for it.\n"
             "- Read a page → mcp__lazy-tool-service__html_notes_read_page(url) — full text of a URL from a search result, when the snippet is not enough.\n\n"
@@ -1368,6 +1398,22 @@ async def send_message(req: MessageRequest):
                                 config = json.loads(config)
                             except Exception:
                                 config = {}
+
+                        # Rehydrate data-heavy widgets from the tool result the
+                        # model just fetched. It only has to name the subject —
+                        # {"symbol": "AMZN"} — instead of hand-typing the whole
+                        # snapshot back to us, which was costing ~55s a turn.
+                        if widget_type == "stock_card" and not config.get("values"):
+                            cached = get_cached_tool_result(f"stock:{config.get('symbol', '')}")
+                            if cached:
+                                logger.info(f"[WIDGET INJECTOR] Rehydrated stock_card for {config.get('symbol')}")
+                                config = {**cached, **{k: v for k, v in config.items() if v}}
+                        elif widget_type == "scoreboard" and not config.get("events"):
+                            cached = (get_cached_tool_result(f"scores:{config.get('league', '')}")
+                                      or get_cached_tool_result(f"scores:{config.get('title', '')}"))
+                            if cached:
+                                logger.info(f"[WIDGET INJECTOR] Rehydrated scoreboard for {config.get('league')}")
+                                config = {**cached, **{k: v for k, v in config.items() if v}}
 
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
@@ -2108,10 +2154,16 @@ async def internal_tool_execute(req: InternalToolRequest):
             return await read_web_page(a.get("url", ""), max_chars=int(a.get("max_chars", 6000)))
 
         elif t == "html_notes_stock_history":
-            return await stock_snapshot(a.get("symbol", ""), a.get("range", "1mo"))
+            result = await stock_snapshot(a.get("symbol", ""), a.get("range", "1mo"))
+            if not result.get("is_error"):
+                cache_tool_result(f"stock:{a.get('symbol', '')}", result)
+            return result
 
         elif t == "html_notes_sports_scores":
-            return await sports_scores(a.get("league", ""))
+            result = await sports_scores(a.get("league", ""))
+            if not result.get("is_error"):
+                cache_tool_result(f"scores:{a.get('league', '')}", result)
+            return result
 
         elif t == "canvas_add_widget":
             # The actual injection to the frontend is handled by the SSE interceptor during 'calling' phase.
