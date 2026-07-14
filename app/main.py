@@ -109,20 +109,70 @@ async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -
             result["snippet"] = text[:500]
 
 
-async def web_search(query: str, limit: int = 6) -> list:
-    """Keyless web search via Brave + scraper-service. Returns [{title,url,snippet}].
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
-    A result's description is the prose that physically follows its link in the SERP
-    markdown. The previous version instead stripped every link out of the whole page,
-    kept the long paragraphs, and zipped paragraph N to result N — but that list is
-    dominated by Brave's own chrome, so results arrived at the model with an empty or
-    outright mismatched snippet. With nothing to describe, the model could only put a
-    title and a url in the data_card, which renders as a bare link. Anchoring each
-    snippet to its own link is what makes the widget show the news instead of a
-    hyperlink to the news.
+
+async def _search_duckduckgo(query: str, limit: int) -> list:
+    """DuckDuckGo's lite endpoint: a plain HTML table, no JS, no bot wall.
+
+    Fetched directly rather than through scraper-service — it is static markup, so
+    the crawl4ai round trip bought nothing but 20-60s of latency.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(
+                "https://lite.duckduckgo.com/lite/",
+                params={"q": query},
+                headers={"User-Agent": _BROWSER_UA},
+            )
+            resp.raise_for_status()
+            markup = resp.text
+    except Exception as e:
+        logger.warning(f"ddg lite search failed for {query!r}: {e}")
+        return []
+
+    soup = BeautifulSoup(markup, "html.parser")
+    results = []
+    for row in soup.find_all("tr"):
+        # DDG seeds the table with Microsoft ads; they carry snippets too, so they
+        # look exactly like results unless we drop them by row class.
+        if "sponsored" in " ".join(row.get("class") or []):
+            continue
+
+        link = row.find("a", class_="result-link")
+        if link is not None:
+            href = link.get("href") or ""
+            if href.startswith("//"):
+                href = "https:" + href
+            # Organic links are wrapped as /l/?uddg=<percent-encoded target>.
+            target = urllib.parse.parse_qs(
+                urllib.parse.urlparse(href).query).get("uddg", [""])[0]
+            href = target or href
+            title = link.get_text(" ", strip=True)
+            if title and href.startswith("http"):
+                results.append({"title": title, "url": href, "snippet": ""})
+            continue
+
+        cell = row.find("td", class_="result-snippet")
+        if cell is not None and results and not results[-1]["snippet"]:
+            results[-1]["snippet"] = cell.get_text(" ", strip=True)[:500]
+
+    return results[:limit]
+
+
+async def _search_brave(query: str, limit: int) -> list:
+    """Brave SERP scraped through scraper-service. Kept as a fallback.
+
+    A result's description is the prose that physically follows its link in the
+    markdown. An earlier version instead stripped every link out of the whole page,
+    kept the long paragraphs, and zipped paragraph N to result N — a pairing with no
+    association behind it, so result 2 would get the tail of result 1's paragraph and
+    most results arrived with an empty snippet.
     """
     target = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
-
     markdown = _MD_IMAGE_RE.sub("", await _scrape(target, engine="crawl4ai"))
     links = list(_MD_LINK_RE.finditer(markdown))
     results, seen = [], set()
@@ -144,16 +194,33 @@ async def web_search(query: str, limit: int = 6) -> list:
         results.append({"title": title, "url": key, "snippet": snippet[:500]})
         if len(results) >= limit:
             break
+    return results
 
-    if results:
-        await _backfill_snippets(results)
-        return results
 
-    # crawl4ai occasionally returns a link-less render; playwright still gives
-    # readable result text, which is enough for the model to answer from.
-    text = await _scrape(target, engine="playwright", timeout=60.0)
-    if text:
-        return [{"title": f"Search results for '{query}'", "url": target, "snippet": text[:1500]}]
+async def web_search(query: str, limit: int = 6) -> list:
+    """Keyless web search. Returns [{title, url, snippet}].
+
+    DuckDuckGo lite first, Brave second. Brave was the only engine that still got
+    through bot detection when this was written, and as of 2026-07-14 it no longer
+    does: crawl4ai gets zero bytes from it and playwright gets "Verifying you're not
+    a bot", so every search fell through to a synthetic single result whose snippet
+    was the text of the CAPTCHA page. DDG's lite endpoint is static HTML, is not
+    walled, answers in about a second, and ships a real description per result — the
+    thing a data_card needs in order to show the news instead of a link to the news.
+    """
+    for engine, search in (("ddg", _search_duckduckgo), ("brave", _search_brave)):
+        try:
+            results = await search(query, limit)
+        except Exception as e:
+            logger.warning(f"{engine} search error for {query!r}: {e}")
+            continue
+        if results:
+            if engine != "ddg":
+                logger.info(f"[SEARCH] ddg returned nothing; served {query!r} from {engine}")
+            await _backfill_snippets(results)
+            return results
+
+    logger.error(f"[SEARCH] every engine failed for {query!r}")
     return []
 
 
@@ -1264,7 +1331,7 @@ async def send_message(req: MessageRequest):
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
             "- remove or change something on screen → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove'|'replace') using an id from CURRENT CANVAS\n\n"
             "ANSWER FROM DATA, NEVER FROM MEMORY\n"
-            "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first. Search takes 20-60s; wait for it.\n"
+            "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first.\n"
             "Then put the real text into the widget: every data_card item needs a 'description' carrying the actual information. If a search result comes back with an empty snippet, call html_notes_read_page on its url and use the page text. An item with only a title and a link is a failure — the user cannot read a link.\n\n"
             "WIDGETS COEXIST. Adding one never removes the others. The exceptions are youtube_player and mini_music_player: only one of each can play, so a new one automatically swaps out the old — just add it, do not remove first.\n\n"
             f"CURRENT CANVAS:\n```markdown\n{canvas_summary}\n```"
