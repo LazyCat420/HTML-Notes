@@ -345,6 +345,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             });
         });
+
+        // Whitespace-only text nodes are pure formatting. Whether they survive
+        // depends on which pipeline last serialized the markup — a fresh Python
+        // f-string vs. round-tripped through a live browser DOM via innerHTML —
+        // not on the widget's actual config, so they're noise for this check.
+        const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+        const blank = [];
+        let n;
+        while ((n = walker.nextNode())) {
+            if (!n.textContent.trim()) blank.push(n);
+        }
+        blank.forEach(n => n.remove());
+
         return clone;
     }
 
