@@ -1135,7 +1135,8 @@ async def send_message(req: MessageRequest):
             "2. REMOVING: find the widget's ID in CURRENT CANVAS STATE and call canvas_modify_dom(css_selector='#<widget-id>', action='remove'). Do not add anything when removing.\n"
             "3. UPDATING ('update that news widget', 'add more detail'): target the specific widget's ID from CURRENT CANVAS STATE — replace it via canvas_add_widget with the same widget_id family or canvas_modify_dom action='replace'.\n"
             "4. VAGUE VIDEO REQUESTS: 'pull up a video' with no topic → pick a random fun search query and execute html_notes_youtube_search immediately. Do NOT ask for clarification.\n"
-            "5. DO NOT explain your plan. Tool calls only."
+            "5. DO NOT explain your plan. Tool calls only.\n"
+            "6. STOP WHEN THE WIDGET IS UP. canvas_add_widget returning success means it is ALREADY on the user's screen. Do not call it a second time for the same widget, do not verify it with canvas_read_dom, and do not re-plan. Finish with ONE short sentence (max 20 words) saying what you added — then stop. Every extra thought after the widget renders is time the user spends staring at a spinner for something already done."
         )
 
         # Ensure all possible tools are enabled
@@ -1262,6 +1263,14 @@ async def send_message(req: MessageRequest):
             "enabledTools": enabled_tools,
             "messages": messages,
             "maxTokens": 4096,
+            # Neither of these was set, so the gateway used its defaults: temperature
+            # 0.7 and 25 iterations. A canvas task is not a creative one — it is
+            # "pick the right tool, fill in the args" — and a warm model deliberates
+            # its way there, then keeps narrating afterwards. Measured: the first
+            # tool call landed at ~8s but the turn ran 70s, with 91-189 reasoning
+            # events, most of them AFTER the widget was already on screen.
+            "temperature": 0.15,
+            "maxIterations": 6,
             "project": "html-notes-client",
             "username": "lazycat",
             "skipConversation": True,
@@ -1282,9 +1291,21 @@ async def send_message(req: MessageRequest):
             # can't be lost.
             all_rendered_html = get_session_canvas(req.session_id) or req.current_canvas or ""
             executed_active_tool = False
+            executed_mutations: set = set()
 
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
+                # The model routinely re-emits the same canvas_add_widget a second
+                # time after it has already succeeded. executed_active_tool resets
+                # whenever a new tool starts, so the repeat used to run again —
+                # rebuilding the same widget and paying another full iteration
+                # (~13k-token prefill at a 0% KV-cache hit) for nothing.
+                signature = json.dumps({"t": tool_name, "a": tool_args}, sort_keys=True, default=str)
+                if signature in executed_mutations:
+                    logger.info(f"[WIDGET INJECTOR] Skipping duplicate {tool_name}")
+                    return
+                executed_mutations.add(signature)
+
                 logger.info(f"[WIDGET INJECTOR] Executing mutation for {tool_name} with args: {tool_args}")
                 yield f'data: {json.dumps({"type": "status", "message": f"executing {tool_name}..."})}\n\n'
 
