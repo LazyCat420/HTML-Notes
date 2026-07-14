@@ -2229,6 +2229,12 @@ def _asset_version() -> str:
 def read_root():
     html = pathlib.Path("app/static/index.html").read_text()
     html = _ASSET_QUERY_RE.sub(rf'\1?v={_asset_version()}', html)
+    # index.html references its assets relatively ("index.js", "lib/…"), which
+    # resolved fine when the page was served from /static/. Serving it at / makes
+    # those resolve to /index.js and 404 — no JS, no app. <base> repoints every
+    # relative URL back at /static/ without touching the markup. Absolute paths
+    # (/session/message, /models) are unaffected.
+    html = html.replace("<head>", '<head>\n    <base href="/static/">', 1)
     # The shell itself must never be cached, or the browser keeps serving an old
     # copy carrying the old ?v= tokens and the whole scheme is pointless.
     return Response(content=html, media_type="text/html",
