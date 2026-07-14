@@ -1,5 +1,6 @@
 import html
 import json
+import urllib.parse
 from typing import Any
 
 def json_escape(val: Any) -> str:
@@ -12,24 +13,34 @@ def esc(val: Any) -> str:
 # Widget chrome shared by every server-rendered widget: a header bar with an
 # icon, a title and a close button that works with or without Alpine.
 def widget_header(title: str, icon: str = "widgets", subtitle: str = "") -> str:
+    # Single row: the subtitle sits inline after the title rather than stacking a
+    # second line under it, so the bar stays one line tall (~30px instead of ~44px)
+    # and gives the space back to the widget body.
     subtitle_html = (
-        f'<span class="text-[0.65rem] text-slate-400 tracking-wider normal-case">{esc(subtitle)}</span>'
+        f'<span class="text-[0.65rem] text-slate-400 tracking-wider normal-case truncate shrink">{esc(subtitle)}</span>'
         if subtitle else ""
     )
     return f"""
-        <div class="widget-header flex items-center justify-between bg-black/30 px-4 py-2.5 border-b border-white/10 relative z-20 shrink-0">
-            <div class="flex items-center gap-2 min-w-0">
-                <span class="material-symbols-outlined text-[1.1rem] text-purple-300">{esc(icon)}</span>
-                <div class="flex flex-col min-w-0">
-                    <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight">{esc(title)}</h3>
-                    {subtitle_html}
-                </div>
+        <div class="widget-header flex items-center justify-between bg-black/30 px-3 py-1.5 border-b border-white/10 relative z-20 shrink-0">
+            <div class="flex items-baseline gap-2 min-w-0">
+                <span class="material-symbols-outlined text-[1rem] text-purple-300 self-center shrink-0">{esc(icon)}</span>
+                <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight shrink-0">{esc(title)}</h3>
+                {subtitle_html}
             </div>
-            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors shrink-0 ml-2">
-                <span class="material-symbols-outlined text-[1.2rem]">close</span>
+            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors shrink-0 ml-2 self-center">
+                <span class="material-symbols-outlined text-[1.1rem]">close</span>
             </button>
         </div>
     """
+
+def _host_of(url: str) -> str:
+    """Bare hostname, for labelling a source link ('reuters.com')."""
+    try:
+        host = urllib.parse.urlparse(url).netloc
+    except Exception:
+        return "source"
+    return host[4:] if host.startswith("www.") else (host or "source")
+
 
 def _monogram_tile(text: str) -> str:
     """Fallback visual when an item has no image: a glowing monogram tile."""
@@ -93,13 +104,24 @@ def render_data_card(widget_id: str, config: dict) -> str:
             f'<span class="item-meta text-[0.65rem] text-slate-400 tracking-wide">{esc(i_meta)}</span>'
             if i_meta else ""
         )
+        # The text IS the answer — the user should be able to read the item without
+        # clicking anything. Six lines rather than two, because a two-line clamp cut
+        # every headline off mid-sentence and sent them to the link to find the rest.
         desc_html = (
-            f'<p class="text-xs text-slate-300 leading-relaxed mt-0.5 line-clamp-2">{esc(i_desc)}</p>'
+            f'<p class="text-xs text-slate-300 leading-relaxed mt-0.5 line-clamp-6">{esc(i_desc)}</p>'
             if i_desc else ""
         )
+        # The title stays plain text and the link is demoted to a small "source"
+        # affordance below it. When an item arrives with no description, a linked
+        # title collapses the whole card into a row of naked hyperlinks, which is
+        # exactly the thing the user has to click to get the information back.
         title_html = f'<span class="text-sm font-semibold text-white leading-snug">{esc(i_title)}</span>'
-        if i_url:
-            title_html = f'<a href="{esc(i_url)}" target="_blank" rel="noopener" class="text-sm font-semibold text-white leading-snug hover:underline">{esc(i_title)}</a>'
+        source_html = (
+            f'<a href="{esc(i_url)}" target="_blank" rel="noopener" '
+            f'class="item-source text-[0.65rem] text-purple-300/70 hover:text-purple-200 hover:underline truncate">'
+            f'{esc(_host_of(i_url))} ↗</a>'
+            if i_url else ""
+        )
 
         rendered_items.append(f"""
             <li class="data-card-item flex items-start gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/10">
@@ -110,7 +132,10 @@ def render_data_card(widget_id: str, config: dict) -> str:
                         {badge_html}
                     </div>
                     {desc_html}
-                    {meta_html}
+                    <div class="flex items-center gap-2 mt-1 min-w-0">
+                        {meta_html}
+                        {source_html}
+                    </div>
                 </div>
             </li>
         """)

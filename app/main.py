@@ -83,35 +83,70 @@ async def _scrape(url: str, engine: str = "crawl4ai", timeout: float = 90.0) -> 
     return ""
 
 
+async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -> None:
+    """Fetch real page text for top results whose SERP snippet came back thin.
+
+    Brave does not render a description for every result, and a result that reaches
+    the model as title+url can only be rendered as a naked hyperlink — the one thing
+    the user should never have to click through to read. Reading the page is the only
+    way to recover actual prose, so pay for it on the few results that need it.
+    """
+    thin = [r for r in results[:top_n] if len(r["snippet"]) < min_len]
+    if not thin:
+        return
+
+    pages = await asyncio.gather(
+        *(_scrape(r["url"], engine="crawl4ai", timeout=25.0) for r in thin),
+        return_exceptions=True,
+    )
+    for result, page in zip(thin, pages):
+        if isinstance(page, BaseException) or not page:
+            continue
+        # Keep link text, drop the link targets, collapse whitespace.
+        text = _MD_LINK_RE.sub(r"\1", _MD_IMAGE_RE.sub("", page))
+        text = " ".join(text.split())
+        if len(text) > len(result["snippet"]):
+            result["snippet"] = text[:500]
+
+
 async def web_search(query: str, limit: int = 6) -> list:
-    """Keyless web search via Brave + scraper-service. Returns [{title,url,snippet}]."""
+    """Keyless web search via Brave + scraper-service. Returns [{title,url,snippet}].
+
+    A result's description is the prose that physically follows its link in the SERP
+    markdown. The previous version instead stripped every link out of the whole page,
+    kept the long paragraphs, and zipped paragraph N to result N — but that list is
+    dominated by Brave's own chrome, so results arrived at the model with an empty or
+    outright mismatched snippet. With nothing to describe, the model could only put a
+    title and a url in the data_card, which renders as a bare link. Anchoring each
+    snippet to its own link is what makes the widget show the news instead of a
+    hyperlink to the news.
+    """
     target = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
 
-    markdown = await _scrape(target, engine="crawl4ai")
-    results, seen = [], []
+    markdown = _MD_IMAGE_RE.sub("", await _scrape(target, engine="crawl4ai"))
+    links = list(_MD_LINK_RE.finditer(markdown))
+    results, seen = [], set()
 
-    for raw_title, href in _MD_LINK_RE.findall(markdown):
+    for i, match in enumerate(links):
+        href = match.group(2)
         if any(h in href for h in _SEARCH_NOISE_HOSTS):
             continue
-        title = _MD_IMAGE_RE.sub("", raw_title).strip()
+        title = match.group(1).strip()
         if len(title) < 3:
             continue
         key = href.split("?utm")[0]
         if key in seen:
             continue
-        seen.append(key)
-        results.append({"title": title, "url": href, "snippet": ""})
+        seen.add(key)
+
+        tail_end = links[i + 1].start() if i + 1 < len(links) else len(markdown)
+        snippet = " ".join(markdown[match.end():tail_end].split())
+        results.append({"title": title, "url": key, "snippet": snippet[:500]})
         if len(results) >= limit:
             break
 
-    # The prose between links is the result description; pair them up in order.
-    plain = _MD_LINK_RE.sub("\n", _MD_IMAGE_RE.sub("", markdown))
-    paragraphs = [p.strip() for p in plain.split("\n") if len(p.strip()) > 60]
-    for i, result in enumerate(results):
-        if i < len(paragraphs):
-            result["snippet"] = paragraphs[i][:300]
-
     if results:
+        await _backfill_snippets(results)
         return results
 
     # crawl4ai occasionally returns a link-less render; playwright still gives
@@ -472,6 +507,55 @@ def get_cached_tool_result(key: str) -> Optional[dict]:
         return None
     stamp, value = entry
     return value if time.time() - stamp <= _TOOL_RESULT_TTL else None
+
+
+def cached_stock_symbols() -> list:
+    """Every ticker whose snapshot we fetched recently, newest first."""
+    now = time.time()
+    hits = [
+        (stamp, value.get("symbol"))
+        for key, (stamp, value) in _tool_results.items()
+        if key.startswith("stock:") and now - stamp <= _TOOL_RESULT_TTL
+        and isinstance(value, dict) and value.get("symbol")
+    ]
+    return [symbol for _, symbol in sorted(hits, reverse=True)]
+
+
+def coerce_widget_type(widget_type: str, widget_id: str, config: dict) -> tuple:
+    """Send a ticker to stock_card even when the model asked for 'chart'.
+
+    'chart' is a bare Chart.js line — no price header, no range tabs, no technicals,
+    no fundamentals. 'chart' and 'stock_card' sit next to each other in one enum, so
+    which one a ticker gets was decided by sampling, and the answer changed between
+    identical requests. Both the tool description and the system prompt said "never
+    chart a ticker" and neither held, because a rule in prose cannot outvote a token
+    distribution. Deciding it here makes it deterministic.
+
+    The model has to call html_notes_stock_history before it can chart a price, so a
+    cached snapshot whose symbol appears in the config, title or widget_id is a
+    positive ID for the ticker it is trying to draw.
+    """
+    if widget_type != "chart" or not isinstance(config, dict):
+        return widget_type, config
+
+    symbol = config.get("symbol") or config.get("ticker") or ""
+    if not symbol:
+        haystack = f"{widget_id} {config.get('title', '')}".upper()
+        symbol = next(
+            (s for s in cached_stock_symbols() if s.upper() in haystack),
+            "",
+        )
+    if not symbol:
+        return widget_type, config
+
+    logger.info(f"[WIDGET COERCE] chart -> stock_card for {symbol}")
+    return "stock_card", {"symbol": str(symbol).upper()}
+
+
+def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
+    """Single choke point for widget HTML: coerce the type, then render."""
+    widget_type, config = coerce_widget_type(widget_type, widget_id, config)
+    return generate_widget_html(widget_type, widget_id, config)
 
 
 # Media widgets (video, audio) are players, not data: the canvas can only ever
@@ -1008,7 +1092,7 @@ async def send_message(req: MessageRequest):
                     if media_div is not None:
                         existing_id = media_div.get("id", widget_id)
                         media_div.replace_with(BeautifulSoup(
-                            generate_widget_html(widget_type, existing_id, widget_config), 'html.parser'))
+                            render_widget(widget_type, existing_id, widget_config), 'html.parser'))
                         return
 
                     target = soup.select_one('#dashboard-grid')
@@ -1018,7 +1102,7 @@ async def send_message(req: MessageRequest):
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
                     target.append(BeautifulSoup(
-                        generate_widget_html(widget_type, widget_id, widget_config), 'html.parser'))
+                        render_widget(widget_type, widget_id, widget_config), 'html.parser'))
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
@@ -1151,55 +1235,39 @@ async def send_message(req: MessageRequest):
         canvas_summary = get_canvas_summary(
             get_session_canvas(req.session_id) or req.current_canvas)
 
-        # Build system prompt with canvas context
+        # Build system prompt with canvas context.
+        #
+        # Kept deliberately short and free of internal contradictions. The previous
+        # version was ~9.3k chars and opened with "NEVER output any conversational
+        # text ... the system will crash", then closed by requiring "ONE short
+        # sentence saying what you added" — a model asked to reconcile those two
+        # spends the turn deciding whether it is allowed to speak, and often resolves
+        # it by talking. Instruction-following also decays with instruction count
+        # (arXiv 2507.11538), and what gets dropped is whatever sits in the middle,
+        # so the act-now rules go first and the per-widget config contracts have been
+        # moved into the canvas_add_widget tool description, where the model reads
+        # them at the point of use instead of carrying them through the whole turn.
         SYSTEM_PROMPT = (
-            "You are an agentic OS assistant that manages a live dashboard canvas.\n"
-            "CRITICAL: You are a strict TOOL-ONLY JSON agent. You MUST NEVER output any conversational text, thinking process, or explanations. You MUST START your response immediately with the tool call.\n"
-            "If you output any text that is not a tool call, the system will crash.\n\n"
-            f"CURRENT CANVAS STATE:\n```markdown\n{canvas_summary}\n```\n\n"
-            "STEP 1 — CLASSIFY INTENT. Every request maps to exactly one output shape:\n"
-            "- Play/watch a VIDEO (mentions video, youtube, watch, clip — even combined with other nouns like 'clock video') → html_notes_youtube_search then canvas_add_widget(widget_type='youtube_player')\n"
-            "- Watch something LIVE ('cnn live news', 'live stream of X', 'watch bbc live') → html_notes_youtube_search(query, order='live') then canvas_add_widget(widget_type='youtube_player'). This is a VIDEO request even though it says 'news' — the user wants a stream to watch, NOT a data_card of headlines. order='live' is required; a plain search returns recorded clips instead of the stream.\n"
-            "- SPORTS scores/fixtures/results/standings ('fifa scores', 'ufc card', \"who's playing in the nba\") → mcp__lazy-tool-service__html_notes_sports_scores(league) then canvas_add_widget(widget_type='scoreboard', widget_id='scores-<league>', config={\"league\": \"<league>\"}) — config is JUST the league; do NOT copy the events back, the server fills them in. league takes a friendly name: fifa, world cup, premier league, champions league, la liga, mls, ufc, mma, nba, nfl, mlb, nhl, college football. NEVER web-search for scores and never render them as a data_card — a scoreboard has to show who is playing whom.\n"
-            "- A NEWS video ('fifa news video', 'latest X video') → html_notes_youtube_search(query, order='date') — order='date' is required, because a relevance search returns an old most-watched clip instead of the newest one. Drop words like 'video'/'watch' from the query: search 'fifa news', not 'fifa news video'.\n"
-            "- Show DATA (news, recipes, weather, search results, facts, lists) → fetch with data tools, then canvas_add_widget(widget_type='data_card')\n"
-            "- Show NUMBERS OVER TIME/CATEGORIES (stock price, trends, comparisons) → fetch data, then canvas_add_widget(widget_type='chart')\n"
-            "- Show a PICTURE (what does X look like) → find an image URL, then canvas_add_widget(widget_type='image')\n"
-            "- UTILITY widget (clock, checklist, notes, music, embedded app) → canvas_add_widget with that widget_type\n"
-            "- REMOVE/CHANGE an existing widget → canvas_modify_dom targeting its ID from CURRENT CANVAS STATE\n\n"
-            "STEP 2 — FETCH DATA FIRST (for data_card/chart/image): use the LIVE DATA TOOLS below, extract the real values, then bake them into the widget config. NEVER create a widget that says 'Loading...' and NEVER write JavaScript that fetches data — widget JS does not run. The config you pass IS the final rendered content.\n\n"
-            "WIDGET CONTRACTS for canvas_add_widget(widget_type, widget_id, config):\n"
-            "- data_card: config={title, subtitle?, icon?, image?, items:[{title, description?, image?, url?, badge?, meta?}]} — one item per headline/recipe/result. Include an item image URL whenever the source data has one. Use config.content (plain text) instead of items for prose answers.\n"
-            "- chart: config={title, type:'line'|'bar'|'pie', labels:[...], values:[...]} — for generic numbers ONLY, never for a stock ticker\n"
-            "- stock_card: config={symbol} only — the server fills in prices/technicals/fundamentals from the tool result\n"
-            "- scoreboard: config={league} only — the server fills in the fixtures from the tool result\n"
-            "- image: config={title, url, caption?} or {title, images:[{url, caption?}]}\n"
-            "- youtube_player: config={video_id, title} — video_id MUST come from html_notes_youtube_search results\n"
-            "- clock: config={timezone}. checklist: config={title, items:[str]}. notes: config={title, content}. iframe_app: config={url, title}. mini_music_player: config={genre, autoplay} e.g. {\"genre\": \"reggae\", \"autoplay\": true}\n"
-            "Always provide a unique widget_id (e.g. 'news-abc12').\n\n"
-            "CANVAS TOOLS:\n"
-            "- Spawn a pre-built widget → mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config) — PREFERRED for everything\n"
-            "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\n"
-            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='replace' or 'remove')\n"
-            "- Search YouTube → mcp__lazy-tool-service__html_notes_youtube_search(query, limit, order) — pass order='date' for the newest uploads from a channel\n"
-            "- Notes → mcp__lazy-tool-service__html_notes_search_notes(query), html_notes_get_note(note_id), html_notes_update_note()\n"
-            "- Custom one-off widgets (ONLY when no pre-built type fits) → plan_widget then create_widget(widgetType, title, htmlContent, cssContent, jsContent). All data must be baked into htmlContent — jsContent may only do cosmetic DOM work, never fetching.\n\n"
-            "LIVE DATA TOOLS (these are the ONLY data tools that exist — never call any other):\n"
-            "- Stock/crypto → mcp__lazy-tool-service__html_notes_stock_history(symbol, range) — range is 1d/5d/1mo/3mo/6mo/1y/5y/10y/max. Returns the FULL snapshot: {symbol, name, price, currency, change_pct, labels, values, technicals, fundamentals}. Answers in under a second.\n"
-            "  Then call canvas_add_widget(widget_type='stock_card', widget_id='stock-<sym>', config={\"symbol\": \"<SYM>\"}) — config is JUST the symbol. Do NOT copy the labels, values, technicals or fundamentals back into the config: the server already has them and will fill the widget in for you. Re-typing that data costs about a minute and changes nothing. Never use widget_type='chart' for a ticker.\n"
-            "  For ANY ticker, stock, share price or 'chart X' request use this — NEVER web-search for prices, it is slow and returns no usable numbers.\n"
-            "- Web search → mcp__lazy-tool-service__html_notes_web_search(query, limit) — returns [{title, url, snippet}]. Use it for ANY question about facts, history, news, recipes, weather, or 'what/when/who/which is...'. It takes 20-60s; that is expected, so wait for it.\n"
-            "- Read a page → mcp__lazy-tool-service__html_notes_read_page(url) — full text of a URL from a search result, when the snippet is not enough.\n\n"
-            "RESEARCH RULE — THIS IS MANDATORY:\n"
-            "If the user asks a question you cannot answer from the conversation itself, you MUST call html_notes_web_search BEFORE answering. Never reply that you cannot find, cannot access, or do not have information about something without having called html_notes_web_search at least once. Never answer a factual question from memory alone — search, then bake the real findings into a data_card.\n"
-            "A question about the oldest/first/earliest video, song, or event is a SEARCH question: search the web for the answer, then (if it names a video) call html_notes_youtube_search for that specific title and show a youtube_player. Do not claim YouTube cannot be sorted by age — find the answer with the web search instead.\n\n"
-            "RULES:\n"
-            "1. WIDGETS COEXIST, PLAYERS DON'T: The grid holds many data widgets at once (stock_card, scoreboard, data_card, chart, image, notes, checklist, clock) — adding one NEVER removes or replaces the others. youtube_player and mini_music_player are the exception: the canvas can only play one video and one track at a time, so calling canvas_add_widget for either one automatically swaps out whichever one is already playing — you do not need to remove it first, just add the new one.\n"
-            "2. REMOVING: find the widget's ID in CURRENT CANVAS STATE and call canvas_modify_dom(css_selector='#<widget-id>', action='remove'). Do not add anything when removing.\n"
-            "3. UPDATING ('update that news widget', 'add more detail'): target the specific widget's ID from CURRENT CANVAS STATE — replace it via canvas_add_widget with the same widget_id family or canvas_modify_dom action='replace'.\n"
-            "4. VAGUE VIDEO REQUESTS: 'pull up a video' with no topic → pick a random fun search query and execute html_notes_youtube_search immediately. Do NOT ask for clarification.\n"
-            "5. DO NOT explain your plan. Tool calls only.\n"
-            "6. STOP WHEN THE WIDGET IS UP. canvas_add_widget returning success means it is ALREADY on the user's screen. Do not call it a second time for the same widget, do not verify it with canvas_read_dom, and do not re-plan. Finish with ONE short sentence (max 20 words) saying what you added — then stop. Every extra thought after the widget renders is time the user spends staring at a spinner for something already done."
+            "You run a live dashboard canvas. You act by calling tools. You never describe what you would do.\n\n"
+            "HOW TO ACT\n"
+            "1. Call the tool immediately. Write no preamble, no plan, no 'let me...' before a tool call.\n"
+            "2. Never ask for clarification. Take the most reasonable reading and go — 'pull up a video' with no topic means pick one and search.\n"
+            "3. Fetch the data before you render it. The config you pass IS the finished content: it renders server-side, so never write 'Loading...' and never write JavaScript that fetches.\n"
+            "4. Stop when the widget is up. canvas_add_widget returning success means it is already on the user's screen — do not call it again, do not verify with canvas_read_dom, do not re-plan.\n"
+            "5. Then write ONE sentence (max 20 words) saying what you added. That sentence is the only prose you write all turn.\n\n"
+            "ROUTING — pick one and execute it:\n"
+            "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
+            "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
+            "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
+            "- news, facts, recipes, weather, 'what/when/who is X' → mcp__lazy-tool-service__html_notes_web_search, then canvas_add_widget(widget_type='data_card')\n"
+            "- picture of X → canvas_add_widget(widget_type='image')\n"
+            "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
+            "- remove or change something on screen → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove'|'replace') using an id from CURRENT CANVAS\n\n"
+            "ANSWER FROM DATA, NEVER FROM MEMORY\n"
+            "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first. Search takes 20-60s; wait for it.\n"
+            "Then put the real text into the widget: every data_card item needs a 'description' carrying the actual information. If a search result comes back with an empty snippet, call html_notes_read_page on its url and use the page text. An item with only a title and a link is a failure — the user cannot read a link.\n\n"
+            "WIDGETS COEXIST. Adding one never removes the others. The exceptions are youtube_player and mini_music_player: only one of each can play, so a new one automatically swaps out the old — just add it, do not remove first.\n\n"
+            f"CURRENT CANVAS:\n```markdown\n{canvas_summary}\n```"
         )
 
         # Ensure all possible tools are enabled
@@ -1477,7 +1545,7 @@ async def send_message(req: MessageRequest):
                             if media_div is not None:
                                 existing_id = media_div.get("id", widget_id)
                                 media_div.replace_with(BeautifulSoup(
-                                    generate_widget_html(widget_type, existing_id, config), 'html.parser'))
+                                    render_widget(widget_type, existing_id, config), 'html.parser'))
                                 replaced = True
 
                             # A retried tool call with the same widget_id must not
@@ -1486,7 +1554,7 @@ async def send_message(req: MessageRequest):
                                 existing = soup.find(id=widget_id)
                                 if existing is not None:
                                     existing.replace_with(BeautifulSoup(
-                                        generate_widget_html(widget_type, widget_id, config), 'html.parser'))
+                                        render_widget(widget_type, widget_id, config), 'html.parser'))
                                     replaced = True
 
                             if replaced:
@@ -1494,7 +1562,7 @@ async def send_message(req: MessageRequest):
                                 return
 
                             snippet = BeautifulSoup(
-                                generate_widget_html(widget_type, widget_id, config), 'html.parser')
+                                render_widget(widget_type, widget_id, config), 'html.parser')
                             target = soup.select_one('#dashboard-grid')
                             if target:
                                 target.append(snippet)

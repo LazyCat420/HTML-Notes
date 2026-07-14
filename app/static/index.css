@@ -215,8 +215,43 @@ body::after {
 .widget-container.col-span-2 { grid-column: span 2; }
 
 @media (max-width: 800px) {
-    .widget-container.col-span-2 { grid-column: span 1; }
+    /* !important so a user's saved multi-column width (written as an inline style
+       by WidgetResizer) still collapses to one column on a narrow screen — an
+       author !important outranks a normal inline declaration. */
+    .widget-container.col-span-2,
+    .widget-container[style*="grid-column"] { grid-column: span 1 !important; }
 }
+
+/* ─── Resize handle ─────────────────────────────────────────────── */
+.widget-resize-handle {
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+    width: 20px;
+    height: 20px;
+    z-index: 40;
+    cursor: nwse-resize;
+    opacity: 0;
+    transition: opacity .15s ease;
+    touch-action: none;
+    /* Two short strokes, the conventional corner grip. */
+    background-image:
+        linear-gradient(135deg, transparent 44%, rgba(127, 212, 255, .85) 44%, rgba(127, 212, 255, .85) 56%, transparent 56%),
+        linear-gradient(135deg, transparent 64%, rgba(127, 212, 255, .55) 64%, rgba(127, 212, 255, .55) 76%, transparent 76%);
+}
+.widget-container:hover .widget-resize-handle,
+.widget-container.is-resizing .widget-resize-handle { opacity: 1; }
+
+/* Kill the CRT/hover transitions mid-drag so the widget tracks the cursor
+   instead of easing toward it a beat late. */
+.widget-container.is-resizing {
+    transition: none !important;
+    user-select: none;
+    outline: 1px solid rgba(127, 212, 255, .5);
+}
+/* Stop the drag from landing on an iframe/canvas inside the widget — but never
+   on the handle itself, which still needs the moves. */
+.widget-container.is-resizing *:not(.widget-resize-handle) { pointer-events: none; }
 
 /* Widget headings: thin, wide, uppercase */
 .widget-container h3,
@@ -1251,6 +1286,20 @@ textarea::placeholder {
 .widget-container .widget-header {
     background: linear-gradient(90deg, rgba(4, 11, 22, 0.6), rgba(10, 24, 42, 0.45));
     border-bottom: 1px solid rgba(127, 212, 255, 0.16);
+}
+
+/* '.live-canvas h1,h2,h3' up in the prose section gives every heading 1.5rem top
+   and 1rem bottom margin. That is right for LLM-written note content (.glass-card /
+   .canvas-widget), but factory widgets are h3 too and sit inside .live-canvas, so
+   every widget title carried 40px of invisible margin around a 19px line — the
+   padding said 44px while the header actually measured ~79px. Factory widgets do all
+   their own spacing in Tailwind and never want the prose margins, so drop them for
+   the whole container (this covers stock_card's price header, which builds its own
+   heading rather than calling widget_header()). Two class levels so it wins
+   regardless of source order. */
+.widget-container h3,
+.widget-container .widget-header h3 {
+    margin: 0;
 }
 
 .data-card .data-card-item {

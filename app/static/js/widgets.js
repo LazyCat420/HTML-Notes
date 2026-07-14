@@ -178,17 +178,24 @@ document.addEventListener('alpine:init', () => {
             const rec = f.recommendation;
             const recTone = !rec ? '' :
                 /buy/.test(rec) ? 'text-emerald-400' : /sell/.test(rec) ? 'text-rose-400' : '';
+            const growth = f.revenue_growth;
+            // These went out raw: a market cap rendered as "3280000000000" and a
+            // margin as "26.3" with no unit. technicalRows() has always formatted
+            // its values; this column never did.
             return [
-                { label: 'Mkt Cap', value: f.market_cap, tone: '' },
-                { label: 'P/E', value: f.pe_ratio, tone: '' },
-                { label: 'Fwd P/E', value: f.forward_pe, tone: '' },
-                { label: 'EPS', value: f.eps, tone: '' },
-                { label: 'Beta', value: f.beta, tone: '' },
-                { label: 'Div Yield', value: f.dividend_yield, tone: '' },
-                { label: 'Revenue', value: f.revenue, tone: '' },
-                { label: 'Rev Growth', value: f.revenue_growth, tone: '' },
-                { label: 'Margin', value: f.profit_margin, tone: '' },
-                { label: 'Target', value: f.analyst_target, tone: '' },
+                { label: 'Mkt Cap', value: this.fmtCompact(f.market_cap), tone: '' },
+                { label: 'P/E', value: this.fmtNum(f.pe_ratio), tone: '' },
+                { label: 'Fwd P/E', value: this.fmtNum(f.forward_pe), tone: '' },
+                { label: 'EPS', value: this.fmtNum(f.eps), tone: '' },
+                { label: 'Beta', value: this.fmtNum(f.beta), tone: '' },
+                { label: 'Div Yield', value: this.fmtPct(f.dividend_yield), tone: '' },
+                { label: 'Revenue', value: this.fmtCompact(f.revenue), tone: '' },
+                {
+                    label: 'Rev Growth', value: this.fmtPct(growth, true),
+                    tone: growth == null ? '' : (growth >= 0 ? 'text-emerald-400' : 'text-rose-400'),
+                },
+                { label: 'Margin', value: this.fmtPct(f.profit_margin), tone: '' },
+                { label: 'Target', value: this.fmtNum(f.analyst_target), tone: '' },
                 { label: 'Rating', value: rec ? rec.replace(/_/g, ' ') : null, tone: recTone },
                 { label: 'Sector', value: f.sector, tone: '' },
             ];
@@ -205,6 +212,13 @@ document.addEventListener('alpine:init', () => {
         fmtCompact(v) {
             if (v == null) return null;
             return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(v);
+        },
+
+        /** Percent already scaled 0-100 by the server (26.3 -> "26.3%"). */
+        fmtPct(v, signed = false) {
+            if (v == null) return null;
+            const sign = signed && v > 0 ? '+' : '';
+            return `${sign}${Number(v).toFixed(1)}%`;
         },
     }));
 

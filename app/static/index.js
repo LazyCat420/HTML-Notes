@@ -33,6 +33,136 @@ window.WidgetManager = {
     }
 };
 
+// ─── LEGO: WIDGET RESIZER ─────────────────────────────────────────
+// Drag the bottom-right corner of any widget. Width snaps to grid columns
+// (the grid is the layout, so a free width would just leave a ragged hole);
+// height is free. Sizes are keyed by widget id and survive reload.
+//
+// reconcileCanvas() replaces a widget's DOM node whenever its content changes,
+// which throws away any inline style we set — so the size lives in localStorage
+// and is re-applied to each node as it appears, rather than being held on the
+// element. A MutationObserver is what re-applies it, because widgets also arrive
+// via history restore and first paint, not only through reconcileCanvas.
+window.WidgetResizer = {
+    MIN_COLS: 1,
+    MAX_COLS: 4,
+    MIN_HEIGHT: 180,
+    MAX_HEIGHT: 1400,
+
+    getSizes() {
+        try {
+            return JSON.parse(localStorage.getItem('widget_sizes') || '{}');
+        } catch {
+            return {};
+        }
+    },
+    saveSize(id, size) {
+        if (!id) return;
+        const sizes = this.getSizes();
+        if (size) sizes[id] = size; else delete sizes[id];
+        localStorage.setItem('widget_sizes', JSON.stringify(sizes));
+    },
+
+    /** Grid geometry, so a pixel drag can be converted into a column count. */
+    metrics(grid) {
+        const style = getComputedStyle(grid);
+        const tracks = style.gridTemplateColumns.split(' ').filter(Boolean);
+        const colWidth = parseFloat(tracks[0]) || 340;
+        const gap = parseFloat(style.columnGap) || 0;
+        return { colWidth, gap, trackCount: Math.max(tracks.length, 1) };
+    },
+
+    apply(el) {
+        const size = this.getSizes()[el.id];
+        if (!size) return;
+        // Inline styles beat the Tailwind col-span-*/h-[380px] classes baked into
+        // the widget HTML by the server factory.
+        if (size.cols) el.style.gridColumn = `span ${size.cols}`;
+        if (size.height) el.style.height = `${size.height}px`;
+    },
+
+    decorate(el) {
+        if (!el.id || el.querySelector(':scope > .widget-resize-handle')) return;
+        const handle = document.createElement('div');
+        handle.className = 'widget-resize-handle';
+        handle.title = 'Drag to resize · double-click to reset';
+        handle.addEventListener('pointerdown', e => this.startDrag(e, el, handle));
+        handle.addEventListener('dblclick', e => {
+            e.preventDefault();
+            this.saveSize(el.id, null);
+            el.style.removeProperty('grid-column');
+            el.style.removeProperty('height');
+            window.dispatchEvent(new Event('resize'));
+        });
+        el.appendChild(handle);
+    },
+
+    startDrag(e, el, handle) {
+        e.preventDefault();
+        e.stopPropagation();
+        const grid = el.closest('.dashboard-grid');
+        if (!grid) return;
+
+        const { colWidth, gap, trackCount } = this.metrics(grid);
+        const rect = el.getBoundingClientRect();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const startW = rect.width;
+        const startH = rect.height;
+        const maxCols = Math.min(this.MAX_COLS, trackCount);
+
+        el.classList.add('is-resizing');
+        handle.setPointerCapture(e.pointerId);
+
+        let cols = null;
+        let height = null;
+
+        const onMove = ev => {
+            const width = startW + (ev.clientX - startX);
+            // Round to the nearest whole number of column tracks (+ their gaps).
+            cols = Math.round((width + gap) / (colWidth + gap));
+            cols = Math.min(Math.max(cols, this.MIN_COLS), maxCols);
+
+            height = startH + (ev.clientY - startY);
+            height = Math.min(Math.max(Math.round(height), this.MIN_HEIGHT), this.MAX_HEIGHT);
+
+            el.style.gridColumn = `span ${cols}`;
+            el.style.height = `${height}px`;
+        };
+
+        const onUp = () => {
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onUp);
+            handle.removeEventListener('pointercancel', onUp);
+            el.classList.remove('is-resizing');
+            if (cols !== null && height !== null) this.saveSize(el.id, { cols, height });
+            // Chart.js sizes to its container on window resize; without this a
+            // resized chart keeps its old canvas dimensions until the next paint.
+            window.dispatchEvent(new Event('resize'));
+        };
+
+        handle.addEventListener('pointermove', onMove);
+        handle.addEventListener('pointerup', onUp);
+        handle.addEventListener('pointercancel', onUp);
+    },
+
+    scan(root) {
+        (root || document).querySelectorAll('.widget-container').forEach(el => {
+            this.apply(el);
+            this.decorate(el);
+        });
+    },
+
+    /** Re-apply sizes to widgets as they are (re)painted, however they arrive. */
+    observe(canvas) {
+        if (!canvas || this._observing) return;
+        this._observing = true;
+        this.scan(canvas);
+        new MutationObserver(() => this.scan(canvas))
+            .observe(canvas, { childList: true, subtree: true });
+    }
+};
+
 document.addEventListener("DOMContentLoaded", () => {
     // Configure DOMPurify globally to allow Alpine.js attributes and event listeners
     if (window.DOMPurify) {
@@ -55,6 +185,8 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     localStorage.setItem("html_notes_session_id", state.sessionId);
+
+    window.WidgetResizer.observe(document.getElementById("live-canvas"));
 
     const elements = {
         liveCanvas: document.getElementById("live-canvas"),
