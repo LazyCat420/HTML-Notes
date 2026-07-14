@@ -221,9 +221,28 @@ def is_query_vague(query_text: str) -> bool:
     
     words = text.split()
     meaningful_words = [w for w in words if w not in filler_words]
-    
+
     # Returns True if no meaningful words are left
     return len(meaningful_words) == 0
+
+# Words that never describe a genre/artist in a music ask. Unlike the
+# is_low_content catalog, genre terms like "lofi" and "beats" are kept.
+MUSIC_FILLER_WORDS = {
+    # Action verbs
+    "add", "show", "open", "play", "create", "pull", "up", "get", "find", "search", "insert", "inject", "spawn", "display", "put", "start", "give",
+    # Articles & prepositions
+    "a", "an", "the", "some", "any", "to", "on", "for", "with", "in", "at", "of", "by",
+    # Conversational filler
+    "please", "now", "here", "thanks", "thank", "you", "would", "like", "want", "need", "can", "could", "me", "us", "hey", "hi",
+    # Music/widget descriptors that aren't genres
+    "widget", "player", "music", "radio", "song", "songs", "audio", "track", "tracks", "tune", "tunes", "playlist", "station",
+}
+
+def extract_music_genre(query_text: str) -> str:
+    """Pull the requested genre/artist out of a music ask.
+    "play reggae music" -> "reggae"; "open the music player" -> ""."""
+    text = re.sub(r'[^\w\s]', '', (query_text or '').lower().strip())
+    return " ".join(w for w in text.split() if w not in MUSIC_FILLER_WORDS)
 
 def is_valid_tool_args(tool_name: str, args: dict) -> bool:
     if not args:
@@ -307,7 +326,9 @@ async def send_message(req: MessageRequest):
             has_custom_url = "http" in text_clean or "www" in text_clean
             is_video_ask = any(w in text_clean for w in ("youtube", "video", "yt"))
             if any(w in text_clean for w in ("music", "player", "radio")) and not has_custom_url and not is_video_ask:
-                return spawn_widget_stream("mini_music_player", "music", {"genre": "lofi"})
+                genre = extract_music_genre(req.message) or "lofi"
+                wants_playback = bool(re.search(r'\bplay(ing)?\b', text_clean))
+                return spawn_widget_stream("mini_music_player", "music", {"genre": genre, "autoplay": wants_playback})
 
             # 5. Notes heuristic matching
             is_searching_notes = "search" in text_clean or "find" in text_clean or "look for" in text_clean
@@ -349,7 +370,7 @@ async def send_message(req: MessageRequest):
             "1. PLANNING MANDATORY: Before you call `create_widget`, you MUST ALWAYS first call `plan_widget` with a structured design plan detailing your widget types, behavior, layout, and style. Generation is blocked unless planning succeeds.\n"
             "2. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\n"
             "3. CREATING AND UPDATING WIDGETS: Use `create_widget` to append widgets and `update_widget` to update them in place. Make sure to define clean HTML, scope all CSS rules, and encapsulate JavaScript scripts securely. Do NOT use inline script events.\n"
-            "4. ADDING WIDGETS: You can also use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`.\n"
+            "4. ADDING WIDGETS: You can also use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'mini_music_player', pass the requested genre or artist in config, e.g. config={\"genre\": \"reggae\", \"autoplay\": true} — the widget fetches matching tracks from the music-player service.\n"
             "5. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST use `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'`. DO NOT explain your plan.\n"
             "6. WIDGETS COEXIST: The grid holds many widgets at once. Adding a widget NEVER removes or replaces the others — do not touch existing widgets unless the user explicitly asks to change or remove them.\n"
             "7. REMOVING WIDGETS: When the user asks to remove/close/hide a widget, find its ID in CURRENT CANVAS STATE above and call `mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove')`. Do not add anything when removing.\n"
