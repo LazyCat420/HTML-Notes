@@ -317,9 +317,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // every single mutation — including ones nobody touched — which reset their
     // Alpine state and forced YouTube iframes to reload and the music player to
     // re-init, causing a visible stutter each time any widget was added. This
-    // snapshot lets reconcileCanvas() recognize "this widget's markup is byte-
-    // identical to what we last painted" and leave its live DOM node (and
-    // in-flight iframe/audio) completely alone.
+    // snapshot (a pristine, pre-Alpine clone of each widget's last-painted node)
+    // lets reconcileCanvas() recognize an untouched widget and leave its live
+    // DOM node — and its in-flight iframe/audio — completely alone.
+    //
+    // Comparison uses isEqualNode(), not a string, because the server re-parses
+    // and re-serializes the WHOLE canvas with BeautifulSoup on every mutation —
+    // an untouched widget's markup can come back with different attribute
+    // quoting/ordering even though nothing about it actually changed.
     const widgetSourceSnapshots = new Map();
 
     function reconcileCanvas(container, rawHtml) {
@@ -350,7 +355,6 @@ document.addEventListener("DOMContentLoaded", () => {
         let changed = false;
         newWidgets.forEach(newWidget => {
             const id = newWidget.id;
-            const freshHtml = newWidget.outerHTML;
 
             // No id to key on — safest to treat as new content every time.
             if (!id) {
@@ -359,10 +363,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
-            if (widgetSourceSnapshots.get(id) === freshHtml) {
-                return; // Unchanged since last paint — leave the live node untouched.
+            const prevSnapshot = widgetSourceSnapshots.get(id);
+            if (prevSnapshot && prevSnapshot.isEqualNode(newWidget)) {
+                return; // Structurally identical to last paint — leave the live node untouched.
             }
-            widgetSourceSnapshots.set(id, freshHtml);
+            widgetSourceSnapshots.set(id, newWidget.cloneNode(true));
 
             const existing = grid.querySelector(`#${CSS.escape(id)}`);
             if (existing) {
@@ -382,7 +387,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // instead of treating every one of them as new (and stutter-replacing them).
     function seedWidgetSnapshots(container) {
         container.querySelectorAll('.widget-container').forEach(w => {
-            if (w.id) widgetSourceSnapshots.set(w.id, w.outerHTML);
+            if (w.id) widgetSourceSnapshots.set(w.id, w.cloneNode(true));
         });
     }
 
