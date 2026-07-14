@@ -474,6 +474,27 @@ def get_cached_tool_result(key: str) -> Optional[dict]:
     return value if time.time() - stamp <= _TOOL_RESULT_TTL else None
 
 
+# Media widgets (video, audio) are players, not data: the canvas can only ever
+# play one thing at a time, so a new one replaces whatever's already playing.
+# Data widgets (stock_card, scoreboard, notes, ...) coexist — a new one adds
+# alongside the rest unless it shares a widget_id with an existing one.
+_MEDIA_WIDGET_MARKERS = {
+    "youtube_player": "youtubePlayerWidget",
+    "mini_music_player": "musicPlayerWidget",
+}
+
+
+def find_singleton_media_widget(soup, widget_type: str):
+    """Return the existing widget-container div for this media type, if any."""
+    marker = _MEDIA_WIDGET_MARKERS.get(widget_type)
+    if not marker:
+        return None
+    for div in soup.find_all("div", class_="widget-container"):
+        if marker in div.get("x-data", ""):
+            return div
+    return None
+
+
 async def read_web_page(url: str, max_chars: int = 6000) -> dict:
     """Fetch and return the readable text of a page."""
     content = await _scrape(url, engine="crawl4ai")
@@ -979,16 +1000,25 @@ async def send_message(req: MessageRequest):
                         widget_config.update(built)
 
                 widget_id = f"{id_prefix}-{uuid.uuid4().hex[:8]}"
-                html_snippet = generate_widget_html(widget_type, widget_id, widget_config)
 
                 def _append(soup):
+                    # Media widgets (video, music) are players: a new one replaces
+                    # whatever's already playing instead of stacking a second one.
+                    media_div = find_singleton_media_widget(soup, widget_type)
+                    if media_div is not None:
+                        existing_id = media_div.get("id", widget_id)
+                        media_div.replace_with(BeautifulSoup(
+                            generate_widget_html(widget_type, existing_id, widget_config), 'html.parser'))
+                        return
+
                     target = soup.select_one('#dashboard-grid')
                     if target is None:
                         grid = BeautifulSoup(
                             '<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
-                    target.append(BeautifulSoup(html_snippet, 'html.parser'))
+                    target.append(BeautifulSoup(
+                        generate_widget_html(widget_type, widget_id, widget_config), 'html.parser'))
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
@@ -1163,7 +1193,7 @@ async def send_message(req: MessageRequest):
             "If the user asks a question you cannot answer from the conversation itself, you MUST call html_notes_web_search BEFORE answering. Never reply that you cannot find, cannot access, or do not have information about something without having called html_notes_web_search at least once. Never answer a factual question from memory alone — search, then bake the real findings into a data_card.\n"
             "A question about the oldest/first/earliest video, song, or event is a SEARCH question: search the web for the answer, then (if it names a video) call html_notes_youtube_search for that specific title and show a youtube_player. Do not claim YouTube cannot be sorted by age — find the answer with the web search instead.\n\n"
             "RULES:\n"
-            "1. WIDGETS COEXIST: The grid holds many widgets at once. Adding a widget NEVER removes or replaces the others — do not touch existing widgets unless the user explicitly asks to change or remove them.\n"
+            "1. WIDGETS COEXIST, PLAYERS DON'T: The grid holds many data widgets at once (stock_card, scoreboard, data_card, chart, image, notes, checklist, clock) — adding one NEVER removes or replaces the others. youtube_player and mini_music_player are the exception: the canvas can only play one video and one track at a time, so calling canvas_add_widget for either one automatically swaps out whichever one is already playing — you do not need to remove it first, just add the new one.\n"
             "2. REMOVING: find the widget's ID in CURRENT CANVAS STATE and call canvas_modify_dom(css_selector='#<widget-id>', action='remove'). Do not add anything when removing.\n"
             "3. UPDATING ('update that news widget', 'add more detail'): target the specific widget's ID from CURRENT CANVAS STATE — replace it via canvas_add_widget with the same widget_id family or canvas_modify_dom action='replace'.\n"
             "4. VAGUE VIDEO REQUESTS: 'pull up a video' with no topic → pick a random fun search query and execute html_notes_youtube_search immediately. Do NOT ask for clarification.\n"
@@ -1434,19 +1464,15 @@ async def send_message(req: MessageRequest):
                         
                         def _add(soup):
                             replaced = False
-                            if widget_type == "youtube_player":
-                                # Swap only an existing YOUTUBE widget in place ("play X
-                                # instead"). Matching on any iframe replaced unrelated
-                                # widgets (music player, iframe apps) — keep it strict.
-                                for div in soup.find_all("div", class_="widget-container"):
-                                    xdata = div.get("x-data", "")
-                                    div_id = div.get("id", "")
-                                    if "youtubePlayerWidget" in xdata or "youtube" in div_id.lower():
-                                        existing_id = div.get("id", widget_id)
-                                        div.replace_with(BeautifulSoup(
-                                            generate_widget_html(widget_type, existing_id, config), 'html.parser'))
-                                        replaced = True
-                                        break
+                            # Media widgets (video, music) are players: a new one
+                            # replaces whatever's already playing instead of stacking
+                            # up a second player next to it.
+                            media_div = find_singleton_media_widget(soup, widget_type)
+                            if media_div is not None:
+                                existing_id = media_div.get("id", widget_id)
+                                media_div.replace_with(BeautifulSoup(
+                                    generate_widget_html(widget_type, existing_id, config), 'html.parser'))
+                                replaced = True
 
                             # A retried tool call with the same widget_id must not
                             # duplicate the widget — replace it in place instead.
