@@ -1,8 +1,194 @@
 // Global Alpine.js widget registry for the Smart Dashboard Lego System
 
+// Loads the YouTube IFrame API once. It is the only way to detect
+// "Video unavailable" / embed-blocked errors (codes 100/101/150) so the
+// player widget can auto-advance to an embeddable alternative.
+function loadYouTubeIframeApi() {
+    if (window.YT && window.YT.Player) return Promise.resolve();
+    if (window._ytApiPromise) return window._ytApiPromise;
+    window._ytApiPromise = new Promise(resolve => {
+        const prev = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => {
+            if (typeof prev === 'function') prev();
+            resolve();
+        };
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        document.head.appendChild(tag);
+    });
+    return window._ytApiPromise;
+}
+
 document.addEventListener('alpine:init', () => {
     
     // 1. Checklist Widget
+    // Rich ticker widget. The snapshot is baked in server-side so it paints
+    // immediately; switching range refetches /api/stock directly rather than
+    // running another agentic turn (which would cost ~a minute per tab click).
+    Alpine.data('stockCardWidget', (initial) => ({
+        snapshot: initial || {},
+        ranges: ['1d', '5d', '1mo', '3mo', '6mo', '1y', '5y', '10y', 'max'],
+        loading: false,
+        chart: null,
+
+        init() {
+            this.$nextTick(() => this.drawChart());
+        },
+
+        async setRange(range) {
+            if (this.loading || range === this.snapshot.range) return;
+            this.loading = true;
+            try {
+                const res = await fetch(
+                    `/api/stock/${encodeURIComponent(this.snapshot.symbol)}?range=${encodeURIComponent(range)}`);
+                const data = await res.json();
+                if (!data.is_error) {
+                    this.snapshot = data;
+                    this.$nextTick(() => this.drawChart());
+                }
+            } catch (e) {
+                console.warn('[StockCard] range fetch failed', e);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        drawChart() {
+            const canvas = this.$refs.canvas;
+            if (!canvas || !window.Chart) return;
+            if (this.chart) this.chart.destroy();
+
+            const values = this.snapshot.values || [];
+            const up = (this.snapshot.change_pct || 0) >= 0;
+            const line = up ? '#34d399' : '#fb7185';
+
+            const gradient = canvas.getContext('2d').createLinearGradient(0, 0, 0, 170);
+            gradient.addColorStop(0, up ? 'rgba(52,211,153,0.28)' : 'rgba(251,113,133,0.28)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+
+            this.chart = new Chart(canvas, {
+                type: 'line',
+                data: {
+                    labels: this.snapshot.labels || [],
+                    datasets: [{
+                        data: values,
+                        borderColor: line,
+                        backgroundColor: gradient,
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.25,
+                        pointRadius: 0,
+                        pointHoverRadius: 4,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => this.fmtPrice(ctx.parsed.y),
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: {
+                                color: 'rgba(255,255,255,0.35)',
+                                font: { size: 9 },
+                                maxTicksLimit: 8,
+                                maxRotation: 0,
+                            },
+                        },
+                        y: {
+                            position: 'right',
+                            grid: { color: 'rgba(255,255,255,0.06)' },
+                            ticks: {
+                                color: 'rgba(255,255,255,0.35)',
+                                font: { size: 9 },
+                                maxTicksLimit: 5,
+                            },
+                        },
+                    },
+                },
+            });
+        },
+
+        fmtPrice(v) {
+            if (v === null || v === undefined) return '—';
+            const currency = this.snapshot.currency || 'USD';
+            try {
+                return new Intl.NumberFormat('en-US', {
+                    style: 'currency', currency, maximumFractionDigits: 2,
+                }).format(v);
+            } catch {
+                return `${v}`;
+            }
+        },
+
+        technicalRows() {
+            const t = this.snapshot.technicals || {};
+            const rsi = t.rsi_14;
+            // RSI only means something at the extremes — colour it there, stay
+            // neutral in the middle so the eye isn't drawn to a non-signal.
+            const rsiTone = rsi == null ? '' :
+                rsi >= 70 ? 'text-rose-400' : rsi <= 30 ? 'text-emerald-400' : '';
+            const vs50 = t.vs_sma_50;
+            return [
+                { label: 'RSI (14)', value: rsi, tone: rsiTone },
+                { label: 'SMA 20', value: this.fmtNum(t.sma_20), tone: '' },
+                { label: 'SMA 50', value: this.fmtNum(t.sma_50), tone: '' },
+                { label: 'SMA 200', value: this.fmtNum(t.sma_200), tone: '' },
+                {
+                    label: 'vs SMA50', value: vs50 == null ? null : `${vs50 > 0 ? '+' : ''}${vs50}%`,
+                    tone: vs50 == null ? '' : (vs50 >= 0 ? 'text-emerald-400' : 'text-rose-400'),
+                },
+                { label: 'Volatility', value: t.volatility == null ? null : `${t.volatility}%`, tone: '' },
+                { label: '52w High', value: this.fmtNum(t.week52_high), tone: '' },
+                { label: '52w Low', value: this.fmtNum(t.week52_low), tone: '' },
+                { label: '52w Range', value: t.week52_position == null ? null : `${t.week52_position}%`, tone: '' },
+                { label: 'Volume', value: this.fmtCompact(t.volume), tone: '' },
+            ];
+        },
+
+        fundamentalRows() {
+            const f = this.snapshot.fundamentals || {};
+            const rec = f.recommendation;
+            const recTone = !rec ? '' :
+                /buy/.test(rec) ? 'text-emerald-400' : /sell/.test(rec) ? 'text-rose-400' : '';
+            return [
+                { label: 'Mkt Cap', value: f.market_cap, tone: '' },
+                { label: 'P/E', value: f.pe_ratio, tone: '' },
+                { label: 'Fwd P/E', value: f.forward_pe, tone: '' },
+                { label: 'EPS', value: f.eps, tone: '' },
+                { label: 'Beta', value: f.beta, tone: '' },
+                { label: 'Div Yield', value: f.dividend_yield, tone: '' },
+                { label: 'Revenue', value: f.revenue, tone: '' },
+                { label: 'Rev Growth', value: f.revenue_growth, tone: '' },
+                { label: 'Margin', value: f.profit_margin, tone: '' },
+                { label: 'Target', value: f.analyst_target, tone: '' },
+                { label: 'Rating', value: rec ? rec.replace(/_/g, ' ') : null, tone: recTone },
+                { label: 'Sector', value: f.sector, tone: '' },
+            ];
+        },
+
+        hasFundamentals() {
+            return Object.values(this.snapshot.fundamentals || {}).some(v => v);
+        },
+
+        fmtNum(v) {
+            return v == null ? null : Number(v).toFixed(2);
+        },
+
+        fmtCompact(v) {
+            if (v == null) return null;
+            return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(v);
+        },
+    }));
+
     Alpine.data('checklistWidget', (title, initialItems = []) => ({
         title: title || 'Checklist',
         items: initialItems,
@@ -135,53 +321,104 @@ document.addEventListener('alpine:init', () => {
                 this.isPlaying = false;
             });
 
+            // Every fetch gets a hard timeout so a hung endpoint can never
+            // leave the widget stuck on "Searching signals...".
+            const fetchJson = async (url, timeoutMs = 12000) => {
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+                try {
+                    const res = await fetch(url, { signal: ctrl.signal });
+                    if (!res.ok) return null;
+                    return await res.json();
+                } catch (e) {
+                    console.warn(`[MusicPlayer] Fetch failed/timed out: ${url}`, e);
+                    return null;
+                } finally {
+                    clearTimeout(timer);
+                }
+            };
+
             try {
                 const host = window.location.hostname;
-                const localUrl = `http://${host}:8002/api/tracks`;
-                
-                const localRes = await fetch(localUrl);
-                let loadedTracks = [];
-                if (localRes.ok) {
-                    const data = await localRes.json();
-                    loadedTracks = data.tracks || [];
-                }
+                const ytGenre = this.genreFilter || "lo-fi";
 
-                let ytGenre = this.genreFilter || "lo-fi";
-                if (this.genreFilter) {
+                const asTrack = (v) => ({
+                    id: v.id,
+                    title: v.title,
+                    artist: v.artist || v.uploader || "YouTube Music",
+                    path: v.id,
+                    isYoutube: true
+                });
+
+                // Both requests go out at once. /api/tracks returns the WHOLE
+                // library unpaginated — ~7MB of JSON, seconds to download and
+                // parse — and it used to be awaited first, holding up the genre
+                // mix, which answers in about 40ms. That wait was the entire
+                // "jazz music takes forever" delay: the widget shell renders
+                // immediately and then sits on "Searching signals..." until this
+                // resolves. The mix alone is enough to start playing.
+                const localPromise = fetchJson(`http://${host}:8002/api/tracks`, 8000);
+                const ytPromise = fetchJson(
+                    `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=genre`, 15000);
+
+                const matchesGenre = (t) => {
+                    if (!this.genreFilter) return true;
                     const term = this.genreFilter.toLowerCase();
-                    loadedTracks = loadedTracks.filter(t => 
-                        (t.genre && t.genre.toLowerCase().includes(term)) ||
-                        (t.title && t.title.toLowerCase().includes(term)) ||
-                        (t.artist && t.artist.toLowerCase().includes(term))
-                    );
+                    return (t.genre && t.genre.toLowerCase().includes(term)) ||
+                           (t.title && t.title.toLowerCase().includes(term)) ||
+                           (t.artist && t.artist.toLowerCase().includes(term));
+                };
+
+                const ytData = await ytPromise;
+                const ytVideos = (ytData && ytData.videos) || [];
+
+                if (ytVideos.length > 0) {
+                    // Play now; fold the local library in once it finally lands.
+                    this.tracks = ytVideos.map(asTrack);
+                    this.currentIndex = 0;
+                    this.loadTrack();
+                    if (autoplay) {
+                        this.audio.play().catch(e => {
+                            console.warn('[MusicPlayer] Autoplay prevented by browser policy.', e);
+                            this.isPlaying = false;
+                        });
+                    }
+                    localPromise.then(localData => {
+                        const local = ((localData && localData.tracks) || []).filter(matchesGenre);
+                        if (local.length) this.tracks = [...this.tracks, ...local];
+                    });
+                    return;
                 }
 
-                const ytUrl = `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=genre`;
-                try {
-                    const ytRes = await fetch(ytUrl);
-                    if (ytRes.ok) {
-                        const ytData = await ytRes.json();
-                        const ytVideos = ytData.videos || [];
-                        const normalizedYt = ytVideos.map(v => ({
-                            id: v.id,
-                            title: v.title,
-                            artist: v.artist || v.uploader || "YouTube Music",
-                            path: v.id, 
-                            isYoutube: true
-                        }));
-                        loadedTracks = [...loadedTracks, ...normalizedYt];
-                    }
-                } catch (ytErr) {
-                    console.warn('[MusicPlayer] Failed to load YouTube tracks:', ytErr);
+                // No mix for this genre — fall back to the local library, then a
+                // direct YouTube search.
+                const localData = await localPromise;
+                const allLocalTracks = (localData && localData.tracks) || [];
+                let loadedTracks = allLocalTracks.filter(matchesGenre);
+
+                if (loadedTracks.length === 0) {
+                    const searchData = await fetchJson(
+                        `http://${host}:8002/api/youtube/search?query=${encodeURIComponent(ytGenre + " music")}`, 15000);
+                    const hits = Array.isArray(searchData) ? searchData : (searchData ? [searchData] : []);
+                    loadedTracks = hits.filter(v => v && v.id).map(asTrack);
+                }
+
+                if (loadedTracks.length === 0 && allLocalTracks.length > 0) {
+                    console.warn(`[MusicPlayer] Nothing found for "${ytGenre}" — falling back to full library.`);
+                    this.error = `Nothing found for "${ytGenre}" — playing your library instead.`;
+                    this.genreFilter = '';
+                    loadedTracks = allLocalTracks;
                 }
 
                 if (loadedTracks.length === 0) {
-                    this.error = 'No tracks found for this genre.';
+                    this.error = `No tracks found for "${ytGenre}". Music service may be offline.`;
                     return;
                 }
 
                 this.tracks = loadedTracks;
-                
+                // A fallback notice shouldn't linger once playback works.
+                if (this.error) setTimeout(() => { this.error = ''; }, 6000);
+
                 // Shuffle array initially if isShuffle is on, else keep order
                 if (this.isShuffle) {
                     this.tracks = [...loadedTracks].sort(() => Math.random() - 0.5);
@@ -307,53 +544,73 @@ document.addEventListener('alpine:init', () => {
     }));
 
     // 5. YouTube Player Widget
-    Alpine.data('youtubePlayerWidget', (initialVideoId = '', title = 'YouTube Player') => ({
+    // candidates: alternate video ids to try when a video refuses to embed
+    // (music-label videos frequently block embedding — error 101/150).
+    Alpine.data('youtubePlayerWidget', (initialVideoId = '', title = 'YouTube Player', candidates = [], searchQuery = '') => ({
         videoId: initialVideoId,
         embedUrl: '',
         isLoading: false,
         error: '',
+        watchUrl: '',
         title: title || 'YouTube Player',
-        
+        candidates: Array.isArray(candidates) ? candidates.filter(Boolean) : [],
+        searchQuery: searchQuery || '',
+        attemptedIds: [],
+        fetchedMoreCandidates: false,
+        player: null,
+
         init() {
             if (this.videoId) {
                 this.resolveVideo();
             }
         },
-        
+
+        destroy() {
+            this.destroyPlayer();
+        },
+
+        destroyPlayer() {
+            if (this.player) {
+                try { this.player.destroy(); } catch (e) {}
+                this.player = null;
+            }
+        },
+
         async resolveVideo() {
             let query = this.videoId;
             if (query.startsWith('query:')) {
                 query = query.substring(6);
             }
-            
+
             const isYtId = /^[a-zA-Z0-9_-]{11}$/.test(query);
             const isUrl = query.includes('youtube.com') || query.includes('youtu.be');
-            
+
             if (isYtId) {
-                this.updateEmbedUrl(query);
+                this.playById(query);
                 return;
             }
-            
+
             if (isUrl) {
                 const extracted = this.extractYoutubeId(query);
                 if (extracted) {
-                    this.updateEmbedUrl(extracted);
+                    this.playById(extracted);
                     return;
                 }
             }
-            
+
             if (query && query.trim() !== '') {
+                this.searchQuery = this.searchQuery || query;
                 this.isLoading = true;
                 this.error = '';
                 try {
-                    const res = await fetch(`/api/youtube/search?query=${encodeURIComponent(query)}`);
+                    const res = await fetch(`/api/youtube/candidates?query=${encodeURIComponent(query)}`);
                     if (res.ok) {
                         const data = await res.json();
-                        if (data && data.id) {
-                            this.updateEmbedUrl(data.id);
-                            if (data.title) {
-                                this.title = data.title;
-                            }
+                        const results = (data && data.results) || [];
+                        if (results.length > 0) {
+                            this.candidates = results.map(r => r.id).filter(Boolean);
+                            if (results[0].title) this.title = results[0].title;
+                            this.playById(this.candidates.shift());
                         } else {
                             this.error = 'No videos found for this search.';
                         }
@@ -367,12 +624,63 @@ document.addEventListener('alpine:init', () => {
                 }
             }
         },
-        
-        updateEmbedUrl(id) {
+
+        playById(id) {
+            this.attemptedIds.push(id);
             this.videoId = id;
-            this.embedUrl = `https://www.youtube.com/embed/${id}?autoplay=1`;
+            this.error = '';
+            this.watchUrl = '';
+            this.destroyPlayer();
+            // Toggle embedUrl through '' so x-if rebuilds a fresh iframe for
+            // each attempt — the IFrame API binds to one iframe per video.
+            this.embedUrl = '';
+            this.$nextTick(() => {
+                this.embedUrl = `https://www.youtube.com/embed/${id}?autoplay=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`;
+                this.$nextTick(() => this.watchForEmbedErrors());
+            });
         },
-        
+
+        async watchForEmbedErrors() {
+            try {
+                await loadYouTubeIframeApi();
+                const iframe = this.$el.querySelector('iframe');
+                if (!iframe || !window.YT || !window.YT.Player) return;
+                this.player = new YT.Player(iframe, {
+                    events: {
+                        onError: (e) => this.handleEmbedError(e.data)
+                    }
+                });
+            } catch (e) {
+                console.warn('[YouTubePlayer] IFrame API unavailable, embed errors will not auto-recover:', e);
+            }
+        },
+
+        async handleEmbedError(code) {
+            console.warn(`[YouTubePlayer] Embed error ${code} for ${this.videoId} — trying next candidate.`);
+            // 101/150 = embedding disabled, 100 = removed/private, 2 = bad id
+            let next = this.candidates.find(id => !this.attemptedIds.includes(id));
+            if (!next && !this.fetchedMoreCandidates && (this.searchQuery || this.title)) {
+                this.fetchedMoreCandidates = true;
+                try {
+                    const q = this.searchQuery || this.title;
+                    const res = await fetch(`/api/youtube/candidates?query=${encodeURIComponent(q)}&limit=8`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        this.candidates.push(...((data && data.results) || []).map(r => r.id).filter(Boolean));
+                        next = this.candidates.find(id => !this.attemptedIds.includes(id));
+                    }
+                } catch (e) {}
+            }
+            if (next) {
+                this.playById(next);
+            } else {
+                this.destroyPlayer();
+                this.embedUrl = '';
+                this.watchUrl = `https://www.youtube.com/watch?v=${this.attemptedIds[0] || this.videoId}`;
+                this.error = 'This video blocks embedding.';
+            }
+        },
+
         extractYoutubeId(url) {
             const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
             const match = url.match(regExp);

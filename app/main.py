@@ -1,12 +1,11 @@
 import httpx
 import logging
 import re
-
 import urllib.parse
-import httpx
 
-import urllib.parse
-import httpx
+# Needed up here, not in the import block further down: the helper functions
+# below are defined before it, and their annotations are evaluated at def time.
+from typing import Any, Dict, List, Optional
 
 async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance") -> list:
     """Search YouTube and return video dicts with video_id/id, title, and channel.
@@ -51,14 +50,318 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
         logger.error(f"search_youtube_videos error: {e}")
     return []
 
+
+# crawl4ai renders Brave's result page as markdown with the outbound hrefs
+# intact, which is the only engine/target pair that survives bot detection:
+# DuckDuckGo serves a CAPTCHA to every engine, Bing and Mojeek fail outright,
+# and the http engine gets challenged. Brave's own chrome (favicons, thumbnails,
+# nav) also appears as links, hence the noise-host filter.
+_MD_LINK_RE = re.compile(r'\[([^\]]*)\]\((https?://[^\s)]+)\)')
+_MD_IMAGE_RE = re.compile(r'!\[[^\]]*\]\([^)]*\)')
+_SEARCH_NOISE_HOSTS = ("search.brave.com", "imgs.search.brave.com", "brave.com/download")
+
+
+async def _scrape(url: str, engine: str = "crawl4ai", timeout: float = 90.0) -> str:
+    """Fetch a URL through scraper-service. Returns page content ('' on failure)."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{SCRAPER_SERVICE_URL}/scrape",
+                json={"url": url, "engine": engine},
+            )
+            payload = resp.json()
+            if payload.get("success"):
+                return payload.get("content") or ""
+            logger.warning(f"_scrape({engine}) failed for {url}: {payload.get('error')}")
+    except Exception as e:
+        logger.warning(f"_scrape({engine}) error for {url}: {e}")
+    return ""
+
+
+async def web_search(query: str, limit: int = 6) -> list:
+    """Keyless web search via Brave + scraper-service. Returns [{title,url,snippet}]."""
+    target = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
+
+    markdown = await _scrape(target, engine="crawl4ai")
+    results, seen = [], []
+
+    for raw_title, href in _MD_LINK_RE.findall(markdown):
+        if any(h in href for h in _SEARCH_NOISE_HOSTS):
+            continue
+        title = _MD_IMAGE_RE.sub("", raw_title).strip()
+        if len(title) < 3:
+            continue
+        key = href.split("?utm")[0]
+        if key in seen:
+            continue
+        seen.append(key)
+        results.append({"title": title, "url": href, "snippet": ""})
+        if len(results) >= limit:
+            break
+
+    # The prose between links is the result description; pair them up in order.
+    plain = _MD_LINK_RE.sub("\n", _MD_IMAGE_RE.sub("", markdown))
+    paragraphs = [p.strip() for p in plain.split("\n") if len(p.strip()) > 60]
+    for i, result in enumerate(results):
+        if i < len(paragraphs):
+            result["snippet"] = paragraphs[i][:300]
+
+    if results:
+        return results
+
+    # crawl4ai occasionally returns a link-less render; playwright still gives
+    # readable result text, which is enough for the model to answer from.
+    text = await _scrape(target, engine="playwright", timeout=60.0)
+    if text:
+        return [{"title": f"Search results for '{query}'", "url": target, "snippet": text[:1500]}]
+    return []
+
+
+STOCK_RANGES = ("1d", "5d", "1mo", "3mo", "6mo", "1y", "5y", "10y", "max")
+
+# Yahoo picks the candle size; too fine over a long window returns tens of
+# thousands of points and a chart nobody can read.
+_STOCK_INTERVALS = {
+    "1d": "5m", "5d": "30m", "1mo": "1d", "3mo": "1d", "6mo": "1d",
+    "1y": "1d", "5y": "1wk", "10y": "1wk", "max": "1mo",
+}
+
+_YAHOO_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
+_yahoo_crumb: dict = {"crumb": None, "cookies": None}
+
+
+def _sma(values: list, window: int) -> Optional[float]:
+    if len(values) < window:
+        return None
+    return round(sum(values[-window:]) / window, 2)
+
+
+def _rsi(values: list, period: int = 14) -> Optional[float]:
+    """Wilder's RSI. <30 oversold, >70 overbought."""
+    if len(values) <= period:
+        return None
+    gains, losses = [], []
+    for prev, curr in zip(values[-(period + 1):-1], values[-period:]):
+        delta = curr - prev
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 1)
+
+
+def _annualized_volatility(values: list) -> Optional[float]:
+    if len(values) < 20:
+        return None
+    returns = [(b - a) / a for a, b in zip(values[:-1], values[1:]) if a]
+    if len(returns) < 2:
+        return None
+    mean = sum(returns) / len(returns)
+    variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+    return round((variance ** 0.5) * (252 ** 0.5) * 100, 1)
+
+
+async def _yahoo_fundamentals(client: httpx.AsyncClient, symbol: str) -> dict:
+    """Company fundamentals. Yahoo's quoteSummary rejects anonymous callers with
+    "Invalid Crumb", so grab a cookie + crumb once and reuse it."""
+    try:
+        if not _yahoo_crumb["crumb"]:
+            seed = await client.get("https://fc.yahoo.com", headers={"User-Agent": _YAHOO_UA})
+            crumb_resp = await client.get(
+                "https://query2.finance.yahoo.com/v1/test/getcrumb",
+                headers={"User-Agent": _YAHOO_UA}, cookies=seed.cookies)
+            if crumb_resp.status_code == 200 and crumb_resp.text.strip():
+                _yahoo_crumb["crumb"] = crumb_resp.text.strip()
+                _yahoo_crumb["cookies"] = seed.cookies
+
+        if not _yahoo_crumb["crumb"]:
+            return {}
+
+        modules = "summaryDetail,defaultKeyStatistics,financialData,assetProfile"
+        resp = await client.get(
+            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(symbol)}"
+            f"?modules={modules}&crumb={urllib.parse.quote(_yahoo_crumb['crumb'])}",
+            headers={"User-Agent": _YAHOO_UA}, cookies=_yahoo_crumb["cookies"])
+        result = (resp.json().get("quoteSummary", {}).get("result") or [None])[0]
+        if not result:
+            _yahoo_crumb["crumb"] = None  # expired — re-seed next call
+            return {}
+
+        detail = result.get("summaryDetail", {}) or {}
+        stats = result.get("defaultKeyStatistics", {}) or {}
+        financial = result.get("financialData", {}) or {}
+        profile = result.get("assetProfile", {}) or {}
+
+        def fmt(source: dict, key: str):
+            value = source.get(key)
+            return value.get("fmt") if isinstance(value, dict) else value
+
+        return {
+            "sector": profile.get("sector"),
+            "industry": profile.get("industry"),
+            "market_cap": fmt(detail, "marketCap"),
+            "pe_ratio": fmt(detail, "trailingPE"),
+            "forward_pe": fmt(detail, "forwardPE"),
+            "eps": fmt(stats, "trailingEps"),
+            "beta": fmt(detail, "beta"),
+            "dividend_yield": fmt(detail, "dividendYield"),
+            "profit_margin": fmt(financial, "profitMargins"),
+            "revenue": fmt(financial, "totalRevenue"),
+            "revenue_growth": fmt(financial, "revenueGrowth"),
+            "analyst_target": fmt(financial, "targetMeanPrice"),
+            "recommendation": financial.get("recommendationKey"),
+        }
+    except Exception as e:
+        logger.warning(f"fundamentals({symbol}) failed: {e}")
+        return {}
+
+
+async def _yahoo_chart(client: httpx.AsyncClient, symbol: str, range_: str) -> Optional[dict]:
+    interval = _STOCK_INTERVALS.get(range_, "1d")
+    resp = await client.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}"
+        f"?range={urllib.parse.quote(range_)}&interval={interval}",
+        headers={"User-Agent": _YAHOO_UA})
+    payload = resp.json()
+    return (payload.get("chart", {}).get("result") or [None])[0]
+
+
+async def stock_snapshot(symbol: str, range_: str = "1mo") -> dict:
+    """Full picture for a ticker: price series + technicals + fundamentals.
+
+    Every tools-api market tool (get_stock, get_historical_prices,
+    generate_chart) has a null endpoint in this deployment, so without this the
+    model falls back to scraping the web for prices — slow, and it can't get
+    clean numbers out of it anyway. Yahoo is keyless and answers in well under
+    a second.
+
+    Technicals are always computed from a 1y daily series, never from the
+    displayed range: a 5-day window has no 200-day moving average, and an RSI
+    taken over 5-minute candles is a different (and misleading) number from the
+    daily RSI a reader expects. The two fetches run concurrently.
+    """
+    if range_ not in STOCK_RANGES:
+        range_ = "1mo"
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            display, daily, fundamentals = await asyncio.gather(
+                _yahoo_chart(client, symbol, range_),
+                _yahoo_chart(client, symbol, "1y"),
+                _yahoo_fundamentals(client, symbol),
+                return_exceptions=True,
+            )
+
+        if not isinstance(display, dict) or not display:
+            return {"error": f"No price data for '{symbol}'", "is_error": True}
+        if not isinstance(fundamentals, dict):
+            fundamentals = {}
+
+        meta = display.get("meta", {})
+        stamps = display.get("timestamp") or []
+        quote = (display.get("indicators", {}).get("quote") or [{}])[0]
+        closes = quote.get("close") or []
+        volumes = quote.get("volume") or []
+
+        intraday = _STOCK_INTERVALS.get(range_, "1d").endswith("m")
+        long_range = range_ in ("5y", "10y", "max")
+        fmt = "%H:%M" if intraday else ("%b %Y" if long_range else "%b %d")
+
+        labels, values, vols = [], [], []
+        for i, (stamp, close) in enumerate(zip(stamps, closes)):
+            if close is None:
+                continue
+            moment = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc)
+            labels.append(moment.strftime(fmt))
+            values.append(round(float(close), 2))
+            vols.append(volumes[i] if i < len(volumes) else None)
+
+        if not values:
+            return {"error": f"No price data for '{symbol}'", "is_error": True}
+
+        # Technicals off the 1y daily series (falls back to the display series).
+        daily_closes = values
+        if isinstance(daily, dict) and daily:
+            candidate = [c for c in ((daily.get("indicators", {}).get("quote") or [{}])[0].get("close") or [])
+                         if c is not None]
+            if candidate:
+                daily_closes = [round(float(c), 2) for c in candidate]
+
+        price = meta.get("regularMarketPrice", values[-1])
+        first, last = values[0], values[-1]
+        change_pct = round(((last - first) / first) * 100, 2) if first else 0.0
+        sma50, sma200 = _sma(daily_closes, 50), _sma(daily_closes, 200)
+        high52, low52 = meta.get("fiftyTwoWeekHigh"), meta.get("fiftyTwoWeekLow")
+
+        technicals = {
+            "sma_20": _sma(daily_closes, 20),
+            "sma_50": sma50,
+            "sma_200": sma200,
+            "rsi_14": _rsi(daily_closes),
+            "volatility": _annualized_volatility(daily_closes),
+            "week52_high": round(high52, 2) if high52 else None,
+            "week52_low": round(low52, 2) if low52 else None,
+            "day_high": meta.get("regularMarketDayHigh"),
+            "day_low": meta.get("regularMarketDayLow"),
+            "volume": meta.get("regularMarketVolume"),
+            # What a reader actually wants to know: where does price sit relative
+            # to trend, and how much of the 52-week band has it used up?
+            "trend": ("bullish" if sma50 and sma200 and sma50 > sma200
+                      else "bearish" if sma50 and sma200 else None),
+            "vs_sma_50": (round(((price - sma50) / sma50) * 100, 1) if sma50 else None),
+            "week52_position": (round(((price - low52) / (high52 - low52)) * 100)
+                                if high52 and low52 and high52 > low52 else None),
+        }
+
+        return {
+            "symbol": meta.get("symbol", symbol.upper()),
+            "name": meta.get("longName") or meta.get("shortName") or symbol.upper(),
+            "currency": meta.get("currency", "USD"),
+            "exchange": meta.get("fullExchangeName"),
+            "price": price,
+            "range": range_,
+            "ranges": list(STOCK_RANGES),
+            "change_pct": change_pct,
+            "labels": labels,
+            "values": values,
+            "volumes": vols,
+            "technicals": technicals,
+            "fundamentals": fundamentals,
+        }
+    except Exception as e:
+        logger.error(f"stock_snapshot({symbol}) error: {e}")
+        return {"error": str(e), "is_error": True}
+
+
+# Kept under the old name: it's what the registered tool schema calls.
+stock_history = stock_snapshot
+
+
+async def read_web_page(url: str, max_chars: int = 6000) -> dict:
+    """Fetch and return the readable text of a page."""
+    content = await _scrape(url, engine="crawl4ai")
+    if not content:
+        content = await _scrape(url, engine="playwright", timeout=60.0)
+    if not content:
+        return {"error": f"Could not fetch {url}", "is_error": True}
+    return {"url": url, "content": content[:max_chars]}
+
+
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL
+from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL
+import asyncio
+import datetime
 import json
+import os
 import uuid
 from bs4 import BeautifulSoup
 from app.widgets.factory import generate_widget_html
@@ -70,8 +373,93 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Global cache to keep track of the latest active canvas HTML for DOM queries
-latest_canvas_html = ""
+# ── Canvas state & turn concurrency ─────────────────────────────────────────
+#
+# Turns run CONCURRENTLY (the DGX Spark serves several generations at once), but
+# the canvas is shared mutable state, so every write is a locked read-modify-
+# write against the server's copy. Two things make that safe:
+#
+#   1. A turn never mutates its own stale snapshot. It re-reads the live canvas
+#      inside the lock at the moment it commits, so a widget added by a turn
+#      that finished in the meantime is still there.
+#   2. Every commit bumps a version. The client applies a canvas only if it is
+#      newer than the one already on screen, so a slow turn's SSE event arriving
+#      late can't roll the canvas back over a faster turn's widget.
+#
+# The old design held the lock for a whole turn, which was correct but pinned
+# throughput to one generation at a time.
+_session_canvas: Dict[str, str] = {}
+_session_canvas_version: Dict[str, int] = {}
+_session_locks: Dict[str, asyncio.Lock] = {}
+_session_inflight: Dict[str, int] = {}
+
+# How many agent turns may generate at once. Beyond this, turns queue.
+AGENT_CONCURRENCY = int(os.getenv("AGENT_CONCURRENCY", "4"))
+_turn_semaphore = asyncio.Semaphore(AGENT_CONCURRENCY)
+
+# canvas_read_dom / canvas_modify_dom arrive as separate HTTP calls from the
+# gateway carrying no session id, so they resolve against the most recent one.
+_last_active_session: str = ""
+
+
+def _canvas_lock(session_id: str) -> asyncio.Lock:
+    lock = _session_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[session_id] = lock
+    return lock
+
+
+def get_session_canvas(session_id: str) -> str:
+    return _session_canvas.get(session_id, "")
+
+
+def set_session_canvas(session_id: str, html: str) -> int:
+    """Store the canvas and return its new version."""
+    global _last_active_session
+    _session_canvas[session_id] = html
+    version = _session_canvas_version.get(session_id, 0) + 1
+    _session_canvas_version[session_id] = version
+    _last_active_session = session_id
+    return version
+
+
+async def commit_canvas(session_id: str, mutate) -> Optional[str]:
+    """Apply `mutate(soup)` to the live canvas under the session lock.
+
+    `mutate` returns False to abort (e.g. its target selector matched nothing).
+    Returns a ready-to-send SSE `component` line, or None if the mutation was a
+    no-op. Reading the base INSIDE the lock is what lets turns run in parallel:
+    each one commits against whatever is on the canvas right now.
+    """
+    async with _canvas_lock(session_id):
+        soup = BeautifulSoup(get_session_canvas(session_id) or "", 'html.parser')
+        if mutate(soup) is False:
+            return None
+        html = str(soup)
+        version = set_session_canvas(session_id, html)
+    return f'data: {json.dumps({"type": "component", "content": html, "version": version})}\n\n'
+
+
+async def _run_turn(session_id: str, current_canvas: str, generator_factory):
+    """Gate a turn on the concurrency semaphore and track it as in-flight.
+
+    While no turn is running for a session, the client's canvas is authoritative
+    (it may have dismissed a widget locally), so we adopt its snapshot. Once a
+    turn is in flight the server's copy wins — a concurrent turn's client
+    snapshot predates whatever just landed.
+    """
+    async with _turn_semaphore:
+        async with _canvas_lock(session_id):
+            if current_canvas and _session_inflight.get(session_id, 0) == 0:
+                set_session_canvas(session_id, current_canvas)
+            _session_inflight[session_id] = _session_inflight.get(session_id, 0) + 1
+        try:
+            async for chunk in generator_factory():
+                yield chunk
+        finally:
+            async with _canvas_lock(session_id):
+                _session_inflight[session_id] = max(0, _session_inflight.get(session_id, 0) - 1)
 
 def get_canvas_summary(html: str) -> str:
     """Parses raw canvas HTML and extracts widget details into a tiny, token-efficient summary."""
@@ -95,6 +483,9 @@ def get_canvas_summary(html: str) -> str:
             for cls in classes:
                 if cls in ("checklist", "clock", "notes", "iframe_app", "mini_music_player", "youtube_player"):
                     wtype = cls
+                    break
+                if cls in ("data-card", "image-widget", "chart-widget"):
+                    wtype = cls.replace("-widget", "").replace("-", "_")
                     break
             if wtype == "custom" and xdata:
                 if "checklistWidget" in xdata: wtype = "checklist"
@@ -244,6 +635,117 @@ def extract_music_genre(query_text: str) -> str:
     text = re.sub(r'[^\w\s]', '', (query_text or '').lower().strip())
     return " ".join(w for w in text.split() if w not in MUSIC_FILLER_WORDS)
 
+# Media/data intent guards for the heuristic fast-path. When one of these
+# matches, the request goes to the agent instead of keyword-spawning a widget
+# ("clock for video" is a video ask, not a clock ask).
+VIDEO_ASK_RE = re.compile(r'\b(youtube|video|videos|yt|watch|clip|trailer|movie)\b')
+DATA_ASK_RE = re.compile(r'\b(news|headlines|weather|forecast|stock|price|chart|graph|image|images|picture|pictures|photo|photos)\b')
+
+# ── Widget intent routing ───────────────────────────────────────────────────
+#
+# A widget ask has two halves: WHICH widget, and WHAT CONTENT goes inside it.
+# The old router only read the first half — it substring-matched a widget noun
+# and spawned an empty shell. Two failures fell out of that:
+#
+#   "notes for grocery list for chicken soup" contains "notes", so it spawned a
+#   blank notepad and stopped — the grocery list, which is the entire point of
+#   the request, was never produced.
+#
+#   "give me a grocery list" matched nothing, so it fell through to the full
+#   agentic loop: ~60s of tool-calling for content no tool can supply.
+#
+# So: decide the widget AND whether it needs content. List intent outranks notes
+# intent ("notes for a grocery list" is a list, not a notepad). Content the model
+# can simply write is filled by ONE direct completion (~2s) instead of the agent.
+LIST_INTENT_RE = re.compile(
+    r'\b(grocery|groceries|shopping|packing|checklist|to-?dos?|task list|'
+    r'bucket list|reading list|watch ?list|wish ?list|ingredients?)\b|\blists?\b')
+NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
+
+# Strip the words that name the widget or frame the request; whatever survives is
+# the subject. "notes for grocery list for chicken soup" → "chicken soup".
+TOPIC_STOPWORDS = MUSIC_FILLER_WORDS | {
+    "note", "notes", "notepad", "scratchpad", "scratch", "pad", "memo", "jot", "down",
+    "list", "lists", "checklist", "todo", "todos", "task", "tasks", "item", "items",
+    "grocery", "groceries", "shopping", "packing", "ingredient", "ingredients",
+    "widget", "new", "my", "make", "build", "and", "it", "about", "write", "keep",
+    # Adjectives that describe the widget, not its subject — "quick notes" is a
+    # blank notepad, not a note about the topic "quick".
+    "quick", "simple", "blank", "empty", "little", "small", "basic", "plain", "just",
+}
+
+
+def extract_topic(text: str) -> str:
+    """The subject of the ask, with widget/filler words removed. Empty means the
+    user wants a blank widget ("notes") rather than a filled one ("notes on X")."""
+    cleaned = re.sub(r'[^\w\s]', ' ', (text or '').lower())
+    return " ".join(w for w in cleaned.split() if w not in TOPIC_STOPWORDS).strip()
+
+
+_fast_model = {"name": None}
+
+
+async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dict]:
+    """One tool-free completion against the Spark, parsed as JSON.
+
+    A grocery list needs no tools — the model just knows it. Routing that through
+    the agentic loop costs ~60s of reasoning and tool-call churn; a direct
+    completion answers in ~2s. Returns None on any failure so the caller can
+    still spawn an empty widget rather than erroring.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            model = _fast_model["name"]
+            if not model:
+                resp = await client.get(f"{VLLM_URL}/v1/models")
+                model = resp.json()["data"][0]["id"]
+                _fast_model["name"] = model
+            resp = await client.post(f"{VLLM_URL}/v1/chat/completions", json={
+                "model": model,
+                "temperature": 0.3,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": instruction}],
+            })
+            text = resp.json()["choices"][0]["message"]["content"]
+        match = re.search(r'\{.*\}', text, re.DOTALL)  # tolerate ``` fences / stray prose
+        return json.loads(match.group(0)) if match else None
+    except Exception as e:
+        logger.warning(f"fast_llm_json failed: {e}")
+        return None
+
+
+async def build_list_config(message: str) -> dict:
+    """Checklist config with real items, written by one direct completion."""
+    data = await fast_llm_json(
+        'Return ONLY a JSON object, no prose and no markdown fence:\n'
+        '{"title": "<short title, max 4 words>", "items": ["<item>", ...]}\n'
+        f'The user asked: "{message}"\n'
+        'Produce the concrete list they want: 5-12 short, specific items. '
+        'For a grocery list use buyable ingredients, for a to-do list use actionable tasks.'
+    )
+    if not data or not isinstance(data.get("items"), list):
+        return {"title": "Checklist", "items": []}
+    return {
+        "title": str(data.get("title") or "Checklist")[:60],
+        "items": [str(i)[:120] for i in data["items"] if str(i).strip()][:14],
+    }
+
+
+async def build_notes_config(message: str) -> dict:
+    """Notes config with written content, for "notes about X" (not a bare notepad)."""
+    data = await fast_llm_json(
+        'Return ONLY a JSON object, no prose and no markdown fence:\n'
+        '{"title": "<short title, max 4 words>", "content": "<the note body>"}\n'
+        f'The user asked: "{message}"\n'
+        'Write a concise, useful note (plain text, max ~120 words).'
+    )
+    if not data or not data.get("content"):
+        return {}
+    return {
+        "title": str(data.get("title") or "Notes")[:60],
+        "content": str(data["content"])[:2000],
+    }
+
 def is_valid_tool_args(tool_name: str, args: dict) -> bool:
     if not args:
         return False
@@ -273,76 +775,114 @@ async def send_message(req: MessageRequest):
         text_lower = req.message.lower().strip()
         text_clean = text_lower.strip()
 
-        def spawn_widget_stream(widget_type: str, id_prefix: str, config: dict):
+        def spawn_widget_stream(widget_type: str, id_prefix: str, config: dict = None,
+                                config_builder=None, status: str = None):
             """Heuristic fast-path: append a prebuilt widget to the CURRENT canvas
             and stream back the full canvas — same contract as the agent path, so
-            existing widgets always survive."""
+            existing widgets always survive.
+
+            `config_builder` is an async callable for widgets whose content has to
+            be written first (a grocery list's items). It runs inside the stream so
+            the user sees a status line while it works, and it still skips the
+            agentic loop entirely.
+            """
             async def stream():
-                global latest_canvas_html
-                yield f'data: {json.dumps({"type": "status", "message": f"heuristic-path: spawning {widget_type} widget..."})}\n\n'
+                message = status or f"heuristic-path: spawning {widget_type} widget..."
+                yield f'data: {json.dumps({"type": "status", "message": message})}\n\n'
+
+                widget_config = dict(config or {})
+                if config_builder:
+                    built = await config_builder()
+                    if built:
+                        widget_config.update(built)
+
                 widget_id = f"{id_prefix}-{uuid.uuid4().hex[:8]}"
-                html_snippet = generate_widget_html(widget_type, widget_id, config)
+                html_snippet = generate_widget_html(widget_type, widget_id, widget_config)
 
-                base_html = req.current_canvas or latest_canvas_html or ""
-                soup = BeautifulSoup(base_html, 'html.parser')
-                target = soup.select_one('#dashboard-grid')
-                if target is None:
-                    soup = BeautifulSoup('<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
+                def _append(soup):
                     target = soup.select_one('#dashboard-grid')
-                target.append(BeautifulSoup(html_snippet, 'html.parser'))
-                full_canvas = str(soup)
-                latest_canvas_html = full_canvas
+                    if target is None:
+                        grid = BeautifulSoup(
+                            '<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
+                        soup.append(grid)
+                        target = soup.select_one('#dashboard-grid')
+                    target.append(BeautifulSoup(html_snippet, 'html.parser'))
 
-                # Persist so the canvas survives a page reload
-                database.save_chat_message(
-                    message_id=f"msg_{uuid.uuid4().hex[:8]}",
-                    session_id=req.session_id,
-                    role="assistant",
-                    content=f"\n\n<!--CANVAS_HTML_START-->\n{full_canvas}\n<!--CANVAS_HTML_END-->"
-                )
-
-                yield f'data: {json.dumps({"type": "component", "content": full_canvas})}\n\n'
+                event = await commit_canvas(req.session_id, _append)
+                if event:
+                    database.save_chat_message(
+                        message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                        session_id=req.session_id,
+                        role="assistant",
+                        content=f"\n\n<!--CANVAS_HTML_START-->\n{get_session_canvas(req.session_id)}\n<!--CANVAS_HTML_END-->"
+                    )
+                    yield event
                 yield 'data: {"type": "done"}\n\n'
-            return StreamingResponse(stream(), media_type="text/event-stream")
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream),
+                media_type="text/event-stream",
+            )
 
         # Removal/modification intents must reach the agent (canvas_modify_dom) —
         # never spawn a widget off keywords like "remove the clock".
         wants_removal = bool(re.search(
             r'\b(remove|delete|close|hide|clear|dismiss|drop|kill|stop)\b|get rid of', text_clean))
 
-        if not wants_removal:
-            # 2. Clock heuristic matching
-            is_clock = "clock" in text_clean
+        # Media/data intents override widget-name keywords: "clock for video",
+        # "video of a clock" or "news about checklists" must reach the agent,
+        # not spawn a clock/checklist off a substring match.
+        is_video_ask = bool(VIDEO_ASK_RE.search(text_clean))
+        is_data_ask = bool(DATA_ASK_RE.search(text_clean))
+
+        if not wants_removal and not is_video_ask and not is_data_ask:
+            is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
+            topic = extract_topic(req.message)
+
+            # 2. Clock (word boundary: "clockwork" must not match)
+            is_clock = bool(re.search(r'\bclock\b', text_clean))
             has_timezone = any(tz in text_clean for tz in ("in ", "for ", "time ", "zone", "city", "york", "london", "tokyo", "paris", "sydney", "canada"))
             if is_clock and not has_timezone:
                 return spawn_widget_stream("clock", "clock", {})
 
-            # 3. Checklist heuristic matching
-            if any(w in text_clean for w in ("checklist", "todo", "to-do", "task list")):
-                return spawn_widget_stream("checklist", "checklist", {})
-
-            # 4. Music player heuristic matching ("youtube player" is a video ask —
-            # leave those to the agent's youtube flow)
+            # 3. Music
             has_custom_url = "http" in text_clean or "www" in text_clean
-            is_video_ask = any(w in text_clean for w in ("youtube", "video", "yt"))
-            if any(w in text_clean for w in ("music", "player", "radio")) and not has_custom_url and not is_video_ask:
+            if re.search(r'\b(music|player|radio)\b', text_clean) and not has_custom_url:
                 genre = extract_music_genre(req.message) or "lofi"
                 wants_playback = bool(re.search(r'\bplay(ing)?\b', text_clean))
-                return spawn_widget_stream("mini_music_player", "music", {"genre": genre, "autoplay": wants_playback})
+                return spawn_widget_stream("mini_music_player", "music",
+                                           {"genre": genre, "autoplay": wants_playback})
 
-            # 5. Notes heuristic matching
-            is_searching_notes = "search" in text_clean or "find" in text_clean or "look for" in text_clean
-            if any(w in text_clean for w in ("notes", "notepad", "scratchpad")) and not is_searching_notes:
-                return spawn_widget_stream("notes", "notes", {})
+            # 4. LISTS — checked BEFORE notes, so "notes for a grocery list" is a
+            #    list, not a blank notepad. A list always gets real items written
+            #    into it; an empty checklist is never what anyone asked for.
+            if LIST_INTENT_RE.search(text_clean) and not is_searching:
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config_builder=lambda: build_list_config(req.message),
+                    status="writing your list...",
+                )
+
+            # 5. NOTES — a bare "notes"/"notepad" means a blank surface to type on.
+            #    "notes about X" means the note should already say something.
+            if NOTES_INTENT_RE.search(text_clean) and not is_searching:
+                if not topic:
+                    return spawn_widget_stream("notes", "notes", {})
+                return spawn_widget_stream(
+                    "notes", "notes",
+                    config_builder=lambda: build_notes_config(req.message),
+                    status="writing your note...",
+                )
 
         # Start loading history
 
         history = database.get_session_messages(req.session_id)
 
-        global latest_canvas_html
-        if req.current_canvas:
-            latest_canvas_html = req.current_canvas
-        canvas_summary = get_canvas_summary(req.current_canvas)
+        # Adopting the client's snapshot is _run_turn's job now (it only does so
+        # when no other turn is in flight, so a concurrent turn's stale snapshot
+        # can't undo a widget that just landed).
+        canvas_summary = get_canvas_summary(
+            get_session_canvas(req.session_id) or req.current_canvas)
 
         # Build system prompt with canvas context
         SYSTEM_PROMPT = (
@@ -350,34 +890,44 @@ async def send_message(req: MessageRequest):
             "CRITICAL: You are a strict TOOL-ONLY JSON agent. You MUST NEVER output any conversational text, thinking process, or explanations. You MUST START your response immediately with the tool call.\n"
             "If you output any text that is not a tool call, the system will crash.\n\n"
             f"CURRENT CANVAS STATE:\n```markdown\n{canvas_summary}\n```\n\n"
+            "STEP 1 — CLASSIFY INTENT. Every request maps to exactly one output shape:\n"
+            "- Play/watch a VIDEO (mentions video, youtube, watch, clip — even combined with other nouns like 'clock video') → html_notes_youtube_search then canvas_add_widget(widget_type='youtube_player')\n"
+            "- Show DATA (news, recipes, weather, search results, facts, lists) → fetch with data tools, then canvas_add_widget(widget_type='data_card')\n"
+            "- Show NUMBERS OVER TIME/CATEGORIES (stock price, trends, comparisons) → fetch data, then canvas_add_widget(widget_type='chart')\n"
+            "- Show a PICTURE (what does X look like) → find an image URL, then canvas_add_widget(widget_type='image')\n"
+            "- UTILITY widget (clock, checklist, notes, music, embedded app) → canvas_add_widget with that widget_type\n"
+            "- REMOVE/CHANGE an existing widget → canvas_modify_dom targeting its ID from CURRENT CANVAS STATE\n\n"
+            "STEP 2 — FETCH DATA FIRST (for data_card/chart/image): use the LIVE DATA TOOLS below, extract the real values, then bake them into the widget config. NEVER create a widget that says 'Loading...' and NEVER write JavaScript that fetches data — widget JS does not run. The config you pass IS the final rendered content.\n\n"
+            "WIDGET CONTRACTS for canvas_add_widget(widget_type, widget_id, config):\n"
+            "- data_card: config={title, subtitle?, icon?, image?, items:[{title, description?, image?, url?, badge?, meta?}]} — one item per headline/recipe/result. Include an item image URL whenever the source data has one. Use config.content (plain text) instead of items for prose answers.\n"
+            "- chart: config={title, type:'line'|'bar'|'pie', labels:[...], values:[...]} — for generic numbers ONLY, never for a stock ticker\n"
+            "- stock_card: config = the entire result of html_notes_stock_history, passed through unchanged\n"
+            "- image: config={title, url, caption?} or {title, images:[{url, caption?}]}\n"
+            "- youtube_player: config={video_id, title} — video_id MUST come from html_notes_youtube_search results\n"
+            "- clock: config={timezone}. checklist: config={title, items:[str]}. notes: config={title, content}. iframe_app: config={url, title}. mini_music_player: config={genre, autoplay} e.g. {\"genre\": \"reggae\", \"autoplay\": true}\n"
+            "Always provide a unique widget_id (e.g. 'news-abc12').\n\n"
             "CANVAS TOOLS:\n"
+            "- Spawn a pre-built widget → mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config) — PREFERRED for everything\n"
             "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\n"
-            "- Plan a widget → mcp__lazy-tool-service__plan_widget(widgetType, title, description, proposedLayout)\n"
-            "- Create a widget → mcp__lazy-tool-service__create_widget(widgetType, title, htmlContent, cssContent, jsContent, dependencies, renderTarget)\n"
-            "- Update a widget → mcp__lazy-tool-service__update_widget(widgetId, title, htmlContent, cssContent, jsContent, dependencies, renderPhase)\n"
-            "- Validate HTML → mcp__lazy-tool-service__validate_widget_html(htmlContent, cssContent, jsContent)\n"
-            "- List widget types → mcp__lazy-tool-service__list_widget_types()\n"
-            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-[UUID]', action='replace' or 'remove')\n"
-            "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
-            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n"
-            "- Search YouTube for videos → mcp__lazy-tool-service__html_notes_youtube_search(query, limit, order) — pass order='date' for the newest uploads from a channel\n\n"
-            "LIVE DATA TOOLS (for custom widgets):\n"
-            "- Current weather → get_weather(location) / get_weather_forecast(location)\n"
-            "- Time in a city/timezone → get_time_in_timezone(timezone)\n"
-            "- Web lookup → search_web(query), read_web_page(url), search_news(query)\n"
-            "When the user asks for a custom live-data widget (e.g. 'weather in Tokyo'), FIRST fetch the data with these tools, THEN render it: plan_widget → create_widget with the fetched values baked into the HTML.\n\n"
-            "AGENTIC UI GENERATION RULES:\n"
-            "1. PLANNING MANDATORY: Before you call `create_widget`, you MUST ALWAYS first call `plan_widget` with a structured design plan detailing your widget types, behavior, layout, and style. Generation is blocked unless planning succeeds.\n"
-            "2. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\n"
-            "3. CREATING AND UPDATING WIDGETS: Use `create_widget` to append widgets and `update_widget` to update them in place. Make sure to define clean HTML, scope all CSS rules, and encapsulate JavaScript scripts securely. Do NOT use inline script events.\n"
-            "4. ADDING WIDGETS: You can also use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'mini_music_player', pass the requested genre or artist in config, e.g. config={\"genre\": \"reggae\", \"autoplay\": true} — the widget fetches matching tracks from the music-player service.\n"
-            "5. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST use `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'`. DO NOT explain your plan.\n"
-            "6. WIDGETS COEXIST: The grid holds many widgets at once. Adding a widget NEVER removes or replaces the others — do not touch existing widgets unless the user explicitly asks to change or remove them.\n"
-            "7. REMOVING WIDGETS: When the user asks to remove/close/hide a widget, find its ID in CURRENT CANVAS STATE above and call `mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove')`. Do not add anything when removing.\n"
-            "8. MODIFYING WIDGETS: Target the specific widget's ID and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'`.\n\n"
-            "CANVAS DOM MODIFICATION RULES:\n"
-            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\n\n"
-            "2. VAGUE YOUTUBE REQUESTS: If the user asks generally to 'pull up a video' or 'play a youtube video' without specifying a topic or search term, choose a random search query and execute `html_notes_youtube_search` immediately. Do NOT ask for clarification."
+            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='replace' or 'remove')\n"
+            "- Search YouTube → mcp__lazy-tool-service__html_notes_youtube_search(query, limit, order) — pass order='date' for the newest uploads from a channel\n"
+            "- Notes → mcp__lazy-tool-service__html_notes_search_notes(query), html_notes_get_note(note_id), html_notes_update_note()\n"
+            "- Custom one-off widgets (ONLY when no pre-built type fits) → plan_widget then create_widget(widgetType, title, htmlContent, cssContent, jsContent). All data must be baked into htmlContent — jsContent may only do cosmetic DOM work, never fetching.\n\n"
+            "LIVE DATA TOOLS (these are the ONLY data tools that exist — never call any other):\n"
+            "- Stock/crypto → mcp__lazy-tool-service__html_notes_stock_history(symbol, range) — range is 1d/5d/1mo/3mo/6mo/1y/5y/10y/max. Returns the FULL snapshot: {symbol, name, price, currency, change_pct, labels, values, technicals, fundamentals}. Answers in under a second.\n"
+            "  Then call canvas_add_widget(widget_type='stock_card', config=<THE WHOLE TOOL RESULT, verbatim>). Pass the entire object through — do not pick out fields, do not rebuild it, and do NOT use widget_type='chart' for a ticker. The stock_card renders the chart, the technicals and the fundamentals, and its own range tabs re-fetch without you.\n"
+            "  For ANY ticker, stock, share price or 'chart X' request use this — NEVER web-search for prices, it is slow and returns no usable numbers.\n"
+            "- Web search → mcp__lazy-tool-service__html_notes_web_search(query, limit) — returns [{title, url, snippet}]. Use it for ANY question about facts, history, news, recipes, weather, or 'what/when/who/which is...'. It takes 20-60s; that is expected, so wait for it.\n"
+            "- Read a page → mcp__lazy-tool-service__html_notes_read_page(url) — full text of a URL from a search result, when the snippet is not enough.\n\n"
+            "RESEARCH RULE — THIS IS MANDATORY:\n"
+            "If the user asks a question you cannot answer from the conversation itself, you MUST call html_notes_web_search BEFORE answering. Never reply that you cannot find, cannot access, or do not have information about something without having called html_notes_web_search at least once. Never answer a factual question from memory alone — search, then bake the real findings into a data_card.\n"
+            "A question about the oldest/first/earliest video, song, or event is a SEARCH question: search the web for the answer, then (if it names a video) call html_notes_youtube_search for that specific title and show a youtube_player. Do not claim YouTube cannot be sorted by age — find the answer with the web search instead.\n\n"
+            "RULES:\n"
+            "1. WIDGETS COEXIST: The grid holds many widgets at once. Adding a widget NEVER removes or replaces the others — do not touch existing widgets unless the user explicitly asks to change or remove them.\n"
+            "2. REMOVING: find the widget's ID in CURRENT CANVAS STATE and call canvas_modify_dom(css_selector='#<widget-id>', action='remove'). Do not add anything when removing.\n"
+            "3. UPDATING ('update that news widget', 'add more detail'): target the specific widget's ID from CURRENT CANVAS STATE — replace it via canvas_add_widget with the same widget_id family or canvas_modify_dom action='replace'.\n"
+            "4. VAGUE VIDEO REQUESTS: 'pull up a video' with no topic → pick a random fun search query and execute html_notes_youtube_search immediately. Do NOT ask for clarification.\n"
+            "5. DO NOT explain your plan. Tool calls only."
         )
 
         # Ensure all possible tools are enabled
@@ -396,16 +946,16 @@ async def send_message(req: MessageRequest):
             "mcp__lazy-tool-service__validate_widget_html",
             "mcp__lazy-tool-service__list_widget_types",
             "mcp__lazy-tool-service__plan_widget",
-            # Live-data tools served by tools-api (weather, time, web) — used to
-            # feed custom widgets ("weather in Tokyo", "time in Berlin", etc.)
-            "get_weather",
-            "get_weather_forecast",
-            "get_time_in_timezone",
-            "parse_datetime",
-            "search_web",
-            "read_web_page",
-            "search_news",
-            "get_youtube_video"
+            # Web research. These are served by HTML-Notes itself (via
+            # scraper-service) because every tools-api data tool — search_web,
+            # search_news, read_web_page, get_weather, get_time_in_timezone —
+            # is registered in the gateway catalog with a null endpoint and its
+            # python bridge has no interpreter in the image, so they all return
+            # "Unknown tool". Enabling them just gave the model phantom tools to
+            # fail against, which is why it kept answering "I couldn't get one".
+            "mcp__lazy-tool-service__html_notes_web_search",
+            "mcp__lazy-tool-service__html_notes_read_page",
+            "mcp__lazy-tool-service__html_notes_stock_history",
         ]
 
         # Build messages array — use system role at index 0.
@@ -517,36 +1067,50 @@ async def send_message(req: MessageRequest):
             We just proxy events and extract render_component results for the canvas.
             """
             final_text = ""
-            all_rendered_html = req.current_canvas or ""
+            # Only a mirror of the last commit, for the DB write at the end of the
+            # turn. It is never used as the base for a mutation — commit_canvas
+            # re-reads the live canvas under the lock, so a sibling turn's widget
+            # can't be lost.
+            all_rendered_html = get_session_canvas(req.session_id) or req.current_canvas or ""
             executed_active_tool = False
 
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
                 logger.info(f"[WIDGET INJECTOR] Executing mutation for {tool_name} with args: {tool_args}")
                 yield f'data: {json.dumps({"type": "status", "message": f"executing {tool_name}..."})}\n\n'
+
+                async def emit(mutate):
+                    """Commit against the LIVE canvas, not this turn's snapshot —
+                    a sibling turn may have added a widget since we started."""
+                    nonlocal all_rendered_html
+                    event = await commit_canvas(req.session_id, mutate)
+                    if event:
+                        all_rendered_html = get_session_canvas(req.session_id)
+                    return event
+
                 try:
                     if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
                         css_selector = tool_args.get("css_selector", "")
                         action = tool_args.get("action", "")
                         html_snippet = tool_args.get("html_snippet", "")
-                        
-                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                        soup = BeautifulSoup(current_html, 'html.parser')
-                        target = soup.select_one(css_selector)
-                        if target:
+
+                        def _modify(soup):
+                            target = soup.select_one(css_selector)
+                            if not target:
+                                return False
                             if action == "append":
-                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                target.append(new_elem)
+                                target.append(BeautifulSoup(html_snippet, 'html.parser'))
                             elif action == "replace":
-                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                target.replace_with(new_elem)
+                                target.replace_with(BeautifulSoup(html_snippet, 'html.parser'))
                             elif action == "remove":
                                 target.decompose()
-                            all_rendered_html = str(soup)
-                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                            
+
+                        event = await emit(_modify)
+                        if event:
+                            yield event
+
                         logger.info("[FAST LOOP] Terminating early after canvas_modify_dom to save latency")
-                            
+
                     elif tool_name == "mcp__lazy-tool-service__canvas_add_widget":
                         if isinstance(tool_args, str):
                             try:
@@ -557,46 +1121,70 @@ async def send_message(req: MessageRequest):
                         widget_type = tool_args.get("widget_type", "")
                         widget_id = tool_args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
                         config = tool_args.get("config", {})
+                        # Some models pass config as a JSON string — normalize.
+                        if isinstance(config, str):
+                            try:
+                                config = json.loads(config)
+                            except Exception:
+                                config = {}
+
+                        # Bake alternate video ids into youtube players so the
+                        # widget can hop to an embeddable video when the first
+                        # one blocks embedding ("Video unavailable").
+                        if widget_type == "youtube_player" and not config.get("candidates"):
+                            search_q = config.get("query") or config.get("title") or ""
+                            if search_q:
+                                try:
+                                    alts = await search_youtube_videos(search_q, limit=6)
+                                    primary = config.get("video_id", "")
+                                    config["candidates"] = [v["video_id"] for v in alts
+                                                            if v.get("video_id") and v["video_id"] != primary]
+                                    config.setdefault("query", search_q)
+                                except Exception as se:
+                                    logger.warning(f"candidate enrichment failed: {se}")
                         
-                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                        soup = BeautifulSoup(current_html, 'html.parser')
-                        
-                        replaced = False
-                        if widget_type == "youtube_player":
-                            # Swap only an existing YOUTUBE widget in place ("play X
-                            # instead"). Matching on any iframe replaced unrelated
-                            # widgets (music player, iframe apps) — keep it strict.
-                            for div in soup.find_all("div", class_="widget-container"):
-                                xdata = div.get("x-data", "")
-                                div_id = div.get("id", "")
-                                is_youtube = ("youtubePlayerWidget" in xdata or
-                                              "youtube" in div_id.lower())
-                                if is_youtube:
-                                    existing_id = div.get("id", widget_id)
-                                    html_snippet = generate_widget_html(widget_type, existing_id, config)
-                                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                    div.replace_with(new_elem)
+                        def _add(soup):
+                            replaced = False
+                            if widget_type == "youtube_player":
+                                # Swap only an existing YOUTUBE widget in place ("play X
+                                # instead"). Matching on any iframe replaced unrelated
+                                # widgets (music player, iframe apps) — keep it strict.
+                                for div in soup.find_all("div", class_="widget-container"):
+                                    xdata = div.get("x-data", "")
+                                    div_id = div.get("id", "")
+                                    if "youtubePlayerWidget" in xdata or "youtube" in div_id.lower():
+                                        existing_id = div.get("id", widget_id)
+                                        div.replace_with(BeautifulSoup(
+                                            generate_widget_html(widget_type, existing_id, config), 'html.parser'))
+                                        replaced = True
+                                        break
+
+                            # A retried tool call with the same widget_id must not
+                            # duplicate the widget — replace it in place instead.
+                            if not replaced:
+                                existing = soup.find(id=widget_id)
+                                if existing is not None:
+                                    existing.replace_with(BeautifulSoup(
+                                        generate_widget_html(widget_type, widget_id, config), 'html.parser'))
                                     replaced = True
-                                    break
-                                    
-                        if replaced:
-                            all_rendered_html = str(soup)
-                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                            logger.info("[WIDGET INJECTOR] Replaced existing youtube_player widget in-place")
-                        else:
-                            html_snippet = generate_widget_html(widget_type, widget_id, config)
+
+                            if replaced:
+                                logger.info("[WIDGET INJECTOR] Replaced existing widget in-place")
+                                return
+
+                            snippet = BeautifulSoup(
+                                generate_widget_html(widget_type, widget_id, config), 'html.parser')
                             target = soup.select_one('#dashboard-grid')
                             if target:
-                                new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                                target.append(new_elem)
-                                all_rendered_html = str(soup)
-                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                target.append(snippet)
                             else:
-                                soup.append(BeautifulSoup(html_snippet, 'html.parser'))
-                                all_rendered_html = str(soup)
-                                yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                                soup.append(snippet)
                             logger.info(f"[WIDGET INJECTOR] Appended new {widget_type} widget")
-                            
+
+                        event = await emit(_add)
+                        if event:
+                            yield event
+
                         logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
                     elif tool_name == "mcp__lazy-tool-service__create_widget":
                         widget_type = tool_args.get("widgetType", "custom")
@@ -637,18 +1225,17 @@ async def send_message(req: MessageRequest):
     </script>
 </div>
 """
-                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                        soup = BeautifulSoup(current_html, 'html.parser')
-                        target = soup.select_one('#dashboard-grid')
-                        if target:
-                            new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                            target.append(new_elem)
-                            all_rendered_html = str(soup)
-                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
-                        else:
-                            soup.append(BeautifulSoup(html_snippet, 'html.parser'))
-                            all_rendered_html = str(soup)
-                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                        def _create(soup):
+                            snippet = BeautifulSoup(html_snippet, 'html.parser')
+                            target = soup.select_one('#dashboard-grid')
+                            if target:
+                                target.append(snippet)
+                            else:
+                                soup.append(snippet)
+
+                        event = await emit(_create)
+                        if event:
+                            yield event
                         logger.info(f"[WIDGET INJECTOR] Created and appended new {widget_type} widget")
                         logger.info("[FAST LOOP] Terminating early after create_widget to save latency")
                     elif tool_name == "mcp__lazy-tool-service__update_widget":
@@ -658,10 +1245,10 @@ async def send_message(req: MessageRequest):
                         css_content = tool_args.get("cssContent")
                         js_content = tool_args.get("jsContent")
                         
-                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
-                        soup = BeautifulSoup(current_html, 'html.parser')
-                        widget_div = soup.find(id=widget_id)
-                        if widget_div:
+                        def _update(soup):
+                            widget_div = soup.find(id=widget_id)
+                            if not widget_div:
+                                return False
                             if title is not None:
                                 title_el = widget_div.select_one(".glass-card-title")
                                 if title_el:
@@ -694,8 +1281,10 @@ async def send_message(req: MessageRequest):
                                         {js_content}
                                     }})();
                                     """
-                            all_rendered_html = str(soup)
-                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+
+                        event = await emit(_update)
+                        if event:
+                            yield event
                             logger.info(f"[WIDGET INJECTOR] Updated widget {widget_id} in-place")
                         logger.info("[FAST LOOP] Terminating early after update_widget to save latency")
                 except Exception as ex:
@@ -797,12 +1386,16 @@ async def send_message(req: MessageRequest):
                 logger.error(f"Prism SSE proxy error: {e}")
                 yield f'data: {json.dumps({"type": "error", "message": f"Connection error: {str(e)}"})}\n\n'
 
-            # Save assistant response to DB
+            # Save assistant response to DB. Persist the LIVE canvas, not this
+            # turn's mirror — a sibling turn may have committed after our last
+            # mutation, and writing a stale snapshot here would resurrect the
+            # pre-sibling canvas on the next page reload.
             asst_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
             saved_content = final_text
-            if all_rendered_html:
-                saved_content += f"\n\n<!--CANVAS_HTML_START-->\n{all_rendered_html}\n<!--CANVAS_HTML_END-->"
-                
+            live_canvas = get_session_canvas(req.session_id) or all_rendered_html
+            if live_canvas:
+                saved_content += f"\n\n<!--CANVAS_HTML_START-->\n{live_canvas}\n<!--CANVAS_HTML_END-->"
+
             if not saved_content.strip():
                 saved_content = "[tool-only turn]"
 
@@ -815,7 +1408,10 @@ async def send_message(req: MessageRequest):
 
             yield 'data: {"type": "done"}\n\n'
 
-        return StreamingResponse(proxy_prism_sse(), media_type="text/event-stream")
+        return StreamingResponse(
+            _run_turn(req.session_id, req.current_canvas or "", proxy_prism_sse),
+            media_type="text/event-stream",
+        )
 
     except Exception as e:
         logger.error(f"Error processing session message: {e}")
@@ -900,6 +1496,20 @@ async def get_note(id: str):
         raise HTTPException(status_code=404, detail="Note not found")
     history = database.get_note_history(id)
     return {"note": note, "history": history}
+
+@app.get("/api/stock/{symbol}")
+async def api_stock(symbol: str, range: str = "1mo"):
+    """Backs the stock widget's range tabs — switching 1D/1M/1Y/10Y/MAX refetches
+    here instead of going through the agent again."""
+    return await stock_snapshot(symbol, range)
+
+
+@app.get("/api/youtube/candidates")
+async def api_youtube_candidates(query: str, limit: int = 6):
+    """Multi-result YouTube search used by the player widget to recover from
+    embed-blocked videos (it walks the list until one plays)."""
+    results = await search_youtube_videos(query, limit=min(limit, 12))
+    return {"results": results, "count": len(results)}
 
 @app.get("/api/youtube/search")
 async def api_youtube_search(query: str):
@@ -1103,7 +1713,7 @@ async def internal_tool_execute(req: InternalToolRequest):
             }
 
         elif t == "canvas_read_dom":
-            canvas_html = a.get("canvas_html") or latest_canvas_html
+            canvas_html = a.get("canvas_html") or get_session_canvas(_last_active_session)
             css_selector = a.get("css_selector")
             
             if not canvas_html or canvas_html.strip() == "":
@@ -1162,7 +1772,7 @@ async def internal_tool_execute(req: InternalToolRequest):
             }
 
         elif t == "canvas_modify_dom":
-            canvas_html = a.get("canvas_html") or latest_canvas_html
+            canvas_html = a.get("canvas_html") or get_session_canvas(_last_active_session)
             css_selector = a.get("css_selector")
             action = a.get("action")
             html_snippet = a.get("html_snippet", "")
@@ -1222,6 +1832,19 @@ async def internal_tool_execute(req: InternalToolRequest):
             order = a.get("order", "relevance")
             results = await search_youtube_videos(query, limit=limit, order=order)
             return {"results": results, "count": len(results)}
+
+        elif t == "html_notes_web_search":
+            results = await web_search(a.get("query", ""), limit=int(a.get("limit", 6)))
+            if not results:
+                return {"results": [], "count": 0,
+                        "message": "Search returned nothing. Retry with a shorter, simpler query."}
+            return {"results": results, "count": len(results)}
+
+        elif t == "html_notes_read_page":
+            return await read_web_page(a.get("url", ""), max_chars=int(a.get("max_chars", 6000)))
+
+        elif t == "html_notes_stock_history":
+            return await stock_snapshot(a.get("symbol", ""), a.get("range", "1mo"))
 
         elif t == "canvas_add_widget":
             # The actual injection to the frontend is handled by the SSE interceptor during 'calling' phase.

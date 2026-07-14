@@ -3,162 +3,83 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HTML-Notes Canvas</title>
+    <title>Canvas</title>
     <meta name="description" content="LLM-driven HTML canvas.">
-    <meta name="theme-color" content="#04080f">
-    <link rel="stylesheet" href="index.css?v=2.0">
+    <meta name="theme-color" content="#0b0b0f">
+    <link rel="stylesheet" href="index.css?v=3.0">
     <script src="lib/dompurify.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Tailwind CSS and Alpine.js for agentic UI generation -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="js/widgets.js?v=1.1"></script>
+    <script defer src="js/widgets.js?v=1.4"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <!-- Add Google Fonts for typography and icons -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
 </head>
-<body x-data="{ 
-    legoBoxOpen: false, 
-    stagePrompt(promptText) {
-        const input = document.getElementById('chat-input');
-        if (input) {
-            input.value = promptText;
-            input.focus();
-            this.legoBoxOpen = false;
-        }
-    }
-}">
+<body>
     <!-- Live Canvas Area -->
     <div id="live-canvas" class="live-canvas">
         <div id="dashboard-grid" class="dashboard-grid">
-            <div id="welcome-message" class="system-message col-span-full">
-                <h1>Canvas Ready</h1>
-                <p>Tell the LLM what to build. It will be added as a widget to the dashboard.</p>
+            <div id="welcome-message" class="system-message">
+                <h1>Canvas</h1>
+                <p>Ask for anything &mdash; a video, the weather, some jazz, a chart. It arrives as a widget.</p>
             </div>
         </div>
     </div>
 
-    <!-- Lego Box Toggle Button -->
-    <button @click="legoBoxOpen = true" class="fixed bottom-6 right-6 z-[40] bg-indigo-600 hover:bg-indigo-500 text-white rounded-full px-5 py-3 shadow-lg transition-transform hover:scale-105 flex items-center gap-2 border border-indigo-500/50" title="Open Lego Box">
-        <span class="text-xl">🧩</span>
-        <span class="font-bold text-sm tracking-wide">Lego Box</span>
-    </button>
-
-    <!-- Lego Box Sidebar panel -->
-    <div x-show="legoBoxOpen" 
-         class="fixed top-0 right-0 h-full w-80 bg-slate-900/95 backdrop-blur-xl border-l border-slate-700/50 shadow-2xl z-[60] flex flex-col transition-transform duration-300"
-         x-transition:enter="transform transition ease-in-out duration-300"
-         x-transition:enter-start="translate-x-full"
-         x-transition:enter-end="translate-x-0"
-         x-transition:leave="transform transition ease-in-out duration-300"
-         x-transition:leave-start="translate-x-0"
-         x-transition:leave-end="translate-x-full"
-         style="display: none;">
-        
-        <div class="flex items-center justify-between p-5 border-b border-slate-700/50 bg-slate-800/50">
-            <h2 class="text-xl font-bold text-white flex items-center gap-2">🧩 Lego Box</h2>
-            <button @click="legoBoxOpen = false" class="text-slate-400 hover:text-white transition-colors bg-slate-800 p-2 rounded-full hover:bg-slate-700">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-            </button>
-        </div>
-
-        <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-            <!-- Widget templates -->
-            <button @click="stagePrompt('Add a Checklist widget to track my tasks')" class="text-left w-full bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-xl p-4 transition-all hover:-translate-y-1 hover:shadow-lg group">
-                <div class="text-lg mb-1 group-hover:text-indigo-400 transition-colors">✅ Checklist</div>
-                <div class="text-xs text-slate-400 leading-snug">Spawn a smart to-do list.</div>
-            </button>
-
-            <button @click="stagePrompt('Add a Mini Music Player widget and play some jazz music')" class="text-left w-full bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-xl p-4 transition-all hover:-translate-y-1 hover:shadow-lg group">
-                <div class="text-lg mb-1 group-hover:text-indigo-400 transition-colors">🎵 Music Player</div>
-                <div class="text-xs text-slate-400 leading-snug">Stream audio natively from backend.</div>
-            </button>
-
-            <button @click="stagePrompt('Add a Notes widget for my meeting')" class="text-left w-full bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-xl p-4 transition-all hover:-translate-y-1 hover:shadow-lg group">
-                <div class="text-lg mb-1 group-hover:text-indigo-400 transition-colors">📝 Notes Board</div>
-                <div class="text-xs text-slate-400 leading-snug">A rich text editor widget.</div>
-            </button>
-
-            <button @click="stagePrompt('Embed the trading-client app via iframe at http://nas:3000')" class="text-left w-full bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-xl p-4 transition-all hover:-translate-y-1 hover:shadow-lg group">
-                <div class="text-lg mb-1 group-hover:text-indigo-400 transition-colors">🌐 Iframe App</div>
-                <div class="text-xs text-slate-400 leading-snug">Embed an external container UI.</div>
-            </button>
-
-            <button @click="stagePrompt('Add a Clock widget to the dashboard')" class="text-left w-full bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-xl p-4 transition-all hover:-translate-y-1 hover:shadow-lg group">
-                <div class="text-lg mb-1 group-hover:text-indigo-400 transition-colors">⏰ Clock</div>
-                <div class="text-xs text-slate-400 leading-snug">A real-time clock widget.</div>
-            </button>
-
-            <button @click="stagePrompt('Add a YouTube Player widget for the new Fireship video')" class="text-left w-full bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-xl p-4 transition-all hover:-translate-y-1 hover:shadow-lg group">
-                <div class="text-lg mb-1 group-hover:text-indigo-400 transition-colors">📺 YouTube Player</div>
-                <div class="text-xs text-slate-400 leading-snug">Play YouTube videos natively.</div>
-            </button>
-        </div>
-    </div>
-
-    <!-- Floating Execution Log Overlay -->
+    <!-- Agent activity log -->
     <div id="execution-log-container" class="execution-log-container" style="display: none;">
         <div class="execution-log-header">
-            <span>Agent Activity</span>
+            <span>Activity</span>
             <button id="btn-toggle-log" class="btn-toggle-log" title="Toggle Log">▼</button>
         </div>
         <div id="execution-log-content" class="execution-log-content"></div>
     </div>
 
-    <!-- Floating Chat History Panel -->
-    <div id="chat-history-panel" class="chat-history-panel collapsed">
-        <div class="chat-history-header" id="chat-history-header" style="cursor: pointer;" title="Toggle Chat History">
-            <span>Chat History</span>
-            <div>
-                <button id="btn-clear-history" class="btn-clear-history" title="Clear Chat History">🗑️</button>
-                <button id="btn-toggle-history" class="btn-toggle-history">▲</button>
-            </div>
-        </div>
-        <div id="chat-history-messages" class="chat-history-messages" style="display: none;"></div>
-    </div>
-
     <!-- Speech Overlay for live TTS / Word animation -->
     <div id="speech-overlay" class="speech-overlay"></div>
 
-    <!-- Floating Command Palette -->
+    <!-- Command bar -->
     <div class="command-palette">
         <div class="input-row">
-            <button id="btn-mic" class="btn-mic" title="Record Voice">
-                <svg class="mic-icon" viewBox="0 0 24 24">
-                    <path d="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M17.3,11C17.3,14 14.76,16.2 12,16.2C9.24,16.2 6.7,14 6.7,11H5C5,14.41 7.72,17.23 11,17.72V21H13V17.72C16.28,17.23 19,14.41 19,11H17.3Z"/>
+            <button id="btn-mic" class="btn-icon" title="Record Voice">
+                <svg viewBox="0 0 24 24">
+                    <path fill="currentColor" d="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M17.3,11C17.3,14 14.76,16.2 12,16.2C9.24,16.2 6.7,14 6.7,11H5C5,14.41 7.72,17.23 11,17.72V21H13V17.72C16.28,17.23 19,14.41 19,11H17.3Z"/>
                 </svg>
             </button>
-            <button id="btn-mute" class="btn-mic" title="Toggle Mute">
-                <svg class="mute-icon" viewBox="0 0 24 24">
+            <button id="btn-mute" class="btn-icon" title="Toggle Mute">
+                <svg viewBox="0 0 24 24">
                     <path fill="currentColor" d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.85 14,18.71V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.77 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>
                 </svg>
             </button>
-            <textarea id="chat-input" placeholder="Type a command to update the canvas..." rows="1"></textarea>
-            <label class="flex items-center gap-2 text-white text-sm ml-2 mr-2" title="Use the lightweight proxy harness">
-                <input type="checkbox" id="toggle-lazy-agent" checked class="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500/50">
-                <span>LazyAgent</span>
-            </label>
+
+            <textarea id="chat-input" placeholder="Ask for anything…" rows="1"></textarea>
+
+            <!-- Shown only while messages are waiting behind the running turn. -->
+            <span id="queue-badge" class="queue-badge" style="display: none;"></span>
+
             <select id="model-select" class="model-select" title="Select Model">
-                <option value="">Loading models...</option>
+                <option value="">Loading…</option>
             </select>
-            <button id="btn-send-message" class="btn-send" title="Send command">
+
+            <button id="btn-send-message" class="btn-send" title="Send">
                 <svg viewBox="0 0 24 24">
                     <path fill="currentColor" d="M2,21L23,12L2,3V10L17,12L2,14V21Z"/>
                 </svg>
             </button>
-            <button id="btn-stop-message" class="btn-stop" title="Stop request" style="display: none;">
+            <button id="btn-stop-message" class="btn-stop" title="Stop" style="display: none;">
                 <svg viewBox="0 0 24 24">
-                    <path fill="currentColor" d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M9,9V15H15V9H9Z"/>
+                    <path fill="currentColor" d="M6,6H18V18H6V6Z"/>
                 </svg>
             </button>
         </div>
         <div id="recording-status" class="recording-status" style="display: none;">
-            <span class="pulse"></span> Recording...
+            <span class="pulse"></span> Recording…
         </div>
         <div id="health-indicator" class="health-dot offline" title="System Status"></div>
     </div>
-    
-    <script src="index.js"></script>
+
+    <script src="index.js?v=3.0"></script>
 </body>
 </html>

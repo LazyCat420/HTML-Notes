@@ -17,7 +17,15 @@ window.WidgetManager = {
                 localStorage.setItem('dismissed_widgets', JSON.stringify(dismissed));
             }
         }
-        widgetElement.remove();
+        // Collapse to a scanline and blink out, like a CRT losing power, then
+        // detach. animationend can be missed if the element is re-rendered
+        // mid-animation, so a timeout guarantees the node still goes away.
+        if (widgetElement.classList.contains('crt-off')) return;
+        widgetElement.classList.remove('crt-on');
+        widgetElement.classList.add('crt-off');
+        const detach = () => widgetElement.remove();
+        widgetElement.addEventListener('animationend', detach, { once: true });
+        setTimeout(detach, 700);
     },
     isDismissed(id) {
         if (!id) return false;
@@ -62,6 +70,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btnToggleLog: document.getElementById("btn-toggle-log"),
         modelSelect: document.getElementById("model-select"),
         btnMute: document.getElementById("btn-mute"),
+        queueBadge: document.getElementById("queue-badge"),
         chatHistoryPanel: document.getElementById("chat-history-panel"),
         chatHistoryMessages: document.getElementById("chat-history-messages"),
         btnClearHistory: document.getElementById("btn-clear-history"),
@@ -137,19 +146,25 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
+    // Stop cancels EVERY running turn and drops anything still queued — otherwise
+    // the queue would just start the next message the user was trying to stop,
+    // and sibling turns would keep streaming.
+    function stopEverything() {
+        chatQueue.length = 0;
+        for (const controller of activeTurns) {
+            controller.abort();
+        }
+        updateQueueIndicator();
+        clearSpeechQueue();
+    }
+
     if (elements.btnStopMessage) {
-        elements.btnStopMessage.addEventListener("click", () => {
-            if (state.abortController) {
-                state.abortController.abort();
-                clearSpeechQueue();
-            }
-        });
+        elements.btnStopMessage.addEventListener("click", stopEverything);
     }
 
     document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && state.abortController) {
-            state.abortController.abort();
-            clearSpeechQueue();
+        if (e.key === "Escape" && (activeTurns.size || chatQueue.length)) {
+            stopEverything();
         }
     });
 
@@ -298,24 +313,38 @@ document.addEventListener("DOMContentLoaded", () => {
     let lastRenderedComponentHtml = null;
 
     const CANVAS_DOMPURIFY_CONFIG = {
-        ADD_TAGS: ['iframe', 'template'],
+        // 'script' is allowed because custom create_widget widgets carry their
+        // behavior inline; the canvas already trusts Alpine attrs (@click,
+        // x-data) which are equivalent execution surface. Scripts are revived
+        // by reviveScripts() after injection since innerHTML never runs them.
+        ADD_TAGS: ['iframe', 'template', 'script'],
         ADD_ATTR: [
-            'style', 'class', 'type', 'checked', 'data-component', 'x-data', 
-            'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click', 
-            'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class', 
-            ':style', 'id', 'placeholder', 'value', 'x-if', ':src', ':key', 
-            ':disabled', 'allow', 'allowfullscreen', 'sandbox'
+            'style', 'class', 'type', 'checked', 'data-component', 'x-data',
+            'x-show', 'x-model', 'x-text', 'x-bind', 'x-on:click', '@click',
+            'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class',
+            ':style', 'id', 'placeholder', 'value', 'x-if', ':src', ':key',
+            ':disabled', 'allow', 'allowfullscreen', 'sandbox',
+            'target', 'rel', 'loading'
         ],
         FORCE_BODY: true
     };
 
-    function renderContent(textContent, componentHtml) {
+    function renderContent(textContent, componentHtml, version) {
         // The text content goes to TTS and Chat History.
         // We ONLY render the HTML component to the live canvas.
-        if (componentHtml && componentHtml !== lastRenderedComponentHtml) {
-            lastRenderedComponentHtml = componentHtml;
-            elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, CANVAS_DOMPURIFY_CONFIG);
+        if (!componentHtml || componentHtml === lastRenderedComponentHtml) return;
+
+        // Server canvas commits are versioned and monotonic. With several turns
+        // in flight, a slow turn's component event can arrive after a faster turn
+        // already committed a newer canvas — painting the older one would quietly
+        // delete the newer widget. Never go backwards.
+        if (typeof version === "number") {
+            if (version < canvasVersion) return;
+            canvasVersion = version;
         }
+
+        lastRenderedComponentHtml = componentHtml;
+        elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, CANVAS_DOMPURIFY_CONFIG);
     }
 
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
@@ -326,7 +355,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             if (data.messages && data.messages.length > 0) {
                 // Populate chat history panel
-                elements.chatHistoryMessages.innerHTML = "";
+                if (elements.chatHistoryMessages) elements.chatHistoryMessages.innerHTML = "";
                 data.messages.forEach(msg => {
                     if (msg.content !== "[tool-only turn]" && (msg.content || "").trim()) {
                         appendChatMessageToHistory(msg.role, msg.content, Boolean(msg.canvas_html));
@@ -400,16 +429,68 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ─── CHAT & RENDERING LOGIC ────────────────────────────────
-    async function sendChatMessage() {
+    // Several turns run at once (the Spark serves multiple generations in
+    // parallel); anything past MAX_CONCURRENT_TURNS waits in the queue.
+    //
+    // The canvas is the shared resource, and it is the server's copy that is
+    // authoritative: every widget write is a locked read-modify-write there, and
+    // each committed canvas carries a version. We only paint a canvas newer than
+    // what's on screen, so a slow turn's component event landing late can't roll
+    // back a widget a faster turn already committed. Before this, two turns each
+    // replaced the canvas wholesale from their own stale snapshot and the loser's
+    // widget silently vanished — both queries looked like they'd been knocked out.
+    const MAX_CONCURRENT_TURNS = 3;
+    const chatQueue = [];
+    const activeTurns = new Set();
+    let canvasVersion = 0;
+
+    function updateQueueIndicator() {
+        if (!elements.queueBadge) return;
+        const queued = chatQueue.length;
+        const running = activeTurns.size;
+        const parts = [];
+        if (running > 1) parts.push(`${running} running`);
+        if (queued) parts.push(`${queued} queued`);
+        elements.queueBadge.textContent = parts.join(" · ");
+        elements.queueBadge.style.display = parts.length ? "inline-flex" : "none";
+    }
+
+    function sendChatMessage() {
         const text = elements.chatInput.value.trim();
         if (!text) return;
 
         elements.chatInput.value = "";
         elements.chatInput.style.height = 'auto';
 
-        clearSpeechQueue();
+        // Echo immediately so a queued message still shows up straight away.
         appendChatMessageToHistory("user", text);
-        
+        chatQueue.push(text);
+        updateQueueIndicator();
+        drainChatQueue();
+    }
+
+    function drainChatQueue() {
+        while (chatQueue.length && activeTurns.size < MAX_CONCURRENT_TURNS) {
+            const text = chatQueue.shift();
+            const controller = new AbortController();
+            activeTurns.add(controller);
+            updateQueueIndicator();
+
+            runChatTurn(text, controller)
+                .catch(err => {
+                    if (err.name !== "AbortError") console.error("Chat turn failed:", err);
+                })
+                .finally(() => {
+                    activeTurns.delete(controller);
+                    updateQueueIndicator();
+                    drainChatQueue();
+                });
+        }
+    }
+
+    async function runChatTurn(text, controller) {
+        clearSpeechQueue();
+
         let provider = "vllm-2";
         let model = "";
         if (elements.modelSelect) {
@@ -429,9 +510,21 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
 
-        // Prepare Execution Log Overlay
-        elements.execLogContent.innerHTML = "";
+        // Each turn owns a group inside the shared activity log — concurrent turns
+        // would otherwise scribble over one another's steps. Only wipe the log
+        // when this is the only turn running.
+        if (activeTurns.size <= 1) elements.execLogContent.innerHTML = "";
         elements.execLogContainer.style.display = "flex";
+
+        const logGroup = document.createElement("div");
+        logGroup.className = "log-group";
+        if (activeTurns.size > 1) {
+            const label = document.createElement("div");
+            label.className = "log-group-label";
+            label.textContent = text.length > 42 ? `${text.slice(0, 42)}…` : text;
+            logGroup.appendChild(label);
+        }
+        elements.execLogContent.appendChild(logGroup);
 
         let lastStatusStep = null;
         function addLogStep(text, icon) {
@@ -447,17 +540,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 const step = document.createElement("div");
                 step.className = "log-step status-step";
                 step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${cleanText}</span><span class="dot-flashing ml-2 inline-block"></span>`;
-                elements.execLogContent.appendChild(step);
+                logGroup.appendChild(step);
                 lastStatusStep = step;
                 elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
                 return;
             }
-            
+
             lastStatusStep = null;
             const step = document.createElement("div");
             step.className = "log-step";
             step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${text}</span>`;
-            elements.execLogContent.appendChild(step);
+            logGroup.appendChild(step);
             elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
         }
 
@@ -466,20 +559,27 @@ document.addEventListener("DOMContentLoaded", () => {
         if (elements.btnSendMessage) elements.btnSendMessage.style.display = "none";
         if (elements.btnStopMessage) elements.btnStopMessage.style.display = "flex";
 
-        state.abortController = new AbortController();
+        // Each turn carries its own controller, so aborting one can't orphan
+        // another. state.abortController mirrors the newest for the Stop button.
+        state.abortController = controller;
 
         try {
             const res = await fetch("/session/message", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                signal: state.abortController.signal,
+                signal: controller.signal,
                 body: JSON.stringify({
                     session_id: state.sessionId,
                     message: text,
                     provider: provider,
                     model: model,
                     current_canvas: getCleanedCanvasHtml(),
-                    use_lazy_agent: document.getElementById('toggle-lazy-agent')?.checked || false
+                    // Always the lazy gateway. Prism's loop silently drops the
+                    // mcp__lazy-tool-service__* widget tools ("not in schema"), so
+                    // the model retries the same call and never renders anything.
+                    // This was a checkbox that was checked by default and had no
+                    // working "off" state, so it is now just always on.
+                    use_lazy_agent: true
                 })
             });
 
@@ -508,12 +608,13 @@ document.addEventListener("DOMContentLoaded", () => {
                                 if (data.type === "chunk") {
                                     const token = data.content || "";
                                     fullText += token;
-                                    renderContent(fullText, fullComponentHtml);
+                                    // Deliberately does NOT repaint the canvas: this
+                                    // turn's snapshot may already be older than what a
+                                    // sibling turn committed. Only `component` paints.
                                     handleIncomingChunk(token);
                                 } else if (data.type === "status") {
                                     addLogStep(data.message || "Thinking...", "🧠");
                                 } else if (data.type === "done") {
-                                    renderContent(fullText, fullComponentHtml);
                                     renderDynamicComponents(elements.liveCanvas);
                                     addLogStep("Finished generation.", "✨");
                                     flushSentenceBuffer();
@@ -521,7 +622,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
                                     fullComponentHtml = data.content || "";
-                                    renderContent(fullText, fullComponentHtml);
+                                    renderContent(fullText, fullComponentHtml, data.version);
                                     scrollToBottom();
                                 } else if (data.type === "tool_call") {
                                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
@@ -537,14 +638,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             }
             
-            // Final cleanup
-            renderContent(fullText, fullComponentHtml);
+            // Final cleanup. No canvas repaint — `component` already painted the
+            // newest version, and this turn's copy may be behind a sibling's.
             renderDynamicComponents(elements.liveCanvas);
-
-            // Auto-hide log after 3 seconds
-            setTimeout(() => {
-                elements.execLogContainer.style.display = "none";
-            }, 3000);
+            hideLogWhenIdle();
 
         } catch (err) {
             if (err.name === 'AbortError') {
@@ -554,15 +651,25 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.error("Network error:", err);
                 renderError("Network error. Is the server running?");
             }
-            // Auto-hide log after 3 seconds
-            setTimeout(() => {
-                elements.execLogContainer.style.display = "none";
-            }, 3000);
+            hideLogWhenIdle();
         } finally {
-            if (elements.btnSendMessage) elements.btnSendMessage.style.display = "flex";
-            if (elements.btnStopMessage) elements.btnStopMessage.style.display = "none";
-            state.abortController = null;
+            // This turn is still counted in activeTurns until drainChatQueue's
+            // .finally() removes it, so "last one out" means size <= 1.
+            const lastOneOut = activeTurns.size <= 1 && chatQueue.length === 0;
+            if (lastOneOut) {
+                if (elements.btnSendMessage) elements.btnSendMessage.style.display = "flex";
+                if (elements.btnStopMessage) elements.btnStopMessage.style.display = "none";
+                state.abortController = null;
+            }
         }
+    }
+
+    function hideLogWhenIdle() {
+        setTimeout(() => {
+            if (activeTurns.size === 0 && chatQueue.length === 0) {
+                elements.execLogContainer.style.display = "none";
+            }
+        }, 3000);
     }
 
     function renderError(msg) {
@@ -575,7 +682,46 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function reviveScripts(container) {
+        // Scripts injected via innerHTML never execute — recreate each one so
+        // the browser runs it. This is what makes create_widget jsContent work.
+        container.querySelectorAll('script').forEach(oldScript => {
+            const newScript = document.createElement('script');
+            for (const attr of oldScript.attributes) {
+                newScript.setAttribute(attr.name, attr.value);
+            }
+            newScript.textContent = oldScript.textContent;
+            oldScript.parentNode.replaceChild(newScript, oldScript);
+        });
+    }
+
+    function applyImageFallbacks(container) {
+        // Any widget image that fails to load degrades to a monogram tile
+        // instead of a broken-image icon.
+        container.querySelectorAll('.widget-container img, .glass-card img, .canvas-widget img').forEach(img => {
+            if (img._hasFallback) return;
+            img._hasFallback = true;
+            img.addEventListener('error', () => {
+                const placeholder = document.createElement('div');
+                placeholder.className = img.className + ' img-fallback';
+                placeholder.style.minHeight = '3.5rem';
+                const label = (img.alt || '?').trim().charAt(0).toUpperCase() || '?';
+                placeholder.innerHTML = `<span class="img-fallback-letter">${label}</span>`;
+                img.replaceWith(placeholder);
+            });
+        });
+    }
+
     function renderDynamicComponents(container) {
+        reviveScripts(container);
+        applyImageFallbacks(container);
+
+        // The welcome message only belongs on an empty canvas.
+        const welcome = container.querySelector('#welcome-message');
+        if (welcome && container.querySelector('.widget-container, .glass-card, .canvas-widget')) {
+            welcome.remove();
+        }
+
         const chartBlocks = container.querySelectorAll('pre code.language-chart');
         chartBlocks.forEach((block) => {
             try {
@@ -585,9 +731,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 const canvasContainer = document.createElement('div');
                 canvasContainer.className = 'chart-container';
                 canvasContainer.style.position = 'relative';
-                canvasContainer.style.height = '400px';
                 canvasContainer.style.width = '100%';
-                canvasContainer.style.marginBottom = '1.5rem';
+                // Inside a chart widget the canvas fills the body; standalone
+                // blocks keep a fixed height.
+                if (block.closest('.widget-container')) {
+                    canvasContainer.style.height = '100%';
+                } else {
+                    canvasContainer.style.height = '400px';
+                    canvasContainer.style.marginBottom = '1.5rem';
+                }
                 
                 const canvas = document.createElement('canvas');
                 canvasContainer.appendChild(canvas);
@@ -607,7 +759,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         // ─── POST-PROCESS WIDGET CONSOLE / CONTROLS ───
-        const widgets = container.querySelectorAll('.widget-container');
+        // Covers factory widgets AND LLM-generated glass-cards so every widget
+        // on the canvas gets a working close button.
+        const widgets = container.querySelectorAll('.widget-container, .glass-card, .canvas-widget');
         widgets.forEach(origWidget => {
             let widget = origWidget;
             const id = widget.id || "";
@@ -808,9 +962,10 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <span class="text-sm text-slate-300">Searching YouTube...</span>
                             </div>
                             <!-- Error state overlay -->
-                            <div x-show="error" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center z-10">
+                            <div x-show="error" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center z-10 gap-2">
                                 <span class="material-symbols-outlined text-4xl text-red-500 mb-2">error</span>
                                 <span class="text-sm text-slate-200" x-text="error"></span>
+                                <a x-show="watchUrl" :href="watchUrl" target="_blank" rel="noopener" class="text-sm text-purple-300 underline hover:text-purple-200">Watch on YouTube ↗</a>
                             </div>
                             <!-- Iframe player -->
                             <template x-if="embedUrl">
@@ -1002,128 +1157,53 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.warn("Failed to execute Alpine.initTree:", err);
             }
         }
-        initDragAndDrop(container);
+        initCanvasWidgets(container);
     }
 
-    function initDragAndDrop(container) {
+    // Widgets that have already played their power-on animation, so a re-render
+    // (every SSE component event replaces the canvas wholesale) doesn't replay it.
+    const poweredOnWidgets = new Set();
+
+    /**
+     * Lay the canvas out and power on anything new.
+     *
+     * This replaced a hand-rolled absolute-positioning tiler that scanned for a
+     * free rectangle per widget. It only advanced its cursor for widgets it
+     * placed itself, so once two widgets carried saved coordinates the cursor
+     * stayed at the origin, and the third widget's collision scan walked it off
+     * the bottom of the grid's fixed 800px min-height — it rendered, just where
+     * nobody could see it. CSS grid handles flow, so the layout math is gone.
+     */
+    function initCanvasWidgets(container) {
         const grid = container.querySelector('#dashboard-grid');
         if (!grid) return;
 
         const items = grid.querySelectorAll('.widget-container, .glass-card, .canvas-element, .rendered-component');
-        
-        // 1. Arrange items using overlap-detection tiling flow algorithm
-        let nextLeft = 20;
-        let nextTop = 20;
-        let rowHeight = 0;
-        const margin = 20;
-        const maxCanvasWidth = grid.clientWidth || 1200;
 
         items.forEach(item => {
             if (!item.id) {
                 item.id = 'item-' + Math.random().toString(36).substr(2, 9);
             }
-            
-            let width = item.classList.contains('col-span-2') ? 780 : 380;
-            let height = item.classList.contains('h-[380px]') ? 380 : 280;
 
-            const hasPosition = item.style.left && item.style.top;
-            if (!hasPosition) {
-                while (true) {
-                    let overlap = false;
-                    const rect = { left: nextLeft, top: nextTop, right: nextLeft + width, bottom: nextTop + height };
-                    
-                    for (const other of items) {
-                        if (other === item) continue;
-                        if (other.style.left && other.style.top) {
-                            const oLeft = parseInt(other.style.left);
-                            const oTop = parseInt(other.style.top);
-                            const oWidth = other.classList.contains('col-span-2') ? 780 : 380;
-                            const oHeight = other.classList.contains('h-[380px]') ? 380 : 280;
-                            const oRect = { left: oLeft, top: oTop, right: oLeft + oWidth, bottom: oTop + oHeight };
-                            
-                            if (!(rect.right <= oRect.left || rect.left >= oRect.right || rect.bottom <= oRect.top || rect.top >= oRect.bottom)) {
-                                overlap = true;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (!overlap) {
-                        break;
-                    }
-                    
-                    nextLeft += 100;
-                    if (nextLeft + width > maxCanvasWidth) {
-                        nextLeft = 20;
-                        nextTop += 100;
-                    }
-                }
-                
-                item.style.position = 'absolute';
-                item.style.left = nextLeft + 'px';
-                item.style.top = nextTop + 'px';
-                item.style.width = width + 'px';
-                item.style.height = height + 'px';
-                
-                nextLeft += width + margin;
-                rowHeight = Math.max(rowHeight, height);
+            // Canvases persisted by the old tiler still carry inline coordinates.
+            // Left in place they'd yank widgets out of grid flow and stack them
+            // on top of each other, so strip them on the way in.
+            item.style.removeProperty('position');
+            item.style.removeProperty('left');
+            item.style.removeProperty('top');
+            item.style.removeProperty('width');
+            item.style.removeProperty('height');
+            item.style.removeProperty('z-index');
+            item.removeAttribute('draggable');
+
+            if (!poweredOnWidgets.has(item.id)) {
+                poweredOnWidgets.add(item.id);
+                item.classList.add('crt-on');
+                item.addEventListener('animationend', () => item.classList.remove('crt-on'), { once: true });
             }
         });
 
-        // Update container height to fit the lowest widget
-        function updateContainerHeight() {
-            let maxBottom = 800;
-            items.forEach(it => {
-                if (it.style.top) {
-                    const topVal = parseInt(it.style.top) || 0;
-                    const heightVal = it.offsetHeight || (it.classList.contains('h-[380px]') ? 380 : 280);
-                    maxBottom = Math.max(maxBottom, topVal + heightVal + 40);
-                }
-            });
-            grid.style.minHeight = maxBottom + 'px';
-        }
-        updateContainerHeight();
-
-        // 2. Mouse-based drag events for absolute positioning
-        items.forEach(item => {
-            item.removeAttribute('draggable');
-
-            item.addEventListener('mousedown', (e) => {
-                const interactive = e.target.closest('input, textarea, button, select, iframe, a, option, [role="button"]');
-                if (interactive) return;
-
-                if (e.button !== 0) return;
-
-                e.preventDefault();
-
-                const startX = e.clientX;
-                const startY = e.clientY;
-                const startLeft = parseInt(item.style.left) || item.offsetLeft;
-                const startTop = parseInt(item.style.top) || item.offsetTop;
-
-                item.classList.add('dragging-widget');
-                item.style.zIndex = '1000';
-
-                function onMouseMove(moveEvent) {
-                    const dx = moveEvent.clientX - startX;
-                    const dy = moveEvent.clientY - startY;
-                    item.style.left = (startLeft + dx) + 'px';
-                    item.style.top = (startTop + dy) + 'px';
-                    updateContainerHeight();
-                }
-
-                function onMouseUp() {
-                    item.classList.remove('dragging-widget');
-                    item.style.zIndex = '';
-                    
-                    document.removeEventListener('mousemove', onMouseMove);
-                    document.removeEventListener('mouseup', onMouseUp);
-                }
-
-                document.addEventListener('mousemove', onMouseMove);
-                document.addEventListener('mouseup', onMouseUp);
-            });
-        });
+        grid.style.removeProperty('min-height');
     }
 
 

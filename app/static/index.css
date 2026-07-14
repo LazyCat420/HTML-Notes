@@ -134,19 +134,26 @@ body::after {
     width: 100%;
 }
 
+/* Real grid flow. Widgets used to be absolutely positioned by a JS tiler that
+   walked a cursor looking for a free rectangle; with two saved widgets on the
+   canvas the cursor never advanced and the third got pushed below the fixed
+   800px min-height, out of sight. Grid auto-placement makes that impossible. */
 .dashboard-grid {
-    position: relative;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    grid-auto-rows: minmax(280px, auto);
+    gap: 1.25rem;
     width: 100%;
-    min-height: 800px;
+    align-content: start;
 }
 
 .dashboard-grid > div {
-    position: absolute;
+    position: relative;
+    min-width: 0; /* let grid children shrink instead of overflowing the track */
 }
 
 #welcome-message {
-    position: static !important;
-    width: 100%;
+    grid-column: 1 / -1;
 }
 
 /* ─── HOLOGRAPHIC WIDGET FRAMES ─────────────────────────────────
@@ -202,8 +209,14 @@ body::after {
     z-index: 30;
 }
 
-.widget-container.col-span-1 { width: 380px; }
-.widget-container.col-span-2 { width: 780px; }
+/* Widgets size to their grid track. col-span-2 asks for a double-width cell,
+   but collapses to a single column when the viewport can't fit two. */
+.widget-container.col-span-1 { grid-column: span 1; }
+.widget-container.col-span-2 { grid-column: span 2; }
+
+@media (max-width: 800px) {
+    .widget-container.col-span-2 { grid-column: span 1; }
+}
 
 /* Widget headings: thin, wide, uppercase */
 .widget-container h3,
@@ -849,13 +862,6 @@ textarea::placeholder {
 /* ─── NATIVE COMPONENT DESIGN SYSTEM ───────────────────────── */
 
 /* Layout Utilities */
-.dashboard-grid {
-    position: relative;
-    width: 100%;
-    min-height: 800px;
-    margin: 1.5rem 0;
-}
-
 .flex-row {
     display: flex;
     flex-direction: row;
@@ -1238,6 +1244,70 @@ textarea::placeholder {
     filter: drop-shadow(0 0 3px rgba(255, 183, 77, 0.7));
 }
 
+/* ─── DATA / IMAGE / CHART WIDGETS ──────────────────────────────
+   Server-rendered contract widgets (news, recipes, search results,
+   pictures, charts). Data is baked in at render time.             */
+
+.widget-container .widget-header {
+    background: linear-gradient(90deg, rgba(4, 11, 22, 0.6), rgba(10, 24, 42, 0.45));
+    border-bottom: 1px solid rgba(127, 212, 255, 0.16);
+}
+
+.data-card .data-card-item {
+    animation: fadeIn 0.35s ease both;
+}
+.data-card .data-card-item:nth-child(2) { animation-delay: 0.05s; }
+.data-card .data-card-item:nth-child(3) { animation-delay: 0.10s; }
+.data-card .data-card-item:nth-child(4) { animation-delay: 0.15s; }
+.data-card .data-card-item:nth-child(5) { animation-delay: 0.20s; }
+
+.data-card .item-thumb {
+    background: linear-gradient(150deg, rgba(24, 52, 84, 0.9), rgba(8, 20, 36, 0.9));
+    border: 1px solid rgba(127, 212, 255, 0.22);
+    box-shadow: 0 0 12px rgba(79, 195, 247, 0.12);
+}
+
+.data-card .item-badge {
+    background: var(--accent-soft);
+    color: #a8dcff;
+    border-color: rgba(127, 212, 255, 0.35);
+}
+
+.data-card a:hover {
+    color: var(--accent-hover);
+    text-shadow: 0 0 10px rgba(79, 195, 247, 0.4);
+}
+
+/* Multi-line clamp used by data card descriptions */
+.line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.image-widget figure img {
+    transition: transform 0.35s ease;
+}
+.image-widget figure:hover img {
+    transform: scale(1.04);
+}
+
+/* Broken images degrade to glowing monogram tiles */
+.img-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(150deg, rgba(24, 52, 84, 0.9), rgba(8, 20, 36, 0.9));
+    border: 1px solid rgba(127, 212, 255, 0.22);
+}
+.img-fallback-letter {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: rgba(191, 233, 255, 0.75);
+    text-shadow: 0 0 12px rgba(79, 195, 247, 0.5);
+}
+
 /* Drag and Drop styles */
 .dragging-widget {
     opacity: 0.5;
@@ -1365,4 +1435,330 @@ div[x-show="legoBoxOpen"] button.bg-slate-800:hover {
     accent-color: var(--accent-color);
     background: rgba(5, 14, 26, 0.55);
     border-color: var(--edge);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CANVAS REDESIGN — calm neutral surfaces, one accent, real grid.
+   This block is last so it wins over the older neon/holographic
+   rules above without having to unpick them.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+    --surface: rgba(255, 255, 255, 0.045);
+    --surface-hover: rgba(255, 255, 255, 0.07);
+    --hairline: rgba(255, 255, 255, 0.09);
+    --ink: #f5f5f7;
+    --ink-dim: rgba(245, 245, 247, 0.55);
+    --accent: #0a84ff;
+    --radius: 20px;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+body {
+    background: #0b0b0f !important;
+    color: var(--ink);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Kill the old animated backdrop layers — they fought the content. */
+body::before,
+body::after { display: none !important; }
+
+.live-canvas {
+    padding: 3rem 2.5rem 11rem 2.5rem;
+}
+
+/* ─── Widget surfaces ───────────────────────────────────────── */
+.widget-container,
+.canvas-widget,
+.dashboard-grid .glass-card {
+    background: var(--surface) !important;
+    border: 1px solid var(--hairline) !important;
+    border-radius: var(--radius) !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.22) !important;
+    backdrop-filter: blur(20px) saturate(140%);
+    transition: background 0.25s var(--ease), transform 0.25s var(--ease),
+                box-shadow 0.25s var(--ease), border-color 0.25s var(--ease);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.widget-container:hover,
+.dashboard-grid .glass-card:hover {
+    background: var(--surface-hover) !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.32) !important;
+}
+
+/* The old frames painted a scanline/glow pseudo-element over content. */
+.widget-container::after,
+.dashboard-grid .glass-card::after { display: none !important; }
+
+.widget-container h3,
+.dashboard-grid .glass-card h3 {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    text-shadow: none;
+}
+
+/* ─── Welcome state ─────────────────────────────────────────── */
+.system-message {
+    text-align: center;
+    padding: 5rem 1rem;
+    border: none;
+    background: none;
+}
+.system-message h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+    margin-bottom: 0.5rem;
+}
+.system-message p { color: var(--ink-dim); font-size: 1rem; }
+
+/* ─── Command bar ───────────────────────────────────────────── */
+.command-palette {
+    bottom: 2rem;
+}
+
+.input-row {
+    background: rgba(28, 28, 32, 0.82) !important;
+    backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid var(--hairline) !important;
+    border-radius: 999px !important;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45) !important;
+    padding: 0.4rem 0.5rem !important;
+    gap: 0.25rem;
+    transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.input-row:focus-within {
+    border-color: rgba(10, 132, 255, 0.5) !important;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 3px rgba(10, 132, 255, 0.16) !important;
+}
+
+#chat-input {
+    background: transparent !important;
+    border: none !important;
+    color: var(--ink);
+    font-size: 0.95rem;
+    padding: 0.55rem 0.75rem;
+}
+#chat-input::placeholder { color: var(--ink-dim); }
+
+.btn-icon {
+    background: transparent;
+    border: none;
+    color: var(--ink-dim);
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.18s var(--ease), color 0.18s var(--ease);
+}
+.btn-icon:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+.btn-icon svg { width: 19px; height: 19px; }
+.btn-icon.recording { color: #ff453a; }
+.btn-icon.muted { color: rgba(245, 245, 247, 0.3); }
+
+.btn-send, .btn-stop {
+    background: var(--accent) !important;
+    border: none !important;
+    width: 38px;
+    height: 38px;
+    border-radius: 50% !important;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: none !important;
+    transition: transform 0.18s var(--ease), filter 0.18s var(--ease);
+}
+.btn-send:hover, .btn-stop:hover { transform: scale(1.06); filter: brightness(1.12); }
+.btn-send svg, .btn-stop svg { width: 17px; height: 17px; }
+.btn-stop { background: #ff453a !important; }
+
+.model-select {
+    background: transparent !important;
+    border: none !important;
+    color: var(--ink-dim) !important;
+    font-size: 0.8rem;
+    max-width: 130px;
+    cursor: pointer;
+}
+.model-select option { background: #1c1c20; color: var(--ink); }
+
+/* Queued-message counter — only visible when a turn is waiting its turn. */
+.queue-badge {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: rgba(10, 132, 255, 0.14);
+    border: 1px solid rgba(10, 132, 255, 0.3);
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    margin-right: 0.2rem;
+}
+
+/* ─── Activity log ──────────────────────────────────────────── */
+.execution-log-container {
+    background: rgba(28, 28, 32, 0.9) !important;
+    border: 1px solid var(--hairline) !important;
+    border-radius: 14px !important;
+    backdrop-filter: blur(24px);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4) !important;
+    font-size: 0.8rem;
+}
+.execution-log-header {
+    color: var(--ink-dim);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    font-size: 0.68rem;
+}
+
+/* ═══ CRT BULB EFFECT ═══════════════════════════════════════════
+   Old TV power cycle: switching on, the beam punches out a bright
+   horizontal scanline that then unfolds vertically into the full
+   picture. Switching off runs it backwards — the picture collapses
+   into a line, flares, and blinks out to a dot.
+   transform-origin: center keeps the collapse anchored mid-widget.  */
+
+@keyframes crt-power-on {
+    0% {
+        transform: scaleX(0) scaleY(0.008);
+        opacity: 0;
+        filter: brightness(8) saturate(0);
+    }
+    28% {
+        transform: scaleX(1) scaleY(0.008);
+        opacity: 1;
+        filter: brightness(8) saturate(0);
+    }
+    45% {
+        transform: scaleX(1) scaleY(0.008);
+        filter: brightness(5) saturate(0.3);
+    }
+    100% {
+        transform: scaleX(1) scaleY(1);
+        opacity: 1;
+        filter: brightness(1) saturate(1);
+    }
+}
+
+@keyframes crt-power-off {
+    0% {
+        transform: scaleX(1) scaleY(1);
+        opacity: 1;
+        filter: brightness(1) saturate(1);
+    }
+    42% {
+        transform: scaleX(1) scaleY(0.008);
+        opacity: 1;
+        filter: brightness(6) saturate(0);
+    }
+    62% {
+        transform: scaleX(1) scaleY(0.008);
+        filter: brightness(9) saturate(0);
+    }
+    100% {
+        transform: scaleX(0) scaleY(0.008);
+        opacity: 0;
+        filter: brightness(12) saturate(0);
+    }
+}
+
+.crt-on {
+    animation: crt-power-on 0.62s var(--ease) both;
+    transform-origin: center center;
+    will-change: transform, filter, opacity;
+}
+
+.crt-off {
+    animation: crt-power-off 0.5s cubic-bezier(0.5, 0, 0.75, 0) both;
+    transform-origin: center center;
+    will-change: transform, filter, opacity;
+    pointer-events: none;
+}
+
+/* The white-hot scanline that streaks across the collapse. */
+.crt-on::before,
+.crt-off::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        to bottom,
+        transparent 0%,
+        rgba(255, 255, 255, 0.9) 49%,
+        rgba(255, 255, 255, 1) 50%,
+        rgba(255, 255, 255, 0.9) 51%,
+        transparent 100%
+    );
+    opacity: 0;
+    pointer-events: none;
+    z-index: 5;
+    animation: crt-scanline 0.55s var(--ease) both;
+}
+
+@keyframes crt-scanline {
+    0%, 100% { opacity: 0; }
+    35%      { opacity: 0.55; }
+    60%      { opacity: 0.2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .crt-on, .crt-off,
+    .crt-on::before, .crt-off::before {
+        animation: none !important;
+    }
+    .crt-off { opacity: 0; }
+}
+
+/* Polish */
+#chat-input {
+    resize: none;
+    outline: none;
+    max-height: 140px;
+}
+
+/* The legacy rule uppercased + letter-spaced this; too loud for the new look. */
+.system-message h1 {
+    text-transform: none !important;
+    letter-spacing: -0.03em !important;
+    text-shadow: none !important;
+}
+
+/* Legacy rule uppercased + wide-tracked every widget heading. */
+.widget-container h3,
+.canvas-widget h3,
+.dashboard-grid .glass-card h3 {
+    text-transform: none !important;
+    letter-spacing: -0.01em !important;
+    font-size: 0.95rem !important;
+    text-shadow: none !important;
+}
+
+/* Concurrent turns each get their own labelled group in the activity log. */
+.log-group + .log-group {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--hairline);
+}
+.log-group-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--accent);
+    opacity: 0.85;
+    margin-bottom: 0.25rem;
 }

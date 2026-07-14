@@ -5,6 +5,230 @@ from typing import Any
 def json_escape(val: Any) -> str:
     return html.escape(json.dumps(val))
 
+def esc(val: Any) -> str:
+    """HTML-escape a value for direct interpolation into widget markup."""
+    return html.escape(str(val if val is not None else ""))
+
+# Widget chrome shared by every server-rendered widget: a header bar with an
+# icon, a title and a close button that works with or without Alpine.
+def widget_header(title: str, icon: str = "widgets", subtitle: str = "") -> str:
+    subtitle_html = (
+        f'<span class="text-[0.65rem] text-slate-400 tracking-wider normal-case">{esc(subtitle)}</span>'
+        if subtitle else ""
+    )
+    return f"""
+        <div class="widget-header flex items-center justify-between bg-black/30 px-4 py-2.5 border-b border-white/10 relative z-20 shrink-0">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="material-symbols-outlined text-[1.1rem] text-purple-300">{esc(icon)}</span>
+                <div class="flex flex-col min-w-0">
+                    <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight">{esc(title)}</h3>
+                    {subtitle_html}
+                </div>
+            </div>
+            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors shrink-0 ml-2">
+                <span class="material-symbols-outlined text-[1.2rem]">close</span>
+            </button>
+        </div>
+    """
+
+def _monogram_tile(text: str) -> str:
+    """Fallback visual when an item has no image: a glowing monogram tile."""
+    letter = (text or "?").strip()[:1].upper() or "?"
+    return f"""
+        <div class="item-thumb w-14 h-14 shrink-0 rounded-xl bg-gradient-to-tr from-slate-700 to-slate-500 flex items-center justify-center ring-1 ring-white/10 shadow-lg">
+            <span class="text-xl font-bold text-white/80">{esc(letter)}</span>
+        </div>
+    """
+
+def render_data_card(widget_id: str, config: dict) -> str:
+    """Universal server-rendered data widget (the reliable path for news,
+    recipes, weather, search results — any structured data). The data is baked
+    into the HTML at render time, so nothing depends on client-side fetching.
+
+    Contract: {title, subtitle?, icon?, image?, content?, items?: [
+        {title, description?, image?, url?, badge?, meta?}]}
+    Fallback chain: items -> content text -> raw config dump. Never blank.
+    """
+    title = config.get("title", "Data")
+    subtitle = config.get("subtitle", "")
+    icon = config.get("icon", "article")
+    hero = config.get("image", "")
+    content = config.get("content", "")
+    items = config.get("items", []) or []
+    if isinstance(items, dict):
+        items = [items]
+
+    body_parts = []
+
+    if hero:
+        body_parts.append(f"""
+            <div class="hero-image w-full h-32 shrink-0 overflow-hidden relative">
+                <img src="{esc(hero)}" alt="{esc(title)}" class="w-full h-full object-cover" loading="lazy">
+                <div class="absolute inset-0 bg-gradient-to-t from-slate-950/80 to-transparent"></div>
+            </div>
+        """)
+
+    rendered_items = []
+    for item in items:
+        if isinstance(item, str):
+            item = {"title": item}
+        if not isinstance(item, dict):
+            continue
+        i_title = item.get("title") or item.get("text") or item.get("name") or ""
+        i_desc = item.get("description") or item.get("summary") or item.get("snippet") or ""
+        i_image = item.get("image") or item.get("thumbnail") or ""
+        i_url = item.get("url") or item.get("link") or ""
+        i_badge = item.get("badge") or item.get("tag") or ""
+        i_meta = item.get("meta") or item.get("source") or item.get("date") or ""
+
+        thumb = (
+            f'<img src="{esc(i_image)}" alt="" loading="lazy" class="item-thumb w-14 h-14 shrink-0 rounded-xl object-cover ring-1 ring-white/10 shadow-lg">'
+            if i_image else _monogram_tile(i_title)
+        )
+        badge_html = (
+            f'<span class="item-badge text-[0.6rem] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-200 border border-purple-400/30 shrink-0">{esc(i_badge)}</span>'
+            if i_badge else ""
+        )
+        meta_html = (
+            f'<span class="item-meta text-[0.65rem] text-slate-400 tracking-wide">{esc(i_meta)}</span>'
+            if i_meta else ""
+        )
+        desc_html = (
+            f'<p class="text-xs text-slate-300 leading-relaxed mt-0.5 line-clamp-2">{esc(i_desc)}</p>'
+            if i_desc else ""
+        )
+        title_html = f'<span class="text-sm font-semibold text-white leading-snug">{esc(i_title)}</span>'
+        if i_url:
+            title_html = f'<a href="{esc(i_url)}" target="_blank" rel="noopener" class="text-sm font-semibold text-white leading-snug hover:underline">{esc(i_title)}</a>'
+
+        rendered_items.append(f"""
+            <li class="data-card-item flex items-start gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/10">
+                {thumb}
+                <div class="flex-grow min-w-0">
+                    <div class="flex items-center justify-between gap-2">
+                        {title_html}
+                        {badge_html}
+                    </div>
+                    {desc_html}
+                    {meta_html}
+                </div>
+            </li>
+        """)
+
+    if rendered_items:
+        body_parts.append(f"""
+            <ul class="data-card-list flex flex-col gap-1 p-3 overflow-y-auto flex-grow custom-scrollbar">
+                {''.join(rendered_items)}
+            </ul>
+        """)
+    elif content:
+        paragraphs = "".join(
+            f'<p class="text-sm text-slate-200 leading-relaxed mb-2">{esc(p.strip())}</p>'
+            for p in str(content).split("\n") if p.strip()
+        )
+        body_parts.append(f"""
+            <div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{paragraphs}</div>
+        """)
+    else:
+        # Last-resort fallback: show whatever config we got as key/value rows
+        # instead of rendering an empty or broken card.
+        rows = "".join(
+            f'<div class="flex justify-between gap-3 py-1.5 border-b border-white/5"><span class="text-xs uppercase tracking-wider text-slate-400">{esc(k)}</span><span class="text-sm text-slate-200 text-right">{esc(v)}</span></div>'
+            for k, v in config.items() if k not in ("title", "subtitle", "icon") and not isinstance(v, (dict, list))
+        ) or '<p class="text-slate-400 text-xs italic text-center py-6">No data provided</p>'
+        body_parts.append(f'<div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{rows}</div>')
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container data-card col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(title, icon, subtitle)}
+        {''.join(body_parts)}
+    </div>
+    """
+
+def render_image(widget_id: str, config: dict) -> str:
+    """Image display widget. Contract: {title?, url | images:[{url, caption?}], caption?}"""
+    title = config.get("title", "Image")
+    images = config.get("images") or []
+    if not images and config.get("url"):
+        images = [{"url": config["url"], "caption": config.get("caption", "")}]
+    normalized = []
+    for img in images:
+        if isinstance(img, str):
+            normalized.append({"url": img, "caption": ""})
+        elif isinstance(img, dict) and img.get("url"):
+            normalized.append({"url": img["url"], "caption": img.get("caption", "")})
+
+    if normalized:
+        figures = []
+        for img in normalized[:4]:
+            caption_html = (
+                f'<figcaption class="text-[0.68rem] text-slate-300 px-2 py-1 bg-black/40 backdrop-blur-sm absolute bottom-0 inset-x-0 truncate">{esc(img["caption"])}</figcaption>'
+                if img.get("caption") else ""
+            )
+            figures.append(f"""
+                <figure class="relative flex-1 min-w-[45%] overflow-hidden rounded-xl bg-slate-950 ring-1 ring-white/10">
+                    <img src="{esc(img['url'])}" alt="{esc(img.get('caption') or title)}" loading="lazy" class="w-full h-full object-cover">
+                    {caption_html}
+                </figure>
+            """)
+        body = f'<div class="image-widget-body flex flex-wrap gap-2 p-3 flex-grow overflow-hidden">{"".join(figures)}</div>'
+    else:
+        body = """
+            <div class="flex flex-col items-center justify-center flex-grow text-slate-400 gap-2">
+                <span class="material-symbols-outlined text-4xl opacity-40">image_not_supported</span>
+                <span class="text-xs italic">No image available</span>
+            </div>
+        """
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container image-widget col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(title, "imagesmode")}
+        {body}
+    </div>
+    """
+
+def render_chart(widget_id: str, config: dict) -> str:
+    """Chart widget. Contract: {title?, chart: <full Chart.js config>} or
+    {title?, type?, labels: [str], values: [num]} — normalized here, baked as a
+    language-chart code block that the frontend converts to a Chart.js canvas.
+    Falls back to a data_card of label/value rows if the data is unusable."""
+    title = config.get("title", "Chart")
+    chart_config = config.get("chart")
+    if not isinstance(chart_config, dict) or "data" not in chart_config:
+        labels = config.get("labels") or []
+        values = config.get("values") or config.get("data") or []
+        if isinstance(values, dict):
+            labels, values = list(values.keys()), list(values.values())
+        if not (isinstance(labels, list) and isinstance(values, list) and labels and values):
+            # Fallback chain: unusable chart data renders as a data card.
+            items = [{"title": str(l), "meta": str(v)} for l, v in zip(labels or [], values or [])]
+            return render_data_card(widget_id, {"title": title, "icon": "monitoring", "items": items,
+                                                "content": config.get("content", "")})
+        chart_config = {
+            "type": config.get("type", "line"),
+            "data": {
+                "labels": labels,
+                "datasets": [{
+                    "label": config.get("label", title),
+                    "data": values,
+                    "borderColor": "#4fc3f7",
+                    "backgroundColor": "rgba(79, 195, 247, 0.18)",
+                    "fill": True,
+                    "tension": 0.35,
+                }],
+            },
+            "options": {"responsive": True, "maintainAspectRatio": False},
+        }
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container chart-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(title, "monitoring")}
+        <div class="chart-body flex-grow p-3 min-h-0">
+            <pre class="chart-config-block" style="display:none"><code class="language-chart">{esc(json.dumps(chart_config))}</code></pre>
+        </div>
+    </div>
+    """
+
 def render_checklist(widget_id: str, config: dict) -> str:
     title = config.get("title", "Checklist")
     items = config.get("items", [])
@@ -207,9 +431,13 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
 def render_youtube_player(widget_id: str, config: dict) -> str:
     video_id = config.get("video_id", "")
     title = config.get("title", "YouTube Player")
-    
+    # Alternate ids to try when the primary video blocks embedding, plus the
+    # search query for a client-side re-search as the last resort.
+    candidates = [c for c in (config.get("candidates") or []) if isinstance(c, str)]
+    query = config.get("query", "") or title
+
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)})">
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)}, {json_escape(candidates)}, {json_escape(query)})">
         <!-- Title Bar -->
         <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
             <div class="flex items-center gap-2">
@@ -229,9 +457,10 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
                 <span class="text-sm text-slate-300">Searching YouTube...</span>
             </div>
             <!-- Error state overlay -->
-            <div x-show="error" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center z-10">
+            <div x-show="error" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center z-10 gap-2">
                 <span class="material-symbols-outlined text-4xl text-red-500 mb-2">error</span>
                 <span class="text-sm text-slate-200" x-text="error"></span>
+                <a x-show="watchUrl" :href="watchUrl" target="_blank" rel="noopener" class="text-sm text-purple-300 underline hover:text-purple-200">Watch on YouTube ↗</a>
             </div>
             <!-- Iframe player -->
             <template x-if="embedUrl">
@@ -241,20 +470,134 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
     </div>
     """
 
+def render_stock_card(widget_id: str, config: dict) -> str:
+    """Rich ticker widget: price header, range tabs, chart, technicals, fundamentals.
+
+    The whole snapshot is baked in at spawn time so the widget renders complete
+    with no client fetch. Switching range re-fetches /api/stock/<symbol> directly
+    — the agent is not involved, so 1D→10Y is instant rather than another
+    minute-long agentic turn.
+    """
+    symbol = config.get("symbol") or config.get("title") or "—"
+    snapshot = {
+        "symbol": symbol,
+        "name": config.get("name") or symbol,
+        "currency": config.get("currency", "USD"),
+        "price": config.get("price"),
+        "range": config.get("range", "1mo"),
+        "change_pct": config.get("change_pct", 0),
+        "labels": config.get("labels") or [],
+        "values": config.get("values") or [],
+        "technicals": config.get("technicals") or {},
+        "fundamentals": config.get("fundamentals") or {},
+    }
+
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[520px] group"
+         x-data="stockCardWidget({json_escape(snapshot)})">
+        <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+            <span class="material-symbols-outlined text-[1.2rem]">close</span>
+        </button>
+
+        <!-- Header: symbol, name, price, change -->
+        <div class="flex items-end justify-between pr-8 shrink-0">
+            <div class="min-w-0">
+                <div class="flex items-baseline gap-2">
+                    <h3 class="text-xl font-bold tracking-tight" x-text="snapshot.symbol"></h3>
+                    <span class="text-xs text-slate-400 truncate" x-text="snapshot.name"></span>
+                </div>
+                <div class="flex items-baseline gap-2 mt-1">
+                    <span class="text-3xl font-semibold tabular-nums" x-text="fmtPrice(snapshot.price)"></span>
+                    <span class="text-sm font-semibold tabular-nums"
+                          :class="snapshot.change_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'"
+                          x-text="(snapshot.change_pct >= 0 ? '+' : '') + snapshot.change_pct + '%'"></span>
+                    <span class="text-[0.65rem] text-slate-500 uppercase tracking-wider" x-text="snapshot.range"></span>
+                </div>
+            </div>
+            <div class="text-right text-[0.7rem] text-slate-400 shrink-0" x-show="snapshot.technicals.trend">
+                <div class="uppercase tracking-wider text-slate-500">Trend</div>
+                <div class="font-semibold"
+                     :class="snapshot.technicals.trend === 'bullish' ? 'text-emerald-400' : 'text-rose-400'"
+                     x-text="snapshot.technicals.trend"></div>
+            </div>
+        </div>
+
+        <!-- Range tabs -->
+        <div class="flex gap-1 mt-3 shrink-0">
+            <template x-for="r in ranges" :key="r">
+                <button @click="setRange(r)"
+                        class="px-2.5 py-1 rounded-lg text-[0.7rem] font-semibold uppercase tracking-wide transition-colors"
+                        :class="r === snapshot.range
+                            ? 'bg-white/15 text-white'
+                            : 'text-slate-400 hover:text-white hover:bg-white/5'"
+                        x-text="r"></button>
+            </template>
+            <span x-show="loading" class="ml-2 self-center text-[0.7rem] text-slate-400">loading…</span>
+        </div>
+
+        <!-- Chart -->
+        <div class="relative mt-2 h-[170px] shrink-0">
+            <canvas x-ref="canvas"></canvas>
+        </div>
+
+        <!-- Technicals + fundamentals -->
+        <div class="grid grid-cols-2 gap-4 mt-3 overflow-y-auto flex-grow text-[0.72rem]">
+            <div>
+                <div class="text-[0.62rem] uppercase tracking-wider text-slate-500 mb-1.5">Technicals</div>
+                <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+                    <template x-for="row in technicalRows()" :key="row.label">
+                        <template x-if="row.value !== null && row.value !== undefined">
+                            <div class="contents">
+                                <span class="text-slate-400 truncate" x-text="row.label"></span>
+                                <span class="text-right tabular-nums font-medium"
+                                      :class="row.tone" x-text="row.value"></span>
+                            </div>
+                        </template>
+                    </template>
+                </div>
+            </div>
+            <div>
+                <div class="text-[0.62rem] uppercase tracking-wider text-slate-500 mb-1.5">Fundamentals</div>
+                <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+                    <template x-for="row in fundamentalRows()" :key="row.label">
+                        <template x-if="row.value !== null && row.value !== undefined && row.value !== ''">
+                            <div class="contents">
+                                <span class="text-slate-400 truncate" x-text="row.label"></span>
+                                <span class="text-right tabular-nums font-medium"
+                                      :class="row.tone" x-text="row.value"></span>
+                            </div>
+                        </template>
+                    </template>
+                </div>
+                <div x-show="!hasFundamentals()" class="text-slate-500 italic">Not available for this symbol.</div>
+            </div>
+        </div>
+    </div>
+    """
+
+
+WIDGET_RENDERERS = {
+    "checklist": render_checklist,
+    "clock": render_clock,
+    "notes": render_notes,
+    "iframe_app": render_iframe_app,
+    "mini_music_player": render_mini_music_player,
+    "youtube_player": render_youtube_player,
+    "data_card": render_data_card,
+    "image": render_image,
+    "chart": render_chart,
+    "stock_card": render_stock_card,
+}
+
 def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
     """Factory function to route widget creation."""
-    if widget_type == "checklist":
-        return render_checklist(widget_id, config)
-    elif widget_type == "clock":
-        return render_clock(widget_id, config)
-    elif widget_type == "notes":
-        return render_notes(widget_id, config)
-    elif widget_type == "iframe_app":
-        return render_iframe_app(widget_id, config)
-    elif widget_type == "mini_music_player":
-        return render_mini_music_player(widget_id, config)
-    elif widget_type == "youtube_player":
-        return render_youtube_player(widget_id, config)
-    else:
-        # Fallback for unknown widgets
-        return f'<div id="{widget_id}" class="widget-container glass-card p-4"><p class="text-red-400">Unknown widget type: {widget_type}</p></div>'
+    if not isinstance(config, dict):
+        config = {}
+    renderer = WIDGET_RENDERERS.get(widget_type)
+    if renderer:
+        return renderer(widget_id, config)
+    # Fallback chain: an unknown type degrades to a data card showing whatever
+    # config the model sent, instead of a dead error card.
+    fallback = dict(config)
+    fallback.setdefault("title", (widget_type or "Widget").replace("_", " ").title())
+    return render_data_card(widget_id, fallback)

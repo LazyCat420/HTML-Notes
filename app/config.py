@@ -11,6 +11,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "data/notes.db")
 LAZY_TOOL_SERVICE_URL = os.getenv("LAZY_TOOL_SERVICE_URL", "http://10.0.0.16:5591")
 TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "http://10.0.0.16:3032")
 MUSIC_PLAYER_URL = os.getenv("MUSIC_PLAYER_URL", "http://10.0.0.16:8002")
+# scraper-service backs web_search/read_page. The tools-api search tools
+# (search_web/search_news/read_web_page) are registered in the gateway catalog
+# with a null endpoint and its python bridge has no interpreter in the image,
+# so they return "Unknown tool" — this is the only working search path.
+SCRAPER_SERVICE_URL = os.getenv("SCRAPER_SERVICE_URL", "http://10.0.0.16:8001")
 
 
 
