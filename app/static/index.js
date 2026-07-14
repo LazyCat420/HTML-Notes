@@ -507,7 +507,17 @@ document.addEventListener("DOMContentLoaded", () => {
         // Strip legacy dataset listener tags that were serialized to HTML
         const allElements = temp.querySelectorAll('[data-has-listener]');
         allElements.forEach(el => el.removeAttribute('data-has-listener'));
-        
+
+        // crt-on/crt-off are transient power-on/off animation classes. If a
+        // request goes out mid-animation they'd otherwise get baked into the
+        // canvas the server treats as canonical — permanently, since nothing
+        // ever removes a class from server-persisted markup — which then
+        // reads as "this widget changed" on every future diff and forces an
+        // unnecessary (and visibly stutter-y) one-time re-render of it.
+        temp.querySelectorAll('.crt-on, .crt-off').forEach(el => {
+            el.classList.remove('crt-on', 'crt-off');
+        });
+
         return temp.innerHTML;
     }
 
