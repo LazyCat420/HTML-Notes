@@ -253,91 +253,66 @@ async def send_message(req: MessageRequest):
         
         text_lower = req.message.lower().strip()
         text_clean = text_lower.strip()
-        
 
-        # 2. Clock heuristic matching
-        is_clock = "clock" in text_clean
-        has_timezone = any(tz in text_clean for tz in ("in ", "for ", "time ", "zone", "city", "york", "london", "tokyo", "paris", "sydney", "canada"))
-        if is_clock and not has_timezone:
-            async def clock_stream():
-                yield f'data: {{"type": "status", "message": "heuristic-path: spawning clock widget..."}}\n\n'
-                widget_id = f"clock-{uuid.uuid4().hex[:8]}"
-                html_snippet = generate_widget_html("clock", widget_id, {})
-                
+        def spawn_widget_stream(widget_type: str, id_prefix: str, config: dict):
+            """Heuristic fast-path: append a prebuilt widget to the CURRENT canvas
+            and stream back the full canvas — same contract as the agent path, so
+            existing widgets always survive."""
+            async def stream():
                 global latest_canvas_html
-                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
-                target = soup.select_one('#dashboard-grid')
-                if target:
-                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                    target.append(new_elem)
-                    latest_canvas_html = str(soup)
-                
-                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
-                yield f"data: {payload_str}\n\n"
-                yield 'data: {"type": "done"}\n\n'
-            return StreamingResponse(clock_stream(), media_type="text/event-stream")
+                yield f'data: {json.dumps({"type": "status", "message": f"heuristic-path: spawning {widget_type} widget..."})}\n\n'
+                widget_id = f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+                html_snippet = generate_widget_html(widget_type, widget_id, config)
 
-        # 3. Checklist heuristic matching
-        if any(w in text_clean for w in ("checklist", "todo", "to-do", "task list")):
-            async def checklist_stream():
-                yield f'data: {{"type": "status", "message": "heuristic-path: spawning checklist widget..."}}\n\n'
-                widget_id = f"checklist-{uuid.uuid4().hex[:8]}"
-                html_snippet = generate_widget_html("checklist", widget_id, {})
-                
-                global latest_canvas_html
-                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
+                base_html = req.current_canvas or latest_canvas_html or ""
+                soup = BeautifulSoup(base_html, 'html.parser')
                 target = soup.select_one('#dashboard-grid')
-                if target:
-                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                    target.append(new_elem)
-                    latest_canvas_html = str(soup)
-                
-                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
-                yield f"data: {payload_str}\n\n"
-                yield 'data: {"type": "done"}\n\n'
-            return StreamingResponse(checklist_stream(), media_type="text/event-stream")
+                if target is None:
+                    soup = BeautifulSoup('<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
+                    target = soup.select_one('#dashboard-grid')
+                target.append(BeautifulSoup(html_snippet, 'html.parser'))
+                full_canvas = str(soup)
+                latest_canvas_html = full_canvas
 
-        # 4. Music player heuristic matching
-        has_custom_url = "http" in text_clean or "www" in text_clean
-        if any(w in text_clean for w in ("music", "player", "radio")) and not has_custom_url:
-            async def music_stream():
-                yield f'data: {{"type": "status", "message": "heuristic-path: spawning music widget..."}}\n\n'
-                widget_id = f"music-{uuid.uuid4().hex[:8]}"
-                html_snippet = generate_widget_html("mini_music_player", widget_id, {"genre": "lofi"})
-                
-                global latest_canvas_html
-                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
-                target = soup.select_one('#dashboard-grid')
-                if target:
-                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                    target.append(new_elem)
-                    latest_canvas_html = str(soup)
-                
-                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
-                yield f"data: {payload_str}\n\n"
-                yield 'data: {"type": "done"}\n\n'
-            return StreamingResponse(music_stream(), media_type="text/event-stream")
+                # Persist so the canvas survives a page reload
+                database.save_chat_message(
+                    message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                    session_id=req.session_id,
+                    role="assistant",
+                    content=f"\n\n<!--CANVAS_HTML_START-->\n{full_canvas}\n<!--CANVAS_HTML_END-->"
+                )
 
-        # 5. Notes heuristic matching
-        is_searching_notes = "search" in text_clean or "find" in text_clean or "look for" in text_clean
-        if any(w in text_clean for w in ("notes", "notepad", "scratchpad")) and not is_searching_notes:
-            async def notes_stream():
-                yield f'data: {{"type": "status", "message": "heuristic-path: spawning notes widget..."}}\n\n'
-                widget_id = f"notes-{uuid.uuid4().hex[:8]}"
-                html_snippet = generate_widget_html("notes", widget_id, {})
-                
-                global latest_canvas_html
-                soup = BeautifulSoup(latest_canvas_html or "Canvas is empty.", 'html.parser')
-                target = soup.select_one('#dashboard-grid')
-                if target:
-                    new_elem = BeautifulSoup(html_snippet, 'html.parser')
-                    target.append(new_elem)
-                    latest_canvas_html = str(soup)
-                
-                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
-                yield f"data: {payload_str}\n\n"
+                yield f'data: {json.dumps({"type": "component", "content": full_canvas})}\n\n'
                 yield 'data: {"type": "done"}\n\n'
-            return StreamingResponse(notes_stream(), media_type="text/event-stream")
+            return StreamingResponse(stream(), media_type="text/event-stream")
+
+        # Removal/modification intents must reach the agent (canvas_modify_dom) —
+        # never spawn a widget off keywords like "remove the clock".
+        wants_removal = bool(re.search(
+            r'\b(remove|delete|close|hide|clear|dismiss|drop|kill|stop)\b|get rid of', text_clean))
+
+        if not wants_removal:
+            # 2. Clock heuristic matching
+            is_clock = "clock" in text_clean
+            has_timezone = any(tz in text_clean for tz in ("in ", "for ", "time ", "zone", "city", "york", "london", "tokyo", "paris", "sydney", "canada"))
+            if is_clock and not has_timezone:
+                return spawn_widget_stream("clock", "clock", {})
+
+            # 3. Checklist heuristic matching
+            if any(w in text_clean for w in ("checklist", "todo", "to-do", "task list")):
+                return spawn_widget_stream("checklist", "checklist", {})
+
+            # 4. Music player heuristic matching ("youtube player" is a video ask —
+            # leave those to the agent's youtube flow)
+            has_custom_url = "http" in text_clean or "www" in text_clean
+            is_video_ask = any(w in text_clean for w in ("youtube", "video", "yt"))
+            if any(w in text_clean for w in ("music", "player", "radio")) and not has_custom_url and not is_video_ask:
+                return spawn_widget_stream("mini_music_player", "music", {"genre": "lofi"})
+
+            # 5. Notes heuristic matching
+            is_searching_notes = "search" in text_clean or "find" in text_clean or "look for" in text_clean
+            if any(w in text_clean for w in ("notes", "notepad", "scratchpad")) and not is_searching_notes:
+                return spawn_widget_stream("notes", "notes", {})
 
         # Start loading history
 
@@ -376,7 +351,9 @@ async def send_message(req: MessageRequest):
             "3. CREATING AND UPDATING WIDGETS: Use `create_widget` to append widgets and `update_widget` to update them in place. Make sure to define clean HTML, scope all CSS rules, and encapsulate JavaScript scripts securely. Do NOT use inline script events.\n"
             "4. ADDING WIDGETS: You can also use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`.\n"
             "5. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST use `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'`. DO NOT explain your plan.\n"
-            "6. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\n\n"
+            "6. WIDGETS COEXIST: The grid holds many widgets at once. Adding a widget NEVER removes or replaces the others — do not touch existing widgets unless the user explicitly asks to change or remove them.\n"
+            "7. REMOVING WIDGETS: When the user asks to remove/close/hide a widget, find its ID in CURRENT CANVAS STATE above and call `mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove')`. Do not add anything when removing.\n"
+            "8. MODIFYING WIDGETS: Target the specific widget's ID and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'`.\n\n"
             "CANVAS DOM MODIFICATION RULES:\n"
             "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\n\n"
             "2. VAGUE YOUTUBE REQUESTS: If the user asks generally to 'pull up a video' or 'play a youtube video' without specifying a topic or search term, choose a random search query and execute `html_notes_youtube_search` immediately. Do NOT ask for clarification."
@@ -565,14 +542,14 @@ async def send_message(req: MessageRequest):
                         
                         replaced = False
                         if widget_type == "youtube_player":
+                            # Swap only an existing YOUTUBE widget in place ("play X
+                            # instead"). Matching on any iframe replaced unrelated
+                            # widgets (music player, iframe apps) — keep it strict.
                             for div in soup.find_all("div", class_="widget-container"):
                                 xdata = div.get("x-data", "")
                                 div_id = div.get("id", "")
-                                has_iframe = div.find("iframe") is not None
-                                is_youtube = ("youtubePlayerWidget" in xdata or 
-                                              "youtube" in div_id.lower() or 
-                                              "video" in div_id.lower() or 
-                                              has_iframe)
+                                is_youtube = ("youtubePlayerWidget" in xdata or
+                                              "youtube" in div_id.lower())
                                 if is_youtube:
                                     existing_id = div.get("id", widget_id)
                                     html_snippet = generate_widget_html(widget_type, existing_id, config)
