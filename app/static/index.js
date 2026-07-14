@@ -317,15 +317,36 @@ document.addEventListener("DOMContentLoaded", () => {
     // every single mutation — including ones nobody touched — which reset their
     // Alpine state and forced YouTube iframes to reload and the music player to
     // re-init, causing a visible stutter each time any widget was added. This
-    // snapshot (a pristine, pre-Alpine clone of each widget's last-painted node)
-    // lets reconcileCanvas() recognize an untouched widget and leave its live
-    // DOM node — and its in-flight iframe/audio — completely alone.
-    //
-    // Comparison uses isEqualNode(), not a string, because the server re-parses
-    // and re-serializes the WHOLE canvas with BeautifulSoup on every mutation —
-    // an untouched widget's markup can come back with different attribute
-    // quoting/ordering even though nothing about it actually changed.
+    // snapshot lets reconcileCanvas() recognize an untouched widget and leave
+    // its live DOM node — and its in-flight iframe/audio — completely alone.
     const widgetSourceSnapshots = new Map();
+
+    // The client's canvas becomes the server's canonical copy for the next
+    // turn whenever no other turn is in flight (see the backend's
+    // "adopt client canvas" comment) — and what the client has by then is
+    // ALPINE-RENDERED markup: x-text spans have real text in them, x-show
+    // elements carry an inline display:none/"" Alpine set at runtime, and a
+    // bound :href/:src has a concrete resolved attribute alongside it. None
+    // of that exists in the server's own templates, so comparing it against
+    // a pristine (or differently-aged Alpine) render of the same widget
+    // always looks "changed" even when the actual config is identical.
+    // Stripping those volatile, Alpine-owned bits from BOTH sides before
+    // comparing makes the check fair regardless of which side happens to be
+    // pristine vs. already-rendered.
+    function normalizeForComparison(node) {
+        const clone = node.cloneNode(true);
+        [clone, ...clone.querySelectorAll('*')].forEach(el => {
+            if (el.hasAttribute('x-text')) el.textContent = '';
+            if (el.hasAttribute('x-show')) el.removeAttribute('style');
+            Array.from(el.attributes).forEach(attr => {
+                if (attr.name.startsWith(':')) {
+                    const real = attr.name.slice(1);
+                    if (real && real !== 'class' && real !== 'style') el.removeAttribute(real);
+                }
+            });
+        });
+        return clone;
+    }
 
     function reconcileCanvas(container, rawHtml) {
         const clean = DOMPurify.sanitize(rawHtml, CANVAS_DOMPURIFY_CONFIG);
@@ -364,8 +385,8 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             const prevSnapshot = widgetSourceSnapshots.get(id);
-            if (prevSnapshot && prevSnapshot.isEqualNode(newWidget)) {
-                return; // Structurally identical to last paint — leave the live node untouched.
+            if (prevSnapshot && normalizeForComparison(prevSnapshot).isEqualNode(normalizeForComparison(newWidget))) {
+                return; // Same config as last paint — leave the live node untouched.
             }
             widgetSourceSnapshots.set(id, newWidget.cloneNode(true));
 
