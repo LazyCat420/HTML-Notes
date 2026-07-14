@@ -267,9 +267,10 @@ async def stock_snapshot(symbol: str, range_: str = "1mo") -> dict:
         closes = quote.get("close") or []
         volumes = quote.get("volume") or []
 
-        intraday = _STOCK_INTERVALS.get(range_, "1d").endswith("m")
-        long_range = range_ in ("5y", "10y", "max")
-        fmt = "%H:%M" if intraday else ("%b %Y" if long_range else "%b %d")
+        # 5d is intraday too, but a bare "13:30" repeats once per day with nothing
+        # to tell the days apart — it needs the weekday.
+        fmt = {"1d": "%H:%M", "5d": "%a %H:%M"}.get(
+            range_, "%b %Y" if range_ in ("5y", "10y", "max") else "%b %d")
 
         labels, values, vols = [], [], []
         for i, (stamp, close) in enumerate(zip(stamps, closes)):

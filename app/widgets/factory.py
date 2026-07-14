@@ -493,7 +493,7 @@ def render_stock_card(widget_id: str, config: dict) -> str:
     }
 
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[520px] group"
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[620px] group"
          x-data="stockCardWidget({json_escape(snapshot)})">
         <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
@@ -536,12 +536,12 @@ def render_stock_card(widget_id: str, config: dict) -> str:
         </div>
 
         <!-- Chart -->
-        <div class="relative mt-2 h-[170px] shrink-0">
+        <div class="relative mt-2 h-[150px] shrink-0">
             <canvas x-ref="canvas"></canvas>
         </div>
 
         <!-- Technicals + fundamentals -->
-        <div class="grid grid-cols-2 gap-4 mt-3 overflow-y-auto flex-grow text-[0.72rem]">
+        <div class="grid grid-cols-2 gap-5 mt-4 overflow-y-auto flex-grow text-[0.72rem]">
             <div>
                 <div class="text-[0.62rem] uppercase tracking-wider text-slate-500 mb-1.5">Technicals</div>
                 <div class="grid grid-cols-2 gap-x-3 gap-y-1">
