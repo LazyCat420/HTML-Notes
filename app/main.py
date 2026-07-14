@@ -8,27 +8,44 @@ import httpx
 import urllib.parse
 import httpx
 
-async def search_youtube_videos(query: str, limit: int = 5) -> list:
-    """Search YouTube and return a list of video dicts containing video_id and title."""
+async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance") -> list:
+    """Search YouTube and return video dicts with video_id/id, title, and channel.
+
+    order="date" sorts results newest-first (for "latest video from <channel>" asks).
+    """
+    def _unescape(s: str) -> str:
+        try:
+            return json.loads('"' + s + '"')
+        except Exception:
+            return s
+
     try:
         url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
+        if order == "date":
+            url += "&sp=CAI%253D"
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"Accept-Language": "en-US,en;q=0.9"})
             html = resp.text
-            import re
-            matches = re.findall(r'"videoRenderer":\{.*?"videoId":"([a-zA-Z0-9_-]{11})",.*?"title":\{"runs":\[\{"text":"(.*?)"\}\]\}', html)
             results = []
             seen = set()
-            for vid, title in matches:
-                if vid not in seen:
-                    seen.add(vid)
-                    try:
-                        clean_title = json.loads('"' + title + '"')
-                    except Exception:
-                        clean_title = title
-                    results.append({"video_id": vid, "title": clean_title})
-                    if len(results) >= limit:
-                        break
+            for block in html.split('"videoRenderer":')[1:]:
+                vid_match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', block)
+                title_match = re.search(r'"title":\{"runs":\[\{"text":"(.*?)"\}\]', block)
+                channel_match = re.search(r'"longBylineText":\{"runs":\[\{"text":"(.*?)"', block)
+                if not vid_match or not title_match:
+                    continue
+                vid = vid_match.group(1)
+                if vid in seen:
+                    continue
+                seen.add(vid)
+                results.append({
+                    "video_id": vid,
+                    "id": vid,
+                    "title": _unescape(title_match.group(1)),
+                    "channel": _unescape(channel_match.group(1)) if channel_match else None,
+                })
+                if len(results) >= limit:
+                    break
             return results
     except Exception as e:
         logger.error(f"search_youtube_videos error: {e}")
@@ -110,7 +127,7 @@ class MessageRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     current_canvas: Optional[str] = None
-    use_lazy_agent: bool = False
+    use_lazy_agent: bool = True
 
 class CreateNoteRequest(BaseModel):
     title: str
@@ -215,6 +232,10 @@ def is_valid_tool_args(tool_name: str, args: dict) -> bool:
         return bool(args.get("widget_type"))
     if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
         return bool(args.get("css_selector") and args.get("action"))
+    if tool_name == "mcp__lazy-tool-service__create_widget":
+        return bool(args.get("widgetType") and args.get("htmlContent"))
+    if tool_name == "mcp__lazy-tool-service__update_widget":
+        return bool(args.get("widgetId"))
     return False
 
 @app.post("/session/message")
@@ -251,7 +272,8 @@ async def send_message(req: MessageRequest):
                     target.append(new_elem)
                     latest_canvas_html = str(soup)
                 
-                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
+                yield f"data: {payload_str}\n\n"
                 yield 'data: {"type": "done"}\n\n'
             return StreamingResponse(clock_stream(), media_type="text/event-stream")
 
@@ -270,7 +292,8 @@ async def send_message(req: MessageRequest):
                     target.append(new_elem)
                     latest_canvas_html = str(soup)
                 
-                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
+                yield f"data: {payload_str}\n\n"
                 yield 'data: {"type": "done"}\n\n'
             return StreamingResponse(checklist_stream(), media_type="text/event-stream")
 
@@ -290,7 +313,8 @@ async def send_message(req: MessageRequest):
                     target.append(new_elem)
                     latest_canvas_html = str(soup)
                 
-                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
+                yield f"data: {payload_str}\n\n"
                 yield 'data: {"type": "done"}\n\n'
             return StreamingResponse(music_stream(), media_type="text/event-stream")
 
@@ -310,7 +334,8 @@ async def send_message(req: MessageRequest):
                     target.append(new_elem)
                     latest_canvas_html = str(soup)
                 
-                yield f'data: {{"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"}}\n\n'
+                payload_str = json.dumps({"type": "component", "content": html_snippet, "action": "append", "target": "#dashboard-grid"})
+                yield f"data: {payload_str}\n\n"
                 yield 'data: {"type": "done"}\n\n'
             return StreamingResponse(notes_stream(), media_type="text/event-stream")
 
@@ -327,23 +352,33 @@ async def send_message(req: MessageRequest):
         SYSTEM_PROMPT = (
             "You are an agentic OS assistant that manages a live dashboard canvas.\n"
             "CRITICAL: You are a strict TOOL-ONLY JSON agent. You MUST NEVER output any conversational text, thinking process, or explanations. You MUST START your response immediately with the tool call.\n"
-            "If you output any text that is not a tool call, the system will crash.\n\\n"
-            f"CURRENT CANVAS STATE:\\n```markdown\\n{canvas_summary}\\n```\\n\\n"
-            "CANVAS TOOLS:\\n"
-            "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\\n"
-            "- Add a Lego Widget (Checklist, Clock, Notes, Music Player, YouTube Player) → mcp__lazy-tool-service__canvas_add_widget()\\n"
-            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-[UUID]', action='replace' or 'remove')\\n"
-            "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\\n"
-            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\\n"
-            "- Search YouTube for videos → mcp__lazy-tool-service__html_notes_youtube_search(query, limit)\\n\\n"
-            "AGENTIC UI GENERATION RULES:\\n"
-            "1. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\\n"
-            "2. ADDING STANDARD WIDGETS: ALWAYS use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`. For 'iframe_app', use config like `{\\\"url\\\": \\\"http://nas:3000\\\", \\\"title\\\": \\\"App\\\", \\\"icon\\\": \\\"🌐\\\"}`. For 'mini_music_player', use config `{\\\"genre\\\": \\\"jazz\\\", \\\"autoplay\\\": true}`.\\n"
-            "3. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST use `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'`. DO NOT explain your plan. Execute `html_notes_youtube_search` immediately.\\n"
-            "4. ADDING CUSTOM WIDGETS: Only if the user asks for something completely custom, use `mcp__lazy-tool-service__canvas_modify_dom` with `css_selector='#dashboard-grid'` and `action='append'`.\\n"
-            "5. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\\n\\n"
-            "CANVAS DOM MODIFICATION RULES:\\n"
-            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\\n\\n"
+            "If you output any text that is not a tool call, the system will crash.\n\n"
+            f"CURRENT CANVAS STATE:\n```markdown\n{canvas_summary}\n```\n\n"
+            "CANVAS TOOLS:\n"
+            "- Inspect what's on screen → mcp__lazy-tool-service__canvas_read_dom()\n"
+            "- Plan a widget → mcp__lazy-tool-service__plan_widget(widgetType, title, description, proposedLayout)\n"
+            "- Create a widget → mcp__lazy-tool-service__create_widget(widgetType, title, htmlContent, cssContent, jsContent, dependencies, renderTarget)\n"
+            "- Update a widget → mcp__lazy-tool-service__update_widget(widgetId, title, htmlContent, cssContent, jsContent, dependencies, renderPhase)\n"
+            "- Validate HTML → mcp__lazy-tool-service__validate_widget_html(htmlContent, cssContent, jsContent)\n"
+            "- List widget types → mcp__lazy-tool-service__list_widget_types()\n"
+            "- Modify/remove an existing widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#widget-[UUID]', action='replace' or 'remove')\n"
+            "- Search notes → mcp__lazy-tool-service__html_notes_search_notes(query)\n"
+            "- Update a note → mcp__lazy-tool-service__html_notes_get_note(note_id) then mcp__lazy-tool-service__html_notes_update_note()\n"
+            "- Search YouTube for videos → mcp__lazy-tool-service__html_notes_youtube_search(query, limit, order) — pass order='date' for the newest uploads from a channel\n\n"
+            "LIVE DATA TOOLS (for custom widgets):\n"
+            "- Current weather → get_weather(location) / get_weather_forecast(location)\n"
+            "- Time in a city/timezone → get_time_in_timezone(timezone)\n"
+            "- Web lookup → search_web(query), read_web_page(url), search_news(query)\n"
+            "When the user asks for a custom live-data widget (e.g. 'weather in Tokyo'), FIRST fetch the data with these tools, THEN render it: plan_widget → create_widget with the fetched values baked into the HTML.\n\n"
+            "AGENTIC UI GENERATION RULES:\n"
+            "1. PLANNING MANDATORY: Before you call `create_widget`, you MUST ALWAYS first call `plan_widget` with a structured design plan detailing your widget types, behavior, layout, and style. Generation is blocked unless planning succeeds.\n"
+            "2. DASHBOARD GRID SYSTEM: The canvas is a CSS Grid (#dashboard-grid).\n"
+            "3. CREATING AND UPDATING WIDGETS: Use `create_widget` to append widgets and `update_widget` to update them in place. Make sure to define clean HTML, scope all CSS rules, and encapsulate JavaScript scripts securely. Do NOT use inline script events.\n"
+            "4. ADDING WIDGETS: You can also use `mcp__lazy-tool-service__canvas_add_widget(widget_type, widget_id, config)` to spawn pre-built Lego widgets (types: 'checklist', 'clock', 'notes', 'iframe_app', 'mini_music_player', 'youtube_player'). Provide a unique `widget_id`.\n"
+            "5. YOUTUBE VIDEOS: To add a YouTube video, YOU MUST FIRST use `mcp__lazy-tool-service__html_notes_youtube_search(query)`. Look at the results, extract the video_id, and then use `mcp__lazy-tool-service__canvas_add_widget` with `widget_type='youtube_player'`. DO NOT explain your plan.\n"
+            "6. MODIFYING/REMOVING WIDGETS: Target the specific widget's ID and use `mcp__lazy-tool-service__canvas_modify_dom` with `action='replace'` or `action='remove'`.\n\n"
+            "CANVAS DOM MODIFICATION RULES:\n"
+            "1. Use mcp__lazy-tool-service__canvas_modify_dom to update elements. Target elements accurately by their ID.\n\n"
             "2. VAGUE YOUTUBE REQUESTS: If the user asks generally to 'pull up a video' or 'play a youtube video' without specifying a topic or search term, choose a random search query and execute `html_notes_youtube_search` immediately. Do NOT ask for clarification."
         )
 
@@ -357,7 +392,22 @@ async def send_message(req: MessageRequest):
             "mcp__lazy-tool-service__canvas_read_dom",
             "mcp__lazy-tool-service__canvas_add_widget",
             "mcp__lazy-tool-service__canvas_modify_dom",
-            "mcp__lazy-tool-service__html_notes_youtube_search"
+            "mcp__lazy-tool-service__html_notes_youtube_search",
+            "mcp__lazy-tool-service__create_widget",
+            "mcp__lazy-tool-service__update_widget",
+            "mcp__lazy-tool-service__validate_widget_html",
+            "mcp__lazy-tool-service__list_widget_types",
+            "mcp__lazy-tool-service__plan_widget",
+            # Live-data tools served by tools-api (weather, time, web) — used to
+            # feed custom widgets ("weather in Tokyo", "time in Berlin", etc.)
+            "get_weather",
+            "get_weather_forecast",
+            "get_time_in_timezone",
+            "parse_datetime",
+            "search_web",
+            "read_web_page",
+            "search_news",
+            "get_youtube_video"
         ]
 
         # Build messages array — use system role at index 0.
@@ -390,10 +440,32 @@ async def send_message(req: MessageRequest):
 
             messages.append({"role": h["role"], "content": content})
 
-        target_url = PRISM_URL
+        # The lazy-tool-service gateway runs the agentic loop and executes the
+        # mcp__lazy-tool-service__* widget tools; plain Prism has no such
+        # catalog registered, so LazyAgent is the default.
+        target_url = LAZY_AGENT_URL if req.use_lazy_agent else PRISM_URL
 
-        # Build Prism /agent payload — NO tools array (Prism uses its own catalog)
+        # Build /agent payload — NO tools array (the gateway uses its own catalog)
         model_name = req.model
+        if not model_name:
+            # Discover a provider/model pair from the gateway's local catalog so
+            # the provider instance and model always match (e.g. "vllm" serves a
+            # different model than "vllm-2").
+            try:
+                with httpx.Client(timeout=3.0) as client:
+                    resp = client.get(f"{target_url}/config-local")
+                    if resp.status_code == 200:
+                        local_models = resp.json().get("models", {})
+                        for provider_id, provider_models in local_models.items():
+                            for m in provider_models:
+                                if m.get("modelType") == "conversation" and "Tool Calling" in (m.get("tools") or []):
+                                    req.provider = provider_id
+                                    model_name = m.get("name")
+                                    break
+                            if model_name:
+                                break
+            except Exception as e:
+                logger.warning(f"Failed to fetch model catalog from {target_url}: {e}")
         if not model_name:
             req.provider = "vllm"
             try:
@@ -407,16 +479,16 @@ async def send_message(req: MessageRequest):
                 logger.warning(f"Failed to fetch dynamic model from {VLLM_URL}: {e}")
             if not model_name:
                 model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
-        # Sync Prism's settings dynamically so MemoryExtractor doesn't crash on outdated models
+        # Sync the gateway's settings dynamically so MemoryExtractor doesn't crash on outdated models
         try:
             with httpx.Client(timeout=1.0) as client:
-                client.put(f"{PRISM_URL}/settings", json={
+                client.put(f"{target_url}/settings", json={
                     "memory": {
                         "extractionModel": model_name
                     }
                 })
         except Exception as e:
-            logger.warning(f"Failed to sync memory extraction model to Prism: {e}")
+            logger.warning(f"Failed to sync memory extraction model to gateway: {e}")
 
         payload = {
             "provider": req.provider,
@@ -425,7 +497,7 @@ async def send_message(req: MessageRequest):
             "workspaceEnabled": False,
             "enabledTools": enabled_tools,
             "messages": messages,
-            "maxTokens": 512,
+            "maxTokens": 4096,
             "project": "html-notes-client",
             "username": "lazycat",
             "skipConversation": True,
@@ -521,6 +593,106 @@ async def send_message(req: MessageRequest):
                             logger.info(f"[WIDGET INJECTOR] Appended new {widget_type} widget")
                             
                         logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
+                    elif tool_name == "mcp__lazy-tool-service__create_widget":
+                        widget_type = tool_args.get("widgetType", "custom")
+                        title = tool_args.get("title", "Widget")
+                        html_content = tool_args.get("htmlContent", "")
+                        css_content = tool_args.get("cssContent", "")
+                        js_content = tool_args.get("jsContent", "")
+                        
+                        # Generate widget ID
+                        widget_id = f"widget-{uuid.uuid4().hex[:8]}"
+                        
+                        # Scope CSS
+                        scoped_css = ""
+                        if css_content:
+                            rules = []
+                            for rule in css_content.split("}"):
+                                if "{" in rule:
+                                    sel, body = rule.split("{", 1)
+                                    sel = sel.strip()
+                                    if sel and not sel.startswith("@"):
+                                        scoped_sel = ", ".join([f"#{widget_id} {s.strip()}" for s in sel.split(",")])
+                                        rules.append(f"{scoped_sel} {{{body}}}")
+                                    else:
+                                        rules.append(rule + "}")
+                            scoped_css = "\n".join(rules)
+                            
+                        # Wrap content
+                        html_snippet = f"""
+<div id="{widget_id}" class="glass-card canvas-widget" data-widget-type="{widget_type}">
+    <div class="glass-card-title">{title}</div>
+    <style>{scoped_css}</style>
+    <div class="widget-body">{html_content}</div>
+    <script>
+    (function() {{
+        const container = document.getElementById('{widget_id}');
+        {js_content}
+    }})();
+    </script>
+</div>
+"""
+                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                        soup = BeautifulSoup(current_html, 'html.parser')
+                        target = soup.select_one('#dashboard-grid')
+                        if target:
+                            new_elem = BeautifulSoup(html_snippet, 'html.parser')
+                            target.append(new_elem)
+                            all_rendered_html = str(soup)
+                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                        else:
+                            soup.append(BeautifulSoup(html_snippet, 'html.parser'))
+                            all_rendered_html = str(soup)
+                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                        logger.info(f"[WIDGET INJECTOR] Created and appended new {widget_type} widget")
+                        logger.info("[FAST LOOP] Terminating early after create_widget to save latency")
+                    elif tool_name == "mcp__lazy-tool-service__update_widget":
+                        widget_id = tool_args.get("widgetId")
+                        title = tool_args.get("title")
+                        html_content = tool_args.get("htmlContent")
+                        css_content = tool_args.get("cssContent")
+                        js_content = tool_args.get("jsContent")
+                        
+                        current_html = all_rendered_html if all_rendered_html else (req.current_canvas or "")
+                        soup = BeautifulSoup(current_html, 'html.parser')
+                        widget_div = soup.find(id=widget_id)
+                        if widget_div:
+                            if title is not None:
+                                title_el = widget_div.select_one(".glass-card-title")
+                                if title_el:
+                                    title_el.string = title
+                            if html_content is not None:
+                                body_el = widget_div.select_one(".widget-body")
+                                if body_el:
+                                    body_el.clear()
+                                    body_el.append(BeautifulSoup(html_content, 'html.parser'))
+                            if css_content is not None:
+                                style_el = widget_div.select_one("style")
+                                if style_el:
+                                    rules = []
+                                    for rule in css_content.split("}"):
+                                        if "{" in rule:
+                                            sel, body = rule.split("{", 1)
+                                            sel = sel.strip()
+                                            if sel and not sel.startswith("@"):
+                                                scoped_sel = ", ".join([f"#{widget_id} {s.strip()}" for s in sel.split(",")])
+                                                rules.append(f"{scoped_sel} {{{body}}}")
+                                            else:
+                                                rules.append(rule + "}")
+                                    style_el.string = "\n".join(rules)
+                            if js_content is not None:
+                                script_el = widget_div.select_one("script")
+                                if script_el:
+                                    script_el.string = f"""
+                                    (function() {{
+                                        const container = document.getElementById('{widget_id}');
+                                        {js_content}
+                                    }})();
+                                    """
+                            all_rendered_html = str(soup)
+                            yield f'data: {json.dumps({"type": "component", "content": all_rendered_html})}\n\n'
+                            logger.info(f"[WIDGET INJECTOR] Updated widget {widget_id} in-place")
+                        logger.info("[FAST LOOP] Terminating early after update_widget to save latency")
                 except Exception as ex:
                     logger.error(f"Failed to execute canvas mutation: {ex}")
 
@@ -592,7 +764,7 @@ async def send_message(req: MessageRequest):
                                     active_tool_args = args
 
                                     # FAST PATH: Execute immediately when arguments are available!
-                                    if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
+                                    if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget", "mcp__lazy-tool-service__create_widget", "mcp__lazy-tool-service__update_widget"):
                                         if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args) and status in ("calling", "done", "success"):
                                             async for evt in execute_mutation(active_tool_name, active_tool_args):
                                                 yield evt
@@ -1033,10 +1205,17 @@ async def internal_tool_execute(req: InternalToolRequest):
             # Handled by the SSE interceptor on the streaming wrapper, but we return success here as well
             return {"success": True, "message": "Successfully added YouTube widget to canvas."}
 
+        elif t == "create_widget":
+            return {"success": True, "message": "Widget created successfully."}
+
+        elif t == "update_widget":
+            return {"success": True, "message": "Widget updated successfully."}
+
         elif t == "html_notes_youtube_search":
             query = a.get("query", "")
             limit = int(a.get("limit", 5))
-            results = await search_youtube_videos(query, limit=limit)
+            order = a.get("order", "relevance")
+            results = await search_youtube_videos(query, limit=limit, order=order)
             return {"results": results, "count": len(results)}
 
         elif t == "canvas_add_widget":
