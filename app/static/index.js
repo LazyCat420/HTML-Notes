@@ -328,18 +328,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 // Populate chat history panel
                 elements.chatHistoryMessages.innerHTML = "";
                 data.messages.forEach(msg => {
-                    if (msg.content !== "[tool-only turn]") {
-                        appendChatMessageToHistory(msg.role, msg.content);
+                    if (msg.content !== "[tool-only turn]" && (msg.content || "").trim()) {
+                        appendChatMessageToHistory(msg.role, msg.content, Boolean(msg.canvas_html));
                     }
                 });
 
-                // Find the last assistant message
-                const assistantMessages = data.messages.filter(m => m.role === "assistant" && m.content !== "[tool-only turn]");
+                // Restore the canvas from the last assistant message that carried one
+                const assistantMessages = data.messages.filter(m => m.role === "assistant" && (m.canvas_html || m.content !== "[tool-only turn]"));
                 if (assistantMessages.length > 0) {
                     const lastMsg = assistantMessages[assistantMessages.length - 1];
-                    // History content is mixed text+HTML, extract only the visual components
+                    // canvas_html is split out by the server; fall back to parsing
+                    // content for history saved before that change.
                     let temp = document.createElement("div");
-                    temp.innerHTML = lastMsg.content;
+                    temp.innerHTML = lastMsg.canvas_html || lastMsg.content;
                     
                     let gridElement = temp.querySelector("#dashboard-grid");
                     
@@ -516,7 +517,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                     renderDynamicComponents(elements.liveCanvas);
                                     addLogStep("Finished generation.", "✨");
                                     flushSentenceBuffer();
-                                    appendChatMessageToHistory("assistant", fullText + fullComponentHtml);
+                                    appendChatMessageToHistory("assistant", fullText, Boolean(fullComponentHtml));
                                 } else if (data.type === "component") {
                                     addLogStep("Rendered visual component", "🎨");
                                     fullComponentHtml = data.content || "";
@@ -1231,16 +1232,16 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function appendChatMessageToHistory(role, content) {
+    function appendChatMessageToHistory(role, content, canvasUpdated = false) {
         if (!elements.chatHistoryMessages) return;
-        
+
         const messageDiv = document.createElement("div");
         messageDiv.className = `chat-message ${role}`;
-        
+
         if (role === "user") {
             messageDiv.textContent = content;
         } else {
-            messageDiv.innerHTML = formatAssistantChatBubble(content);
+            messageDiv.innerHTML = formatAssistantChatBubble(content, canvasUpdated);
         }
         
         elements.chatHistoryMessages.appendChild(messageDiv);
@@ -1254,13 +1255,15 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.chatHistoryMessages.scrollTop = elements.chatHistoryMessages.scrollHeight;
     }
 
-    function formatAssistantChatBubble(content) {
+    function formatAssistantChatBubble(content, canvasUpdated = false) {
+        // Canvas HTML never belongs in the chat bubble — it renders on the canvas.
+        content = (content || "").replace(/<!--CANVAS_HTML_START-->[\s\S]*?<!--CANVAS_HTML_END-->/g, "");
         let temp = document.createElement("div");
         temp.innerHTML = content;
-        
-        let components = temp.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component, .chart-container");
-        let hasComponent = components.length > 0;
-        
+
+        let components = temp.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component, .chart-container, .dashboard-grid, .system-message, style, script");
+        let hasComponent = components.length > 0 || canvasUpdated;
+
         components.forEach(el => el.remove());
         let cleaned = temp.innerHTML;
         

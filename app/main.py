@@ -1230,11 +1230,24 @@ async def internal_tool_execute(req: InternalToolRequest):
         logger.error(f"Internal tool execution error: {e}")
         return {"error": str(e), "is_error": True}
 
+CANVAS_BLOCK_RE = re.compile(r'<!--CANVAS_HTML_START-->(.*?)<!--CANVAS_HTML_END-->', re.DOTALL)
+
 @app.get("/session/{session_id}/history")
 async def get_session_history(session_id: str):
     try:
         history = database.get_session_messages(session_id)
-        return {"messages": history}
+        # Persisted assistant messages embed the canvas snapshot; split it into
+        # canvas_html so the client shows only text in the chat panel.
+        messages = []
+        for h in history:
+            msg = dict(h)
+            content = msg.get("content") or ""
+            m = CANVAS_BLOCK_RE.search(content)
+            if m:
+                msg["canvas_html"] = m.group(1).strip()
+                msg["content"] = CANVAS_BLOCK_RE.sub("", content).strip()
+            messages.append(msg)
+        return {"messages": messages}
     except Exception as e:
         logger.error(f"Error fetching history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
