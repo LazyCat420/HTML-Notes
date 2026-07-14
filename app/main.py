@@ -347,6 +347,103 @@ async def stock_snapshot(symbol: str, range_: str = "1mo") -> dict:
 stock_history = stock_snapshot
 
 
+# ESPN's scoreboard API is keyless and covers every league we care about. Friendly
+# names → ESPN paths, longest key first so "champions league" beats "league" and
+# "college football" beats "football".
+SPORTS_LEAGUES = {
+    "fifa": "soccer/fifa.world", "world cup": "soccer/fifa.world",
+    "premier league": "soccer/eng.1", "epl": "soccer/eng.1",
+    "champions league": "soccer/uefa.champions", "ucl": "soccer/uefa.champions",
+    "la liga": "soccer/esp.1", "serie a": "soccer/ita.1", "bundesliga": "soccer/ger.1",
+    "mls": "soccer/usa.1", "soccer": "soccer/fifa.world",
+    "ufc": "mma/ufc", "mma": "mma/ufc",
+    "nba": "basketball/nba", "basketball": "basketball/nba",
+    "wnba": "basketball/wnba",
+    "college football": "football/college-football",
+    "college basketball": "basketball/mens-college-basketball",
+    "nfl": "football/nfl", "football": "football/nfl",
+    "mlb": "baseball/mlb", "baseball": "baseball/mlb",
+    "nhl": "hockey/nhl", "hockey": "hockey/nhl",
+}
+# Longest first so multi-word leagues win over the single word inside them.
+_SPORTS_KEYS = sorted(SPORTS_LEAGUES, key=len, reverse=True)
+
+
+def resolve_league(text: str) -> Optional[str]:
+    lowered = (text or "").lower()
+    for key in _SPORTS_KEYS:
+        if re.search(rf'\b{re.escape(key)}\b', lowered):
+            return SPORTS_LEAGUES[key]
+    return None
+
+
+def _competitor(side: dict) -> dict:
+    """A competitor is a team in team sports and an athlete in MMA/boxing — the
+    'team' key is simply absent for a UFC fight."""
+    team = side.get("team") or {}
+    athlete = side.get("athlete") or {}
+    return {
+        "name": (team.get("displayName") or athlete.get("displayName")
+                 or team.get("shortDisplayName") or athlete.get("shortName") or "TBD"),
+        "abbrev": team.get("abbreviation") or athlete.get("shortName") or "",
+        "logo": team.get("logo") or athlete.get("headshot") or "",
+        "score": side.get("score"),
+        "record": (side.get("records") or [{}])[0].get("summary", ""),
+        "winner": bool(side.get("winner")),
+    }
+
+
+async def sports_scores(league: str) -> dict:
+    """Fixtures and scores for a league. Keyless, sub-second.
+
+    Without this, "fifa scores" had no tool at all: it fell to the agent, which
+    web-searched (a 20-60s scrape) and tried to squeeze the result into a text
+    card. A UFC event nests every fight under one event's `competitions`, so
+    those get flattened into individual matchups alongside team-sport games.
+    """
+    path = resolve_league(league) or SPORTS_LEAGUES.get(league.lower().strip()) or league
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(
+                f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard",
+                headers={"User-Agent": _YAHOO_UA})
+            payload = resp.json()
+    except Exception as e:
+        logger.error(f"sports_scores({league}) error: {e}")
+        return {"error": str(e), "is_error": True}
+
+    info = (payload.get("leagues") or [{}])[0]
+    matchups = []
+    for event in payload.get("events", []):
+        for comp in event.get("competitions", []):
+            sides = comp.get("competitors") or []
+            if len(sides) < 2:
+                continue
+            # ESPN puts home first for team sports; MMA has no home/away at all.
+            away, home = ((sides[1], sides[0]) if sides[0].get("homeAway") == "home"
+                          else (sides[0], sides[1]))
+            status = (comp.get("status") or {}).get("type") or {}
+            matchups.append({
+                "home": _competitor(home),
+                "away": _competitor(away),
+                "state": status.get("state"),           # pre | in | post
+                "detail": status.get("shortDetail"),    # "Final", "7/18 - 5:00 PM EDT", "62'"
+                "completed": bool(status.get("completed")),
+                "note": (comp.get("notes") or [{}])[0].get("headline", ""),
+            })
+
+    if not matchups:
+        return {"error": f"No fixtures found for '{league}'. It may be the off-season.",
+                "is_error": True}
+
+    return {
+        "league": info.get("abbreviation") or info.get("name") or league,
+        "title": info.get("name") or league,
+        "season": (payload.get("season") or {}).get("year"),
+        "events": matchups,
+    }
+
+
 async def read_web_page(url: str, max_chars: int = 6000) -> dict:
     """Fetch and return the readable text of a page."""
     content = await _scrape(url, engine="crawl4ai")
@@ -654,7 +751,36 @@ def extract_music_genre(query_text: str) -> str:
 # Media/data intent guards for the heuristic fast-path. When one of these
 # matches, the request goes to the agent instead of keyword-spawning a widget
 # ("clock for video" is a video ask, not a clock ask).
-VIDEO_ASK_RE = re.compile(r'\b(youtube|video|videos|yt|watch|clip|trailer|movie)\b')
+VIDEO_ASK_RE = re.compile(r'\b(youtube|video|videos|yt|watch|clip|clips|trailer|movie|highlights?)\b')
+
+# A news video must be sorted by DATE. "fifa news video" searched by relevance
+# returns whatever is most-watched for those words — a years-old recap — which is
+# never what "news" means. Recency words flip the search to order='date'.
+RECENCY_RE = re.compile(r'\b(news|latest|recent|recently|today|tonight|breaking|update|updates|current|new)\b')
+
+# Words that describe the medium, not the subject. "fifa news video" should search
+# YouTube for "fifa news", not for the literal word "video".
+VIDEO_FILLER = {
+    "video", "videos", "yt", "youtube", "clip", "clips", "watch", "pull", "up", "show",
+    "me", "a", "an", "the", "of", "some", "play", "find", "get", "please", "for", "on",
+    "give", "want", "see", "put", "add", "open", "stream", "livestream",
+}
+
+
+def clean_video_query(text: str) -> str:
+    """Strip medium words so the search hits the subject.
+    "pull up a fifa news video" → "fifa news"."""
+    cleaned = re.sub(r'[^\w\s]', ' ', (text or '').lower())
+    kept = [w for w in cleaned.split() if w not in VIDEO_FILLER]
+    return " ".join(kept).strip() or (text or "").strip()
+
+
+# Sports fixtures/scores. Without a tool these fell to the agent, which
+# web-searched (20-60s) and tried to squeeze a scoreboard into a text card.
+SCORE_ASK_RE = re.compile(
+    r'\b(scores?|fixtures?|results?|standings?|schedule|matchups?|'
+    r'who\'?s playing|whos playing|playing today|next (game|match|fight)|'
+    r'card|bouts?|fights?)\b')
 DATA_ASK_RE = re.compile(r'\b(news|headlines|weather|forecast|stock|price|chart|graph|image|images|picture|pictures|photo|photos)\b')
 
 # "cnn live news" is a thing to WATCH, but it contains "news", so DATA_ASK_RE
@@ -859,11 +985,43 @@ async def send_message(req: MessageRequest):
         is_video_ask = bool(VIDEO_ASK_RE.search(text_clean))
         is_data_ask = bool(DATA_ASK_RE.search(text_clean))
 
-        # 1. LIVE STREAMS — checked before the data guard, because "cnn live news"
+        wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
+        league = resolve_league(text_clean)
+
+        # 1. SPORTS SCORES — "fifa scores", "ufc card", "who's playing in the nba".
+        #    A scoreboard is structured data, not prose: a text card of headlines
+        #    cannot show you who is playing whom.
+        if (league and not wants_removal and not is_video_ask
+                and (SCORE_ASK_RE.search(text_clean) or text_clean in SPORTS_LEAGUES)):
+            # Resolved before returning so an off-season/empty league falls through
+            # to the agent instead of spawning an empty scoreboard.
+            board = await sports_scores(league)
+            if not board.get("is_error"):
+                return spawn_widget_stream("scoreboard", "scores", board,
+                                           status=f"pulling {board.get('title', 'scores')}...")
+
+        # 2. NEWS VIDEO — "fifa news video". Searched by relevance this returns the
+        #    most-watched clip for those words (a years-old recap); news means the
+        #    NEWEST upload, so sort by date and drop the medium words from the query.
+        if (is_video_ask and RECENCY_RE.search(text_clean)
+                and not wants_removal and not LIVE_ASK_RE.search(text_clean)):
+            query = clean_video_query(req.message)
+            hits = await search_youtube_videos(query, limit=6, order="date")
+            if not hits:
+                hits = await search_youtube_videos(query, limit=6)
+            if hits:
+                top = hits[0]
+                return spawn_widget_stream("youtube_player", "news-video", {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or query,
+                    "query": query,
+                    "candidates": [v["video_id"] for v in hits[1:] if v.get("video_id")],
+                }, status=f"finding the latest '{query}' video...")
+
+        # 3. LIVE STREAMS — checked before the data guard, because "cnn live news"
         #    contains "news" and was being sent down the data_card path (a text
         #    list of headlines) when the user wanted something to watch. "live
         #    music"/"live radio" still belongs to the music player, not YouTube.
-        wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         if LIVE_ASK_RE.search(text_clean) and not wants_removal and not wants_music:
             # Resolved here rather than in a config_builder so that a search miss
             # can still fall through to the agent instead of spawning a dead player.
@@ -939,6 +1097,8 @@ async def send_message(req: MessageRequest):
             "STEP 1 — CLASSIFY INTENT. Every request maps to exactly one output shape:\n"
             "- Play/watch a VIDEO (mentions video, youtube, watch, clip — even combined with other nouns like 'clock video') → html_notes_youtube_search then canvas_add_widget(widget_type='youtube_player')\n"
             "- Watch something LIVE ('cnn live news', 'live stream of X', 'watch bbc live') → html_notes_youtube_search(query, order='live') then canvas_add_widget(widget_type='youtube_player'). This is a VIDEO request even though it says 'news' — the user wants a stream to watch, NOT a data_card of headlines. order='live' is required; a plain search returns recorded clips instead of the stream.\n"
+            "- SPORTS scores/fixtures/results/standings ('fifa scores', 'ufc card', \"who's playing in the nba\") → mcp__lazy-tool-service__html_notes_sports_scores(league) then canvas_add_widget(widget_type='scoreboard', config=<THE WHOLE TOOL RESULT, verbatim>). league takes a friendly name: fifa, world cup, premier league, champions league, la liga, mls, ufc, mma, nba, nfl, mlb, nhl, college football. NEVER web-search for scores and never render them as a data_card — a scoreboard has to show who is playing whom.\n"
+            "- A NEWS video ('fifa news video', 'latest X video') → html_notes_youtube_search(query, order='date') — order='date' is required, because a relevance search returns an old most-watched clip instead of the newest one. Drop words like 'video'/'watch' from the query: search 'fifa news', not 'fifa news video'.\n"
             "- Show DATA (news, recipes, weather, search results, facts, lists) → fetch with data tools, then canvas_add_widget(widget_type='data_card')\n"
             "- Show NUMBERS OVER TIME/CATEGORIES (stock price, trends, comparisons) → fetch data, then canvas_add_widget(widget_type='chart')\n"
             "- Show a PICTURE (what does X look like) → find an image URL, then canvas_add_widget(widget_type='image')\n"
@@ -949,6 +1109,7 @@ async def send_message(req: MessageRequest):
             "- data_card: config={title, subtitle?, icon?, image?, items:[{title, description?, image?, url?, badge?, meta?}]} — one item per headline/recipe/result. Include an item image URL whenever the source data has one. Use config.content (plain text) instead of items for prose answers.\n"
             "- chart: config={title, type:'line'|'bar'|'pie', labels:[...], values:[...]} — for generic numbers ONLY, never for a stock ticker\n"
             "- stock_card: config = the entire result of html_notes_stock_history, passed through unchanged\n"
+            "- scoreboard: config = the entire result of html_notes_sports_scores, passed through unchanged\n"
             "- image: config={title, url, caption?} or {title, images:[{url, caption?}]}\n"
             "- youtube_player: config={video_id, title} — video_id MUST come from html_notes_youtube_search results\n"
             "- clock: config={timezone}. checklist: config={title, items:[str]}. notes: config={title, content}. iframe_app: config={url, title}. mini_music_player: config={genre, autoplay} e.g. {\"genre\": \"reggae\", \"autoplay\": true}\n"
@@ -1003,6 +1164,7 @@ async def send_message(req: MessageRequest):
             "mcp__lazy-tool-service__html_notes_web_search",
             "mcp__lazy-tool-service__html_notes_read_page",
             "mcp__lazy-tool-service__html_notes_stock_history",
+            "mcp__lazy-tool-service__html_notes_sports_scores",
         ]
 
         # Build messages array — use system role at index 0.
@@ -1892,6 +2054,9 @@ async def internal_tool_execute(req: InternalToolRequest):
 
         elif t == "html_notes_stock_history":
             return await stock_snapshot(a.get("symbol", ""), a.get("range", "1mo"))
+
+        elif t == "html_notes_sports_scores":
+            return await sports_scores(a.get("league", ""))
 
         elif t == "canvas_add_widget":
             # The actual injection to the frontend is handled by the SSE interceptor during 'calling' phase.

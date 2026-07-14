@@ -576,8 +576,99 @@ def render_stock_card(widget_id: str, config: dict) -> str:
     """
 
 
+def render_scoreboard(widget_id: str, config: dict) -> str:
+    """Fixtures/scores widget. Contract: the full result of html_notes_sports_scores
+    — {league, title, season, events:[{home, away, state, detail, note}]}.
+
+    Server-rendered with the data baked in: widget <script> tags never execute
+    through innerHTML, so anything that fetched client-side would render a dead
+    "Loading..." shell.
+    """
+    title = config.get("title") or config.get("league") or "Scores"
+    events = config.get("events") or []
+
+    def side_row(side: dict, live: bool, opponent_won: bool) -> str:
+        name = esc(side.get("name") or "TBD")
+        logo = side.get("logo") or ""
+        score = side.get("score")
+        record = side.get("record") or ""
+        won = side.get("winner")
+
+        # A loser in a finished game is dimmed so a scanning eye lands on the
+        # winner without having to compare two numbers.
+        name_cls = "text-white font-semibold" if (won or not opponent_won) else "text-slate-400"
+        score_cls = ("text-white font-bold" if won or live else
+                     "text-slate-400 font-semibold" if opponent_won else "text-white font-semibold")
+
+        badge = (f'<img src="{esc(logo)}" alt="" loading="lazy" class="w-6 h-6 object-contain shrink-0">'
+                 if logo else
+                 f'<div class="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0">'
+                 f'<span class="text-[0.55rem] font-bold text-white/70">{esc((side.get("abbrev") or name)[:3].upper())}</span></div>')
+
+        record_html = (f'<span class="text-[0.6rem] text-slate-500 ml-1.5">{esc(record)}</span>'
+                       if record else "")
+
+        return f"""
+            <div class="flex items-center justify-between gap-2 py-0.5">
+                <div class="flex items-center gap-2 min-w-0">
+                    {badge}
+                    <span class="text-[0.8rem] truncate {name_cls}">{name}</span>
+                    {record_html}
+                </div>
+                <span class="text-sm tabular-nums shrink-0 {score_cls}">{esc(score if score not in (None, "") else "—")}</span>
+            </div>
+        """
+
+    cards = []
+    for event in events:
+        home = event.get("home") or {}
+        away = event.get("away") or {}
+        state = event.get("state")
+        live = state == "in"
+        final = state == "post"
+        detail = event.get("detail") or ""
+        note = event.get("note") or ""
+
+        if live:
+            status_html = (f'<span class="flex items-center gap-1.5 text-[0.62rem] font-bold uppercase tracking-wider text-rose-400">'
+                           f'<span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>{esc(detail or "Live")}</span>')
+        else:
+            tone = "text-slate-500" if final else "text-sky-300"
+            status_html = (f'<span class="text-[0.62rem] font-semibold uppercase tracking-wider {tone}">'
+                           f'{esc(detail or ("Final" if final else "Scheduled"))}</span>')
+
+        note_html = (f'<div class="text-[0.6rem] text-slate-500 truncate mt-0.5">{esc(note)}</div>'
+                     if note else "")
+
+        cards.append(f"""
+            <li class="rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] transition-colors p-2.5">
+                <div class="flex items-center justify-between mb-1.5">
+                    {status_html}
+                    {note_html}
+                </div>
+                {side_row(away, live, bool(home.get("winner")))}
+                {side_row(home, live, bool(away.get("winner")))}
+            </li>
+        """)
+
+    body = ("".join(cards) if cards else
+            '<li class="text-slate-400 text-xs italic text-center py-6">No fixtures — likely the off-season.</li>')
+
+    subtitle = f"{len(events)} matchup{'s' if len(events) != 1 else ''}"
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container scoreboard col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(title, "sports_soccer", subtitle)}
+        <ul class="flex flex-col gap-1.5 p-3 overflow-y-auto flex-grow custom-scrollbar">
+            {body}
+        </ul>
+    </div>
+    """
+
+
 WIDGET_RENDERERS = {
     "checklist": render_checklist,
+    "scoreboard": render_scoreboard,
     "clock": render_clock,
     "notes": render_notes,
     "iframe_app": render_iframe_app,
