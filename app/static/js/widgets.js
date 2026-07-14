@@ -1,5 +1,24 @@
 // Global Alpine.js widget registry for the Smart Dashboard Lego System
 
+// The mix endpoint has two pipelines: type=genre asks an LLM to discover
+// artists for a genre (slow, and wrong for a proper noun like "Oasis" — the
+// LLM has nothing to discover, it just burns 10-20s before falling through).
+// type=artist tries a direct YouTube search first and only calls the LLM if
+// that comes up short, so anything that isn't a recognized genre word should
+// go through it instead.
+const KNOWN_MUSIC_GENRES = new Set([
+    'lofi', 'lo-fi', 'jazz', 'reggae', 'rock', 'pop', 'hiphop', 'hip-hop', 'rap',
+    'classical', 'edm', 'techno', 'ambient', 'blues', 'country', 'metal', 'indie',
+    'electronic', 'funk', 'soul', 'disco', 'folk', 'punk', 'house', 'trance',
+    'dubstep', 'kpop', 'k-pop', 'rnb', 'r&b', 'instrumental', 'chill', 'acoustic',
+    'gospel', 'latin', 'salsa', 'reggaeton', 'afrobeat', 'synthwave', 'vaporwave',
+    'workout', 'study', 'sleep', 'party', 'romantic', 'oldies', 'grunge', 'ska',
+]);
+
+function isKnownMusicGenre(term) {
+    return (term || '').toLowerCase().split(/\s+/).some(w => KNOWN_MUSIC_GENRES.has(w));
+}
+
 // Loads the YouTube IFrame API once. It is the only way to detect
 // "Video unavailable" / embed-blocked errors (codes 100/101/150) so the
 // player widget can auto-advance to an embeddable alternative.
@@ -357,9 +376,10 @@ document.addEventListener('alpine:init', () => {
                 // "jazz music takes forever" delay: the widget shell renders
                 // immediately and then sits on "Searching signals..." until this
                 // resolves. The mix alone is enough to start playing.
+                const mixType = isKnownMusicGenre(ytGenre) ? 'genre' : 'artist';
                 const localPromise = fetchJson(`http://${host}:8002/api/tracks`, 8000);
                 const ytPromise = fetchJson(
-                    `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=genre`, 15000);
+                    `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=${mixType}`, 15000);
 
                 const matchesGenre = (t) => {
                     if (!this.genreFilter) return true;

@@ -312,6 +312,80 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let lastRenderedComponentHtml = null;
 
+    // Every `component` event carries the FULL canvas, not a diff. Assigning it
+    // straight to innerHTML tore down and recreated every widget's DOM node on
+    // every single mutation — including ones nobody touched — which reset their
+    // Alpine state and forced YouTube iframes to reload and the music player to
+    // re-init, causing a visible stutter each time any widget was added. This
+    // snapshot lets reconcileCanvas() recognize "this widget's markup is byte-
+    // identical to what we last painted" and leave its live DOM node (and
+    // in-flight iframe/audio) completely alone.
+    const widgetSourceSnapshots = new Map();
+
+    function reconcileCanvas(container, rawHtml) {
+        const clean = DOMPurify.sanitize(rawHtml, CANVAS_DOMPURIFY_CONFIG);
+        const doc = new DOMParser().parseFromString(clean, 'text/html');
+
+        let grid = container.querySelector('#dashboard-grid');
+        if (!grid) {
+            container.innerHTML = '<div id="dashboard-grid" class="dashboard-grid"></div>';
+            grid = container.querySelector('#dashboard-grid');
+        }
+
+        // The very first widget in a session can arrive without a #dashboard-grid
+        // wrapper (nothing existed yet for the server to append into) — fall back
+        // to any widget-container found anywhere in the parsed document.
+        const sourceRoot = doc.querySelector('#dashboard-grid') || doc.body;
+        const newWidgets = Array.from(sourceRoot.querySelectorAll('.widget-container'));
+        const newIds = new Set(newWidgets.map(w => w.id).filter(Boolean));
+
+        // The server dropped a widget (explicit remove) — take it off the live canvas.
+        Array.from(grid.querySelectorAll('.widget-container')).forEach(existing => {
+            if (existing.id && !newIds.has(existing.id)) {
+                widgetSourceSnapshots.delete(existing.id);
+                existing.remove();
+            }
+        });
+
+        let changed = false;
+        newWidgets.forEach(newWidget => {
+            const id = newWidget.id;
+            const freshHtml = newWidget.outerHTML;
+
+            // No id to key on — safest to treat as new content every time.
+            if (!id) {
+                grid.appendChild(newWidget);
+                changed = true;
+                return;
+            }
+
+            if (widgetSourceSnapshots.get(id) === freshHtml) {
+                return; // Unchanged since last paint — leave the live node untouched.
+            }
+            widgetSourceSnapshots.set(id, freshHtml);
+
+            const existing = grid.querySelector(`#${CSS.escape(id)}`);
+            if (existing) {
+                existing.replaceWith(newWidget);
+            } else {
+                grid.appendChild(newWidget);
+            }
+            changed = true;
+        });
+
+        grid.style.removeProperty('min-height');
+        return changed;
+    }
+
+    // Called after a one-off full-canvas paint (page load / history restore) so
+    // the NEXT reconcileCanvas() call knows these widgets are already up to date
+    // instead of treating every one of them as new (and stutter-replacing them).
+    function seedWidgetSnapshots(container) {
+        container.querySelectorAll('.widget-container').forEach(w => {
+            if (w.id) widgetSourceSnapshots.set(w.id, w.outerHTML);
+        });
+    }
+
     const CANVAS_DOMPURIFY_CONFIG = {
         // 'script' is allowed because custom create_widget widgets carry their
         // behavior inline; the canvas already trusts Alpine attrs (@click,
@@ -346,8 +420,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         lastRenderedComponentHtml = componentHtml;
-        elements.liveCanvas.innerHTML = DOMPurify.sanitize(componentHtml, CANVAS_DOMPURIFY_CONFIG);
-        return true;
+        return reconcileCanvas(elements.liveCanvas, componentHtml);
     }
 
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
@@ -385,6 +458,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         });
                         
                         elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, CANVAS_DOMPURIFY_CONFIG);
+                        seedWidgetSnapshots(elements.liveCanvas);
                         renderDynamicComponents(elements.liveCanvas);
                     } else {
                         // Fallback for older saved history without #dashboard-grid
@@ -398,6 +472,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         
                         if (htmlOnly) {
                             elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, CANVAS_DOMPURIFY_CONFIG)}</div>`;
+                            seedWidgetSnapshots(elements.liveCanvas);
                             renderDynamicComponents(elements.liveCanvas);
                         }
                     }

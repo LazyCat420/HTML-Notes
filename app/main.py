@@ -1111,13 +1111,14 @@ async def send_message(req: MessageRequest):
             if is_clock and not has_timezone:
                 return spawn_widget_stream("clock", "clock", {})
 
-            # 3. Music
+            # 3. Music — asking for a music widget always means "start playing
+            # it", so autoplay unconditionally instead of requiring the word
+            # "play" in the request.
             has_custom_url = "http" in text_clean or "www" in text_clean
             if re.search(r'\b(music|player|radio)\b', text_clean) and not has_custom_url:
                 genre = extract_music_genre(req.message) or "lofi"
-                wants_playback = bool(re.search(r'\bplay(ing)?\b', text_clean))
                 return spawn_widget_stream("mini_music_player", "music",
-                                           {"genre": genre, "autoplay": wants_playback})
+                                           {"genre": genre, "autoplay": True})
 
             # 4. LISTS — checked BEFORE notes, so "notes for a grocery list" is a
             #    list, not a blank notepad. A list always gets real items written
@@ -1461,7 +1462,12 @@ async def send_message(req: MessageRequest):
                                     config.setdefault("query", search_q)
                                 except Exception as se:
                                     logger.warning(f"candidate enrichment failed: {se}")
-                        
+
+                        # A music widget is always meant to be listened to —
+                        # don't rely on the model remembering to set autoplay.
+                        if widget_type == "mini_music_player":
+                            config["autoplay"] = True
+
                         def _add(soup):
                             replaced = False
                             # Media widgets (video, music) are players: a new one
