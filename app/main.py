@@ -452,7 +452,9 @@ async def send_message(req: MessageRequest):
             # the provider instance and model always match (e.g. "vllm" serves a
             # different model than "vllm-2").
             try:
-                with httpx.Client(timeout=3.0) as client:
+                # /config-local probes each vLLM instance and takes ~3s itself,
+                # so the client timeout must sit well above that.
+                with httpx.Client(timeout=10.0) as client:
                     resp = client.get(f"{target_url}/config-local")
                     if resp.status_code == 200:
                         local_models = resp.json().get("models", {})
@@ -467,7 +469,9 @@ async def send_message(req: MessageRequest):
             except Exception as e:
                 logger.warning(f"Failed to fetch model catalog from {target_url}: {e}")
         if not model_name:
-            req.provider = "vllm"
+            # VLLM_URL is Gold Spark (10.0.0.141), registered as provider
+            # "vllm-2" in the gateway — the pair must match or the gateway
+            # 404s with "model does not exist" on the wrong instance.
             try:
                 with httpx.Client(timeout=2.0) as client:
                     resp = client.get(f"{VLLM_URL}/v1/models")
@@ -475,9 +479,12 @@ async def send_message(req: MessageRequest):
                         models_data = resp.json().get("data", [])
                         if models_data:
                             model_name = models_data[0].get("id")
+                            req.provider = "vllm-2"
             except Exception as e:
                 logger.warning(f"Failed to fetch dynamic model from {VLLM_URL}: {e}")
             if not model_name:
+                # Last resort: the Jetson instance/model pair.
+                req.provider = "vllm"
                 model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
         # Sync the gateway's settings dynamically so MemoryExtractor doesn't crash on outdated models
         try:
