@@ -1293,6 +1293,17 @@ async def send_message(req: MessageRequest):
             executed_active_tool = False
             executed_mutations: set = set()
 
+            # Once the widget is on screen the turn is, from the user's point of
+            # view, over. Measured: the widget landed at ~8s and the model then
+            # spent another 60s reasoning and re-adding it. So we stop reading the
+            # agent's stream as soon as a canvas mutation commits.
+            #
+            # The exception is a request that asks for more than one thing ("a
+            # clock and a chart") — closing after the first widget would drop the
+            # second, so those are allowed to run the loop out.
+            wants_multiple = bool(re.search(r'\band\b|\balso\b|,|\bthen\b', text_clean))
+            canvas_settled = False
+
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
                 # The model routinely re-emits the same canvas_add_widget a second
@@ -1565,6 +1576,9 @@ async def send_message(req: MessageRequest):
                                         executed_active_tool = True
                                         active_tool_name = None
                                         active_tool_args = {}
+                                        if not wants_multiple:
+                                            canvas_settled = True
+                                            break
 
                                 if event_type == "chunk":
                                     # Text token from LLM
@@ -1595,6 +1609,9 @@ async def send_message(req: MessageRequest):
                                             executed_active_tool = True
                                             active_tool_name = None
                                             active_tool_args = {}
+                                            if not wants_multiple:
+                                                canvas_settled = True
+                                                break
                                         elif status in ("calling", "done", "success", "error"):
                                             active_tool_name = None
                                             active_tool_args = {}
@@ -1615,6 +1632,14 @@ async def send_message(req: MessageRequest):
             except Exception as e:
                 logger.error(f"Prism SSE proxy error: {e}")
                 yield f'data: {json.dumps({"type": "error", "message": f"Connection error: {str(e)}"})}\n\n'
+
+            if canvas_settled:
+                logger.info("[FAST LOOP] Closed agent stream after canvas commit")
+                # We cut the model off before it wrote its closing line, so the chat
+                # bubble would otherwise be empty. The widget IS the answer here.
+                if not final_text.strip():
+                    final_text = "Added it to your canvas."
+                    yield f'data: {json.dumps({"type": "chunk", "content": final_text})}\n\n'
 
             # Save assistant response to DB. Persist the LIVE canvas, not this
             # turn's mirror — a sibling turn may have committed after our last
