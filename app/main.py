@@ -11,6 +11,9 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     """Search YouTube and return video dicts with video_id/id, title, and channel.
 
     order="date" sorts results newest-first (for "latest video from <channel>" asks).
+    order="live" applies YouTube's LIVE filter — the only reliable way to reach an
+    actual stream. A plain search for "cnn live news" returns recorded clips; the
+    filtered one returns "CNN Headlines: 24/7 Live News".
     """
     def _unescape(s: str) -> str:
         try:
@@ -22,6 +25,8 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
         url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
         if order == "date":
             url += "&sp=CAI%253D"
+        elif order == "live":
+            url += "&sp=EgJAAQ%253D%253D"
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"Accept-Language": "en-US,en;q=0.9"})
             html = resp.text
@@ -361,8 +366,10 @@ from app import database
 from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL
 import asyncio
 import datetime
+import itertools
 import json
 import os
+import time
 import uuid
 from bs4 import BeautifulSoup
 from app.widgets.factory import generate_widget_html
@@ -390,9 +397,17 @@ logger = logging.getLogger(__name__)
 # The old design held the lock for a whole turn, which was correct but pinned
 # throughput to one generation at a time.
 _session_canvas: Dict[str, str] = {}
-_session_canvas_version: Dict[str, int] = {}
 _session_locks: Dict[str, asyncio.Lock] = {}
 _session_inflight: Dict[str, int] = {}
+
+# Canvas versions must never go BACKWARDS across a restart. A plain per-session
+# counter starting at 0 looked fine until you redeploy: the browser tab is still
+# open holding canvasVersion=7, the fresh container starts emitting 1, 2, 3 — the
+# client drops every one as stale and the canvas stops painting. The tool ran and
+# the model truthfully says it added the widget, but nothing appears. Seeding from
+# epoch-ms makes every new version beat anything a live tab could be holding.
+_version_counter = itertools.count(int(time.time() * 1000))
+_session_canvas_version: Dict[str, int] = {}
 
 # How many agent turns may generate at once. Beyond this, turns queue.
 AGENT_CONCURRENCY = int(os.getenv("AGENT_CONCURRENCY", "4"))
@@ -416,10 +431,10 @@ def get_session_canvas(session_id: str) -> str:
 
 
 def set_session_canvas(session_id: str, html: str) -> int:
-    """Store the canvas and return its new version."""
+    """Store the canvas and return its new (globally monotonic) version."""
     global _last_active_session
     _session_canvas[session_id] = html
-    version = _session_canvas_version.get(session_id, 0) + 1
+    version = next(_version_counter)
     _session_canvas_version[session_id] = version
     _last_active_session = session_id
     return version
@@ -642,6 +657,14 @@ def extract_music_genre(query_text: str) -> str:
 VIDEO_ASK_RE = re.compile(r'\b(youtube|video|videos|yt|watch|clip|trailer|movie)\b')
 DATA_ASK_RE = re.compile(r'\b(news|headlines|weather|forecast|stock|price|chart|graph|image|images|picture|pictures|photo|photos)\b')
 
+# "cnn live news" is a thing to WATCH, but it contains "news", so DATA_ASK_RE
+# claimed it and the model was told to build a data_card — a text list of
+# headlines, when what was asked for was a stream. Live intent has to outrank the
+# data classification, and it needs YouTube's LIVE filter to land on an actual
+# stream: a plain search for "cnn live news" returns recorded clips, the filtered
+# one returns "CNN Headlines: 24/7 Live News".
+LIVE_ASK_RE = re.compile(r'\b(live|livestream|live ?stream|streaming)\b')
+
 # ── Widget intent routing ───────────────────────────────────────────────────
 #
 # A widget ask has two halves: WHICH widget, and WHAT CONTENT goes inside it.
@@ -836,6 +859,28 @@ async def send_message(req: MessageRequest):
         is_video_ask = bool(VIDEO_ASK_RE.search(text_clean))
         is_data_ask = bool(DATA_ASK_RE.search(text_clean))
 
+        # 1. LIVE STREAMS — checked before the data guard, because "cnn live news"
+        #    contains "news" and was being sent down the data_card path (a text
+        #    list of headlines) when the user wanted something to watch. "live
+        #    music"/"live radio" still belongs to the music player, not YouTube.
+        wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
+        if LIVE_ASK_RE.search(text_clean) and not wants_removal and not wants_music:
+            # Resolved here rather than in a config_builder so that a search miss
+            # can still fall through to the agent instead of spawning a dead player.
+            live_hits = await search_youtube_videos(req.message, limit=6, order="live")
+            if not live_hits:
+                live_hits = await search_youtube_videos(req.message, limit=6)
+            if live_hits:
+                top = live_hits[0]
+                return spawn_widget_stream("youtube_player", "live", {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or req.message,
+                    "query": req.message,
+                    # Label-owned/geo-blocked streams refuse to embed; the player
+                    # hops through these on an embed error.
+                    "candidates": [v["video_id"] for v in live_hits[1:] if v.get("video_id")],
+                }, status="finding a live stream...")
+
         if not wants_removal and not is_video_ask and not is_data_ask:
             is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
             topic = extract_topic(req.message)
@@ -893,6 +938,7 @@ async def send_message(req: MessageRequest):
             f"CURRENT CANVAS STATE:\n```markdown\n{canvas_summary}\n```\n\n"
             "STEP 1 — CLASSIFY INTENT. Every request maps to exactly one output shape:\n"
             "- Play/watch a VIDEO (mentions video, youtube, watch, clip — even combined with other nouns like 'clock video') → html_notes_youtube_search then canvas_add_widget(widget_type='youtube_player')\n"
+            "- Watch something LIVE ('cnn live news', 'live stream of X', 'watch bbc live') → html_notes_youtube_search(query, order='live') then canvas_add_widget(widget_type='youtube_player'). This is a VIDEO request even though it says 'news' — the user wants a stream to watch, NOT a data_card of headlines. order='live' is required; a plain search returns recorded clips instead of the stream.\n"
             "- Show DATA (news, recipes, weather, search results, facts, lists) → fetch with data tools, then canvas_add_widget(widget_type='data_card')\n"
             "- Show NUMBERS OVER TIME/CATEGORIES (stock price, trends, comparisons) → fetch data, then canvas_add_widget(widget_type='chart')\n"
             "- Show a PICTURE (what does X look like) → find an image URL, then canvas_add_widget(widget_type='image')\n"
