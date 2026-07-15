@@ -119,3 +119,36 @@ def test_youtube_player_bakes_candidates_and_query():
     assert "xyz987GHI65" in out and "qrs456JKL21" in out
     assert "2pac i get around" in out
     assert "Watch on YouTube" in out
+
+# ─── Content signature (client reconcile keys on this to avoid widget stutter) ──
+
+def test_every_widget_carries_a_content_signature():
+    # The client reconciler leaves a live widget node (and its playing iframe /
+    # audio) untouched when its data-sig is unchanged, instead of diffing rendered
+    # HTML — which is unreliable once Alpine mutates the DOM. So every widget must
+    # be stamped, on the root element next to its id.
+    for wtype in ("data_card", "youtube_player", "mini_music_player", "clock",
+                  "checklist", "stock_card", "scoreboard", "weather", "chart",
+                  "notes", "image", "iframe_app", "some_unknown_type"):
+        out = generate_widget_html(wtype, f"w-{wtype}", {"title": "X"})
+        assert 'data-sig="' in out, f"{wtype} is missing data-sig"
+        assert f'id="w-{wtype}" data-sig="' in out, f"{wtype} data-sig not on the root"
+
+def test_content_signature_is_stable_and_content_addressed():
+    from app.widgets.factory import _content_sig
+    # Same config (any key order) → same sig → unchanged widget is left alone.
+    a = _content_sig("youtube_player", {"video_id": "abc", "title": "X"})
+    b = _content_sig("youtube_player", {"title": "X", "video_id": "abc"})
+    assert a == b
+    # New content → new sig → the widget correctly re-renders.
+    assert a != _content_sig("youtube_player", {"video_id": "DEF", "title": "X"})
+    # Same config, different widget type → different sig.
+    assert a != _content_sig("chart", {"video_id": "abc", "title": "X"})
+
+def test_singleton_media_sig_changes_when_song_changes():
+    # A new song in the (id-reusing) music player must change the sig so the
+    # client re-renders it; an unrelated re-render with the same genre must not.
+    from app.widgets.factory import _content_sig
+    jazz = _content_sig("mini_music_player", {"genre": "jazz"})
+    assert jazz == _content_sig("mini_music_player", {"genre": "jazz"})
+    assert jazz != _content_sig("mini_music_player", {"genre": "rock"})

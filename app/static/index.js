@@ -529,14 +529,32 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
+            const existing = grid.querySelector(`#${CSS.escape(id)}`);
             const prevSnapshot = widgetSourceSnapshots.get(id);
-            if (prevSnapshot && normalizeForComparison(prevSnapshot).isEqualNode(normalizeForComparison(newWidget))) {
-                return; // Same config as last paint — leave the live node untouched.
-            }
+            // Record what the server just sent as this widget's latest source,
+            // for the next reconcile's fallback comparison.
             widgetSourceSnapshots.set(id, newWidget.cloneNode(true));
 
-            const existing = grid.querySelector(`#${CSS.escape(id)}`);
             if (existing) {
+                // Primary check: the server-stamped content signature. It is
+                // computed from the widget's DATA, so it is immune to Alpine's
+                // post-init DOM rewrites (an inserted <iframe> sibling, merged
+                // :class values) that make a structural HTML compare wrongly
+                // report an untouched widget as "changed" and stutter-replace
+                // its live node. Read the sig off the LIVE node — Alpine never
+                // touches data-* attributes, so it is always the one this
+                // widget was last rendered with.
+                const newSig = newWidget.getAttribute('data-sig');
+                const liveSig = existing.getAttribute('data-sig');
+                if (newSig && liveSig) {
+                    if (newSig === liveSig) return; // unchanged — keep the live node (and its media)
+                } else if (prevSnapshot &&
+                           normalizeForComparison(prevSnapshot).isEqualNode(normalizeForComparison(newWidget))) {
+                    // One side is unsigned (a custom create_widget or a canvas
+                    // saved before signatures existed) — fall back to the
+                    // structural comparison against the previous paint.
+                    return;
+                }
                 existing.replaceWith(newWidget);
             } else {
                 grid.appendChild(newWidget);
@@ -952,11 +970,20 @@ document.addEventListener("DOMContentLoaded", () => {
     function reviveScripts(container) {
         // Scripts injected via innerHTML never execute — recreate each one so
         // the browser runs it. This is what makes create_widget jsContent work.
-        container.querySelectorAll('script').forEach(oldScript => {
+        //
+        // Only revive scripts that have NOT already been revived: this runs over
+        // the whole canvas after every component event, and a widget the
+        // reconciler deliberately preserved still holds its already-run script.
+        // Re-creating (and thus re-executing) it on every new-widget add would
+        // restart whatever it does — a second visible cause of widget stutter.
+        // The data-revived marker rides along on the preserved live node, so its
+        // script is skipped on every subsequent pass.
+        container.querySelectorAll('script:not([data-revived])').forEach(oldScript => {
             const newScript = document.createElement('script');
             for (const attr of oldScript.attributes) {
                 newScript.setAttribute(attr.name, attr.value);
             }
+            newScript.setAttribute('data-revived', '');
             newScript.textContent = oldScript.textContent;
             oldScript.parentNode.replaceChild(newScript, oldScript);
         });
