@@ -1,3 +1,4 @@
+import hashlib
 import html
 import json
 import urllib.parse
@@ -782,15 +783,41 @@ WIDGET_RENDERERS = {
     "weather": render_weather,
 }
 
+def _content_sig(widget_type: str, config: dict) -> str:
+    """A stable fingerprint of what a widget DISPLAYS, from its type + config.
+
+    The client reconciler keys on this to decide "did this widget actually
+    change?" — comparing rendered HTML there is unreliable, because once Alpine
+    runs it rewrites the DOM (x-if inserts a real <iframe> sibling, x-for adds
+    <li>s, :class merges resolved classes) so an untouched widget no longer
+    matches its own pristine server template and gets needlessly replaced, which
+    reloads its iframe / restarts its audio. A signature computed from the DATA
+    is immune to all of that: same config in → same sig → the live node is left
+    alone (and keeps its playing media). Same-typed singletons with new content
+    (a new song, refreshed headlines) get a new sig and correctly re-render.
+    """
+    try:
+        payload = json.dumps(config, sort_keys=True, default=str)
+    except Exception:
+        payload = repr(config)
+    return hashlib.md5(f"{widget_type}\x00{payload}".encode("utf-8")).hexdigest()[:16]
+
+
 def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
     """Factory function to route widget creation."""
     if not isinstance(config, dict):
         config = {}
     renderer = WIDGET_RENDERERS.get(widget_type)
     if renderer:
-        return renderer(widget_id, config)
-    # Fallback chain: an unknown type degrades to a data card showing whatever
-    # config the model sent, instead of a dead error card.
-    fallback = dict(config)
-    fallback.setdefault("title", (widget_type or "Widget").replace("_", " ").title())
-    return render_data_card(widget_id, fallback)
+        html_out = renderer(widget_id, config)
+    else:
+        # Fallback chain: an unknown type degrades to a data card showing whatever
+        # config the model sent, instead of a dead error card.
+        fallback = dict(config)
+        fallback.setdefault("title", (widget_type or "Widget").replace("_", " ").title())
+        html_out = render_data_card(widget_id, fallback)
+    # Stamp the content signature onto the widget root so the client can tell an
+    # unchanged widget from a genuinely changed one without diffing live DOM.
+    marker = f'id="{widget_id}"'
+    sig_attr = f'{marker} data-sig="{_content_sig(widget_type, config)}"'
+    return html_out.replace(marker, sig_attr, 1)

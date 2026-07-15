@@ -2,6 +2,8 @@ import httpx
 import logging
 import re
 import urllib.parse
+import xml.etree.ElementTree as ET
+from html import unescape as _html_unescape
 
 # Needed up here, not in the import block further down: the helper functions
 # below are defined before it, and their annotations are evaluated at def time.
@@ -222,6 +224,186 @@ async def web_search(query: str, limit: int = 6) -> list:
 
     logger.error(f"[SEARCH] every engine failed for {query!r}")
     return []
+
+
+# ─────────────────────────── NEWS ───────────────────────────
+# Real, current headlines with real photos. A bare "news" ask used to run
+# web_search("top stories news"), and DuckDuckGo answers that with news-org
+# HOMEPAGES — nbcnews.com / nytimes.com / news.google.com landing pages whose
+# "snippet" describes the organization, never today's stories. That is exactly
+# the static-looking card the user complained about.
+#
+# GDELT's keyless Doc API is built for this: it returns each story's REAL
+# article URL, its social image (the article's og:image), the publisher domain,
+# and a timestamp — so a card can show a photo and link to the actual story.
+# Google News RSS is the fallback (real dated headlines, but its links are
+# redirects that never resolve to the article, so no article photo is reachable
+# — the publisher favicon stands in). The old web_search is the last resort.
+
+_GDELT_DOC = "https://api.gdeltproject.org/api/v2/doc/doc"
+_OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', re.I)
+_OG_DESC_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\'](?:og:description|description)["\']'
+    r'[^>]+content=["\']([^"\']+)', re.I)
+
+
+def _norm_title_key(title: str) -> str:
+    """Collapse a headline to a dedupe key. GDELT returns the same wire story
+    (AP/Reuters) syndicated across a dozen outlets; keying on the lowercased
+    alphanumeric words keeps a single copy."""
+    return " ".join(re.findall(r"[a-z0-9]+", (title or "").lower()))[:90]
+
+
+async def _gdelt_news(topic: str, limit: int) -> list:
+    """GDELT Doc API → [{title, url, image, meta, snippet, date}]. Keyless.
+    A blank topic becomes a broad top-stories query."""
+    topic = (topic or "").strip()
+    if not topic:
+        base = "(breaking OR politics OR world OR business)"
+    elif len(topic.split()) >= 2:
+        # Phrase-match multi-word topics ("artificial intelligence"); a bare
+        # AND of the words pulls in articles that merely mention each somewhere.
+        base = f'"{topic}"'
+    else:
+        base = topic
+    query = f"{base} sourcelang:english"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(_GDELT_DOC, params={
+                "query": query, "mode": "ArtList", "maxrecords": str(limit * 4),
+                "format": "json", "sort": "DateDesc", "timespan": "3d",
+            }, headers={"User-Agent": _BROWSER_UA})
+        # A rate-limited GDELT answers 200/429 with a plain-text body, not JSON.
+        if not resp.text.strip().startswith("{"):
+            return []
+        articles = resp.json().get("articles") or []
+    except Exception as e:
+        logger.warning(f"gdelt news({topic!r}) failed: {e}")
+        return []
+
+    items, seen = [], set()
+    for a in articles:
+        title = (a.get("title") or "").strip()
+        url = a.get("url") or ""
+        if not title or not url:
+            continue
+        key = _norm_title_key(title)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            "title": title,
+            "url": url,
+            "image": a.get("socialimage") or "",
+            "meta": a.get("domain") or _host_of(url),
+            "snippet": "",
+            "date": a.get("seendate") or "",
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+async def _google_news_rss(topic: str, limit: int) -> list:
+    """Fallback headlines from Google News RSS. Real and dated, but the links are
+    Google redirects that don't resolve to the article, so there is no article
+    photo — the publisher favicon is used as a thumbnail instead."""
+    if topic and topic.strip():
+        url = ("https://news.google.com/rss/search?q="
+               + urllib.parse.quote(topic.strip()) + "&hl=en-US&gl=US&ceid=US:en")
+    else:
+        url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": _BROWSER_UA})
+            resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        logger.warning(f"google news rss({topic!r}) failed: {e}")
+        return []
+
+    items, seen = [], set()
+    for it in root.findall(".//item"):
+        title = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        if not title or not link:
+            continue
+        source_el = it.find("{*}source")
+        source = (source_el.text or "").strip() if source_el is not None else ""
+        # Google suffixes the title with " - <Source>". Peel it off so the headline
+        # reads cleanly and the source name lands in the meta, not the title.
+        if source and title.endswith(f" - {source}"):
+            title = title[: -(len(source) + 3)]
+        elif not source and " - " in title:
+            title, source = title.rsplit(" - ", 1)
+        src_url = source_el.get("url") if source_el is not None else ""
+        host = _host_of(src_url) if src_url else ""
+        key = _norm_title_key(title)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            "title": title.strip(),
+            "url": link,
+            "image": (f"https://www.google.com/s2/favicons?domain={host}&sz=128"
+                      if host else ""),
+            "meta": source or host,
+            "snippet": "",
+            "date": it.findtext("pubDate") or "",
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+async def _enrich_news(items: list, timeout: float = 5.0) -> None:
+    """Fill each item's summary (og:description) and, when GDELT had no social
+    image, its photo (og:image), by fetching the real article. Concurrent and
+    best-effort — a slow or blocking site just leaves that item with its title
+    as the summary."""
+    async def one(client: httpx.AsyncClient, item: dict) -> None:
+        try:
+            resp = await client.get(item["url"], headers={"User-Agent": _BROWSER_UA})
+            html = resp.text
+        except Exception:
+            return
+        if not item.get("snippet"):
+            m = _OG_DESC_RE.search(html)
+            if m:
+                item["snippet"] = _html_unescape(m.group(1)).strip()[:400]
+        if not item.get("image"):
+            m = _OG_IMAGE_RE.search(html)
+            if m:
+                item["image"] = _html_unescape(m.group(1)).strip()
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        await asyncio.gather(*(one(client, it) for it in items),
+                             return_exceptions=True)
+
+
+async def news_search(topic: str, limit: int = 6) -> list:
+    """Current headlines with real photos and summaries.
+
+    GDELT first (real article URLs + social images), Google News RSS as a
+    headline-only fallback, generic web search last. Returns
+    [{title, url, image, meta, snippet, date}].
+    """
+    items, source = await _gdelt_news(topic, limit), "gdelt"
+    if not items:
+        items, source = await _google_news_rss(topic, limit), "google-news"
+    if not items:
+        raw = await web_search(f"{topic} news" if topic else "top news headlines", limit)
+        items = [{"title": r.get("title", ""), "url": r.get("url", ""), "image": "",
+                  "meta": _host_of(r.get("url", "")), "snippet": r.get("snippet", ""),
+                  "date": ""} for r in raw]
+        source = "web"
+    # GDELT / DDG expose real article URLs, so enrich them with og:description and
+    # og:image. Google News links are redirects that don't resolve — skip those.
+    if items and source in ("gdelt", "web"):
+        await _enrich_news(items)
+    logger.info(f"[NEWS] {topic!r} → {len(items)} items via {source}")
+    return items
 
 
 STOCK_RANGES = ("1d", "5d", "1mo", "3mo", "6mo", "1y", "5y", "10y", "max")
@@ -1311,29 +1493,32 @@ def extract_location(message: str) -> str:
 
 
 async def build_news_config(message: str) -> dict:
-    """A news data_card whose items carry real summaries, not naked links.
+    """A news data_card of current stories: photo + tightened headline + a 2-3
+    sentence summary per item.
 
-    Web-searches the topic, then a single local-LLM pass rewrites the raw snippets
-    into headline + 2-3 sentence summary pairs, mapped back to their source URLs.
-    Falls back to the raw snippets if the model call fails, so the card is never
-    a wall of links.
+    Pulls real headlines with images via news_search (GDELT → Google News RSS →
+    web search), then a single local-LLM pass rewrites the snippets into
+    summaries mapped back to their sources. Falls back to the raw items if the
+    model call fails, so the card is never a wall of links.
     """
     # extract_topic drops widget/filler words; also drop news-y words so
     # "news about AI" → topic "ai", not a doubled "News: News Ai" title.
     _NEWSY = {"news", "headline", "headlines", "latest", "recent", "breaking",
               "update", "updates", "today", "story", "stories", "about"}
     raw = extract_topic(message)
-    topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip() or "top stories"
-    results = await web_search(f"{topic} news", limit=6)
+    topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip()
+    display = topic or "top stories"
+    results = await news_search(topic, limit=6)
     if not results:
-        return {"title": f"News: {topic}".title()[:60], "icon": "newspaper", "items": []}
+        return {"title": f"News: {display}".title()[:60], "icon": "newspaper", "items": []}
 
     def raw_items():
         return [{
             "title": r.get("title", ""),
             "description": (r.get("snippet") or "")[:300],
             "url": r.get("url", ""),
-            "meta": _host_of(r.get("url", "")),
+            "image": r.get("image", ""),
+            "meta": r.get("meta") or _host_of(r.get("url", "")),
             "badge": "News",
         } for r in results[:6]]
 
@@ -1346,13 +1531,15 @@ async def build_news_config(message: str) -> dict:
         '{"overview": "<one-sentence summary of the whole topic>", '
         '"items": [{"index": <the [N] number of the source>, "title": "<tightened headline>", '
         '"summary": "<2-3 sentence plain-English summary of what happened>"}]}\n'
-        f'Topic: "{topic}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
+        f'Topic: "{display}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
         'Write one entry per distinct story (max 6). Base every summary ONLY on that '
-        "source's text — never invent facts, names, or numbers not present in it.",
+        "source's text — never invent facts, names, or numbers not present in it. If a "
+        "source is only a headline with no body text, keep its summary to a faithful "
+        "one-line restatement of that headline.",
         max_tokens=1000,
     )
     if not data or not isinstance(data.get("items"), list) or not data["items"]:
-        return {"title": f"News: {topic}".title()[:60], "icon": "newspaper", "items": raw_items()}
+        return {"title": f"News: {display}".title()[:60], "icon": "newspaper", "items": raw_items()}
 
     items = []
     for it in data["items"][:6]:
@@ -1363,11 +1550,12 @@ async def build_news_config(message: str) -> dict:
             "title": (it.get("title") or src.get("title") or "")[:140],
             "description": summary[:500] or (src.get("snippet") or "")[:300],
             "url": src.get("url", ""),
-            "meta": _host_of(src.get("url", "")) if src.get("url") else "",
+            "image": src.get("image", ""),
+            "meta": src.get("meta") or (_host_of(src.get("url", "")) if src.get("url") else ""),
             "badge": "News",
         })
     return {
-        "title": f"News: {topic}".title()[:60],
+        "title": f"News: {display}".title()[:60],
         "subtitle": (data.get("overview") or "")[:120],
         "icon": "newspaper",
         "items": items or raw_items(),
@@ -1624,7 +1812,7 @@ async def send_message(req: MessageRequest):
             "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
             "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
             "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
-            "- news, headlines → mcp__lazy-tool-service__html_notes_web_search('<topic> news'), then canvas_add_widget(widget_type='data_card') with one item per story whose 'description' is a 2-3 sentence summary you WRITE from the snippets (call html_notes_read_page on any thin snippet first). Never leave a news item as a title + link with no summary.\n"
+            "- news, headlines, 'top stories' → mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories). It returns a ready data_card config of current stories, each with a photo, a tightened headline and a written summary. Then call canvas_add_widget(widget_type='data_card', config={'news_topic': '<same topic>'}) — the server rehydrates the stories, so do NOT re-type them. Do NOT use html_notes_web_search for news (it returns news-site homepages, not stories, and no photos).\n"
             "- facts, recipes, 'what/when/who is X' → mcp__lazy-tool-service__html_notes_web_search, then canvas_add_widget(widget_type='data_card')\n"
             "- picture of X → canvas_add_widget(widget_type='image')\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
@@ -1663,6 +1851,7 @@ async def send_message(req: MessageRequest):
             # fail against, which is why it kept answering "I couldn't get one".
             "mcp__lazy-tool-service__html_notes_web_search",
             "mcp__lazy-tool-service__html_notes_read_page",
+            "mcp__lazy-tool-service__html_notes_news",
             "mcp__lazy-tool-service__html_notes_stock_history",
             "mcp__lazy-tool-service__html_notes_stock_news",
             "mcp__lazy-tool-service__html_notes_sports_scores",
@@ -1903,6 +2092,17 @@ async def send_message(req: MessageRequest):
                                 # Cache wins: it carries the resolved place label + full forecast,
                                 # config only carried the bare location string the model typed.
                                 config = {**config, **cached}
+                        elif (widget_type == "data_card" and not config.get("items")
+                              and ("news_topic" in config or "topic" in config)):
+                            # A news data_card from html_notes_news: the model names
+                            # the topic, the server supplies the summarized stories
+                            # (with photos) it already fetched and cached.
+                            topic = str(config.get("news_topic", config.get("topic", ""))).strip()
+                            cached = get_cached_tool_result(f"news:{topic}")
+                            if cached:
+                                logger.info(f"[WIDGET INJECTOR] Rehydrated news data_card for {topic!r}")
+                                config = {**cached, **{k: v for k, v in config.items()
+                                                       if v and k not in ("news_topic", "topic")}}
 
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
@@ -2642,6 +2842,15 @@ async def internal_tool_execute(req: InternalToolRequest):
 
         elif t == "html_notes_read_page":
             return await read_web_page(a.get("url", ""), max_chars=int(a.get("max_chars", 6000)))
+
+        elif t == "html_notes_news":
+            # Returns a ready-to-render data_card config (photo + headline +
+            # summary per story). Cached so canvas_add_widget can rehydrate from
+            # just {"news_topic": "..."} instead of the model re-typing every item.
+            topic = (a.get("topic") or a.get("query") or "").strip()
+            config = await build_news_config(topic)
+            cache_tool_result(f"news:{topic}", config)
+            return config
 
         elif t == "html_notes_stock_history":
             result = await stock_snapshot(a.get("symbol", ""), a.get("range", "1mo"))
