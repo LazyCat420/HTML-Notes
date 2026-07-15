@@ -1,5 +1,6 @@
 import httpx
 import logging
+import random
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -1390,6 +1391,29 @@ def clean_video_query(text: str) -> str:
     return " ".join(kept).strip() or (text or "").strip()
 
 
+def pick_varied_video(hits: list, k: int = 5):
+    """Choose a video from the top-`k` results at random, for VARIETY.
+
+    A broad ask ("a cookie recipe video", "funny cats") always returned the same
+    #1 YouTube hit, which is boring on repeat. Picking from the top handful keeps
+    the result relevant (they're all strong matches for the query) while making a
+    second identical ask land on something different. Returns
+    (chosen_hit, other_ids) where other_ids are the remaining results IN RELEVANCE
+    ORDER — so the widget's embed-error fallback still hops to the next-best video,
+    not another random one.
+
+    Deterministic callers (live streams, a named channel) must NOT use this: they
+    want the single canonical result, so they keep indexing hits[0] directly.
+    """
+    if not hits:
+        return None, []
+    pool = hits[: max(1, k)]
+    chosen = random.choice(pool)
+    cid = chosen.get("video_id")
+    others = [v["video_id"] for v in hits if v.get("video_id") and v.get("video_id") != cid]
+    return chosen, others
+
+
 # Sports fixtures/scores. Without a tool these fell to the agent, which
 # web-searched (20-60s) and tried to squeeze a scoreboard into a text card.
 SCORE_ASK_RE = re.compile(
@@ -2014,13 +2038,15 @@ async def send_message(req: MessageRequest):
             hits = await search_youtube_videos(query, limit=6, order="date")
             if not hits:
                 hits = await search_youtube_videos(query, limit=6)
-            if hits:
-                top = hits[0]
+            # Vary among the top few NEWEST clips: still recent (that's what "news"
+            # means), but not the identical video on every repeat ask.
+            top, cands = pick_varied_video(hits, k=3)
+            if top:
                 return spawn_widget_stream("youtube_player", "news-video", {
                     "video_id": top["video_id"],
                     "title": top.get("title") or query,
                     "query": query,
-                    "candidates": [v["video_id"] for v in hits[1:] if v.get("video_id")],
+                    "candidates": cands,
                 }, status=f"finding the latest '{query}' video...")
 
         # 3. LIVE STREAMS — checked before the data guard, because "cnn live news"
@@ -2043,6 +2069,25 @@ async def send_message(req: MessageRequest):
                     # hops through these on an embed error.
                     "candidates": [v["video_id"] for v in live_hits[1:] if v.get("video_id")],
                 }, status="finding a live stream...")
+
+        # 3b. GENERAL VIDEO — a plain "show me a video of X" / "X video" that is
+        #     neither a live stream (handled above, deterministic — bloomberg live
+        #     is always THE stream) nor a dated news clip. Broad topic asks like
+        #     "a cookie recipe video" used to fall through to the agent, which
+        #     picked the #1 hit every time, so a repeat ask replayed the identical
+        #     video. Fast-path it AND vary among the top handful so it stays
+        #     interesting. Music videos keep going to the player, not here.
+        if is_video_ask and not wants_removal and not wants_music:
+            vquery = clean_video_query(req.message)
+            vhits = await search_youtube_videos(vquery, limit=8)
+            top, cands = pick_varied_video(vhits, k=5)
+            if top:
+                return spawn_widget_stream("youtube_player", "video", {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or vquery,
+                    "query": vquery,
+                    "candidates": cands,
+                }, status=f"finding a '{vquery}' video...")
 
         # 4. WEATHER — "weather in Tokyo", "forecast for London", "sf weather".
         #    A real Open-Meteo pull (keyless) rendered as the dedicated weather
