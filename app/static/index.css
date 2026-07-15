@@ -141,10 +141,23 @@ body::after {
 .dashboard-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    grid-auto-rows: minmax(280px, auto);
-    gap: 1.25rem;
+    /* Masonry: a 1px row track + no row-gap lets the inline layout script in
+       index.html give each widget a grid-row span equal to its pixel height
+       (+ a gap), so varying-height widgets pack tightly per column instead of
+       every row stretching to the tallest widget and leaving ugly whitespace.
+       `dense` backfills the holes left by the 2-column-wide widgets. */
+    grid-auto-rows: 1px;
+    grid-auto-flow: row dense;
+    row-gap: 0;
+    column-gap: 1.25rem;
     width: 100%;
     align-content: start;
+}
+/* Until the layout script assigns a row span, keep the widget from stretching
+   the implicit 1px track (which would clip it). It sizes to its own content. */
+.dashboard-grid > .widget-container,
+.dashboard-grid > .glass-card {
+    align-self: start;
 }
 
 .dashboard-grid > div {

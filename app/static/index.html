@@ -81,5 +81,47 @@
     </div>
 
     <script src="index.js?v=3.0"></script>
+    <!-- Masonry layout: pairs with the .dashboard-grid CSS (1px row track). Gives
+         each widget a grid-row span equal to its height so varying-height widgets
+         pack tightly with no whitespace, and reflows as widgets are added, removed
+         or resized. Deliberately standalone (no index.js edits). -->
+    <script>
+    (function () {
+        var GAP = 20; // px vertical gap between stacked widgets
+        function spanFor(el) {
+            var h = Math.ceil(el.getBoundingClientRect().height);
+            if (h > 0) el.style.gridRowEnd = 'span ' + (h + GAP);
+        }
+        function layout() {
+            var grid = document.querySelector('#dashboard-grid');
+            if (!grid) return;
+            grid.querySelectorAll('.widget-container, .glass-card').forEach(spanFor);
+        }
+        window.__masonryLayout = layout;
+        var ro = (typeof ResizeObserver !== 'undefined')
+            ? new ResizeObserver(function (entries) { entries.forEach(function (e) { spanFor(e.target); }); })
+            : null;
+        function observeAll() {
+            var grid = document.querySelector('#dashboard-grid');
+            if (!grid || !ro) return;
+            grid.querySelectorAll('.widget-container, .glass-card').forEach(function (w) {
+                if (!w.__masonryObserved) { w.__masonryObserved = true; ro.observe(w); }
+            });
+        }
+        var pending = null;
+        function schedule() { if (pending) return; pending = requestAnimationFrame(function () { pending = null; observeAll(); layout(); }); }
+        function start() {
+            var lc = document.querySelector('#live-canvas');
+            if (!lc) { setTimeout(start, 300); return; }
+            new MutationObserver(schedule).observe(lc, { childList: true, subtree: true });
+            observeAll(); layout();
+        }
+        if (document.readyState !== 'loading') start();
+        else document.addEventListener('DOMContentLoaded', start);
+        window.addEventListener('resize', layout);
+        // Images/iframes finishing load change widget height — relayout then.
+        window.addEventListener('load', layout);
+    })();
+    </script>
 </body>
 </html>
