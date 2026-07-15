@@ -1027,6 +1027,7 @@ from typing import List, Dict, Any, Optional
 from app import database
 from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL
 import asyncio
+import contextvars
 import datetime
 import hashlib
 import itertools
@@ -1073,6 +1074,50 @@ _session_inflight: Dict[str, int] = {}
 # epoch-ms makes every new version beat anything a live tab could be holding.
 _version_counter = itertools.count(int(time.time() * 1000))
 _session_canvas_version: Dict[str, int] = {}
+
+# Request ARRIVAL order. A media singleton (video/music) swap is a locked
+# read-modify-write, so the last turn to COMMIT wins — but two video asks fired
+# seconds apart can commit out of order (their YouTube scrapes finish at different
+# speeds), and then the OLDER request's video overwrites the newer one ("the video
+# doesn't change until I refresh"). Stamping each media widget with the arrival
+# seq and refusing to replace a widget placed by a NEWER request fixes the order
+# without touching the coexist path (which correctly relies on last-commit-wins).
+# Epoch-ms seeded (like _version_counter) so a container restart still hands out
+# seqs higher than any data-req-seq a live tab could be holding from before it.
+_request_counter = itertools.count(int(time.time() * 1000))
+
+
+def _stamp_media_seq(node, widget_type: str, req_seq: int) -> None:
+    """Stamp a freshly-appended media widget with the request arrival seq so a
+    later-committing OLDER request can't overwrite it (see _place_media_widget)."""
+    if req_seq and widget_type in _MEDIA_WIDGET_MARKERS:
+        root = node.find("div", class_="widget-container")
+        if root is not None:
+            root["data-req-seq"] = str(req_seq)
+
+
+def _place_media_widget(soup, widget_type: str, widget_id: str, config: dict, req_seq: int) -> bool:
+    """Swap the singleton media widget of this type in place, honouring request
+    arrival order. Returns True if it handled the widget (caller should stop),
+    False if there is no existing media widget to replace (caller appends)."""
+    media_div = find_singleton_media_widget(soup, widget_type)
+    if media_div is None:
+        return False
+    try:
+        existing_seq = int(media_div.get("data-req-seq") or 0)
+    except (TypeError, ValueError):
+        existing_seq = 0
+    if req_seq and existing_seq and req_seq < existing_seq:
+        # A newer request already placed a media widget here — don't clobber it
+        # with this older (slower-committing) request's video/track.
+        return True
+    existing_id = media_div.get("id", widget_id)
+    new_node = BeautifulSoup(render_widget(widget_type, existing_id, config), "html.parser")
+    root = new_node.find("div", class_="widget-container")
+    if root is not None and req_seq:
+        root["data-req-seq"] = str(req_seq)
+    media_div.replace_with(new_node)
+    return True
 
 # How many agent turns may generate at once. Beyond this, turns queue.
 AGENT_CONCURRENCY = int(os.getenv("AGENT_CONCURRENCY", "4"))
@@ -1840,6 +1885,11 @@ def is_valid_tool_args(tool_name: str, args: dict) -> bool:
 @app.post("/session/message")
 async def send_message(req: MessageRequest):
     try:
+        # Stamp this request's arrival order so a slower-committing older video
+        # can't overwrite a newer one (see _place_media_widget). Captured as a
+        # local so both nested closures (fast-path _append, agent injector _add)
+        # read the same value regardless of context propagation.
+        req_seq = next(_request_counter)
         # Save user message
         user_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
         database.save_chat_message(
@@ -1878,12 +1928,10 @@ async def send_message(req: MessageRequest):
 
                 def _append(soup):
                     # Media widgets (video, music) are players: a new one replaces
-                    # whatever's already playing instead of stacking a second one.
-                    media_div = find_singleton_media_widget(soup, widget_type)
-                    if media_div is not None:
-                        existing_id = media_div.get("id", widget_id)
-                        media_div.replace_with(BeautifulSoup(
-                            render_widget(widget_type, existing_id, widget_config), 'html.parser'))
+                    # whatever's already playing instead of stacking a second one —
+                    # but only if this request is newer than whatever placed it, so
+                    # a slower older request can't overwrite it.
+                    if _place_media_widget(soup, widget_type, widget_id, widget_config, req_seq):
                         return
 
                     target = soup.select_one('#dashboard-grid')
@@ -1892,8 +1940,10 @@ async def send_message(req: MessageRequest):
                             '<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
-                    target.append(BeautifulSoup(
-                        render_widget(widget_type, widget_id, widget_config), 'html.parser'))
+                    node = BeautifulSoup(
+                        render_widget(widget_type, widget_id, widget_config), 'html.parser')
+                    _stamp_media_seq(node, widget_type, req_seq)
+                    target.append(node)
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
@@ -2436,12 +2486,9 @@ async def send_message(req: MessageRequest):
                             replaced = False
                             # Media widgets (video, music) are players: a new one
                             # replaces whatever's already playing instead of stacking
-                            # up a second player next to it.
-                            media_div = find_singleton_media_widget(soup, widget_type)
-                            if media_div is not None:
-                                existing_id = media_div.get("id", widget_id)
-                                media_div.replace_with(BeautifulSoup(
-                                    render_widget(widget_type, existing_id, config), 'html.parser'))
+                            # up a second player — but request-order-safe, so a slower
+                            # older ask can't overwrite a newer one.
+                            if _place_media_widget(soup, widget_type, widget_id, config, req_seq):
                                 replaced = True
 
                             # A retried tool call with the same widget_id must not
@@ -2459,6 +2506,7 @@ async def send_message(req: MessageRequest):
 
                             snippet = BeautifulSoup(
                                 render_widget(widget_type, widget_id, config), 'html.parser')
+                            _stamp_media_seq(snippet, widget_type, req_seq)
                             target = soup.select_one('#dashboard-grid')
                             if target:
                                 target.append(snippet)
