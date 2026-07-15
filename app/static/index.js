@@ -308,6 +308,12 @@ document.addEventListener("DOMContentLoaded", () => {
     setInterval(checkHealth, 30000);
     updateMuteButtonUI();
 
+    // Prime audio on the first real user interaction so TTS fired off the SSE
+    // stream (or the wake word) isn't rejected by the browser autoplay policy.
+    ["pointerdown", "keydown", "touchstart"].forEach(evt => {
+        window.addEventListener(evt, primeAudioPlayback, { once: true, passive: true });
+    });
+
     // Load history
     loadHistory();
 
@@ -319,6 +325,13 @@ document.addEventListener("DOMContentLoaded", () => {
             updateMuteButtonUI();
             if (state.isMuted) {
                 clearSpeechQueue();
+            } else {
+                // Unmuting is a user gesture: clear any offline latch and prime
+                // audio so playback isn't blocked by autoplay policy. Previously a
+                // tripped failure counter stayed tripped until a page reload, so
+                // toggling mute appeared to do nothing.
+                markTtsHealthy();
+                primeAudioPlayback();
             }
         });
     }
@@ -1615,6 +1628,55 @@ document.addEventListener("DOMContentLoaded", () => {
     const ttsAudioCache = new Map();
     let consecutiveTtsFailures = 0;
     const MAX_TTS_FAILURES = 3;
+    // After MAX_TTS_FAILURES the service is presumed offline, but only for a
+    // cooldown window — otherwise a transient outage kills TTS for the whole
+    // session with no way back short of a page reload (the old latch never
+    // reset, which is why toggling mute "did nothing"). This self-heals.
+    const TTS_COOLDOWN_MS = 30000;
+    let ttsDisabledUntil = 0;
+    // Browsers block Audio.play() until the page has had a user gesture. We prime
+    // on the first interaction so TTS triggered off the SSE stream (or the wake
+    // word) isn't silently rejected by autoplay policy.
+    let audioUnlocked = false;
+    let sharedAudioCtx = null;
+
+    function ttsAvailable() {
+        return !state.isMuted && Date.now() >= ttsDisabledUntil;
+    }
+
+    function markTtsHealthy() {
+        consecutiveTtsFailures = 0;
+        ttsDisabledUntil = 0;
+        setTtsIndicator(false);
+    }
+
+    function markTtsOffline() {
+        ttsDisabledUntil = Date.now() + TTS_COOLDOWN_MS;
+        setTtsIndicator(true);
+    }
+
+    function setTtsIndicator(offline) {
+        if (!elements.btnMute) return;
+        const showOffline = offline && !state.isMuted;
+        elements.btnMute.classList.toggle("tts-offline", showOffline);
+        if (showOffline) {
+            elements.btnMute.title = "Voice unavailable (TTS offline) — retrying…";
+        } else {
+            updateMuteButtonUI();
+        }
+    }
+
+    function primeAudioPlayback() {
+        if (audioUnlocked) return;
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (Ctx) {
+                sharedAudioCtx = sharedAudioCtx || new Ctx();
+                if (sharedAudioCtx.state === "suspended") sharedAudioCtx.resume();
+            }
+        } catch (e) {}
+        audioUnlocked = true;
+    }
 
     function updateMuteButtonUI() {
         if (!elements.btnMute) return;
@@ -1739,8 +1801,9 @@ document.addEventListener("DOMContentLoaded", () => {
             fetchPromise: null
         };
 
-        // Start background fetch immediately unless muted or TTS service down
-        if (!state.isMuted && consecutiveTtsFailures < MAX_TTS_FAILURES) {
+        // Start background fetch immediately unless muted or TTS is in its
+        // offline cooldown (see ttsAvailable — the cooldown self-heals).
+        if (ttsAvailable()) {
             item.status = 'fetching';
             item.fetchPromise = (async () => {
                 try {
@@ -1754,14 +1817,15 @@ document.addEventListener("DOMContentLoaded", () => {
                     item.audioUrl = URL.createObjectURL(blob);
                     item.audio = new Audio(item.audioUrl);
                     item.status = 'ready';
-                    consecutiveTtsFailures = 0;
+                    markTtsHealthy();
                     ttsAudioCache.set(cleanText, { audioUrl: item.audioUrl });
                 } catch (e) {
                     console.error("Background TTS fetch failed:", e);
                     item.status = 'error';
                     consecutiveTtsFailures++;
                     if (consecutiveTtsFailures >= MAX_TTS_FAILURES) {
-                        console.warn("TTS service appears offline. Switching to local silent simulation.");
+                        console.warn(`TTS service appears offline. Pausing TTS ${TTS_COOLDOWN_MS/1000}s, then auto-retrying.`);
+                        markTtsOffline();
                     }
                 }
             })();
@@ -1866,6 +1930,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
 
                 if (item.status === 'ready' && item.audio) {
+                    primeAudioPlayback();
                     currentAudio = item.audio;
                     
                     item.audio.onended = () => {
