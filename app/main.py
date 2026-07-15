@@ -1020,7 +1020,7 @@ async def get_weather(location: str, units: str = "fahrenheit") -> dict:
 
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -1036,7 +1036,8 @@ import pathlib
 import time
 import uuid
 from bs4 import BeautifulSoup
-from app.widgets.factory import generate_widget_html, _host_of
+from app.widgets.factory import generate_widget_html, _host_of, map_document_html, map_payload
+import base64 as _base64
 
 
 logging.basicConfig(level=logging.INFO)
@@ -3207,6 +3208,23 @@ def _redirect_stale_ui_entrypoint():
     # stranded tab is rescued the next time it loads.
     return RedirectResponse(url="/", status_code=307,
                             headers={"Cache-Control": "no-store"})
+
+
+@app.get("/widgets/map", include_in_schema=False)
+def widget_map(d: str = ""):
+    """Standalone Leaflet page for the map widget's <iframe>. The marker data
+    rides in `d` as base64url JSON (built by factory.render_map). Rendered as its
+    own document so its <script> runs — the canvas DOMPurify strips inline scripts,
+    which is why the map is an iframe rather than inline markup."""
+    payload = {"center": {"lat": 39.5, "lon": -98.35}, "zoom": 4, "markers": []}
+    if d:
+        try:
+            raw = _base64.urlsafe_b64decode(d.encode("ascii"))
+            payload = map_payload(json.loads(raw))  # re-sanitise; never trust the URL
+        except Exception as e:
+            logger.warning(f"/widgets/map bad payload: {e}")
+    return HTMLResponse(map_document_html(payload),
+                        headers={"Cache-Control": "public, max-age=3600"})
 
 
 # Mount UI static files at root
