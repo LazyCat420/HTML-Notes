@@ -1699,7 +1699,9 @@ async def build_answer_config(query: str, results: Optional[list] = None,
 
 async def geocode_place(name: str) -> Optional[dict]:
     """Place name -> {lat, lon, resolved} via Open-Meteo's keyless geocoder.
-    Returns None on a miss so the caller can just drop that marker."""
+    Fast and clean but CITY/TOWN-level only — it misses counties, landmarks and
+    event-ish strings. Returns None on a miss; build_map_config retries those
+    through Nominatim (geocode_place_flex)."""
     name = (name or "").strip()
     if len(name) < 2:
         return None
@@ -1712,7 +1714,30 @@ async def geocode_place(name: str) -> Optional[dict]:
                 g = hits[0]
                 return {"lat": g["latitude"], "lon": g["longitude"], "resolved": g.get("name", name)}
     except Exception as e:
-        logger.warning(f"geocode failed for {name!r}: {e}")
+        logger.warning(f"geocode(open-meteo) failed for {name!r}: {e}")
+    return None
+
+
+async def geocode_nominatim(query: str) -> Optional[dict]:
+    """Fallback geocoder (OSM Nominatim) for what Open-Meteo can't resolve —
+    counties, landmarks, 'Butte County California'. Keyless but needs a real
+    User-Agent and is rate-limited to ~1 req/s, so build_map_config calls it
+    SEQUENTIALLY and only for the Open-Meteo misses."""
+    query = (query or "").strip()
+    if len(query) < 2:
+        return None
+    try:
+        async with httpx.AsyncClient(
+                timeout=10.0,
+                headers={"User-Agent": "html-notes-map/1.0 (dashboard widget)"}) as c:
+            r = await c.get("https://nominatim.openstreetmap.org/search",
+                            params={"q": query, "format": "json", "limit": 1})
+            arr = r.json() if r.status_code == 200 else []
+            if arr:
+                return {"lat": float(arr[0]["lat"]), "lon": float(arr[0]["lon"]),
+                        "resolved": (arr[0].get("display_name", query) or query).split(",")[0][:40]}
+    except Exception as e:
+        logger.warning(f"geocode(nominatim) failed for {query!r}: {e}")
     return None
 
 
@@ -1751,34 +1776,42 @@ async def build_map_config(query: str) -> dict:
         'You extract mappable locations from search results. Return ONLY JSON:\n'
         '{"title": "<short map title>", "overview": "<one sentence>", '
         '"region": "<a broad geocodable area to centre on, e.g. \'California\'>", '
-        '"locations": [{"place": "<a SPECIFIC geocodable place: a city/town/landmark, '
-        'never the event name>", "label": "<short marker label>", '
-        '"detail": "<one short line: what/when/how big>"}]}\n\n'
+        '"locations": [{"place": "<the nearest NAMED TOWN or CITY, plus state/country>", '
+        '"label": "<short marker label>", "detail": "<one short line: what/when/how big>"}]}\n\n'
         f'QUERY: "{q}"\n\nSOURCES:\n' + "\n\n".join(src) + '\n\n'
-        'Give up to 12 locations. `place` MUST be a real geocodable location (prefer a '
-        'named town/city near the event over a county). Base everything on the SOURCES; '
-        'do not invent places. If the query is about one place, return one location.',
+        'Give up to 12 locations. CRITICAL: `place` must be a NAMED TOWN or CITY that a '
+        'geocoder can find (e.g. "Chico, California") — NOT a county ("Butte County"), NOT '
+        'the event name ("Park Fire"), NOT a highway or park. If the source only names a '
+        'county or region, pick the largest town in it. Put the descriptive name in `label` '
+        'instead. Base everything on the SOURCES; do not invent places. One place → one location.',
         max_tokens=1100,
     )
 
     locs = (data or {}).get("locations") or []
     locs = [l for l in locs if isinstance(l, dict) and (l.get("place") or "").strip()][:12]
+    # Pass 1: Open-Meteo concurrently (fast, city-level).
     geocoded = await asyncio.gather(*[geocode_place(l.get("place", "")) for l in locs]) if locs else []
 
-    markers = []
-    for l, g in zip(locs, geocoded):
-        if g:
-            markers.append({
-                "lat": g["lat"], "lon": g["lon"],
+    def _marker(l, g):
+        return {"lat": g["lat"], "lon": g["lon"],
                 "label": (l.get("label") or l.get("place") or g["resolved"])[:90],
-                "detail": (l.get("detail") or "")[:180],
-                "color": "#ef4444",
-            })
+                "detail": (l.get("detail") or "")[:180], "color": "#ef4444"}
+
+    markers, misses = [], []
+    for l, g in zip(locs, geocoded):
+        (markers.append(_marker(l, g)) if g else misses.append(l))
+
+    # Pass 2: Nominatim for the misses — sequential (rate limit), bounded, and it
+    # resolves the counties/landmarks Open-Meteo rejected so yield stays high.
+    for l in misses[:6]:
+        g = await geocode_nominatim(l.get("place", ""))
+        if g:
+            markers.append(_marker(l, g))
 
     center = None
     if not markers:
         region = (data or {}).get("region") or q
-        g = await geocode_place(region)
+        g = await geocode_place(region) or await geocode_nominatim(region)
         if g:
             center = {"lat": g["lat"], "lon": g["lon"]}
 
