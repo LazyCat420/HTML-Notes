@@ -708,6 +708,65 @@ def render_scoreboard(widget_id: str, config: dict) -> str:
     """
 
 
+def render_weather(widget_id: str, config: dict) -> str:
+    """Current conditions + 5-day forecast. Config is the get_weather() result:
+    {location, unit, current:{temp,feels_like,humidity,wind,wind_unit,condition,emoji},
+     daily:[{day,hi,lo,emoji}]}. Degrades to a data_card if the data is missing."""
+    cur = config.get("current") or {}
+    if config.get("is_error") or not cur:
+        return render_data_card(widget_id, {
+            "title": "Weather", "icon": "cloud",
+            "content": config.get("error") or "Weather data is unavailable right now.",
+        })
+
+    location = config.get("location", "—")
+    unit = config.get("unit", "°")
+    temp = cur.get("temp")
+    emoji = cur.get("emoji", "")
+    condition = cur.get("condition", "")
+
+    stat_cells = []
+    for label, val in (
+        ("Feels", f"{cur.get('feels_like')}{unit}" if cur.get("feels_like") is not None else None),
+        ("Humidity", f"{cur.get('humidity')}%" if cur.get("humidity") is not None else None),
+        ("Wind", f"{cur.get('wind')} {cur.get('wind_unit','')}" if cur.get("wind") is not None else None),
+    ):
+        if val:
+            stat_cells.append(
+                f'<div class="flex flex-col"><span class="text-[0.6rem] uppercase tracking-wider text-slate-400">{esc(label)}</span>'
+                f'<span class="text-sm font-semibold text-white">{esc(val)}</span></div>')
+
+    day_tiles = []
+    for d in (config.get("daily") or []):
+        hi = d.get("hi")
+        lo = d.get("lo")
+        day_tiles.append(f"""
+            <div class="flex flex-col items-center gap-1 px-2.5 py-2 rounded-xl bg-white/5 border border-white/10 shrink-0 min-w-[3.5rem]">
+                <span class="text-[0.65rem] uppercase tracking-wider text-slate-400">{esc(d.get('day',''))}</span>
+                <span class="text-xl leading-none">{esc(d.get('emoji',''))}</span>
+                <span class="text-xs font-semibold text-white">{esc(hi) if hi is not None else '–'}°</span>
+                <span class="text-[0.65rem] text-slate-400">{esc(lo) if lo is not None else '–'}°</span>
+            </div>
+        """)
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container weather-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-sky-900/70 via-slate-900/70 to-indigo-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(location, "partly_cloudy_day", condition)}
+        <div class="flex items-center justify-between px-6 pt-5 pb-2">
+            <div class="flex flex-col">
+                <span class="text-6xl font-extralight tracking-tighter leading-none">{esc(temp) if temp is not None else '—'}<span class="text-3xl align-top text-slate-300 ml-0.5">{esc(unit)}</span></span>
+                <span class="text-sm text-slate-300 mt-1">{esc(condition)}</span>
+            </div>
+            <span class="text-7xl leading-none drop-shadow-lg">{esc(emoji)}</span>
+        </div>
+        <div class="flex gap-6 px-6 pb-3">{''.join(stat_cells)}</div>
+        <div class="mt-auto px-4 pb-4 pt-2 border-t border-white/10">
+            <div class="flex gap-2 overflow-x-auto custom-scrollbar">{''.join(day_tiles)}</div>
+        </div>
+    </div>
+    """
+
+
 WIDGET_RENDERERS = {
     "checklist": render_checklist,
     "scoreboard": render_scoreboard,
@@ -720,6 +779,7 @@ WIDGET_RENDERERS = {
     "image": render_image,
     "chart": render_chart,
     "stock_card": render_stock_card,
+    "weather": render_weather,
 }
 
 def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:

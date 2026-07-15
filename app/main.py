@@ -1318,7 +1318,12 @@ async def build_news_config(message: str) -> dict:
     Falls back to the raw snippets if the model call fails, so the card is never
     a wall of links.
     """
-    topic = extract_topic(message) or "top stories"
+    # extract_topic drops widget/filler words; also drop news-y words so
+    # "news about AI" → topic "ai", not a doubled "News: News Ai" title.
+    _NEWSY = {"news", "headline", "headlines", "latest", "recent", "breaking",
+              "update", "updates", "today", "story", "stories", "about"}
+    raw = extract_topic(message)
+    topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip() or "top stories"
     results = await web_search(f"{topic} news", limit=6)
     if not results:
         return {"title": f"News: {topic}".title()[:60], "icon": "newspaper", "items": []}
@@ -1618,7 +1623,9 @@ async def send_message(req: MessageRequest):
             "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → mcp__lazy-tool-service__html_notes_stock_news; its 'matches' array gives you tickers to feed into html_notes_stock_history. Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
             "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
             "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
-            "- news, facts, recipes, weather, 'what/when/who is X' → mcp__lazy-tool-service__html_notes_web_search, then canvas_add_widget(widget_type='data_card')\n"
+            "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
+            "- news, headlines → mcp__lazy-tool-service__html_notes_web_search('<topic> news'), then canvas_add_widget(widget_type='data_card') with one item per story whose 'description' is a 2-3 sentence summary you WRITE from the snippets (call html_notes_read_page on any thin snippet first). Never leave a news item as a title + link with no summary.\n"
+            "- facts, recipes, 'what/when/who is X' → mcp__lazy-tool-service__html_notes_web_search, then canvas_add_widget(widget_type='data_card')\n"
             "- picture of X → canvas_add_widget(widget_type='image')\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
