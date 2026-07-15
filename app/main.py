@@ -709,6 +709,134 @@ async def read_web_page(url: str, max_chars: int = 6000) -> dict:
     return {"url": url, "content": content[:max_chars]}
 
 
+# WMO weather-interpretation codes → (label, material-symbols icon, emoji).
+# Open-Meteo returns this integer as `weather_code`. https://open-meteo.com/en/docs
+_WMO_CODES = {
+    0: ("Clear", "clear_day", "☀️"),
+    1: ("Mainly clear", "partly_cloudy_day", "🌤️"),
+    2: ("Partly cloudy", "partly_cloudy_day", "⛅"),
+    3: ("Overcast", "cloud", "☁️"),
+    45: ("Fog", "foggy", "🌫️"), 48: ("Rime fog", "foggy", "🌫️"),
+    51: ("Light drizzle", "rainy", "🌦️"), 53: ("Drizzle", "rainy", "🌦️"),
+    55: ("Heavy drizzle", "rainy", "🌦️"),
+    56: ("Freezing drizzle", "rainy", "🌧️"), 57: ("Freezing drizzle", "rainy", "🌧️"),
+    61: ("Light rain", "rainy", "🌧️"), 63: ("Rain", "rainy", "🌧️"),
+    65: ("Heavy rain", "rainy", "🌧️"),
+    66: ("Freezing rain", "rainy", "🌧️"), 67: ("Freezing rain", "rainy", "🌧️"),
+    71: ("Light snow", "weather_snowy", "🌨️"), 73: ("Snow", "weather_snowy", "❄️"),
+    75: ("Heavy snow", "weather_snowy", "❄️"), 77: ("Snow grains", "weather_snowy", "🌨️"),
+    80: ("Light showers", "rainy", "🌦️"), 81: ("Showers", "rainy", "🌧️"),
+    82: ("Violent showers", "thunderstorm", "⛈️"),
+    85: ("Snow showers", "weather_snowy", "🌨️"), 86: ("Snow showers", "weather_snowy", "❄️"),
+    95: ("Thunderstorm", "thunderstorm", "⛈️"),
+    96: ("Thunderstorm, hail", "thunderstorm", "⛈️"), 99: ("Thunderstorm, hail", "thunderstorm", "⛈️"),
+}
+
+
+def _wmo(code) -> tuple:
+    try:
+        return _WMO_CODES.get(int(code), ("Unknown", "help", "❓"))
+    except (TypeError, ValueError):
+        return ("Unknown", "help", "❓")
+
+
+async def geocode_location(name: str) -> Optional[dict]:
+    """City name → {name, label, latitude, longitude} via Open-Meteo's keyless
+    geocoding API. Returns None if nothing matches."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": name, "count": 1, "language": "en", "format": "json"},
+            )
+            results = resp.json().get("results") or []
+    except Exception as e:
+        logger.warning(f"geocode({name!r}) failed: {e}")
+        return None
+    if not results:
+        return None
+    r = results[0]
+    label = r.get("name", name)
+    parts = [p for p in (label, r.get("admin1"), r.get("country_code")) if p]
+    # dict.fromkeys dedupes "Singapore, Singapore" → "Singapore".
+    return {
+        "name": label,
+        "label": ", ".join(dict.fromkeys(parts)),
+        "latitude": r.get("latitude"),
+        "longitude": r.get("longitude"),
+    }
+
+
+async def get_weather(location: str, units: str = "fahrenheit") -> dict:
+    """Current conditions + 5-day forecast for a place, via Open-Meteo (keyless).
+
+    Geocodes the name, then one forecast call. The returned dict is exactly the
+    weather widget's config; {is_error: True} on any failure so the caller can
+    fall through to the agent instead of rendering a dead card.
+    """
+    place = await geocode_location(location)
+    if not place or place.get("latitude") is None:
+        return {"error": f"Couldn't find a place called '{location}'.", "is_error": True}
+
+    fahrenheit = units != "celsius"
+    unit_sym = "°F" if fahrenheit else "°C"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get("https://api.open-meteo.com/v1/forecast", params={
+                "latitude": place["latitude"],
+                "longitude": place["longitude"],
+                "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min",
+                "temperature_unit": "fahrenheit" if fahrenheit else "celsius",
+                "wind_speed_unit": "mph" if fahrenheit else "kmh",
+                "timezone": "auto",
+                "forecast_days": 5,
+            })
+            data = resp.json()
+    except Exception as e:
+        logger.warning(f"weather({location!r}) failed: {e}")
+        return {"error": f"Couldn't fetch weather for {place['label']}.", "is_error": True}
+
+    def _round(v):
+        return round(v) if isinstance(v, (int, float)) else None
+
+    cur = data.get("current") or {}
+    cur_label, cur_icon, cur_emoji = _wmo(cur.get("weather_code"))
+    daily = data.get("daily") or {}
+    dates = daily.get("time") or []
+    codes = daily.get("weather_code") or []
+    highs = daily.get("temperature_2m_max") or []
+    lows = daily.get("temperature_2m_min") or []
+    days = []
+    for i, d in enumerate(dates[:5]):
+        label, icon, emoji = _wmo(codes[i] if i < len(codes) else None)
+        try:
+            y, m, dd = (int(x) for x in d.split("-"))
+            day_name = "Today" if i == 0 else datetime.date(y, m, dd).strftime("%a")
+        except Exception:
+            day_name = "Today" if i == 0 else d[5:]
+        days.append({
+            "day": day_name,
+            "hi": _round(highs[i]) if i < len(highs) else None,
+            "lo": _round(lows[i]) if i < len(lows) else None,
+            "condition": label, "icon": icon, "emoji": emoji,
+        })
+
+    return {
+        "location": place["label"],
+        "unit": unit_sym,
+        "current": {
+            "temp": _round(cur.get("temperature_2m")),
+            "feels_like": _round(cur.get("apparent_temperature")),
+            "humidity": cur.get("relative_humidity_2m"),
+            "wind": _round(cur.get("wind_speed_10m")),
+            "wind_unit": "mph" if fahrenheit else "km/h",
+            "condition": cur_label, "icon": cur_icon, "emoji": cur_emoji,
+        },
+        "daily": days,
+    }
+
+
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -726,7 +854,7 @@ import pathlib
 import time
 import uuid
 from bs4 import BeautifulSoup
-from app.widgets.factory import generate_widget_html
+from app.widgets.factory import generate_widget_html, _host_of
 
 
 logging.basicConfig(level=logging.INFO)
@@ -1040,6 +1168,13 @@ SCORE_ASK_RE = re.compile(
     r'card|bouts?|fights?)\b')
 DATA_ASK_RE = re.compile(r'\b(news|headlines|weather|forecast|stock|price|chart|graph|image|images|picture|pictures|photo|photos)\b')
 
+# Fast-path triggers for the two data widgets that now have real sources+renderers.
+WEATHER_ASK_RE = re.compile(r'\b(weather|forecast|temperature)\b')
+NEWS_ASK_RE = re.compile(r'\b(news|headlines?)\b')
+# Stock news has its own cleaner path (html_notes_stock_news); keep it off the
+# general news fast-path.
+STOCK_WORD_RE = re.compile(r'\b(stock|stocks|ticker|shares|share price|crypto|nasdaq|equities?)\b')
+
 # "cnn live news" is a thing to WATCH, but it contains "news", so DATA_ASK_RE
 # claimed it and the model was told to build a data_card — a text list of
 # headlines, when what was asked for was a stream. Live intent has to outrank the
@@ -1152,6 +1287,87 @@ async def build_notes_config(message: str) -> dict:
         "title": str(data.get("title") or "Notes")[:60],
         "content": str(data["content"])[:2000],
     }
+
+
+_LOCATION_STOPWORDS = {
+    "weather", "forecast", "temperature", "temp", "climate", "the", "whats", "what",
+    "is", "in", "for", "at", "near", "today", "tomorrow", "current", "currently",
+    "right", "now", "like", "hows", "how", "s", "a", "me", "show", "get",
+}
+
+
+def extract_location(message: str) -> str:
+    """Pull a place name out of a weather ask. 'weather in San Francisco' → 'San
+    Francisco'; 'tokyo weather' → 'tokyo'; bare 'weather' → 'New York' default."""
+    m = (message or "").strip()
+    match = re.search(r'\b(?:in|for|at|near)\s+([A-Za-zÀ-ɏ .,\'-]+)', m, re.IGNORECASE)
+    if match:
+        loc = match.group(1).strip(" .,")
+        if loc:
+            return loc
+    cleaned = re.sub(r'[^\w\s]', ' ', m.lower())
+    words = [w for w in cleaned.split() if w not in _LOCATION_STOPWORDS]
+    return " ".join(words).strip() or "New York"
+
+
+async def build_news_config(message: str) -> dict:
+    """A news data_card whose items carry real summaries, not naked links.
+
+    Web-searches the topic, then a single local-LLM pass rewrites the raw snippets
+    into headline + 2-3 sentence summary pairs, mapped back to their source URLs.
+    Falls back to the raw snippets if the model call fails, so the card is never
+    a wall of links.
+    """
+    topic = extract_topic(message) or "top stories"
+    results = await web_search(f"{topic} news", limit=6)
+    if not results:
+        return {"title": f"News: {topic}".title()[:60], "icon": "newspaper", "items": []}
+
+    def raw_items():
+        return [{
+            "title": r.get("title", ""),
+            "description": (r.get("snippet") or "")[:300],
+            "url": r.get("url", ""),
+            "meta": _host_of(r.get("url", "")),
+            "badge": "News",
+        } for r in results[:6]]
+
+    source_lines = [
+        f'[{i}] {r.get("title","")}\n{(r.get("snippet") or "")[:400]}'
+        for i, r in enumerate(results[:6])
+    ]
+    data = await fast_llm_json(
+        'You are a news editor. Return ONLY a JSON object, no prose, no markdown fence:\n'
+        '{"overview": "<one-sentence summary of the whole topic>", '
+        '"items": [{"index": <the [N] number of the source>, "title": "<tightened headline>", '
+        '"summary": "<2-3 sentence plain-English summary of what happened>"}]}\n'
+        f'Topic: "{topic}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
+        'Write one entry per distinct story (max 6). Base every summary ONLY on that '
+        "source's text — never invent facts, names, or numbers not present in it.",
+        max_tokens=1000,
+    )
+    if not data or not isinstance(data.get("items"), list) or not data["items"]:
+        return {"title": f"News: {topic}".title()[:60], "icon": "newspaper", "items": raw_items()}
+
+    items = []
+    for it in data["items"][:6]:
+        idx = it.get("index")
+        src = results[idx] if isinstance(idx, int) and 0 <= idx < len(results) else {}
+        summary = (it.get("summary") or "").strip()
+        items.append({
+            "title": (it.get("title") or src.get("title") or "")[:140],
+            "description": summary[:500] or (src.get("snippet") or "")[:300],
+            "url": src.get("url", ""),
+            "meta": _host_of(src.get("url", "")) if src.get("url") else "",
+            "badge": "News",
+        })
+    return {
+        "title": f"News: {topic}".title()[:60],
+        "subtitle": (data.get("overview") or "")[:120],
+        "icon": "newspaper",
+        "items": items or raw_items(),
+    }
+
 
 def is_valid_tool_args(tool_name: str, args: dict) -> bool:
     if not args:
@@ -1305,6 +1521,28 @@ async def send_message(req: MessageRequest):
                     "candidates": [v["video_id"] for v in live_hits[1:] if v.get("video_id")],
                 }, status="finding a live stream...")
 
+        # 4. WEATHER — "weather in Tokyo", "forecast for London", "sf weather".
+        #    A real Open-Meteo pull (keyless) rendered as the dedicated weather
+        #    widget, not a text card of search results about weather.
+        if WEATHER_ASK_RE.search(text_clean) and not wants_removal and not is_video_ask:
+            weather = await get_weather(extract_location(req.message))
+            if not weather.get("is_error"):
+                return spawn_widget_stream(
+                    "weather", "weather", weather,
+                    status=f"checking the weather in {weather.get('location', '')}...")
+            # An unresolved place falls through to the agent instead of a dead card.
+
+        # 5. NEWS — "news about X", "latest headlines". Search + one summarizing
+        #    LLM pass so each item reads as a story, not a bare link. Stock news
+        #    keeps its own dedicated path.
+        if (NEWS_ASK_RE.search(text_clean) and not wants_removal
+                and not is_video_ask and not STOCK_WORD_RE.search(text_clean)
+                and not LIVE_ASK_RE.search(text_clean)):
+            return spawn_widget_stream(
+                "data_card", "news",
+                config_builder=lambda: build_news_config(req.message),
+                status="gathering and summarizing the news...")
+
         if not wants_removal and not is_video_ask and not is_data_ask:
             is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
             topic = extract_topic(req.message)
@@ -1421,6 +1659,7 @@ async def send_message(req: MessageRequest):
             "mcp__lazy-tool-service__html_notes_stock_history",
             "mcp__lazy-tool-service__html_notes_stock_news",
             "mcp__lazy-tool-service__html_notes_sports_scores",
+            "mcp__lazy-tool-service__html_notes_get_weather",
         ]
 
         # Build messages array — use system role at index 0.
@@ -1650,6 +1889,13 @@ async def send_message(req: MessageRequest):
                             if cached:
                                 logger.info(f"[WIDGET INJECTOR] Rehydrated scoreboard for {config.get('league')}")
                                 config = {**cached, **{k: v for k, v in config.items() if v}}
+                        elif widget_type == "weather" and not config.get("current"):
+                            cached = get_cached_tool_result(f"weather:{str(config.get('location', '')).lower()}")
+                            if cached:
+                                logger.info(f"[WIDGET INJECTOR] Rehydrated weather for {config.get('location')}")
+                                # Cache wins: it carries the resolved place label + full forecast,
+                                # config only carried the bare location string the model typed.
+                                config = {**config, **cached}
 
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
@@ -2398,6 +2644,15 @@ async def internal_tool_execute(req: InternalToolRequest):
 
         elif t == "html_notes_stock_news":
             return await stock_news(a.get("query", ""), limit=int(a.get("limit", 8)))
+
+        elif t == "html_notes_get_weather":
+            location = a.get("location", "")
+            result = await get_weather(location, units=a.get("units", "fahrenheit"))
+            if not result.get("is_error"):
+                # Key on the location the model typed so the widget injector can
+                # rehydrate config={"location": "<same string>"} without a re-fetch.
+                cache_tool_result(f"weather:{str(location).lower()}", result)
+            return result
 
         elif t == "html_notes_sports_scores":
             result = await sports_scores(a.get("league", ""))
