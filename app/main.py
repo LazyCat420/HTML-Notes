@@ -1020,7 +1020,7 @@ async def get_weather(location: str, units: str = "fahrenheit") -> dict:
 
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -2909,6 +2909,24 @@ async def get_session_history(session_id: str):
     except Exception as e:
         logger.error(f"Error fetching history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# The raw static/index.html hard-codes its asset refs as `index.js?v=3.0`,
+# `js/widgets.js?v=1.4` etc. Only the `/` route (read_root) rewrites those to a
+# per-deploy mtime fingerprint; a browser that loads `/static/index.html`
+# directly (an old bookmark from when the UI was served from /static/) gets the
+# frozen `?v=3.0` URLs, so it reuses its long-cached index.js FOREVER — even on
+# refresh — and runs frontend code from before the reconcile/SSE/paint fixes.
+# The visible symptom is "widgets don't update live, only after a refresh".
+# Funnel every UI entry point through `/` so the fingerprinted assets are the
+# only ones a browser ever sees. Registered BEFORE the /static mount so it wins.
+@app.get("/static/index.html", include_in_schema=False)
+@app.get("/static/", include_in_schema=False)
+def _redirect_stale_ui_entrypoint():
+    # 307 (not 301) + no-store so browsers never cache the redirect itself and a
+    # stranded tab is rescued the next time it loads.
+    return RedirectResponse(url="/", status_code=307,
+                            headers={"Cache-Control": "no-store"})
+
 
 # Mount UI static files at root
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
