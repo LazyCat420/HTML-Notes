@@ -891,6 +891,118 @@ def render_weather(widget_id: str, config: dict) -> str:
     """
 
 
+# Self-contained Leaflet map init. Kept as a PLAIN string (not an f-string) so the
+# Leaflet tile-URL placeholders `{s}/{z}/{x}/{y}` and JS object braces stay literal;
+# the four __TOKENS__ are substituted server-side. The widget carries its own lib
+# loader (injects Leaflet from CDN once, shared across every map on the page) and
+# init, so the map is a pure server-rendered template — the agent only supplies the
+# marker DATA, never any rendering code. Idempotent: re-running init is a no-op.
+_MAP_INIT_JS = """
+(function(){
+  var elId=__ELID__, markers=__MARKERS__, center=__CENTER__, zoom=__ZOOM__;
+  function init(){
+    var el=document.getElementById(elId);
+    if(!el||el._leafletInited||!window.L){return;}
+    el._leafletInited=true;
+    var map=L.map(el,{scrollWheelZoom:false,attributionControl:true}).setView([center.lat,center.lon],zoom);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      {maxZoom:18,attribution:'© OpenStreetMap © CARTO'}).addTo(map);
+    var pts=[];
+    markers.forEach(function(m){
+      var col=m.color||'#f97316';
+      var mk=L.circleMarker([m.lat,m.lon],{radius:8,color:col,fillColor:col,fillOpacity:0.65,weight:2}).addTo(map);
+      mk.bindPopup('<b>'+(m.label||'')+'</b>'+(m.detail?'<br>'+m.detail:''));
+      if(m.label){mk.bindTooltip(m.label,{direction:'top'});}
+      pts.push([m.lat,m.lon]);
+    });
+    if(pts.length>1){try{map.fitBounds(pts,{padding:[28,28],maxZoom:12});}catch(e){}}
+    setTimeout(function(){try{map.invalidateSize();}catch(e){}},250);
+  }
+  function ensure(cb){
+    if(window.L){cb();return;}
+    if(!document.getElementById('leaflet-css')){
+      var c=document.createElement('link');c.id='leaflet-css';c.rel='stylesheet';
+      c.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';document.head.appendChild(c);
+    }
+    var s=document.getElementById('leaflet-js');
+    if(s){if(window.L){cb();}else{s.addEventListener('load',cb);}return;}
+    s=document.createElement('script');s.id='leaflet-js';
+    s.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';s.onload=cb;document.head.appendChild(s);
+  }
+  ensure(init);
+})();
+"""
+
+
+def render_map(widget_id: str, config: dict) -> str:
+    """Interactive map widget (Leaflet + CARTO dark tiles, keyless). Server-rendered
+    template: the agent supplies only DATA.
+
+    Contract: {title?, subtitle?, center?:{lat,lon}, zoom?, markers?:[
+        {lat, lon, label?, detail?, color?(#hex)}]}
+    Markers are sanitised and baked into an inline init script; center/zoom default
+    to fit the markers. With no markers it still shows the region so the user never
+    gets a blank card."""
+    title = config.get("title", "Map")
+    subtitle = config.get("subtitle", "")
+
+    clean = []
+    for m in (config.get("markers") or []):
+        if not isinstance(m, dict):
+            continue
+        try:
+            lat, lon = float(m.get("lat")), float(m.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        color = str(m.get("color", "") or "")
+        clean.append({
+            "lat": lat, "lon": lon,
+            # esc() HTML-escapes labels so a web-sourced string can't inject markup
+            # into the Leaflet popup; the JSON is further <-escaped below.
+            "label": esc(str(m.get("label", ""))[:90]),
+            "detail": esc(str(m.get("detail", ""))[:180]),
+            "color": color if color.startswith("#") and len(color) <= 9 else "",
+        })
+
+    center = config.get("center")
+    if not (isinstance(center, dict) and "lat" in center and "lon" in center):
+        if clean:
+            center = {"lat": sum(c["lat"] for c in clean) / len(clean),
+                      "lon": sum(c["lon"] for c in clean) / len(clean)}
+        else:
+            center = {"lat": 39.5, "lon": -98.35}  # continental US fallback
+    try:
+        zoom = int(config.get("zoom") or (5 if len(clean) > 1 else (9 if clean else 4)))
+    except (TypeError, ValueError):
+        zoom = 5
+
+    # <-escape closes off any "</script>" breakout from web-sourced marker text.
+    markers_json = json.dumps(clean).replace("<", "\\u003c")
+    center_json = json.dumps({"lat": center["lat"], "lon": center["lon"]})
+    script = (_MAP_INIT_JS
+              .replace("__ELID__", json.dumps(f"{widget_id}-map"))
+              .replace("__MARKERS__", markers_json)
+              .replace("__CENTER__", center_json)
+              .replace("__ZOOM__", str(zoom)))
+
+    empty_note = ("" if clean else
+                  '<div class="absolute inset-x-0 bottom-3 text-center text-[0.7rem] text-slate-400 z-[500] pointer-events-none">'
+                  'Couldn\'t pin exact spots — showing the region.</div>')
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container map-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[420px] group">
+        {widget_header(title, "map", subtitle)}
+        <div class="relative flex-grow">
+            <div id="{widget_id}-map" class="absolute inset-0 w-full h-full" style="background:#0f172a"></div>
+            {empty_note}
+        </div>
+        <script>{script}</script>
+    </div>
+    """
+
+
 WIDGET_RENDERERS = {
     "checklist": render_checklist,
     "scoreboard": render_scoreboard,
@@ -904,6 +1016,7 @@ WIDGET_RENDERERS = {
     "chart": render_chart,
     "stock_card": render_stock_card,
     "weather": render_weather,
+    "map": render_map,
 }
 
 def _content_sig(widget_type: str, config: dict) -> str:

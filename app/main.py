@@ -1391,8 +1391,15 @@ NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
 ANSWER_ASK_RE = re.compile(
     r'\b(recipe|recipes|how to|how do|how does|how can|tutorial|guide|'
     r'what is|what are|whats|what\'s|who is|who are|who was|when is|when was|'
-    r'where is|why is|why do|why does|explain|difference between|'
+    r'why is|why do|why does|explain|difference between|'
     r'vs\.?|versus|meaning of|definition of|instructions?|steps to)\b')
+# A geo/location query that wants a MAP with markers, not a text answer. Checked
+# before ANSWER so "where are the fires in California" pulls up a map. Kept to
+# strong geo signals so a conceptual "why is X" never gets a map.
+MAP_ASK_RE = re.compile(
+    r'\b(map|maps|on a map|where are|where is|where\'?s|located|location of|'
+    r'near me|nearby|fires? in|wildfires?|earthquakes?|flooding|floods?|'
+    r'hurricanes?|tornado(es)?|show me where|whereabouts)\b')
 
 # Strip the words that name the widget or frame the request; whatever survives is
 # the subject. "notes for grocery list for chicken soup" → "chicken soup".
@@ -1689,6 +1696,100 @@ async def build_answer_config(query: str, results: Optional[list] = None,
     }
 
 
+async def geocode_place(name: str) -> Optional[dict]:
+    """Place name -> {lat, lon, resolved} via Open-Meteo's keyless geocoder.
+    Returns None on a miss so the caller can just drop that marker."""
+    name = (name or "").strip()
+    if len(name) < 2:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get("https://geocoding-api.open-meteo.com/v1/search",
+                            params={"name": name, "count": 1, "language": "en", "format": "json"})
+            hits = (r.json() or {}).get("results") or []
+            if hits:
+                g = hits[0]
+                return {"lat": g["latitude"], "lon": g["longitude"], "resolved": g.get("name", name)}
+    except Exception as e:
+        logger.warning(f"geocode failed for {name!r}: {e}")
+    return None
+
+
+async def build_map_config(query: str) -> dict:
+    """Turn a geo query ("where are the fires in California", "map of X") into a
+    `map` widget: search the web, have the LLM PULL the place names out of the
+    results, geocode them, and drop markers. Fully agentic on the data side — the
+    model decides WHICH places matter; the server renders the template.
+
+    Degrades to a region-centred (marker-less) map so the card is never blank.
+    """
+    q = (query or "").strip()
+    results = await web_search(q, limit=6)
+
+    async def _page_text(r):
+        url = r.get("url", "")
+        if not url:
+            return ""
+        try:
+            page = await read_web_page(url, max_chars=2200)
+            return "" if page.get("is_error") else (page.get("content") or "")
+        except Exception:
+            return ""
+    try:
+        page_texts = await asyncio.wait_for(
+            asyncio.gather(*[_page_text(r) for r in results[:2]]), timeout=12.0)
+    except asyncio.TimeoutError:
+        page_texts = []
+
+    src = []
+    for i, r in enumerate(results[:6]):
+        body = page_texts[i] if i < len(page_texts) else ""
+        src.append(f'[{i}] {r.get("title","")}\n{(body or r.get("snippet") or "")[:1500]}')
+
+    data = await fast_llm_json(
+        'You extract mappable locations from search results. Return ONLY JSON:\n'
+        '{"title": "<short map title>", "overview": "<one sentence>", '
+        '"region": "<a broad geocodable area to centre on, e.g. \'California\'>", '
+        '"locations": [{"place": "<a SPECIFIC geocodable place: a city/town/landmark, '
+        'never the event name>", "label": "<short marker label>", '
+        '"detail": "<one short line: what/when/how big>"}]}\n\n'
+        f'QUERY: "{q}"\n\nSOURCES:\n' + "\n\n".join(src) + '\n\n'
+        'Give up to 12 locations. `place` MUST be a real geocodable location (prefer a '
+        'named town/city near the event over a county). Base everything on the SOURCES; '
+        'do not invent places. If the query is about one place, return one location.',
+        max_tokens=1100,
+    )
+
+    locs = (data or {}).get("locations") or []
+    locs = [l for l in locs if isinstance(l, dict) and (l.get("place") or "").strip()][:12]
+    geocoded = await asyncio.gather(*[geocode_place(l.get("place", "")) for l in locs]) if locs else []
+
+    markers = []
+    for l, g in zip(locs, geocoded):
+        if g:
+            markers.append({
+                "lat": g["lat"], "lon": g["lon"],
+                "label": (l.get("label") or l.get("place") or g["resolved"])[:90],
+                "detail": (l.get("detail") or "")[:180],
+                "color": "#ef4444",
+            })
+
+    center = None
+    if not markers:
+        region = (data or {}).get("region") or q
+        g = await geocode_place(region)
+        if g:
+            center = {"lat": g["lat"], "lon": g["lon"]}
+
+    return {
+        "title": ((data or {}).get("title") or q or "Map")[:70],
+        "subtitle": ((data or {}).get("overview") or (f"{len(markers)} location"
+                     + ("s" if len(markers) != 1 else "") if markers else ""))[:120],
+        "markers": markers,
+        "center": center,
+    }
+
+
 def is_valid_tool_args(tool_name: str, args: dict) -> bool:
     if not args:
         return False
@@ -1903,7 +2004,17 @@ async def send_message(req: MessageRequest):
                     status="writing your note...",
                 )
 
-            # 6. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
+            # 6. MAP — geo/location queries ("where are the fires in California",
+            #    "map of X") get an interactive map with markers geocoded from a
+            #    web search, not a text card.
+            if MAP_ASK_RE.search(text_clean):
+                return spawn_widget_stream(
+                    "map", "map",
+                    config_builder=lambda: build_map_config(req.message),
+                    status="finding the locations and building your map...",
+                )
+
+            # 7. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
             #    Synthesised into a readable answer card (Markdown answer + demoted
             #    sources) instead of dumping the user into the ~30-60s agent loop
             #    that returns a wall of links.
@@ -1952,6 +2063,7 @@ async def send_message(req: MessageRequest):
             "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
             "- news, headlines, 'top stories' → mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories). It returns a ready data_card config of current stories, each with a photo, a tightened headline and a written summary. Then call canvas_add_widget(widget_type='data_card', config={'news_topic': '<same topic>'}) — the server rehydrates the stories, so do NOT re-type them. Do NOT use html_notes_web_search for news (it returns news-site homepages, not stories, and no photos).\n"
             "- facts, recipes, how-tos, 'what/who/when is X', comparisons → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph) and attaches the pages as sources. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
+            "- WHERE something is / a map / locations ('where are the fires in California', 'map of X') → canvas_add_widget(widget_type='map', config={'map_query': '<the query>'}). The server web-searches, geocodes the places and drops the markers — do NOT type coordinates.\n"
             "- picture of X → canvas_add_widget(widget_type='image')\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
@@ -2255,6 +2367,16 @@ async def send_message(req: MessageRequest):
                             logger.info(f"[WIDGET INJECTOR] Synthesised answer data_card for {aq!r}")
                             config = {**answer_cfg, **{k: v for k, v in config.items()
                                                        if v and k not in ("search_query", "answer_query")}}
+                        elif (widget_type == "map" and not config.get("markers")
+                              and config.get("map_query")):
+                            # A map from a query: the server searches, geocodes the
+                            # places the LLM pulled out, and bakes the markers — the
+                            # model never hand-types coordinates.
+                            mq = str(config.get("map_query", "")).strip()
+                            map_cfg = await build_map_config(mq)
+                            logger.info(f"[WIDGET INJECTOR] Built map for {mq!r} ({len(map_cfg.get('markers', []))} markers)")
+                            config = {**map_cfg, **{k: v for k, v in config.items()
+                                                    if v and k != "map_query"}}
 
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
