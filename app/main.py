@@ -1385,6 +1385,14 @@ LIST_INTENT_RE = re.compile(
     r'\b(grocery|groceries|shopping|packing|checklist|to-?dos?|task list|'
     r'bucket list|reading list|watch ?list|wish ?list|ingredients?)\b|\blists?\b')
 NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
+# A question/how-to/recipe that wants a SYNTHESISED answer (summary + sources),
+# not a widget noun and not a data feed. Routed to build_answer_config so the
+# user gets the actual recipe/steps/definition instead of the ~30-60s agent loop.
+ANSWER_ASK_RE = re.compile(
+    r'\b(recipe|recipes|how to|how do|how does|how can|tutorial|guide|'
+    r'what is|what are|whats|what\'s|who is|who are|who was|when is|when was|'
+    r'where is|why is|why do|why does|explain|difference between|'
+    r'vs\.?|versus|meaning of|definition of|instructions?|steps to)\b')
 
 # Strip the words that name the widget or frame the request; whatever survives is
 # the subject. "notes for grocery list for chicken soup" → "chicken soup".
@@ -1559,6 +1567,125 @@ async def build_news_config(message: str) -> dict:
         "subtitle": (data.get("overview") or "")[:120],
         "icon": "newspaper",
         "items": items or raw_items(),
+    }
+
+
+# Map the LLM-chosen answer `format` to a header icon. The model picks the format;
+# this is just the visual affordance for it. Unknown formats fall back to "article".
+_ANSWER_ICONS = {
+    "recipe": "restaurant", "howto": "checklist", "how-to": "checklist",
+    "steps": "checklist", "definition": "menu_book", "fact": "lightbulb",
+    "comparison": "compare_arrows", "list": "format_list_bulleted",
+    "article": "article", "explainer": "article", "answer": "lightbulb",
+}
+
+
+async def build_answer_config(query: str, results: Optional[list] = None,
+                              read_top: int = 2) -> dict:
+    """Turn a general web query (recipe, how-to, fact, "what/who is X", comparison)
+    into a SYNTHESISED data_card: a readable Markdown answer up top, with the pages
+    it drew from demoted to a "Sources" list — instead of a wall of links.
+
+    Pipeline mirrors build_news_config but for arbitrary questions:
+      search -> read the top `read_top` pages for real body text (a recipe's
+      ingredients/steps live in the page, not the snippet) -> ONE local-LLM pass
+      that WRITES the answer as Markdown and PICKS the format itself (agentic:
+      a recipe becomes ingredients+steps, a definition a short paragraph, a
+      comparison a table). The model only ever fills a structured schema the
+      server renders — it never hand-builds HTML — so it stays reliable.
+
+    Degrades gracefully: if the LLM pass fails, returns a summarised item list so
+    the card is still useful and never a wall of naked links.
+    """
+    q = (query or "").strip()
+    if results is None:
+        results = await web_search(q, limit=6)
+    if not results:
+        return {"title": (q or "Search")[:60].title(), "icon": "search",
+                "answer": f"I couldn't find anything for **{q}**. Try rephrasing the question.",
+                "items": []}
+
+    # Read the top pages concurrently for real content — snippets alone can't carry
+    # a recipe's ingredients or a how-to's steps. Bounded + best-effort; a scrape
+    # miss just means that source contributes its snippet instead.
+    async def _page_text(r):
+        url = r.get("url", "")
+        if not url:
+            return ""
+        try:
+            page = await read_web_page(url, max_chars=2500)
+            return "" if page.get("is_error") else (page.get("content") or "")
+        except Exception:
+            return ""
+    top = results[:max(0, read_top)]
+    # Hard cap the enrichment: read_web_page falls back to a 60s Playwright scrape,
+    # and this runs on a "fast" path — a slow page must never hang the card. On
+    # timeout we synthesise from snippets alone.
+    try:
+        page_texts = (await asyncio.wait_for(
+            asyncio.gather(*[_page_text(r) for r in top]), timeout=12.0)) if top else []
+    except asyncio.TimeoutError:
+        logger.info(f"build_answer_config: page reads timed out for {q!r}, using snippets")
+        page_texts = []
+
+    source_blocks = []
+    for i, r in enumerate(results[:6]):
+        body = page_texts[i] if i < len(page_texts) else ""
+        chunk = (body or r.get("snippet") or "")[:1800]
+        source_blocks.append(f'[{i}] {r.get("title","")} ({_host_of(r.get("url",""))})\n{chunk}')
+
+    data = await fast_llm_json(
+        'You are a research assistant writing a single, self-contained answer card. '
+        'Return ONLY a JSON object (no prose, no markdown fence):\n'
+        '{"format": "<recipe|howto|definition|fact|comparison|explainer>", '
+        '"title": "<short card title>", '
+        '"overview": "<one plain sentence summarising the answer>", '
+        '"answer": "<the full answer in GitHub-flavored Markdown>", '
+        '"sources": [<the [N] index numbers of the sources you actually used>]}\n\n'
+        f'QUESTION: "{q}"\n\nSOURCES:\n' + "\n\n".join(source_blocks) + '\n\n'
+        'RULES:\n'
+        '- WRITE THE ANSWER, do not list links. The user should get what they asked for '
+        'directly in `answer`.\n'
+        '- Choose the format that fits: a recipe -> "## Ingredients" (bulleted) then '
+        '"## Steps" (numbered); a how-to -> numbered steps; a definition/fact -> a tight '
+        'paragraph or two; a comparison -> a Markdown table.\n'
+        '- Use Markdown: ##/### headings, - bullets, 1. numbered lists, **bold**, and '
+        '[label](url) links. Keep it scannable.\n'
+        '- Ground every claim in the SOURCES text above. Never invent quantities, names, '
+        'dates or numbers that are not present. If sources conflict, say so briefly.\n'
+        '- `sources` lists only the indices you drew from.',
+        max_tokens=1400,
+    )
+
+    def summarised_items(indices=None):
+        pool = results[:6] if indices is None else [results[i] for i in indices
+                                                    if isinstance(i, int) and 0 <= i < len(results)]
+        return [{
+            "title": r.get("title", ""),
+            "description": (r.get("snippet") or "")[:240],
+            "url": r.get("url", ""),
+            "image": r.get("image", ""),
+            "meta": _host_of(r.get("url", "")),
+            "badge": "Source",
+        } for r in (pool or results[:6])]
+
+    hero = next((r.get("image") for r in results if r.get("image")), "")
+
+    if not data or not (data.get("answer") or "").strip():
+        # LLM pass failed — still give a useful, summarised card (not naked links).
+        return {"title": (q or "Answer")[:60].title(), "icon": "search",
+                "subtitle": "Top results", "image": hero, "items": summarised_items()}
+
+    used = data.get("sources")
+    used = used if isinstance(used, list) else None
+    fmt = str(data.get("format", "")).lower()
+    return {
+        "title": (data.get("title") or q or "Answer")[:70],
+        "subtitle": (data.get("overview") or "")[:140],
+        "icon": _ANSWER_ICONS.get(fmt, "article"),
+        "image": hero,
+        "answer": (data.get("answer") or "").strip(),
+        "items": summarised_items(used),
     }
 
 
@@ -1776,6 +1903,17 @@ async def send_message(req: MessageRequest):
                     status="writing your note...",
                 )
 
+            # 6. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
+            #    Synthesised into a readable answer card (Markdown answer + demoted
+            #    sources) instead of dumping the user into the ~30-60s agent loop
+            #    that returns a wall of links.
+            if ANSWER_ASK_RE.search(text_clean):
+                return spawn_widget_stream(
+                    "data_card", "answer",
+                    config_builder=lambda: build_answer_config(req.message),
+                    status="researching and writing your answer...",
+                )
+
         # Start loading history
 
         history = database.get_session_messages(req.session_id)
@@ -1813,7 +1951,7 @@ async def send_message(req: MessageRequest):
             "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
             "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
             "- news, headlines, 'top stories' → mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories). It returns a ready data_card config of current stories, each with a photo, a tightened headline and a written summary. Then call canvas_add_widget(widget_type='data_card', config={'news_topic': '<same topic>'}) — the server rehydrates the stories, so do NOT re-type them. Do NOT use html_notes_web_search for news (it returns news-site homepages, not stories, and no photos).\n"
-            "- facts, recipes, 'what/when/who is X' → mcp__lazy-tool-service__html_notes_web_search, then canvas_add_widget(widget_type='data_card')\n"
+            "- facts, recipes, how-tos, 'what/who/when is X', comparisons → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph) and attaches the pages as sources. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
             "- picture of X → canvas_add_widget(widget_type='image')\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
@@ -1821,7 +1959,7 @@ async def send_message(req: MessageRequest):
             "- REMOVE something, or tweak a hand-built custom widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove'|'replace') using an id from CURRENT CANVAS\n\n"
             "ANSWER FROM DATA, NEVER FROM MEMORY\n"
             "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first.\n"
-            "Then put the real text into the widget: every data_card item needs a 'description' carrying the actual information. If a search result comes back with an empty snippet, call html_notes_read_page on its url and use the page text. An item with only a title and a link is a failure — the user cannot read a link.\n\n"
+            "For a data_card, prefer the search_query path above: pass config={'search_query': '<query>'} and let the server write the summarised answer with sources. Only hand-build config.items when you have specific structured rows that no search summary would capture — and then every item still needs a 'description' with the real information, never just a title and a link.\n\n"
             "WIDGETS COEXIST. Adding one never removes the others. The exceptions are youtube_player and mini_music_player: only one of each can play, so a new one automatically swaps out the old — just add it, do not remove first.\n\n"
             f"CURRENT CANVAS:\n```markdown\n{canvas_summary}\n```"
         )
@@ -2103,6 +2241,20 @@ async def send_message(req: MessageRequest):
                                 logger.info(f"[WIDGET INJECTOR] Rehydrated news data_card for {topic!r}")
                                 config = {**cached, **{k: v for k, v in config.items()
                                                        if v and k not in ("news_topic", "topic")}}
+                        elif (widget_type == "data_card" and not config.get("answer")
+                              and not config.get("items")
+                              and (config.get("search_query") or config.get("answer_query"))):
+                            # A general answer data_card: the model names the query,
+                            # the server reads the top pages, WRITES a summarised
+                            # Markdown answer and attaches the pages as sources — the
+                            # model never hand-builds the wall-of-links card. Reuses
+                            # the html_notes_web_search result cache when present.
+                            aq = str(config.get("search_query") or config.get("answer_query") or "").strip()
+                            cached_hits = get_cached_tool_result(f"search:{aq}")
+                            answer_cfg = await build_answer_config(aq, results=cached_hits)
+                            logger.info(f"[WIDGET INJECTOR] Synthesised answer data_card for {aq!r}")
+                            config = {**answer_cfg, **{k: v for k, v in config.items()
+                                                       if v and k not in ("search_query", "answer_query")}}
 
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
@@ -2834,11 +2986,18 @@ async def internal_tool_execute(req: InternalToolRequest):
             return {"results": results, "count": len(results)}
 
         elif t == "html_notes_web_search":
-            results = await web_search(a.get("query", ""), limit=int(a.get("limit", 6)))
+            query = a.get("query", "")
+            results = await web_search(query, limit=int(a.get("limit", 6)))
             if not results:
                 return {"results": [], "count": 0,
                         "message": "Search returned nothing. Retry with a shorter, simpler query."}
-            return {"results": results, "count": len(results)}
+            # Cache the raw hits so a following canvas_add_widget(data_card,
+            # {search_query: query}) can synthesise the answer WITHOUT re-searching.
+            cache_tool_result(f"search:{query.strip()}", results)
+            return {"results": results, "count": len(results),
+                    "hint": "To show this as a card, call canvas_add_widget(widget_type='data_card', "
+                            f"config={{'search_query': '{query}'}}). The server will read the top pages, "
+                            "write a summarised answer and attach these as sources — do not re-type them."}
 
         elif t == "html_notes_read_page":
             return await read_web_page(a.get("url", ""), max_chars=int(a.get("max_chars", 6000)))

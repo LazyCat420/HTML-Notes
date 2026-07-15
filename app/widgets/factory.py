@@ -52,21 +52,124 @@ def _monogram_tile(text: str) -> str:
         </div>
     """
 
+import re as _re
+
+# Inline markdown → HTML on ALREADY-ESCAPED text. The escaping (html.escape) runs
+# first, so `<`/`>`/`&` are inert; markdown markers (* _ ` [ ]) survive escaping
+# untouched, so we can safely wrap them here. Links are restricted to http(s) so a
+# summariser can never inject a javascript:/data: URL. The whole canvas is also
+# DOMPurify-sanitised on the client, so this is defense-in-depth, not the only gate.
+def _md_inline(text: str) -> str:
+    text = esc(text)
+    text = _re.sub(r'`([^`]+)`',
+                   r'<code class="px-1 py-0.5 rounded bg-white/10 text-[0.8em]">\1</code>', text)
+    text = _re.sub(r'\*\*([^*]+)\*\*', r'<strong class="font-semibold text-white">\1</strong>', text)
+    text = _re.sub(r'__([^_]+)__', r'<strong class="font-semibold text-white">\1</strong>', text)
+    text = _re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<em>\1</em>', text)
+    # [label](http…) — only http/https links survive; anything else renders as plain label.
+    def _link(m):
+        label, url = m.group(1), m.group(2)
+        if url.lower().startswith(("http://", "https://")):
+            return (f'<a href="{url}" target="_blank" rel="noopener" '
+                    f'class="text-purple-300 hover:text-purple-200 hover:underline">{label}</a>')
+        return label
+    text = _re.sub(r'\[([^\]]+)\]\(([^)\s]+)\)', _link, text)
+    return text
+
+
+def _render_markdown(md: str) -> str:
+    """Small, safe Markdown-subset → HTML for the data_card answer block: headings,
+    unordered/ordered lists, blockquotes, horizontal rules and paragraphs, with
+    inline bold/italic/code/links. Deliberately NOT a full CommonMark parser — the
+    summariser is prompted to use exactly these constructs, and a bounded renderer
+    can't be surprised into emitting unsafe HTML."""
+    if not md:
+        return ""
+    lines = str(md).replace("\r\n", "\n").split("\n")
+    out, i, n = [], 0, len(lines)
+
+    def flush_list(buf, ordered):
+        if not buf:
+            return
+        tag = "ol" if ordered else "ul"
+        cls = ("list-decimal" if ordered else "list-disc") + " list-inside space-y-1 my-2 text-sm text-slate-200"
+        lis = "".join(f'<li class="leading-relaxed pl-1">{_md_inline(x)}</li>' for x in buf)
+        out.append(f'<{tag} class="{cls}">{lis}</{tag}>')
+
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped:
+            i += 1
+            continue
+        # Horizontal rule
+        if _re.fullmatch(r'(-{3,}|\*{3,}|_{3,})', stripped):
+            out.append('<hr class="border-white/10 my-3">')
+            i += 1
+            continue
+        # Headings
+        m = _re.match(r'(#{1,6})\s+(.*)', stripped)
+        if m:
+            level = len(m.group(1))
+            size = {1: "text-base", 2: "text-sm", 3: "text-sm"}.get(level, "text-xs")
+            out.append(f'<h4 class="{size} font-bold text-white mt-3 mb-1 tracking-wide">{_md_inline(m.group(2))}</h4>')
+            i += 1
+            continue
+        # Unordered list block
+        if _re.match(r'[-*+]\s+', stripped):
+            buf = []
+            while i < n and _re.match(r'\s*[-*+]\s+', lines[i]):
+                buf.append(_re.sub(r'^\s*[-*+]\s+', '', lines[i]))
+                i += 1
+            flush_list(buf, ordered=False)
+            continue
+        # Ordered list block
+        if _re.match(r'\d+[.)]\s+', stripped):
+            buf = []
+            while i < n and _re.match(r'\s*\d+[.)]\s+', lines[i]):
+                buf.append(_re.sub(r'^\s*\d+[.)]\s+', '', lines[i]))
+                i += 1
+            flush_list(buf, ordered=True)
+            continue
+        # Blockquote
+        if stripped.startswith(">"):
+            buf = []
+            while i < n and lines[i].strip().startswith(">"):
+                buf.append(_re.sub(r'^\s*>\s?', '', lines[i]))
+                i += 1
+            out.append('<blockquote class="border-l-2 border-purple-400/40 pl-3 my-2 text-slate-300 italic text-sm">'
+                       + "<br>".join(_md_inline(x) for x in buf) + '</blockquote>')
+            continue
+        # Paragraph (gather consecutive non-block lines)
+        buf = []
+        while i < n and lines[i].strip() and not _re.match(r'(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|-{3,}$|\*{3,}$)', lines[i].strip()):
+            buf.append(lines[i].strip())
+            i += 1
+        out.append(f'<p class="text-sm text-slate-200 leading-relaxed my-2">{_md_inline(" ".join(buf))}</p>')
+    return "".join(out)
+
+
 def render_data_card(widget_id: str, config: dict) -> str:
     """Universal server-rendered data widget (the reliable path for news,
     recipes, weather, search results — any structured data). The data is baked
     into the HTML at render time, so nothing depends on client-side fetching.
 
-    Contract: {title, subtitle?, icon?, image?, content?, items?: [
-        {title, description?, image?, url?, badge?, meta?}]}
-    Fallback chain: items -> content text -> raw config dump. Never blank.
+    Contract: {title, subtitle?, icon?, image?, answer?(markdown), content?,
+        items?/sources?: [{title, description?, image?, url?, badge?, meta?}]}
+    An `answer` is the synthesised, human-readable response (rendered as Markdown);
+    when present, `items` are treated as supporting SOURCES and shown under a small
+    "Sources" heading rather than as the primary content.
+    Fallback chain: answer/content -> items -> raw config dump. Never blank.
     """
     title = config.get("title", "Data")
     subtitle = config.get("subtitle", "")
     icon = config.get("icon", "article")
     hero = config.get("image", "")
     content = config.get("content", "")
-    items = config.get("items", []) or []
+    answer = config.get("answer", "") or ""
+    # `sources` is the semantic alias for `items` once an answer carries the content;
+    # accept either so the synthesiser and the older news/search callers both work.
+    items = config.get("items") or config.get("sources") or []
     if isinstance(items, dict):
         items = [items]
 
@@ -141,19 +244,39 @@ def render_data_card(widget_id: str, config: dict) -> str:
             </li>
         """)
 
-    if rendered_items:
+    # A synthesised answer is the primary content; sources are supporting evidence
+    # shown beneath it. This is the "summary with links as sources" shape — not a
+    # wall of links. Answer + sources live in ONE scroll container so they scroll
+    # together as one readable document.
+    if answer:
+        sources_block = ""
+        if rendered_items:
+            sources_block = f"""
+                <div class="data-card-sources mt-3 pt-3 border-t border-white/10">
+                    <div class="flex items-center gap-1.5 mb-1.5 text-slate-400">
+                        <span class="material-symbols-outlined text-[0.85rem]">link</span>
+                        <span class="text-[0.65rem] font-semibold uppercase tracking-wider">Sources</span>
+                    </div>
+                    <ul class="flex flex-col gap-1">{''.join(rendered_items)}</ul>
+                </div>
+            """
+        body_parts.append(f"""
+            <div class="data-card-answer p-4 overflow-y-auto flex-grow custom-scrollbar">
+                <div class="answer-prose">{_render_markdown(answer)}</div>
+                {sources_block}
+            </div>
+        """)
+    elif rendered_items:
         body_parts.append(f"""
             <ul class="data-card-list flex flex-col gap-1 p-3 overflow-y-auto flex-grow custom-scrollbar">
                 {''.join(rendered_items)}
             </ul>
         """)
     elif content:
-        paragraphs = "".join(
-            f'<p class="text-sm text-slate-200 leading-relaxed mb-2">{esc(p.strip())}</p>'
-            for p in str(content).split("\n") if p.strip()
-        )
+        # Legacy plain-text content: render through Markdown too so a caller that
+        # passes lightly-formatted text still gets lists/headings, not flat lines.
         body_parts.append(f"""
-            <div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{paragraphs}</div>
+            <div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{_render_markdown(content)}</div>
         """)
     else:
         # Last-resort fallback: show whatever config we got as key/value rows
