@@ -446,19 +446,35 @@ document.addEventListener('alpine:init', () => {
                 // immediately and then sits on "Searching signals..." until this
                 // resolves. The mix alone is enough to start playing.
                 const mixType = isKnownMusicGenre(ytGenre) ? 'genre' : 'artist';
+                const mixUrl = `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=${mixType}`;
                 const localPromise = fetchJson(`http://${host}:8002/api/tracks`, 8000);
-                const ytPromise = fetchJson(
-                    `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=${mixType}`, 15000);
+                // A genre mix on a COLD cache runs an LLM artist-discovery pass
+                // and per-artist YouTube searches — it takes ~18s the first time a
+                // genre is ever requested, then ~0.3s once cached. The old 15s
+                // timeout abandoned the (working!) mix right before it landed, and
+                // the widget then fell through to the local-library fallback below,
+                // which for "smooth jazz" played the first track in the whole
+                // library — Burzum (black metal). Give the cold mix room, and if it
+                // still times out, retry ONCE: the pipeline populated its cache on
+                // the first attempt, so the retry returns almost instantly.
+                let ytData = await fetchJson(mixUrl, 22000);
+                if (!(ytData && ytData.videos && ytData.videos.length)) {
+                    ytData = await fetchJson(mixUrl, 12000);
+                }
 
+                // Match a local track against the requested genre. Compare on ANY
+                // word of the filter, not the whole phrase: a request for "smooth
+                // jazz" must still match the library's "jazz" tracks (the literal
+                // phrase "smooth jazz" appears on no track, so a whole-string
+                // includes() matched nothing and dumped the entire library).
+                const filterWords = (this.genreFilter || '')
+                    .toLowerCase().split(/\s+/).filter(w => w.length > 2);
                 const matchesGenre = (t) => {
-                    if (!this.genreFilter) return true;
-                    const term = this.genreFilter.toLowerCase();
-                    return (t.genre && t.genre.toLowerCase().includes(term)) ||
-                           (t.title && t.title.toLowerCase().includes(term)) ||
-                           (t.artist && t.artist.toLowerCase().includes(term));
+                    if (!filterWords.length) return true;
+                    const hay = `${t.genre || ''} ${t.title || ''} ${t.artist || ''}`.toLowerCase();
+                    return filterWords.some(w => hay.includes(w));
                 };
 
-                const ytData = await ytPromise;
                 const ytVideos = (ytData && ytData.videos) || [];
 
                 if (ytVideos.length > 0) {
@@ -493,14 +509,25 @@ document.addEventListener('alpine:init', () => {
                 }
 
                 if (loadedTracks.length === 0 && allLocalTracks.length > 0) {
-                    console.warn(`[MusicPlayer] Nothing found for "${ytGenre}" — falling back to full library.`);
-                    this.error = `Nothing found for "${ytGenre}" — playing your library instead.`;
-                    this.genreFilter = '';
-                    loadedTracks = allLocalTracks;
+                    // Only fall back to the whole library when NO specific genre was
+                    // asked for (a bare "play music"). If the user asked for "smooth
+                    // jazz" and we found nothing, dumping the full unfiltered library
+                    // plays whatever is first in it — for this library, Burzum — which
+                    // is the exact opposite of the request. Better to surface the miss
+                    // than to play contradicting music.
+                    if (!filterWords.length) {
+                        console.warn('[MusicPlayer] No genre specified — playing full library.');
+                        this.genreFilter = '';
+                        loadedTracks = allLocalTracks;
+                    } else {
+                        console.warn(`[MusicPlayer] Nothing found for "${ytGenre}" (mix + local both empty).`);
+                    }
                 }
 
                 if (loadedTracks.length === 0) {
-                    this.error = `No tracks found for "${ytGenre}". Music service may be offline.`;
+                    this.error = filterWords.length
+                        ? `Couldn't find any "${ytGenre}" tracks right now — try again in a moment.`
+                        : `No tracks found. Music service may be offline.`;
                     return;
                 }
 
@@ -724,7 +751,12 @@ document.addEventListener('alpine:init', () => {
             // each attempt — the IFrame API binds to one iframe per video.
             this.embedUrl = '';
             this.$nextTick(() => {
-                this.embedUrl = `https://www.youtube.com/embed/${id}?autoplay=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`;
+                // mute=1 is REQUIRED for autoplay to fire at all: browsers block
+                // UNMUTED autoplay inside a cross-origin iframe, so autoplay=1 on
+                // its own just loads the video paused (the "video won't play until
+                // I click it" complaint). Start muted so it actually plays, then
+                // unmute via the IFrame API in onReady below.
+                this.embedUrl = `https://www.youtube.com/embed/${id}?autoplay=1&mute=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`;
                 this.$nextTick(() => this.watchForEmbedErrors());
             });
         },
@@ -736,6 +768,17 @@ document.addEventListener('alpine:init', () => {
                 if (!iframe || !window.YT || !window.YT.Player) return;
                 this.player = new YT.Player(iframe, {
                     events: {
+                        onReady: (e) => {
+                            // The src autoplays muted (browser rule). Now that it
+                            // is playing, try to unmute: browsers permit a
+                            // programmatic unmute once the page has seen a user
+                            // gesture, and sending the chat message that spawned
+                            // this widget IS one. If a given browser refuses, it
+                            // stays muted-but-playing instead of paused — strictly
+                            // better than before.
+                            try { e.target.playVideo(); } catch (_) {}
+                            try { e.target.unMute(); e.target.setVolume(100); } catch (_) {}
+                        },
                         onError: (e) => this.handleEmbedError(e.data)
                     }
                 });

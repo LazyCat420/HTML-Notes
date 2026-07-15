@@ -872,56 +872,81 @@ document.addEventListener("DOMContentLoaded", () => {
             let fullText = "";
             let fullComponentHtml = "";
 
+            // SSE lines can be split across reader.read() boundaries — and the
+            // `component` event's payload IS the whole canvas (often many KB), so
+            // it is split almost every time. Splitting each raw chunk on "\n" and
+            // JSON.parse-ing immediately meant a half-arrived component line failed
+            // to parse (swallowed as a "partial chunk"), its continuation didn't
+            // start with "data: " so it was ignored too, and the widget silently
+            // never painted until a reload repainted it from history. Buffer across
+            // reads and only ever process COMPLETE, newline-terminated lines.
+            let buffer = "";
+
+            const dispatch = (data) => {
+                if (data.type === "chunk") {
+                    const token = data.content || "";
+                    fullText += token;
+                    // Deliberately does NOT repaint the canvas: this
+                    // turn's snapshot may already be older than what a
+                    // sibling turn committed. Only `component` paints.
+                    handleIncomingChunk(token);
+                } else if (data.type === "status") {
+                    addLogStep(data.message || "Thinking...", "🧠");
+                } else if (data.type === "done") {
+                    renderDynamicComponents(elements.liveCanvas);
+                    addLogStep("Finished generation.", "✨");
+                    flushSentenceBuffer();
+                    appendChatMessageToHistory("assistant", fullText, Boolean(fullComponentHtml));
+                } else if (data.type === "component") {
+                    addLogStep("Rendered visual component", "🎨");
+                    fullComponentHtml = data.content || "";
+                    if (renderContent(fullText, fullComponentHtml, data.version)) {
+                        // Initialize the moment the widget lands, not on
+                        // "done". A stock_card is entirely Alpine x-text, so
+                        // painted-but-uninitialized is an EMPTY SHELL — and
+                        // any turn whose "done" never arrives (abort, second
+                        // turn, dropped connection) left it that way until
+                        // the page was reloaded.
+                        renderDynamicComponents(elements.liveCanvas);
+                    }
+                    scrollToBottom();
+                } else if (data.type === "tool_call") {
+                    addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
+                } else if (data.type === "error") {
+                    addLogStep(`Error: ${data.message}`, "❌");
+                    renderError(data.message || "An error occurred.");
+                }
+            };
+
+            const processLine = (line) => {
+                if (!line.startsWith("data: ")) return;
+                try {
+                    dispatch(JSON.parse(line.substring(6)));
+                } catch (e) {
+                    // A complete SSE line failed to parse — genuinely malformed,
+                    // not a partial (partials never reach here). Log and skip.
+                    console.warn("Dropped unparseable SSE line", e);
+                }
+            };
+
             while (!done) {
                 const { value, done: readerDone } = await reader.read();
                 done = readerDone;
                 if (value) {
-                    const chunk = decoder.decode(value, { stream: true });
-                    const lines = chunk.split("\n");
-                    for (const line of lines) {
-                        if (line.startsWith("data: ")) {
-                            try {
-                                const data = JSON.parse(line.substring(6));
-                                if (data.type === "chunk") {
-                                    const token = data.content || "";
-                                    fullText += token;
-                                    // Deliberately does NOT repaint the canvas: this
-                                    // turn's snapshot may already be older than what a
-                                    // sibling turn committed. Only `component` paints.
-                                    handleIncomingChunk(token);
-                                } else if (data.type === "status") {
-                                    addLogStep(data.message || "Thinking...", "🧠");
-                                } else if (data.type === "done") {
-                                    renderDynamicComponents(elements.liveCanvas);
-                                    addLogStep("Finished generation.", "✨");
-                                    flushSentenceBuffer();
-                                    appendChatMessageToHistory("assistant", fullText, Boolean(fullComponentHtml));
-                                } else if (data.type === "component") {
-                                    addLogStep("Rendered visual component", "🎨");
-                                    fullComponentHtml = data.content || "";
-                                    if (renderContent(fullText, fullComponentHtml, data.version)) {
-                                        // Initialize the moment the widget lands, not on
-                                        // "done". A stock_card is entirely Alpine x-text, so
-                                        // painted-but-uninitialized is an EMPTY SHELL — and
-                                        // any turn whose "done" never arrives (abort, second
-                                        // turn, dropped connection) left it that way until
-                                        // the page was reloaded.
-                                        renderDynamicComponents(elements.liveCanvas);
-                                    }
-                                    scrollToBottom();
-                                } else if (data.type === "tool_call") {
-                                    addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
-                                } else if (data.type === "error") {
-                                    addLogStep(`Error: ${data.message}`, "❌");
-                                    renderError(data.message || "An error occurred.");
-                                }
-                            } catch (e) {
-                                // ignore parse errors on partial chunks
-                            }
-                        }
+                    buffer += decoder.decode(value, { stream: true });
+                    let newlineIdx;
+                    // Process only lines that are fully terminated by "\n". Any
+                    // trailing partial line stays in `buffer` for the next read.
+                    while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+                        const line = buffer.slice(0, newlineIdx);
+                        buffer = buffer.slice(newlineIdx + 1);
+                        // Trim a trailing "\r" in case the stream uses CRLF.
+                        processLine(line.endsWith("\r") ? line.slice(0, -1) : line);
                     }
                 }
             }
+            // Flush any final line the stream ended without a trailing newline.
+            if (buffer.trim()) processLine(buffer.trim());
             
             // Final cleanup. No canvas repaint — `component` already painted the
             // newest version, and this turn's copy may be behind a sibling's.

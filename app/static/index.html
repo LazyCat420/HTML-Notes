@@ -109,7 +109,18 @@
             });
         }
         var pending = null;
-        function schedule() { if (pending) return; pending = requestAnimationFrame(function () { pending = null; observeAll(); layout(); }); }
+        function schedule() {
+            if (pending) return;
+            pending = requestAnimationFrame(function () {
+                pending = null; observeAll(); layout();
+                // A second pass after the frame catches widgets whose height only
+                // settles once Alpine fills their x-text (stock_card, weather) or
+                // markdown/images reflow — the ResizeObserver covers most of this,
+                // but this guarantees a correct span even if a widget's size lands
+                // between observer notifications.
+                setTimeout(function () { observeAll(); layout(); }, 180);
+            });
+        }
         function start() {
             var lc = document.querySelector('#live-canvas');
             if (!lc) { setTimeout(start, 300); return; }

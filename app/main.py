@@ -1986,6 +1986,15 @@ async def send_message(req: MessageRequest):
             if not board.get("is_error"):
                 return spawn_widget_stream("scoreboard", "scores", board,
                                            status=f"pulling {board.get('title', 'scores')}...")
+            # Off-season / no fixtures today: ESPN has nothing to put on a
+            # scoreboard, so rather than silently falling through to the slow
+            # agent loop (which for "fifa game current stats" rendered NOTHING),
+            # synthesize an answer card — standings, upcoming fixtures, recent
+            # results — from a web search. The user always gets something.
+            return spawn_widget_stream(
+                "data_card", "sports-answer",
+                config_builder=lambda: build_answer_config(req.message),
+                status="the league is between games — finding the latest...")
 
         # 2. NEWS VIDEO — "fifa news video". Searched by relevance this returns the
         #    most-watched clip for those words (a years-old recap); news means the

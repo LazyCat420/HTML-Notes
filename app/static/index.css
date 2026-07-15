@@ -158,6 +158,18 @@ body::after {
 .dashboard-grid > .widget-container,
 .dashboard-grid > .glass-card {
     align-self: start;
+    /* CRITICAL anti-overlap default. With a 1px row track, a widget that has
+       not yet had its exact span computed by the masonry script would reserve
+       only 1px of grid track while rendering at its full height — so the next
+       item is placed 1px below it and the two visually overlap (the frosted
+       new card sitting on top of the video behind it). Reserving a generous
+       fixed span up front means widgets NEVER overlap even before the script
+       runs (or if it never runs); the script then shrinks this to the exact
+       pixel height. 640 covers the tallest widget (stock_card, 620px), so
+       nothing can overlap. Short widgets show a little transient whitespace
+       for the ~1 frame until the script tightens them — whitespace is the
+       safe failure mode; overlap is not. */
+    grid-row-end: span 640;
 }
 
 .dashboard-grid > div {
