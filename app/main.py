@@ -1164,6 +1164,8 @@ async def commit_canvas(session_id: str, mutate) -> Optional[str]:
             return None
         html = str(soup)
         version = set_session_canvas(session_id, html)
+    logger.info(f"[CANVAS] committed v{version} ({len(html)} bytes) session={session_id[:8]} "
+                f"— emitting component frame to client")
     return f'data: {json.dumps({"type": "component", "content": html, "version": version})}\n\n'
 
 
@@ -1890,6 +1892,13 @@ async def send_message(req: MessageRequest):
         # local so both nested closures (fast-path _append, agent injector _add)
         # read the same value regardless of context propagation.
         req_seq = next(_request_counter)
+        # Audit trail: every query is logged at ingress with its req_seq so a
+        # failed-to-render query can be correlated with whether a canvas commit
+        # (logged in commit_canvas as [CANVAS]) was ever emitted for it. If a
+        # [QUERY] has a matching [CANVAS] emit but nothing appeared on screen,
+        # the loss is client-side (SSE framing); if there is no [CANVAS], the
+        # turn produced no widget server-side.
+        logger.info(f"[QUERY] seq={req_seq} session={req.session_id[:8]} msg={req.message!r}")
         # Save user message
         user_msg_id = f"msg_{uuid.uuid4().hex[:8]}"
         database.save_chat_message(
