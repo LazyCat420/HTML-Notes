@@ -855,9 +855,63 @@ def coerce_widget_type(widget_type: str, widget_id: str, config: dict) -> tuple:
     return "stock_card", {"symbol": str(symbol).upper()}
 
 
+# Keys that carry only an unresolved QUERY/topic — not real content. A data-ish
+# widget holding only these never rehydrated from its data source, so rendering it
+# produces the raw key/value dump the user sees as a broken empty card
+# ("NEWS_TOPIC | stock market").
+_QUERY_ONLY_KEYS = {"news_topic", "topic", "search_query", "map_query", "query",
+                    "symbol", "ticker", "location", "url"}
+# Keys that DO carry real, renderable content.
+_CONTENT_KEYS = ("items", "sources", "answer", "content", "values", "markers",
+                 "events", "articles", "results", "price", "technicals", "image")
+
+
+def _widget_is_degenerate(widget_type: str, config: dict) -> bool:
+    """True when a data-ish widget carries a topic/query but no real content, so
+    it would render as an empty shell / raw-config dump. Scoped to the widget
+    types whose renderers lack their own graceful empty state (weather, map,
+    image, checklist, youtube all handle empty results themselves)."""
+    if not isinstance(config, dict) or widget_type not in (
+            "data_card", "stock_card", "scoreboard", "chart"):
+        return False
+    if any(config.get(k) for k in _CONTENT_KEYS):
+        return False
+    meaningful = [k for k, v in config.items()
+                  if v and k not in ("title", "subtitle", "icon")]
+    return not meaningful or all(k in _QUERY_ONLY_KEYS for k in meaningful)
+
+
+def _graceful_fallback_config(config: dict) -> dict:
+    """A readable 'couldn't load this' card — never a raw key dump or blank."""
+    topic = ""
+    for k in ("news_topic", "topic", "search_query", "map_query", "query",
+              "symbol", "ticker", "title"):
+        v = config.get(k) if isinstance(config, dict) else None
+        if v:
+            topic = str(v).strip()
+            break
+    icon = (config.get("icon") if isinstance(config, dict) else None) or "info"
+    return {
+        "title": topic.title() if topic else "No results",
+        "icon": icon,
+        "content": (f"Couldn't pull up **{topic or 'that'}** right now — the "
+                    f"source came back empty. Try rephrasing, or ask again in a moment."),
+    }
+
+
 def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
     """Single choke point for widget HTML: coerce the type, then render."""
     widget_type, config = coerce_widget_type(widget_type, widget_id, config)
+    # Universal safety net: a data widget with only a topic/query and no content
+    # would render as a raw key/value dump — a card that looks broken. Downgrade
+    # it to a readable fallback so the canvas never shows an empty shell, no
+    # matter how the config arrived (fast-path, agent, or cache-miss rehydration).
+    if _widget_is_degenerate(widget_type, config):
+        logger.info(
+            "[WIDGET GUARD] degenerate %s (%s) keys=%s -> fallback card",
+            widget_type, widget_id,
+            list(config.keys()) if isinstance(config, dict) else config)
+        widget_type, config = "data_card", _graceful_fallback_config(config)
     return generate_widget_html(widget_type, widget_id, config)
 
 
@@ -1379,7 +1433,8 @@ RECENCY_RE = re.compile(r'\b(news|latest|recent|recently|today|tonight|breaking|
 VIDEO_FILLER = {
     "video", "videos", "yt", "youtube", "clip", "clips", "watch", "pull", "up", "show",
     "me", "a", "an", "the", "of", "some", "play", "find", "get", "please", "for", "on",
-    "give", "want", "see", "put", "add", "open", "stream", "livestream",
+    "give", "want", "see", "put", "add", "open", "stream", "streams", "streaming",
+    "live", "livestream", "livestreams",
 }
 
 
@@ -1501,7 +1556,7 @@ STOCK_WORD_RE = re.compile(r'\b(stock|stocks|ticker|shares|share price|crypto|na
 # data classification, and it needs YouTube's LIVE filter to land on an actual
 # stream: a plain search for "cnn live news" returns recorded clips, the filtered
 # one returns "CNN Headlines: 24/7 Live News".
-LIVE_ASK_RE = re.compile(r'\b(live|livestream|live ?stream|streaming)\b')
+LIVE_ASK_RE = re.compile(r'\b(live|livestreams?|live ?streams?|streaming)\b')
 
 # "this one sucks, find another" — swap the CURRENT video for a different one and
 # remember not to show the disliked video again. Gated on a video actually being
@@ -1542,6 +1597,14 @@ CHANNEL_DISLIKE_RE = re.compile(
 LIST_INTENT_RE = re.compile(
     r'\b(grocery|groceries|shopping|packing|checklist|to-?dos?|task list|'
     r'bucket list|reading list|watch ?list|wish ?list|ingredients?)\b|\blists?\b')
+# "add greek salad TO THE grocery list", "also add milk", "put eggs on the list".
+# An EDIT of an existing checklist, not a request for a new one — distinguished
+# from "add a grocery list" (create) by the "to/onto/on the ... list" / "also"
+# shape. Merged into the existing widget in place; see _extract_existing_checklist.
+LIST_EDIT_RE = re.compile(
+    r'\b(add|append|include|put|throw in|toss in)\b.*\b(to|onto|on)\b.*\blists?\b'
+    r'|\balso\s+(add|include|put|need)\b'
+    r'|\b(add|put|append|include)\b.*\bto (the|my|our|this|that)\b')
 NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
 # A question/how-to/recipe that wants a SYNTHESISED answer (summary + sources),
 # not a widget noun and not a data feed. Routed to build_answer_config so the
@@ -1558,6 +1621,20 @@ MAP_ASK_RE = re.compile(
     r'\b(map|maps|on a map|where are|where is|where\'?s|located|location of|'
     r'near me|nearby|fires? in|wildfires?|earthquakes?|flooding|floods?|'
     r'hurricanes?|tornado(es)?|show me where|whereabouts)\b')
+# Travel-time / directions / traffic. There is no routing widget yet, so rather
+# than a blank markers map (which looks broken) these resolve to a synthesised
+# answer card with the actual guidance. Kept off MAP_ASK_RE — "how long to the
+# airport" has no geo token and would otherwise fall through to a wall of links.
+DIRECTIONS_ASK_RE = re.compile(
+    r'\b(directions?|how (long|far)|travel time|drive time|commute|'
+    r'traffic|route to|way to|get to|getting to|how do i get)\b')
+# Wikipedia — "open a random wikipedia page", "wikipedia article about X".
+WIKI_ASK_RE = re.compile(r'\bwiki(pedia)?\b')
+# Framing words stripped so a Wikipedia ask reduces to a page title.
+_WIKI_STRIP_RE = re.compile(
+    r'\b(open|show|me|a|an|the|random|wikipedia|wiki|page|pages|article|'
+    r'articles|about|on|of|for|please|pull up|look up|lookup|find|get)\b',
+    re.IGNORECASE)
 
 # Strip the words that name the widget or frame the request; whatever survives is
 # the subject. "notes for grocery list for chicken soup" → "chicken soup".
@@ -1577,6 +1654,52 @@ def extract_topic(text: str) -> str:
     user wants a blank widget ("notes") rather than a filled one ("notes on X")."""
     cleaned = re.sub(r'[^\w\s]', ' ', (text or '').lower())
     return " ".join(w for w in cleaned.split() if w not in TOPIC_STOPWORDS).strip()
+
+
+async def build_wikipedia_config(message: str) -> dict:
+    """Fetch a Wikipedia article (random, or a named topic) via the REST summary
+    API and render it as a readable data_card. NOT an iframe — en.wikipedia.org
+    sends X-Frame-Options and refuses to embed, which rendered a black window."""
+    lower = (message or "").lower()
+    is_random = "random" in lower
+    topic = _WIKI_STRIP_RE.sub(" ", message or "")
+    topic = re.sub(r'[^\w\s]', " ", topic)
+    topic = " ".join(topic.split()).strip()
+    if not topic:
+        is_random = True
+    try:
+        headers = {"User-Agent": "html-notes/1.0 (canvas widget)"}
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True,
+                                     headers=headers) as client:
+            if is_random:
+                r = await client.get(
+                    "https://en.wikipedia.org/api/rest_v1/page/random/summary")
+            else:
+                slug = urllib.parse.quote(topic.replace(" ", "_"))
+                r = await client.get(
+                    f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}")
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logger.warning(f"[WIKI] fetch failed: {e}")
+        return {"title": "Wikipedia", "icon": "menu_book",
+                "content": "Couldn't reach Wikipedia right now — try again in a moment."}
+
+    page_title = data.get("title") or topic.title() or "Wikipedia"
+    extract = data.get("extract") or ""
+    page_url = (((data.get("content_urls") or {}).get("desktop") or {}).get("page")
+                or f"https://en.wikipedia.org/wiki/{urllib.parse.quote(page_title.replace(' ', '_'))}")
+    thumb = (data.get("thumbnail") or {}).get("source", "")
+    if not extract:
+        return {"title": page_title, "icon": "menu_book",
+                "content": f"Couldn't load a summary. [Read on Wikipedia ↗]({page_url})"}
+    return {
+        "title": page_title,
+        "subtitle": data.get("description") or "Wikipedia",
+        "icon": "menu_book",
+        "image": thumb,
+        "answer": f"{extract}\n\n[Read the full article on Wikipedia ↗]({page_url})",
+    }
 
 
 _fast_model = {"name": None}
@@ -1626,6 +1749,67 @@ async def build_list_config(message: str) -> dict:
         "title": str(data.get("title") or "Checklist")[:60],
         "items": [str(i)[:120] for i in data["items"] if str(i).strip()][:14],
     }
+
+
+def _extract_existing_checklist(session_id: str):
+    """Find the most-recent checklist on the session canvas and return
+    (widget_id, title, items[{text,done}]) or None. Items are baked into the
+    widget's x-data="checklistWidget(<title>, <items>)" attribute; BeautifulSoup
+    decodes the html-escaped JSON back to real JSON when it parses the canvas."""
+    html_str = get_session_canvas(session_id)
+    if not html_str or "checklistWidget(" not in html_str:
+        return None
+    soup = BeautifulSoup(html_str, "html.parser")
+    found = None
+    for div in soup.find_all("div", class_="widget-container"):
+        if (div.get("x-data") or "").strip().startswith("checklistWidget("):
+            found = div  # last one wins — the most recently added list
+    if found is None:
+        return None
+    m = re.search(r'checklistWidget\(\s*(".*?"|\'.*?\')\s*,\s*(\[.*\])\s*\)\s*$',
+                  found.get("x-data") or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        title = json.loads(m.group(1))
+    except Exception:
+        title = "Checklist"
+    try:
+        raw_items = json.loads(m.group(2))
+    except Exception:
+        return None
+    items = []
+    for it in raw_items:
+        if isinstance(it, str) and it.strip():
+            items.append({"text": it.strip(), "done": False})
+        elif isinstance(it, dict) and str(it.get("text", "")).strip():
+            items.append({"text": str(it["text"]).strip(), "done": bool(it.get("done"))})
+    return found.get("id"), (title or "Checklist"), items
+
+
+async def build_list_add_config(message: str, existing_title: str,
+                                existing_items: list) -> dict:
+    """Merge the newly-requested items INTO an existing checklist, preserving the
+    prior items (and their done flags). Used to edit a list in place instead of
+    spawning a second one for "add greek salad to the grocery list"."""
+    data = await fast_llm_json(
+        'Return ONLY a JSON object, no prose and no markdown fence:\n'
+        '{"items": ["<item>", ...]}\n'
+        f'There is already a checklist titled "{existing_title}". The user now '
+        f'asked: "{message}"\n'
+        'List ONLY the NEW items to add (do not repeat existing ones). Use buyable '
+        'ingredients for a grocery list, actionable tasks otherwise. If they named '
+        'a dish (e.g. "greek salad"), expand it into its ingredients. 1-12 items.'
+    )
+    merged = list(existing_items)
+    seen = {i["text"].strip().lower() for i in merged if i.get("text")}
+    if data and isinstance(data.get("items"), list):
+        for raw in data["items"]:
+            t = str(raw).strip()[:120]
+            if t and t.lower() not in seen:
+                merged.append({"text": t, "done": False})
+                seen.add(t.lower())
+    return {"title": existing_title, "items": merged[:40]}
 
 
 async def build_notes_config(message: str) -> dict:
@@ -2023,7 +2207,8 @@ async def send_message(req: MessageRequest):
         text_clean = text_lower.strip()
 
         def spawn_widget_stream(widget_type: str, id_prefix: str, config: dict = None,
-                                config_builder=None, status: str = None):
+                                config_builder=None, status: str = None,
+                                widget_id: str = None):
             """Heuristic fast-path: append a prebuilt widget to the CURRENT canvas
             and stream back the full canvas — same contract as the agent path, so
             existing widgets always survive.
@@ -2043,14 +2228,14 @@ async def send_message(req: MessageRequest):
                     if built:
                         widget_config.update(built)
 
-                widget_id = f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+                resolved_id = widget_id or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
 
                 def _append(soup):
                     # Media widgets (video, music) are players: a new one replaces
                     # whatever's already playing instead of stacking a second one —
                     # but only if this request is newer than whatever placed it, so
                     # a slower older request can't overwrite it.
-                    if _place_media_widget(soup, widget_type, widget_id, widget_config, req_seq):
+                    if _place_media_widget(soup, widget_type, resolved_id, widget_config, req_seq):
                         return
 
                     target = soup.select_one('#dashboard-grid')
@@ -2060,9 +2245,16 @@ async def send_message(req: MessageRequest):
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
                     node = BeautifulSoup(
-                        render_widget(widget_type, widget_id, widget_config), 'html.parser')
+                        render_widget(widget_type, resolved_id, widget_config), 'html.parser')
                     _stamp_media_seq(node, widget_type, req_seq)
-                    target.append(node)
+                    # An explicit widget_id that already exists is an EDIT (e.g.
+                    # merging into a checklist): replace it in place instead of
+                    # appending a duplicate.
+                    existing = soup.find(id=resolved_id)
+                    if existing is not None:
+                        existing.replace_with(node)
+                    else:
+                        target.append(node)
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
@@ -2176,23 +2368,39 @@ async def send_message(req: MessageRequest):
         #    list of headlines) when the user wanted something to watch. "live
         #    music"/"live radio" still belongs to the music player, not YouTube.
         if LIVE_ASK_RE.search(text_clean) and not wants_removal and not wants_music:
-            # Resolved here rather than in a config_builder so that a search miss
-            # can still fall through to the agent instead of spawning a dead player.
-            live_hits = await search_youtube_videos(req.message, limit=6, order="live")
-            if not live_hits:
-                live_hits = await search_youtube_videos(req.message, limit=6)
-            live_hits = filter_blocked_videos(live_hits)
+            # Search the CLEANED subject, not the raw message: "dunkey livestreams"
+            # must search "dunkey" under YouTube's live filter (the filter, not the
+            # word, is what finds a stream). Searching the literal "dunkey
+            # livestreams" returned nothing, so live asks silently died while the
+            # plain "dunkey videos" path worked.
+            lquery = clean_video_query(req.message)
+            live_hits = filter_blocked_videos(
+                await search_youtube_videos(lquery, limit=6, order="live"))
             if live_hits:
                 top = live_hits[0]
-                _remember_current_video(req.session_id, top, req.message)
+                _remember_current_video(req.session_id, top, lquery)
                 return spawn_widget_stream("youtube_player", "live", {
                     "video_id": top["video_id"],
-                    "title": top.get("title") or req.message,
-                    "query": req.message,
+                    "title": top.get("title") or lquery,
+                    "query": lquery,
                     # Label-owned/geo-blocked streams refuse to embed; the player
                     # hops through these on an embed error.
                     "candidates": [v["video_id"] for v in live_hits[1:] if v.get("video_id")],
-                }, status="finding a live stream...")
+                }, status=f"finding a '{lquery}' live stream...")
+            # Nobody's live right now: fall back to a regular (varied) video of the
+            # same subject rather than falling through to the agent (which broke).
+            # "dunkey livestreams" when dunkey is offline → a dunkey video.
+            vod_hits = filter_blocked_videos(
+                await search_youtube_videos(lquery, limit=8))
+            top, cands = pick_varied_video(vod_hits, k=5)
+            if top:
+                _remember_current_video(req.session_id, top, lquery)
+                return spawn_widget_stream("youtube_player", "video", {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or lquery,
+                    "query": lquery,
+                    "candidates": cands,
+                }, status=f"no live stream right now — pulling a '{lquery}' video...")
 
         # 3b. GENERAL VIDEO — a plain "show me a video of X" / "X video" that is
         #     neither a live stream (handled above, deterministic — bloomberg live
@@ -2237,6 +2445,55 @@ async def send_message(req: MessageRequest):
                 config_builder=lambda: build_news_config(req.message),
                 status="gathering and summarizing the news...")
 
+        # 5a. WIKIPEDIA — "open a random wikipedia page", "wikipedia about X".
+        #     Rendered as a data_card from the REST summary API, NOT an iframe:
+        #     en.wikipedia.org sends X-Frame-Options and refuses to embed, which
+        #     rendered a solid-black "App Window".
+        if (WIKI_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask):
+            return spawn_widget_stream(
+                "data_card", "wikipedia",
+                config_builder=lambda: build_wikipedia_config(req.message),
+                status="opening a Wikipedia article...")
+
+        # 5b. DIRECTIONS / TRAVEL-TIME — "how long to the airport", "traffic to
+        #     downtown", "directions to X". No routing widget yet, so synthesise a
+        #     real answer card instead of a blank map. Checked BEFORE the map fast
+        #     path (a travel question isn't a "where is X" marker map) and OUTSIDE
+        #     the is_data_ask gate so a "weather AND how long to..." still resolves.
+        if (DIRECTIONS_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask):
+            return spawn_widget_stream(
+                "data_card", "directions",
+                config_builder=lambda: build_answer_config(req.message),
+                status="checking the route and travel time...")
+
+        # 6. MAP — geo/location queries. Pulled OUT of the is_data_ask gate below:
+        #    "weather" (a DATA_ASK word) used to suppress the entire map branch, so
+        #    "weather in X and a map of Y" never drew a map. A real geo signal wins.
+        if (MAP_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask):
+            return spawn_widget_stream(
+                "map", "map",
+                config_builder=lambda: build_map_config(req.message),
+                status="finding the locations and building your map...")
+
+        # 6b. LIST EDIT — "add greek salad to the grocery list", "also add milk".
+        #     Merge into the EXISTING checklist (reuse its widget_id) rather than
+        #     spawning a second list. Only fires when a checklist is actually on
+        #     the canvas; otherwise falls through to the normal create path.
+        if (LIST_EDIT_RE.search(text_clean)
+                and not wants_removal and not is_video_ask):
+            existing_list = _extract_existing_checklist(req.session_id)
+            if existing_list:
+                ex_id, ex_title, ex_items = existing_list
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config_builder=lambda: build_list_add_config(
+                        req.message, ex_title, ex_items),
+                    status=f"adding to “{ex_title}”...",
+                    widget_id=ex_id)
+
         if not wants_removal and not is_video_ask and not is_data_ask:
             is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
             topic = extract_topic(req.message)
@@ -2277,15 +2534,7 @@ async def send_message(req: MessageRequest):
                     status="writing your note...",
                 )
 
-            # 6. MAP — geo/location queries ("where are the fires in California",
-            #    "map of X") get an interactive map with markers geocoded from a
-            #    web search, not a text card.
-            if MAP_ASK_RE.search(text_clean):
-                return spawn_widget_stream(
-                    "map", "map",
-                    config_builder=lambda: build_map_config(req.message),
-                    status="finding the locations and building your map...",
-                )
+            # (MAP now runs earlier, outside the is_data_ask gate — see above.)
 
             # 7. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
             #    Synthesised into a readable answer card (Markdown answer + demoted

@@ -1641,6 +1641,8 @@ body::after { display: none !important; }
 .btn-icon svg { width: 19px; height: 19px; }
 .btn-icon.recording { color: #ff453a; }
 .btn-icon.muted { color: rgba(245, 245, 247, 0.3); }
+/* TTS service is offline (in cooldown) — amber tint cues "voice unavailable". */
+.btn-icon.tts-offline { color: #ff9f0a; opacity: 0.85; }
 
 .btn-send, .btn-stop {
     background: var(--accent) !important;

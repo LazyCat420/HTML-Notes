@@ -101,15 +101,17 @@ def test_unknown_widget_type_degrades_to_data_card():
 # ─── Heuristic intent guards ─────────────────────────────────────
 
 def test_video_ask_overrides_widget_keywords():
-    from app.main import VIDEO_ASK_RE, DATA_ASK_RE
+    from app.main import VIDEO_ASK_RE, DATA_ASK_RE, ANSWER_ASK_RE
     # "clock for video" must be treated as a video ask, not a clock spawn
     assert VIDEO_ASK_RE.search("pull up a clock for video")
     assert VIDEO_ASK_RE.search("play a video of a clock")
     assert not VIDEO_ASK_RE.search("add a clock widget")
-    # data asks reach the agent too
+    # data asks reach the dedicated data paths / agent
     assert DATA_ASK_RE.search("show me the news")
-    assert DATA_ASK_RE.search("find me a recipe with chicken")
     assert not DATA_ASK_RE.search("add a checklist")
+    # recipes are now a synthesised ANSWER card, not a raw data ask
+    assert ANSWER_ASK_RE.search("find me a recipe with chicken")
+    assert not DATA_ASK_RE.search("find me a recipe with chicken")
 
 def test_youtube_player_bakes_candidates_and_query():
     config = {"video_id": "abc123DEF45", "title": "2Pac - I Get Around",

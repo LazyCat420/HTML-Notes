@@ -96,8 +96,12 @@ def test_sse_no_duplicate_widget(mock_stream):
     print(f"Container element count: {container_count}")
     assert container_count == 1, f"Expected widget container to be appended exactly once, got {container_count}"
 
+@patch("app.main.search_youtube_videos", new_callable=AsyncMock, return_value=[])
 @patch("httpx.AsyncClient.stream")
-def test_youtube_widget_in_place_replacement(mock_stream):
+def test_youtube_widget_in_place_replacement(mock_stream, mock_yt_search):
+    # search_youtube_videos is mocked out: the agent path enriches youtube configs
+    # with a live search, which would otherwise hit the network non-deterministically
+    # in CI. This test isolates the in-place media-widget replacement itself.
     session_id = "test-session-youtube-replacement"
     
     database.init_db()
@@ -112,7 +116,7 @@ def test_youtube_widget_in_place_replacement(mock_stream):
 
     # Stream adding a youtube widget when one already exists with a different ID
     mock_events = [
-        'data: {"type": "tool_execution", "status": "preparing", "tool": {"name": "mcp__lazy-tool-service__canvas_add_widget", "args": {"widget_type": "youtube_player", "widget_id": "fireship-video-latest", "config": {"video_id": "new_video_id", "title": "New Video Title"}}}}\n',
+        'data: {"type": "tool_execution", "status": "success", "tool": {"name": "mcp__lazy-tool-service__canvas_add_widget", "args": {"widget_type": "youtube_player", "widget_id": "fireship-video-latest", "config": {"video_id": "new_video_id", "title": "New Video Title"}}}}\n',
         'data: {"type": "chunk", "content": "Updated "}\n',
         'data: {"type": "done"}\n'
     ]

@@ -486,10 +486,32 @@ def render_notes(widget_id: str, config: dict) -> str:
     """
 
 def render_iframe_app(widget_id: str, config: dict) -> str:
-    url = config.get("url", "about:blank")
+    url = (config.get("url") or "").strip()
     title = config.get("title", "App Window")
     icon = config.get("icon", "🌐")
-    
+
+    # A missing/blank url used to fall back to src="about:blank" over a near-black
+    # background — a widget that renders as a solid black box. Show a readable
+    # placeholder instead, and only offer the "open" link when there's a real url.
+    if not url or url == "about:blank":
+        body = (
+            '<div class="flex-grow flex flex-col items-center justify-center text-center p-6 gap-3 text-slate-400">'
+            '<span class="material-symbols-outlined text-4xl opacity-40">public_off</span>'
+            '<p class="text-sm">No app URL was provided for this window.</p>'
+            '</div>'
+        )
+        open_link = ""
+    else:
+        body = (
+            f'<iframe src="{esc(url)}" class="w-full flex-grow border-none bg-slate-950" '
+            f'sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>'
+        )
+        open_link = (
+            f'<a href="{esc(url)}" target="_blank" rel="noopener" '
+            f'class="text-white/50 hover:text-white transition-colors" title="Open Full App">'
+            f'<span class="material-symbols-outlined text-[1.2rem]">open_in_new</span></a>'
+        )
+
     return f"""
     <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
         <!-- Title Bar -->
@@ -499,16 +521,14 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
                 <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]">{title}</h3>
             </div>
             <div class="flex items-center gap-3">
-                <a href="{url}" target="_blank" class="text-white/50 hover:text-white transition-colors" title="Open Full App">
-                    <span class="material-symbols-outlined text-[1.2rem]">open_in_new</span>
-                </a>
+                {open_link}
                 <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
                     <span class="material-symbols-outlined text-[1.2rem]">close</span>
                 </button>
             </div>
         </div>
-        <!-- Iframe Content -->
-        <iframe src="{url}" class="w-full flex-grow border-none bg-slate-950" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+        <!-- Content -->
+        {body}
     </div>
     """
 

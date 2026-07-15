@@ -54,6 +54,6 @@ async def test_large_canvas_not_truncated():
         
         # The first message is our [SYSTEM INSTRUCTIONS] block
         system_instruction_msg = messages[0]["content"]
-        assert "CURRENT CANVAS STATE:" in system_instruction_msg
+        assert "CURRENT CANVAS:" in system_instruction_msg
         assert "Widget ID: #widget-1" in system_instruction_msg
         assert "..." not in system_instruction_msg[-100:]  # Make sure we didn't suffix with truncation indicator
