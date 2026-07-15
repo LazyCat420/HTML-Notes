@@ -449,6 +449,59 @@ async def stock_snapshot(symbol: str, range_: str = "1mo") -> dict:
 stock_history = stock_snapshot
 
 
+async def stock_news(query: str, limit: int = 8) -> dict:
+    """Stock/company news headlines + ticker matches for a free-text query.
+
+    Yahoo's search endpoint is keyless like the chart endpoint above and
+    answers both jobs stock_snapshot can't: "what's the news on X" and
+    "find me stocks" (the quotes array is ticker discovery — the model can
+    feed those symbols straight into html_notes_stock_history).
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "stock_news needs a query (ticker, company name, or topic).", "is_error": True}
+    limit = max(1, min(int(limit or 8), 15))
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(
+                "https://query1.finance.yahoo.com/v1/finance/search"
+                f"?q={urllib.parse.quote(query)}&newsCount={limit}&quotesCount=6",
+                headers={"User-Agent": _YAHOO_UA})
+            payload = resp.json()
+
+        news = []
+        for item in payload.get("news") or []:
+            stamp = item.get("providerPublishTime")
+            news.append({
+                "title": item.get("title"),
+                "publisher": item.get("publisher"),
+                "published": (datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc)
+                              .strftime("%Y-%m-%d %H:%M UTC") if stamp else None),
+                "url": item.get("link"),
+                "related_tickers": item.get("relatedTickers") or [],
+            })
+
+        matches = [
+            {
+                "symbol": q.get("symbol"),
+                "name": q.get("longname") or q.get("shortname"),
+                "exchange": q.get("exchDisp"),
+                "type": q.get("quoteTypeDisp") or q.get("quoteType"),
+            }
+            for q in (payload.get("quotes") or [])
+            if q.get("symbol")
+        ]
+
+        if not news and not matches:
+            return {"news": [], "matches": [], "count": 0,
+                    "message": "Nothing found. Retry with a ticker symbol or a shorter company name."}
+        return {"news": news, "matches": matches, "count": len(news)}
+    except Exception as e:
+        logger.error(f"stock_news({query}) error: {e}")
+        return {"error": str(e), "is_error": True}
+
+
 # ESPN's scoreboard API is keyless and covers every league we care about. Friendly
 # names → ESPN paths, longest key first so "champions league" beats "league" and
 # "college football" beats "football".
@@ -1324,6 +1377,7 @@ async def send_message(req: MessageRequest):
             "5. Then write ONE sentence (max 20 words) saying what you added. That sentence is the only prose you write all turn.\n\n"
             "ROUTING — pick one and execute it:\n"
             "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
+            "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → mcp__lazy-tool-service__html_notes_stock_news; its 'matches' array gives you tickers to feed into html_notes_stock_history. Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
             "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
             "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
             "- news, facts, recipes, weather, 'what/when/who is X' → mcp__lazy-tool-service__html_notes_web_search, then canvas_add_widget(widget_type='data_card')\n"
@@ -1363,6 +1417,7 @@ async def send_message(req: MessageRequest):
             "mcp__lazy-tool-service__html_notes_web_search",
             "mcp__lazy-tool-service__html_notes_read_page",
             "mcp__lazy-tool-service__html_notes_stock_history",
+            "mcp__lazy-tool-service__html_notes_stock_news",
             "mcp__lazy-tool-service__html_notes_sports_scores",
         ]
 
@@ -2338,6 +2393,9 @@ async def internal_tool_execute(req: InternalToolRequest):
             if not result.get("is_error"):
                 cache_tool_result(f"stock:{a.get('symbol', '')}", result)
             return result
+
+        elif t == "html_notes_stock_news":
+            return await stock_news(a.get("query", ""), limit=int(a.get("limit", 8)))
 
         elif t == "html_notes_sports_scores":
             result = await sports_scores(a.get("league", ""))
