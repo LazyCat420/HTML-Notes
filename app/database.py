@@ -69,7 +69,23 @@ def init_db():
         FOREIGN KEY(session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
     );
     """)
-    
+
+    # Persistent agent memory — a general key/value store that survives across
+    # sessions and container restarts. First use: video/channel blocklists so
+    # "this one sucks, find another" / "this channel sucks" are remembered
+    # forever. Kept generic (category + key + JSON value) so future preferences
+    # and remembered facts can reuse it instead of growing one table per feature.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,   -- e.g. 'blocked_video', 'blocked_channel'
+        key TEXT NOT NULL,        -- video_id, channel name, preference key
+        value TEXT,               -- optional JSON/text payload (reason, etc.)
+        created_at TEXT NOT NULL,
+        UNIQUE(category, key)
+    );
+    """)
+
     conn.commit()
     conn.close()
 
@@ -390,3 +406,46 @@ def get_session_messages(session_id: str) -> List[Dict[str, Any]]:
             "created_at": row["created_at"]
         })
     return messages
+
+
+# ── Persistent agent memory ────────────────────────────────────────────────
+def add_agent_memory(category: str, key: str, value: Optional[str] = None) -> None:
+    """Remember one (category, key) fact forever. Idempotent — re-adding the same
+    key just refreshes its value/timestamp instead of erroring on the UNIQUE."""
+    now = datetime.utcnow().isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO agent_memory (category, key, value, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (category, key, value, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_agent_memory(category: str, key: str) -> None:
+    """Forget one (category, key) fact — e.g. unblock a channel."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM agent_memory WHERE category = ? AND key = ?", (category, key)
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_agent_memory(category: str) -> List[Dict[str, Any]]:
+    """All remembered facts in a category, newest first."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT category, key, value, created_at FROM agent_memory "
+        "WHERE category = ? ORDER BY created_at DESC",
+        (category,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

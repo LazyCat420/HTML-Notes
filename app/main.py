@@ -1414,6 +1414,72 @@ def pick_varied_video(hits: list, k: int = 5):
     return chosen, others
 
 
+# ── Persistent video/channel dislikes ───────────────────────────────────────
+# Backed by the agent_memory table so a block survives sessions and restarts.
+# Loaded once into in-memory sets so the hot search path never touches the DB;
+# both are updated together when a new block is added.
+_BLOCKED_VIDEO_CAT = "blocked_video"
+_BLOCKED_CHANNEL_CAT = "blocked_channel"
+_blocked_video_ids: set = set()
+_blocked_channels: set = set()   # stored lowercased for case-insensitive match
+
+
+def _load_blocklists() -> None:
+    try:
+        _blocked_video_ids.update(
+            m["key"] for m in database.list_agent_memory(_BLOCKED_VIDEO_CAT))
+        _blocked_channels.update(
+            (m["key"] or "").lower() for m in database.list_agent_memory(_BLOCKED_CHANNEL_CAT))
+    except Exception as e:
+        logger.warning(f"could not load video blocklists: {e}")
+
+
+def block_video(video_id: str, reason: str = "") -> None:
+    if not video_id:
+        return
+    _blocked_video_ids.add(video_id)
+    database.add_agent_memory(_BLOCKED_VIDEO_CAT, video_id, reason or None)
+
+
+def block_channel(channel: str, reason: str = "") -> None:
+    if not channel:
+        return
+    _blocked_channels.add(channel.lower())
+    database.add_agent_memory(_BLOCKED_CHANNEL_CAT, channel, reason or None)
+
+
+def filter_blocked_videos(hits: list) -> list:
+    """Drop any hit the user has permanently disliked (by video or by channel).
+    If EVERY hit is blocked, returns the originals rather than nothing — a video
+    the user half-dislikes still beats an empty player."""
+    if not hits:
+        return hits
+    kept = [h for h in hits
+            if h.get("video_id") not in _blocked_video_ids
+            and (h.get("channel") or "").lower() not in _blocked_channels]
+    return kept or hits
+
+
+# The last video shown per session, so a follow-up ("this one sucks, find
+# another", "this channel sucks") knows what to exclude and what query to
+# re-run. In-memory is fine: it only needs to survive within a conversation,
+# while the block itself is what persists in the DB.
+_session_current_video: Dict[str, dict] = {}
+
+
+def _remember_current_video(session_id: str, hit_or_cfg: dict, query: str) -> None:
+    if not session_id:
+        return
+    _session_current_video[session_id] = {
+        "video_id": hit_or_cfg.get("video_id"),
+        "channel": hit_or_cfg.get("channel"),
+        "query": query or "",
+    }
+
+
+_load_blocklists()
+
+
 # Sports fixtures/scores. Without a tool these fell to the agent, which
 # web-searched (20-60s) and tried to squeeze a scoreboard into a text card.
 SCORE_ASK_RE = re.compile(
@@ -1436,6 +1502,26 @@ STOCK_WORD_RE = re.compile(r'\b(stock|stocks|ticker|shares|share price|crypto|na
 # stream: a plain search for "cnn live news" returns recorded clips, the filtered
 # one returns "CNN Headlines: 24/7 Live News".
 LIVE_ASK_RE = re.compile(r'\b(live|livestream|live ?stream|streaming)\b')
+
+# "this one sucks, find another" — swap the CURRENT video for a different one and
+# remember not to show the disliked video again. Gated on a video actually being
+# on screen (see _session_current_video), so a bare "another one" only means
+# "another video" when a video is what's playing.
+ANOTHER_VIDEO_RE = re.compile(
+    r'\b(another|different|other|next)\b.*\b(one|video|clip)\b'
+    r'|\b(this|that)\s+(one|video|clip)?\s*(sucks?|is bad|is boring|is terrible)'
+    r'|\b(hate|don\'?t like|do not like|dislike)\s+(this|that)\b'
+    r'|\bnot\s+(this|that)\s+(one|video|clip)?\b'
+    r'|\b(something|anything)\s+else\b'
+    r'|\b(skip|change)\s+(this|the)?\s*(one|video|clip)?\b'
+    r'|\bfind\s+(me\s+)?another\b')
+# Escalation: the user is rejecting the CHANNEL, not just this video. Blocks the
+# whole channel forever. Checked first — if it matches, we block the channel;
+# otherwise a generic "another one" blocks just the single video.
+CHANNEL_DISLIKE_RE = re.compile(
+    r'\bchannel\b.*\b(sucks?|bad|boring|terrible|stop|no more|enough)\b'
+    r'|\b(not|hate|block|ban|stop|no more)\b.*\bchannel\b'
+    r'|\bdifferent\s+channel\b')
 
 # ── Widget intent routing ───────────────────────────────────────────────────
 #
@@ -2008,6 +2094,40 @@ async def send_message(req: MessageRequest):
         wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         league = resolve_league(text_clean)
 
+        # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
+        #    the dislike forever. Checked before every other video path so a
+        #    "find me another video" isn't misread as a fresh search for the
+        #    literal words. Only fires when a video is actually on screen.
+        current_vid = _session_current_video.get(req.session_id)
+        if (current_vid and not wants_removal and not wants_music
+                and (ANOTHER_VIDEO_RE.search(text_clean) or CHANNEL_DISLIKE_RE.search(text_clean))):
+            vquery = current_vid.get("query") or clean_video_query(req.message)
+            disliked_channel = current_vid.get("channel")
+            if CHANNEL_DISLIKE_RE.search(text_clean) and disliked_channel:
+                block_channel(disliked_channel, reason=f"disliked via: {req.message[:80]}")
+                status = f"got it — never showing {disliked_channel} again. finding another..."
+                logger.info(f"[VIDEO PREF] blocked channel {disliked_channel!r}")
+            else:
+                block_video(current_vid.get("video_id"), reason=f"disliked via: {req.message[:80]}")
+                status = "finding you a different one..."
+                logger.info(f"[VIDEO PREF] blocked video {current_vid.get('video_id')!r}")
+
+            async def _find_another():
+                hits = await search_youtube_videos(vquery, limit=10)
+                hits = filter_blocked_videos(hits)
+                top, cands = pick_varied_video(hits, k=5)
+                if not top:
+                    return None
+                _remember_current_video(req.session_id, top, vquery)
+                return {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or vquery,
+                    "query": vquery,
+                    "candidates": cands,
+                }
+            return spawn_widget_stream("youtube_player", "video",
+                                       config_builder=_find_another, status=status)
+
         # 1. SPORTS SCORES — "fifa scores", "ufc card", "who's playing in the nba".
         #    A scoreboard is structured data, not prose: a text card of headlines
         #    cannot show you who is playing whom.
@@ -2038,10 +2158,12 @@ async def send_message(req: MessageRequest):
             hits = await search_youtube_videos(query, limit=6, order="date")
             if not hits:
                 hits = await search_youtube_videos(query, limit=6)
+            hits = filter_blocked_videos(hits)
             # Vary among the top few NEWEST clips: still recent (that's what "news"
             # means), but not the identical video on every repeat ask.
             top, cands = pick_varied_video(hits, k=3)
             if top:
+                _remember_current_video(req.session_id, top, query)
                 return spawn_widget_stream("youtube_player", "news-video", {
                     "video_id": top["video_id"],
                     "title": top.get("title") or query,
@@ -2059,8 +2181,10 @@ async def send_message(req: MessageRequest):
             live_hits = await search_youtube_videos(req.message, limit=6, order="live")
             if not live_hits:
                 live_hits = await search_youtube_videos(req.message, limit=6)
+            live_hits = filter_blocked_videos(live_hits)
             if live_hits:
                 top = live_hits[0]
+                _remember_current_video(req.session_id, top, req.message)
                 return spawn_widget_stream("youtube_player", "live", {
                     "video_id": top["video_id"],
                     "title": top.get("title") or req.message,
@@ -2080,8 +2204,10 @@ async def send_message(req: MessageRequest):
         if is_video_ask and not wants_removal and not wants_music:
             vquery = clean_video_query(req.message)
             vhits = await search_youtube_videos(vquery, limit=8)
+            vhits = filter_blocked_videos(vhits)
             top, cands = pick_varied_video(vhits, k=5)
             if top:
+                _remember_current_video(req.session_id, top, vquery)
                 return spawn_widget_stream("youtube_player", "video", {
                     "video_id": top["video_id"],
                     "title": top.get("title") or vquery,
@@ -2528,17 +2654,39 @@ async def send_message(req: MessageRequest):
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
                         # one blocks embedding ("Video unavailable").
-                        if widget_type == "youtube_player" and not config.get("candidates"):
+                        if widget_type == "youtube_player":
                             search_q = config.get("query") or config.get("title") or ""
-                            if search_q:
-                                try:
-                                    alts = await search_youtube_videos(search_q, limit=6)
-                                    primary = config.get("video_id", "")
+                            primary = config.get("video_id", "")
+                            channel = None
+                            try:
+                                alts = await search_youtube_videos(search_q, limit=8) if search_q else []
+                                # Resolve the primary's channel from the search hits
+                                # (the model doesn't supply it) so a later "this
+                                # channel sucks" has something to block.
+                                for v in alts:
+                                    if v.get("video_id") == primary:
+                                        channel = v.get("channel")
+                                        break
+                                # Honor the persistent blocklist even on the agent
+                                # path: if the model picked a disliked video/channel,
+                                # hop to the best non-blocked alternative.
+                                if primary in _blocked_video_ids or (channel or "").lower() in _blocked_channels:
+                                    kept = filter_blocked_videos(alts)
+                                    alt_top, alt_cands = pick_varied_video(kept, k=5)
+                                    if alt_top:
+                                        primary = alt_top["video_id"]
+                                        channel = alt_top.get("channel")
+                                        config["video_id"] = primary
+                                        config["title"] = config.get("title") or alt_top.get("title")
+                                        config["candidates"] = alt_cands
+                                if not config.get("candidates") and alts:
                                     config["candidates"] = [v["video_id"] for v in alts
                                                             if v.get("video_id") and v["video_id"] != primary]
-                                    config.setdefault("query", search_q)
-                                except Exception as se:
-                                    logger.warning(f"candidate enrichment failed: {se}")
+                                config.setdefault("query", search_q)
+                            except Exception as se:
+                                logger.warning(f"candidate enrichment failed: {se}")
+                            _remember_current_video(
+                                req.session_id, {"video_id": primary, "channel": channel}, search_q)
 
                         # A music widget is always meant to be listened to —
                         # don't rely on the model remembering to set autoplay.
