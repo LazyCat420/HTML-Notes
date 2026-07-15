@@ -235,13 +235,20 @@ document.addEventListener('alpine:init', () => {
         }
     }));
 
-    // 2. Clock Widget
-    Alpine.data('clockWidget', (initialTimezone = 'local') => ({
+    // 2. Clock Widget — three modes: 'clock' (default), 'stopwatch', 'countdown'
+    Alpine.data('clockWidget', (initialTimezone = 'local', mode = 'clock', durationSeconds = 0) => ({
         time: '--:--:--',
         date: '---',
         interval: null,
         selectedTimezone: initialTimezone || 'local',
-        
+        mode: ['clock', 'stopwatch', 'countdown'].includes(mode) ? mode : 'clock',
+        running: false,
+        elapsedMs: 0,               // stopwatch
+        baseDurationMs: Math.max(0, Number(durationSeconds) || 0) * 1000,
+        remainingMs: Math.max(0, Number(durationSeconds) || 0) * 1000,
+        finished: false,            // countdown hit zero
+        _lastTick: null,
+
         init() {
             if (this.selectedTimezone && this.selectedTimezone !== 'local' && this.selectedTimezone !== 'None' && this.selectedTimezone !== 'null') {
                 try {
@@ -252,33 +259,86 @@ document.addEventListener('alpine:init', () => {
             } else {
                 this.selectedTimezone = 'local';
             }
-            
+
+            if (this.mode === 'countdown' && this.baseDurationMs > 0) {
+                this.running = true;   // a requested timer starts immediately
+            }
+            this._lastTick = Date.now();
             this.updateTime();
-            this.interval = setInterval(() => this.updateTime(), 1000);
-            
+            this.interval = setInterval(() => this.updateTime(), 250);
+
             this.$watch('selectedTimezone', () => {
                 this.updateTime();
             });
         },
-        
+
         destroy() {
             if (this.interval) clearInterval(this.interval);
         },
-        
+
+        toggle() {
+            if (this.mode === 'countdown' && this.finished) this.reset();
+            this.running = !this.running;
+            this._lastTick = Date.now();
+        },
+
+        reset() {
+            this.running = false;
+            this.finished = false;
+            this.elapsedMs = 0;
+            this.remainingMs = this.baseDurationMs;
+            this.updateTime();
+        },
+
+        _fmt(ms) {
+            const totalSec = Math.max(0, Math.floor(ms / 1000));
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.floor((totalSec % 3600) / 60);
+            const s = totalSec % 60;
+            const pad = (n) => String(n).padStart(2, '0');
+            return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+        },
+
         updateTime() {
-            const now = new Date();
+            const now = Date.now();
+            const delta = now - (this._lastTick || now);
+            this._lastTick = now;
+
+            if (this.mode === 'stopwatch') {
+                if (this.running) this.elapsedMs += delta;
+                this.time = this._fmt(this.elapsedMs);
+                this.date = this.running ? 'STOPWATCH · RUNNING' : 'STOPWATCH · PAUSED';
+                return;
+            }
+
+            if (this.mode === 'countdown') {
+                if (this.running && !this.finished) {
+                    this.remainingMs -= delta;
+                    if (this.remainingMs <= 0) {
+                        this.remainingMs = 0;
+                        this.running = false;
+                        this.finished = true;
+                    }
+                }
+                this.time = this._fmt(this.remainingMs);
+                this.date = this.finished ? "⏰ TIME'S UP"
+                    : (this.running ? 'COUNTDOWN · RUNNING' : 'COUNTDOWN · PAUSED');
+                return;
+            }
+
+            const nowDate = new Date();
             const optionsTime = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
             const optionsDate = { weekday: 'short', month: 'short', day: 'numeric' };
-            
+
             if (this.selectedTimezone !== 'local') {
                 try {
                     optionsTime.timeZone = this.selectedTimezone;
                     optionsDate.timeZone = this.selectedTimezone;
                 } catch (e) {}
             }
-            
-            this.time = now.toLocaleTimeString([], optionsTime);
-            this.date = now.toLocaleDateString([], optionsDate);
+
+            this.time = nowDate.toLocaleTimeString([], optionsTime);
+            this.date = nowDate.toLocaleDateString([], optionsDate);
         }
     }));
 

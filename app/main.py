@@ -1383,6 +1383,7 @@ async def send_message(req: MessageRequest):
             "- news, facts, recipes, weather, 'what/when/who is X' → mcp__lazy-tool-service__html_notes_web_search, then canvas_add_widget(widget_type='data_card')\n"
             "- picture of X → canvas_add_widget(widget_type='image')\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
+            "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- remove or change something on screen → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove'|'replace') using an id from CURRENT CANVAS\n\n"
             "ANSWER FROM DATA, NEVER FROM MEMORY\n"
             "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first.\n"

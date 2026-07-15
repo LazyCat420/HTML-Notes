@@ -298,19 +298,36 @@ def render_checklist(widget_id: str, config: dict) -> str:
 
 def render_clock(widget_id: str, config: dict) -> str:
     timezone = config.get("timezone") or "local"
+    mode = config.get("mode") or "clock"
+    duration = config.get("duration_seconds") or config.get("duration") or 0
+    try:
+        duration = int(float(duration))
+    except (TypeError, ValueError):
+        duration = 0
+    # A duration with no explicit mode means the user asked for a timer.
+    if mode == "clock" and duration > 0:
+        mode = "countdown"
+    if mode not in ("clock", "stopwatch", "countdown"):
+        mode = "clock"
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="clockWidget({json_escape(timezone)})">
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="clockWidget({json_escape(timezone)}, {json_escape(mode)}, {duration})">
         <!-- Close Button -->
         <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
         </button>
         
         <div class="flex-grow flex flex-col items-center justify-center">
-            <div class="text-4xl font-light text-white tracking-widest font-mono" x-text="time">--:--:--</div>
+            <div class="text-4xl font-light text-white tracking-widest font-mono" :class="finished ? 'text-red-400 animate-pulse' : ''" x-text="time">--:--:--</div>
             <div class="text-xs text-purple-300 uppercase tracking-widest mt-2 font-semibold" x-text="date">---</div>
         </div>
-        
-        <div class="opacity-0 group-hover:opacity-100 transition-opacity w-full mt-2">
+
+        <div x-show="mode !== 'clock'" class="w-full mt-2 flex gap-2 justify-center">
+            <button @click="toggle()" class="px-4 py-1.5 rounded-xl text-xs font-semibold bg-purple-600/60 hover:bg-purple-500/70 border border-white/10 transition-colors"
+                x-text="finished ? 'Restart' : (running ? 'Pause' : 'Start')">Start</button>
+            <button @click="reset()" class="px-4 py-1.5 rounded-xl text-xs font-semibold bg-black/30 hover:bg-black/50 text-slate-300 border border-white/10 transition-colors">Reset</button>
+        </div>
+
+        <div x-show="mode === 'clock'" class="opacity-0 group-hover:opacity-100 transition-opacity w-full mt-2">
             <select x-model="selectedTimezone" class="w-full bg-black/30 text-slate-300 text-xs rounded-xl border border-white/10 px-3 py-2 focus:outline-none focus:border-purple-500 transition-colors cursor-pointer appearance-none text-center">
                 <option value="local">Local Time</option>
                 <option value="UTC">UTC</option>
