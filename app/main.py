@@ -1605,6 +1605,33 @@ LIST_EDIT_RE = re.compile(
     r'\b(add|append|include|put|throw in|toss in)\b.*\b(to|onto|on)\b.*\blists?\b'
     r'|\balso\s+(add|include|put|need)\b'
     r'|\b(add|put|append|include)\b.*\bto (the|my|our|this|that)\b')
+# "delete the veggies FROM the grocery list" / "cross milk off the list" — an
+# in-place item edit, NOT removing the whole widget. Distinguished from "delete
+# the list" by the "…from/off/out of the … list" container shape (an item named
+# between the verb and the list). Must be intercepted before wants_removal funnels
+# it to the agent (which would decompose the entire checklist).
+LIST_ITEM_REMOVE_RE = re.compile(
+    r'\b(delete|remove|drop|take|cross|clear|get rid of|scratch)\b.*'
+    r'\b(from|off|out of)\b.*\blists?\b'
+    r'|\b(uncheck|untick)\b')
+# "bring back my grocery list", "restore the list", "reopen my list", "that list
+# again" — restore a previously-saved list from persistent state instead of
+# regenerating a fresh one. Guarded so an "add X to my list again" (an edit) and
+# item-removal don't get swallowed here.
+LIST_RESTORE_RE = re.compile(
+    r'\b(bring|get|put|pull|give)\b[^.]*\bback\b'
+    r'|\brestore\b|\breopen\b'
+    r'|\blists?\b[^.]*\bagain\b|\bagain\b[^.]*\blists?\b'
+    r'|\bback\b[^.]*\blists?\b')
+# "close out everything", "clear the whole canvas", "get rid of all the widgets",
+# "wipe it", "start over" — clear the ENTIRE canvas in one server call. The agent
+# path can only remove one widget per iteration and stops after the first commit,
+# so it could never close them all.
+CLEAR_ALL_RE = re.compile(
+    r'\b(wipe|nuke)\b|\bstart (over|fresh|again)\b|\bclean slate\b'
+    r'|\b(close|clear|remove|delete|hide|dismiss|get rid of|kill)\b[^.]*'
+    r'\b(everything|every widget|all (the |my )?(widgets?|cards?)|all of (it|them)|'
+    r'the (whole |entire )?(canvas|dashboard|screen)|it all)\b')
 NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
 # A question/how-to/recipe that wants a SYNTHESISED answer (summary + sources),
 # not a widget noun and not a data feed. Routed to build_answer_config so the
@@ -1745,10 +1772,12 @@ async def build_list_config(message: str) -> dict:
     )
     if not data or not isinstance(data.get("items"), list):
         return {"title": "Checklist", "items": []}
-    return {
+    result = {
         "title": str(data.get("title") or "Checklist")[:60],
         "items": [str(i)[:120] for i in data["items"] if str(i).strip()][:14],
     }
+    _persist_list_state(result)
+    return result
 
 
 def _extract_existing_checklist(session_id: str):
@@ -1809,7 +1838,89 @@ async def build_list_add_config(message: str, existing_title: str,
             if t and t.lower() not in seen:
                 merged.append({"text": t, "done": False})
                 seen.add(t.lower())
-    return {"title": existing_title, "items": merged[:40]}
+    result = {"title": existing_title, "items": merged[:40]}
+    _persist_list_state(result)
+    return result
+
+
+async def build_list_remove_config(message: str, existing_title: str,
+                                   existing_items: list) -> dict:
+    """Remove the item(s) the user named from an existing checklist, keeping the
+    rest. Powers "delete the veggies from the grocery list" as an in-place edit
+    instead of the whole widget being removed."""
+    data = await fast_llm_json(
+        'Return ONLY a JSON object, no prose and no markdown fence:\n'
+        '{"remove": ["<exact existing item text to remove>", ...]}\n'
+        f'The checklist "{existing_title}" currently has these items:\n'
+        f'{json.dumps([i.get("text", "") for i in existing_items])}\n'
+        f'The user asked: "{message}"\n'
+        'Return the EXACT texts (copied from the list above) of the items to '
+        'remove. A category word like "veggies"/"dairy" means remove every item '
+        'in the list that fits it. Return an empty list if nothing matches.'
+    )
+    to_remove = set()
+    if data and isinstance(data.get("remove"), list):
+        to_remove = {str(x).strip().lower() for x in data["remove"] if str(x).strip()}
+    remaining = [i for i in existing_items
+                 if i.get("text", "").strip().lower() not in to_remove]
+    # If the model matched nothing (or everything by mistake would empty it),
+    # keep what we have rather than nuking the list.
+    result = {"title": existing_title,
+              "items": remaining if remaining else existing_items}
+    _persist_list_state(result)
+    return result
+
+
+def _list_slug(title: str) -> str:
+    """A stable key from a list title: 'Grocery List' -> 'grocery-list'."""
+    s = re.sub(r'[^a-z0-9]+', '-', (title or '').lower()).strip('-')
+    return s or "checklist"
+
+
+def _persist_list_state(config: dict) -> None:
+    """Save a checklist's items so it can be restored after it's closed. Keyed by
+    the list's title slug (overwrite-in-place), plus a 'list:__last__' pointer to
+    the most recent one so a bare 'bring my list back' resolves. Best-effort."""
+    try:
+        title = config.get("title") or "Checklist"
+        items = config.get("items") or []
+        if not items:
+            return
+        payload = json.dumps({"title": title, "items": items})
+        database.set_widget_state(f"list:{_list_slug(title)}", payload)
+        database.set_widget_state("list:__last__", payload)
+    except Exception as e:
+        logger.warning(f"[WIDGET STATE] persist failed: {e}")
+
+
+def _resolve_restorable_list(message: str) -> Optional[dict]:
+    """Find the stored checklist the user wants back. Prefers a stored list whose
+    slug shares a meaningful word with the request ('grocery' -> list:grocery-list);
+    falls back to the most recently saved list. Returns {title, items} or None."""
+    try:
+        states = database.list_widget_states("list:")
+    except Exception as e:
+        logger.warning(f"[WIDGET STATE] restore lookup failed: {e}")
+        return None
+    named = [s for s in states if s["key"] != "list:__last__"]
+    stop = {"list", "lists", "checklist", "the", "my", "our", "that", "this",
+            "back", "bring", "again", "get", "give", "show", "put", "pull",
+            "restore", "reopen", "a", "an", "please", "me", "it", "up", "want"}
+    words = {w for w in re.findall(r'[a-z]+', (message or "").lower()) if w not in stop}
+    for s in named:
+        slug_words = set(s["key"][len("list:"):].split("-"))
+        if words & slug_words:
+            try:
+                return json.loads(s["value"])
+            except Exception:
+                pass
+    last = database.get_widget_state("list:__last__")
+    if last:
+        try:
+            return json.loads(last)
+        except Exception:
+            pass
+    return None
 
 
 async def build_notes_config(message: str) -> dict:
@@ -2272,6 +2383,37 @@ async def send_message(req: MessageRequest):
                 media_type="text/event-stream",
             )
 
+        def _stream_clear_canvas(status: str = "closing everything..."):
+            """Clear the ENTIRE canvas in one commit and stream it back. Bypasses
+            the agent, which can only remove one widget per iteration and stops
+            after the first mutation — so it could never close them all."""
+            async def stream():
+                yield f'data: {json.dumps({"type": "status", "message": status})}\n\n'
+
+                def _clear(soup):
+                    grid = soup.select_one('#dashboard-grid')
+                    if grid is not None:
+                        grid.clear()
+                    else:
+                        for c in soup.select('.glass-card, .widget-container'):
+                            c.decompose()
+
+                event = await commit_canvas(req.session_id, _clear)
+                if event:
+                    database.save_chat_message(
+                        message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                        session_id=req.session_id,
+                        role="assistant",
+                        content=f"\n\n<!--CANVAS_HTML_START-->\n{get_session_canvas(req.session_id)}\n<!--CANVAS_HTML_END-->"
+                    )
+                    yield event
+                yield 'data: {"type": "done"}\n\n'
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream),
+                media_type="text/event-stream",
+            )
+
         # Removal/modification intents must reach the agent (canvas_modify_dom) —
         # never spawn a widget off keywords like "remove the clock".
         wants_removal = bool(re.search(
@@ -2285,6 +2427,43 @@ async def send_message(req: MessageRequest):
 
         wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         league = resolve_league(text_clean)
+
+        # ── High-priority canvas-control intercepts (run before the removal
+        #    funnel and the widget fast-paths) ────────────────────────────────
+
+        # LIST ITEM REMOVE — "delete the veggies from the grocery list" edits the
+        # list in place. Checked before CLEAR_ALL and before wants_removal sends it
+        # to the agent (which would decompose the whole widget).
+        if LIST_ITEM_REMOVE_RE.search(text_clean) and not is_video_ask:
+            existing_list = _extract_existing_checklist(req.session_id)
+            if existing_list:
+                ex_id, ex_title, ex_items = existing_list
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config_builder=lambda: build_list_remove_config(
+                        req.message, ex_title, ex_items),
+                    status=f"updating “{ex_title}”...",
+                    widget_id=ex_id)
+
+        # CLOSE ALL — one server call, no agent. Guarded so a "…from the list" item
+        # edit (which can contain "all") never triggers a full wipe.
+        if CLEAR_ALL_RE.search(text_clean) and not LIST_ITEM_REMOVE_RE.search(text_clean):
+            return _stream_clear_canvas()
+
+        # LIST RESTORE — "bring back my grocery list": restore saved items instead
+        # of regenerating. Guarded against edits/removals so those still route
+        # normally; only fires when a matching saved list actually exists.
+        if (LIST_RESTORE_RE.search(text_clean)
+                and not LIST_EDIT_RE.search(text_clean)
+                and not LIST_ITEM_REMOVE_RE.search(text_clean)
+                and not is_video_ask and not is_data_ask):
+            restored = _resolve_restorable_list(req.message)
+            if restored and restored.get("items"):
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config={"title": restored.get("title") or "Checklist",
+                            "items": restored["items"]},
+                    status="bringing your list back...")
 
         # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
         #    the dislike forever. Checked before every other video path so a

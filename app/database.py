@@ -449,3 +449,57 @@ def list_agent_memory(category: str) -> List[Dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Persistent widget state ─────────────────────────────────────────────────
+# A closed widget's structured state, keyed by purpose (e.g. 'list:grocery-list')
+# so it can be restored after the widget is closed, the session ends, or the
+# server restarts. Stored in agent_memory under category 'widget_state'. Unlike
+# add_agent_memory (INSERT OR IGNORE — keeps the FIRST value, for the blocklist),
+# this OVERWRITES in place via upsert, so restoring/editing never bloats the DB.
+_WIDGET_STATE_CAT = "widget_state"
+
+
+def set_widget_state(key: str, value: str) -> None:
+    """Persist (overwriting) a widget's JSON state under a stable purpose key."""
+    now = datetime.utcnow().isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO agent_memory (category, key, value, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(category, key) DO UPDATE SET value = excluded.value,
+                                                 created_at = excluded.created_at
+        """,
+        (_WIDGET_STATE_CAT, key, value, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_widget_state(key: str) -> Optional[str]:
+    """The stored JSON state for a widget purpose key, or None."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT value FROM agent_memory WHERE category = ? AND key = ?",
+        (_WIDGET_STATE_CAT, key),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row["value"] if row and row["value"] is not None else None
+
+
+def list_widget_states(prefix: str = "") -> List[Dict[str, Any]]:
+    """All persisted widget states whose key starts with `prefix`, newest first."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT key, value, created_at FROM agent_memory "
+        "WHERE category = ? AND key LIKE ? ORDER BY created_at DESC",
+        (_WIDGET_STATE_CAT, f"{prefix}%"),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
