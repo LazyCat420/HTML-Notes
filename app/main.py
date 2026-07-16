@@ -656,12 +656,14 @@ async def stock_news(query: str, limit: int = 8) -> dict:
         news = []
         for item in payload.get("news") or []:
             stamp = item.get("providerPublishTime")
+            thumbs = (item.get("thumbnail") or {}).get("resolutions") or []
             news.append({
                 "title": item.get("title"),
                 "publisher": item.get("publisher"),
                 "published": (datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc)
                               .strftime("%Y-%m-%d %H:%M UTC") if stamp else None),
                 "url": item.get("link"),
+                "image": (thumbs[-1].get("url") or "") if thumbs else "",
                 "related_tickers": item.get("relatedTickers") or [],
             })
 
@@ -1549,6 +1551,8 @@ NEWS_ASK_RE = re.compile(r'\b(news|headlines?)\b')
 # Stock news has its own cleaner path (html_notes_stock_news); keep it off the
 # general news fast-path.
 STOCK_WORD_RE = re.compile(r'\b(stock|stocks|ticker|shares|share price|crypto|nasdaq|equities?)\b')
+# "market news" without a stock word — still a finance-news ask, routed with them.
+MARKET_WORD_RE = re.compile(r'\bmarkets?\b')
 
 # "cnn live news" is a thing to WATCH, but it contains "news", so DATA_ASK_RE
 # claimed it and the model was told to build a data_card — a text list of
@@ -2086,6 +2090,12 @@ def extract_location(message: str) -> str:
     return database.get_user_facts().get("location") or "New York"
 
 
+# Words extract_topic keeps but that shouldn't survive into a news/market topic —
+# "news about AI" → topic "ai", not a doubled "News: News Ai" title.
+_NEWSY = {"news", "headline", "headlines", "latest", "recent", "breaking",
+          "update", "updates", "today", "story", "stories", "about"}
+
+
 async def build_news_config(message: str) -> dict:
     """A news data_card of current stories: photo + tightened headline + a 2-3
     sentence summary per item.
@@ -2095,10 +2105,6 @@ async def build_news_config(message: str) -> dict:
     summaries mapped back to their sources. Falls back to the raw items if the
     model call fails, so the card is never a wall of links.
     """
-    # extract_topic drops widget/filler words; also drop news-y words so
-    # "news about AI" → topic "ai", not a doubled "News: News Ai" title.
-    _NEWSY = {"news", "headline", "headlines", "latest", "recent", "breaking",
-              "update", "updates", "today", "story", "stories", "about"}
     raw = extract_topic(message)
     topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip()
     # "what's going on in the news", "anything interesting", "what's happening"
@@ -2163,6 +2169,109 @@ async def build_news_config(message: str) -> dict:
         "subtitle": (data.get("overview") or "")[:120],
         "icon": "newspaper",
         "items": items or raw_items(),
+    }
+
+
+async def build_stock_news_config(message: str) -> dict:
+    """Market/stock news with the same summarizing treatment as build_news_config —
+    the general news fast-path deliberately excludes stock words, and the agent's
+    stock_news tool returns bare title+publisher rows the model can only render as
+    a link list.
+
+    Yahoo's finance search has no snippets, so the top article pages are read for
+    real body text (build_answer_config's enrichment pattern, same 12s cap) before
+    the news-editor LLM pass writes the per-story summaries. Falls back to
+    headline items when the LLM pass fails, and to the general news chain when
+    Yahoo returns nothing — never bare links.
+    """
+    raw = extract_topic(message)
+    topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip()
+    # Bare stock-words mean a GENERAL market ask ("stock market news") — Yahoo's
+    # search wants a real query, so default to the market itself.
+    _MARKETY = {"stock", "stocks", "market", "markets", "share", "shares", "price",
+                "prices", "ticker", "tickers", "equities", "equity", "finance",
+                "financial", "trading", "the"}
+    is_general = not topic or all(w in _MARKETY for w in topic.split())
+    query = "stock market" if is_general else topic
+    display = "the market" if is_general else topic
+    data0 = await stock_news(query, limit=8)
+    news = [n for n in (data0.get("news") or []) if n.get("title")]
+    if not news:
+        # Yahoo struck out (obscure company, crypto slang) → general news chain,
+        # which searches GDELT/Google News with the full topic.
+        return await build_news_config(message)
+
+    def raw_items(summaries: dict = None):
+        out = []
+        for i, n in enumerate(news[:6]):
+            tickers = ", ".join(n.get("related_tickers") or [])
+            out.append({
+                "title": (n.get("title") or "")[:140],
+                "description": ((summaries or {}).get(i) or "")[:500],
+                "url": n.get("url", ""),
+                "image": n.get("image", ""),
+                "meta": " · ".join(x for x in [n.get("publisher"), n.get("published")] if x),
+                "badge": tickers[:24] or "Markets",
+            })
+        return out
+
+    # Yahoo gives headlines only — read the top pages so the summaries have real
+    # material instead of restated headlines. Best-effort, hard-capped.
+    async def _page_text(n):
+        url = n.get("url", "")
+        if not url:
+            return ""
+        try:
+            page = await read_web_page(url, max_chars=2000)
+            return "" if page.get("is_error") else (page.get("content") or "")
+        except Exception:
+            return ""
+    try:
+        page_texts = await asyncio.wait_for(
+            asyncio.gather(*[_page_text(n) for n in news[:3]]), timeout=12.0)
+    except asyncio.TimeoutError:
+        logger.info(f"build_stock_news_config: page reads timed out for {query!r}")
+        page_texts = []
+
+    source_lines = []
+    for i, n in enumerate(news[:6]):
+        body = page_texts[i] if i < len(page_texts) else ""
+        tickers = ", ".join(n.get("related_tickers") or [])
+        head = f'[{i}] {n.get("title","")} ({n.get("publisher","")}, {n.get("published","")})'
+        if tickers:
+            head += f" [tickers: {tickers}]"
+        source_lines.append(head + ("\n" + body[:1500] if body else ""))
+
+    data = await fast_llm_json(
+        'You are a financial news editor. Return ONLY a JSON object, no prose, no '
+        'markdown fence:\n'
+        '{"overview": "<one-sentence read on what is moving and why>", '
+        '"items": [{"index": <the [N] number of the source>, "title": "<tightened headline>", '
+        '"summary": "<2-3 sentence plain-English summary: what happened and why it matters>"}]}\n'
+        f'Topic: "{display}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
+        'Write one entry per distinct story (max 6). Base every summary ONLY on that '
+        "source's text — never invent numbers, prices, or moves not present in it. If a "
+        "source is only a headline, keep its summary to a faithful one-line restatement.",
+        max_tokens=1000,
+    )
+    title = ("Market News" if is_general else f"Market News: {display}").title()[:60]
+    if not data or not isinstance(data.get("items"), list) or not data["items"]:
+        # LLM pass failed → article excerpts as descriptions, not bare links.
+        excerpts = {i: t[:220] for i, t in enumerate(page_texts) if t}
+        return {"title": title, "icon": "trending_up", "items": raw_items(excerpts)}
+    summaries = {it.get("index"): (it.get("summary") or "").strip()
+                 for it in data["items"] if isinstance(it.get("index"), int)}
+    titles = {it.get("index"): (it.get("title") or "").strip()
+              for it in data["items"] if isinstance(it.get("index"), int)}
+    items = raw_items(summaries)
+    for i, item in enumerate(items):
+        if titles.get(i):
+            item["title"] = titles[i][:140]
+    return {
+        "title": title,
+        "subtitle": (data.get("overview") or "")[:120],
+        "icon": "trending_up",
+        "items": items,
     }
 
 
@@ -2444,33 +2553,54 @@ def _extract_directions_place(message: str) -> str:
     return cleaned[:60] if len(cleaned) >= 2 else ''
 
 
-def build_traffic_map_config(message: str) -> Optional[dict]:
-    """A traffic/directions ask → a real, pannable Google Maps embed via the
-    keyless classic `output=embed` URL. It loads in the USER's browser, so it
-    centers on THEM (not the server). 'from A to B' → a traffic-aware route; a
-    single place or 'near me' → a map of that area. Returns None when no place can
-    be pulled out, so the caller falls back to the travel-time answer card."""
+async def build_traffic_widget(message: str) -> tuple[str, Optional[dict]]:
+    """A traffic/directions ask → (widget_type, config) for the best widget we can
+    actually deliver.
+
+    'from A to B' → Google's keyless directions embed (iframe_app) — its route
+    line is still congestion-coloured. A single-place TRAFFIC ask → OUR Leaflet
+    `map` widget with a TomTom traffic-flow tile overlay: Google's classic
+    `layer=t` embed param is DEAD (the legacy URL is server-redirected to the
+    modern /maps/embed?pb= endpoint, which silently drops the layer token —
+    verified 2026-07-15 with byte-identical screenshots ±layer=t), so the old
+    embed rendered a plain map. Degrades to that plain embed when TOMTOM_API_KEY
+    is missing or geocoding misses, and to (type, None) when no place can be
+    pulled out, so the caller falls back to the travel-time answer card."""
     msg = (message or "").strip()
     city = (database.get_user_facts().get("location") or "").strip()
     is_traffic = bool(re.search(r'\btraffic\b', msg, re.I))
     m = _DIR_FROM_TO_RE.search(msg)
     if m:
         saddr, daddr = m.group(1).strip()[:60], m.group(2).strip()[:60]
-        params = {"saddr": saddr, "daddr": daddr, "output": "embed"}
-        if is_traffic:
-            params["layer"] = "t"
-        url = "https://maps.google.com/maps?" + urllib.parse.urlencode(params)
-        return {"url": url, "title": f"{saddr} → {daddr}"[:60], "icon": "🚗"}
+        url = "https://maps.google.com/maps?" + urllib.parse.urlencode(
+            {"saddr": saddr, "daddr": daddr, "output": "embed"})
+        return "iframe_app", {"url": url, "title": f"{saddr} → {daddr}"[:60], "icon": "🚗"}
     place = _extract_directions_place(msg) or city
     if not place:
-        return None
-    params = {"q": place, "z": "12", "output": "embed"}
+        return "iframe_app", None
     if is_traffic:
-        params["layer"] = "t"
-    url = "https://maps.google.com/maps?" + urllib.parse.urlencode(params)
+        key = await _fetch_secret("TOMTOM_API_KEY")
+        if key:
+            geo = await geocode_place(place) or await geocode_nominatim(place)
+            if geo:
+                return "map", {
+                    "title": f"Traffic: {geo['resolved']}"[:60],
+                    "subtitle": "live flow · green moving · red jammed",
+                    "traffic": True,
+                    "center": {"lat": geo["lat"], "lon": geo["lon"]},
+                    "zoom": 13,
+                    "markers": [{"lat": geo["lat"], "lon": geo["lon"],
+                                 "label": geo["resolved"]}],
+                }
+            logger.warning(f"[TRAFFIC] geocode miss for {place!r} — plain embed fallback")
+        else:
+            logger.warning("[TRAFFIC] TOMTOM_API_KEY not in env/vault — plain map, "
+                           "no traffic overlay (free key: developer.tomtom.com)")
+    url = "https://maps.google.com/maps?" + urllib.parse.urlencode(
+        {"q": place, "z": "12", "output": "embed"})
     label = "Traffic" if is_traffic else "Directions"
-    return {"url": url, "title": f"{label}: {place}"[:60],
-            "icon": "🚦" if is_traffic else "🧭"}
+    return "iframe_app", {"url": url, "title": f"{label}: {place}"[:60],
+                          "icon": "🚦" if is_traffic else "🧭"}
 
 
 async def _fetch_secret(name: str) -> str:
@@ -3003,6 +3133,19 @@ async def send_message(req: MessageRequest):
                     status=f"checking the weather in {weather.get('location', '')}...")
             # An unresolved place falls through to the agent instead of a dead card.
 
+        # 5-pre. STOCK/MARKET NEWS — branch 5 deliberately excludes stock words,
+        #    which used to drop these asks to the agent, whose stock_news tool
+        #    returns bare title+publisher rows → a wall of links. Same
+        #    gather→summarize treatment as general news, sourced from Yahoo
+        #    finance search instead of GDELT.
+        if (NEWS_ASK_RE.search(text_clean)
+                and (STOCK_WORD_RE.search(text_clean) or MARKET_WORD_RE.search(text_clean))
+                and not wants_removal and not is_video_ask):
+            return spawn_widget_stream(
+                "data_card", "stock-news",
+                config_builder=lambda: build_stock_news_config(req.message),
+                status="gathering and summarizing market news...")
+
         # 5. NEWS — "news about X", "latest headlines". Search + one summarizing
         #    LLM pass so each item reads as a story, not a bare link. Stock news
         #    keeps its own dedicated path.
@@ -3038,10 +3181,10 @@ async def send_message(req: MessageRequest):
             # A pure travel-TIME ask ("how long to the airport") keeps the answer
             # card, which gives the actual minutes.
             if TRAFFIC_MAP_RE.search(text_clean):
-                traffic_cfg = build_traffic_map_config(req.message)
+                traffic_widget, traffic_cfg = await build_traffic_widget(req.message)
                 if traffic_cfg:
                     return spawn_widget_stream(
-                        "iframe_app", "traffic", config=traffic_cfg,
+                        traffic_widget, "traffic", config=traffic_cfg,
                         status="pulling up the map and live traffic...")
             return spawn_widget_stream(
                 "data_card", "directions",
@@ -3187,7 +3330,7 @@ async def send_message(req: MessageRequest):
             "5. Then write ONE sentence (max 20 words) saying what you added. That sentence is the only prose you write all turn.\n\n"
             "ROUTING — pick one and execute it:\n"
             "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
-            "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → mcp__lazy-tool-service__html_notes_stock_news; its 'matches' array gives you tickers to feed into html_notes_stock_history. Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
+            "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → mcp__lazy-tool-service__html_notes_stock_news; its 'matches' array gives you tickers to feed into html_notes_stock_history. To show the news, call canvas_add_widget(widget_type='data_card', config={'stock_news_query': '<same query>'}) — the server re-pulls the stories and WRITES a summary per story; do NOT hand-build items from the raw title+link rows. Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
             "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
             "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
             "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
@@ -3484,6 +3627,18 @@ async def send_message(req: MessageRequest):
                                 logger.info(f"[WIDGET INJECTOR] Rehydrated news data_card for {topic!r}")
                                 config = {**cached, **{k: v for k, v in config.items()
                                                        if v and k not in ("news_topic", "topic")}}
+                        elif (widget_type == "data_card" and not config.get("items")
+                              and config.get("stock_news_query")):
+                            # Stock/market news: the model names the query; the
+                            # server re-pulls Yahoo headlines, reads the top pages
+                            # and WRITES the per-story summaries — never a wall of
+                            # raw title+link rows (the stock_news tool result has
+                            # no snippets to summarize from).
+                            sq = str(config.get("stock_news_query", "")).strip()
+                            stock_cfg = await build_stock_news_config(sq)
+                            logger.info(f"[WIDGET INJECTOR] Synthesised stock-news data_card for {sq!r}")
+                            config = {**stock_cfg, **{k: v for k, v in config.items()
+                                                      if v and k != "stock_news_query"}}
                         elif (widget_type == "data_card" and not config.get("answer")
                               and not config.get("items")
                               and (config.get("search_query") or config.get("answer_query"))):
@@ -4373,11 +4528,12 @@ def _redirect_stale_ui_entrypoint():
 
 
 @app.get("/widgets/map", include_in_schema=False)
-def widget_map(d: str = ""):
+async def widget_map(d: str = ""):
     """Standalone Leaflet page for the map widget's <iframe>. The marker data
     rides in `d` as base64url JSON (built by factory.render_map). Rendered as its
     own document so its <script> runs — the canvas DOMPurify strips inline scripts,
-    which is why the map is an iframe rather than inline markup."""
+    which is why the map is an iframe rather than inline markup. A payload with
+    traffic=true gets the TomTom flow-tile overlay when the key is available."""
     payload = {"center": {"lat": 39.5, "lon": -98.35}, "zoom": 4, "markers": []}
     if d:
         try:
@@ -4385,7 +4541,8 @@ def widget_map(d: str = ""):
             payload = map_payload(json.loads(raw))  # re-sanitise; never trust the URL
         except Exception as e:
             logger.warning(f"/widgets/map bad payload: {e}")
-    return HTMLResponse(map_document_html(payload),
+    traffic_key = await _fetch_secret("TOMTOM_API_KEY") if payload.get("traffic") else ""
+    return HTMLResponse(map_document_html(payload, traffic_key=traffic_key),
                         headers={"Cache-Control": "public, max-age=3600"})
 
 

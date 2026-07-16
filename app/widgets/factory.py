@@ -958,17 +958,29 @@ def map_payload(config: dict) -> dict:
     except (TypeError, ValueError):
         zoom = 5
     return {"center": {"lat": center["lat"], "lon": center["lon"]}, "zoom": zoom,
-            "markers": clean[:40]}
+            "markers": clean[:40], "traffic": bool(config.get("traffic"))}
 
 
-def map_document_html(payload: dict) -> str:
+def map_document_html(payload: dict, traffic_key: str = "") -> str:
     """A complete, standalone Leaflet HTML page for the map <iframe>. Rendered by
     the server (NOT sanitised by the canvas DOMPurify, since it's a separate
     document loaded via iframe src), so the map's own <script> runs normally —
     which is why the map lives in an iframe instead of inline in the canvas, where
     DOMPurify strips <script> tags. `payload` is already label-escaped by
-    map_payload(); it's JSON-embedded with <-escaping to prevent </script> breakout."""
+    map_payload(); it's JSON-embedded with <-escaping to prevent </script> breakout.
+
+    `traffic_key` (a TomTom API key) + payload["traffic"] layers live traffic-flow
+    tiles over the base map — transparent PNGs, so the standard second-tile-layer
+    pattern. The key is necessarily visible to the browser (it fetches the tiles),
+    same exposure class as any client-side map key; restrict it by referrer in the
+    TomTom dashboard."""
     data_json = json.dumps(payload).replace("<", "\\u003c")
+    traffic_js = ""
+    if payload.get("traffic") and traffic_key:
+        traffic_js = (
+            "L.tileLayer('https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key="
+            + urllib.parse.quote(traffic_key)
+            + "',{maxZoom:18,opacity:0.9,attribution:'© TomTom'}).addTo(map);")
     # Plain string (not f-string): keep Leaflet's {s}/{z}/{x}/{y}{r} tile tokens and
     # the JS braces literal; only __DATA__ is substituted.
     body = """<!doctype html><html><head><meta charset="utf-8">
@@ -980,6 +992,7 @@ def map_document_html(payload: dict) -> str:
 var d=__DATA__;
 var map=L.map('map',{scrollWheelZoom:false,attributionControl:true}).setView([d.center.lat,d.center.lon],d.zoom);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:18,attribution:'© OpenStreetMap © CARTO'}).addTo(map);
+__TRAFFIC_LAYER__
 var pts=[];
 (d.markers||[]).forEach(function(m){
   var c=m.color||'#f97316';
@@ -990,7 +1003,7 @@ var pts=[];
 });
 if(pts.length>1){try{map.fitBounds(pts,{padding:[25,25],maxZoom:12});}catch(e){}}
 </script></body></html>"""
-    return body.replace("__DATA__", data_json)
+    return body.replace("__DATA__", data_json).replace("__TRAFFIC_LAYER__", traffic_js)
 
 
 def render_map(widget_id: str, config: dict) -> str:

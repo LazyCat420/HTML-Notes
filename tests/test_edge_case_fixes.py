@@ -363,21 +363,115 @@ def test_list_edit_matches_conversational_followups():
         assert LIST_EDIT_RE.search(q), q
 
 
-def test_traffic_map_config(monkeypatch):
+@pytest.mark.asyncio
+async def test_traffic_widget_fallbacks_without_tomtom_key(monkeypatch):
+    """Google's classic layer=t embed param is DEAD (the legacy URL redirects to
+    the modern /maps/embed?pb= endpoint which silently drops the layer token), so
+    without a TomTom key a traffic ask degrades to a PLAIN area embed — and the
+    URL must no longer pretend to carry a traffic layer."""
     import app.main as m, app.database as db
     monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "Seattle"})
-    # single place → q= embed with traffic layer
-    cfg = m.build_traffic_map_config("traffic in seattle")
-    assert cfg and "output=embed" in cfg["url"] and "layer=t" in cfg["url"]
-    # from A to B → a route embed
-    cfg = m.build_traffic_map_config("directions from boston to nyc")
-    assert cfg and "saddr=boston" in cfg["url"] and "daddr=nyc" in cfg["url"]
+
+    async def no_key(name):
+        return ""
+    monkeypatch.setattr(m, "_fetch_secret", no_key)
+    wtype, cfg = await m.build_traffic_widget("traffic in seattle")
+    assert wtype == "iframe_app" and cfg and "output=embed" in cfg["url"]
+    assert "layer" not in cfg["url"]
+    # from A to B → a route embed (its route line is still congestion-coloured)
+    wtype, cfg = await m.build_traffic_widget("directions from boston to nyc")
+    assert wtype == "iframe_app" and cfg
+    assert "saddr=boston" in cfg["url"] and "daddr=nyc" in cfg["url"]
     # "near me" falls back to the saved city (client-side embed, not server region)
-    cfg = m.build_traffic_map_config("traffic near me")
+    wtype, cfg = await m.build_traffic_widget("traffic near me")
     assert cfg and "Seattle" in cfg["url"]
     # no place and no saved city → None so caller uses the travel-time answer card
     monkeypatch.setattr(db, "get_user_facts", lambda: {})
-    assert m.build_traffic_map_config("traffic") is None
+    wtype, cfg = await m.build_traffic_widget("traffic")
+    assert cfg is None
+
+
+@pytest.mark.asyncio
+async def test_traffic_widget_renders_leaflet_tomtom_map_with_key(monkeypatch):
+    import app.main as m, app.database as db
+    monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "Seattle"})
+
+    async def key(name):
+        return "tomtom-test-key"
+
+    async def geo(name):
+        return {"lat": 47.6, "lon": -122.33, "resolved": "Seattle"}
+    monkeypatch.setattr(m, "_fetch_secret", key)
+    monkeypatch.setattr(m, "geocode_place", geo)
+    wtype, cfg = await m.build_traffic_widget("traffic near me")
+    assert wtype == "map" and cfg["traffic"] is True
+    assert cfg["center"]["lat"] == 47.6 and cfg["markers"]
+    assert cfg["title"].startswith("Traffic")
+
+
+def test_map_document_injects_traffic_tiles_only_with_key():
+    from app.widgets.factory import map_payload, map_document_html
+    payload = map_payload({"traffic": True,
+                           "center": {"lat": 47.6, "lon": -122.33}, "zoom": 13})
+    assert payload["traffic"] is True
+    doc = map_document_html(payload, traffic_key="abc123")
+    assert "api.tomtom.com/traffic/map/4/tile/flow" in doc and "abc123" in doc
+    assert "__TRAFFIC_LAYER__" not in doc
+    # no key → no overlay, and the placeholder must not leak into the page
+    doc = map_document_html(payload, traffic_key="")
+    assert "tomtom" not in doc.lower() and "__TRAFFIC_LAYER__" not in doc
+    # a non-traffic payload never gets the layer even when a key exists
+    plain = map_payload({"center": {"lat": 1, "lon": 2}})
+    assert map_document_html(plain, traffic_key="abc123").lower().count("tomtom") == 0
+
+
+def test_stock_news_asks_route_to_market_branch():
+    """'stock market news' used to be EXCLUDED from the news fast-path and fall to
+    the agent, whose stock_news tool rows have no snippets → a wall of links. The
+    market branch must catch every finance-news phrasing the news branch rejects."""
+    from app.main import NEWS_ASK_RE, STOCK_WORD_RE, MARKET_WORD_RE
+    for q in ["stock market news", "crypto news", "market news today",
+              "any news on nvidia stock", "nasdaq headlines"]:
+        assert NEWS_ASK_RE.search(q), q
+        assert STOCK_WORD_RE.search(q) or MARKET_WORD_RE.search(q), q
+    # plain news must NOT be hijacked by the market branch
+    for q in ["news about ai", "latest headlines", "news today"]:
+        assert not (STOCK_WORD_RE.search(q) or MARKET_WORD_RE.search(q)), q
+
+
+@pytest.mark.asyncio
+async def test_build_stock_news_config_writes_summaries(monkeypatch):
+    import app.main as m
+
+    async def fake_stock_news(query, limit=8):
+        return {"news": [{"title": "Nvidia pops 5%", "publisher": "Reuters",
+                          "published": "2026-07-15 10:00 UTC", "url": "https://x/a",
+                          "image": "https://img/a.jpg", "related_tickers": ["NVDA"]}],
+                "matches": [], "count": 1}
+
+    async def fake_read(url, max_chars=2000):
+        return {"content": "Nvidia rose after earnings beat expectations."}
+
+    async def fake_llm(instruction, max_tokens=400):
+        return {"overview": "Chips rallied.",
+                "items": [{"index": 0, "title": "Nvidia jumps on earnings",
+                           "summary": "Nvidia stock rose 5% after a strong report."}]}
+    monkeypatch.setattr(m, "stock_news", fake_stock_news)
+    monkeypatch.setattr(m, "read_web_page", fake_read)
+    monkeypatch.setattr(m, "fast_llm_json", fake_llm)
+    cfg = await m.build_stock_news_config("nvidia stock news")
+    item = cfg["items"][0]
+    assert item["description"].startswith("Nvidia stock rose")
+    assert item["title"] == "Nvidia jumps on earnings"
+    assert item["badge"] == "NVDA" and item["image"] == "https://img/a.jpg"
+    assert cfg["subtitle"] == "Chips rallied."
+
+    # LLM pass failing must still yield article excerpts, never bare links
+    async def dead_llm(instruction, max_tokens=400):
+        return None
+    monkeypatch.setattr(m, "fast_llm_json", dead_llm)
+    cfg = await m.build_stock_news_config("nvidia stock news")
+    assert cfg["items"][0]["description"].startswith("Nvidia rose after")
 
 
 def test_traffic_gate_does_not_hijack_translation():
