@@ -332,6 +332,62 @@ def test_poi_query_has_location(monkeypatch):
     assert m.poi_query_has_location("where can i get food")
 
 
+def _map_branch_fires(m, text_clean, is_data, is_list):
+    """Replicates the map/POI routing condition so we can assert the grocery guard."""
+    return bool(m.MAP_ASK_RE.search(text_clean)
+                or ((m.POI_MAP_RE.search(text_clean) or m.EAT_MAP_RE.search(text_clean))
+                    and not is_data and not is_list))
+
+
+def test_grocery_list_not_hijacked_by_map():
+    """'grocery' is a POI noun, so a grocery-LIST ask used to hit the map branch
+    (→ the 'which city?' prompt). The is_list guard must keep list asks off the map."""
+    import re, app.main as m
+    for q in ["can we add potato salad recipe to the grocery list",
+              "add potato salad to the grocery list", "grocery list",
+              "what's on my shopping list"]:
+        is_list = bool(re.search(r'\b(list|checklist|to-?dos?)\b', q)
+                       or m.LIST_EDIT_RE.search(q) or m.LIST_ITEM_REMOVE_RE.search(q))
+        assert is_list, q
+        assert not _map_branch_fires(m, q, is_data=False, is_list=is_list), q
+    # a genuine store search (no "list") still maps
+    q = "grocery stores near me"
+    assert _map_branch_fires(m, q, is_data=False, is_list=False), q
+
+
+def test_list_edit_matches_conversational_followups():
+    from app.main import LIST_EDIT_RE
+    for q in ["oh and add steak as well", "and add milk", "add eggs too",
+              "also grab some bread", "and throw in some butter",
+              "add greek salad to the grocery list"]:
+        assert LIST_EDIT_RE.search(q), q
+
+
+def test_traffic_map_config(monkeypatch):
+    import app.main as m, app.database as db
+    monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "Seattle"})
+    # single place → q= embed with traffic layer
+    cfg = m.build_traffic_map_config("traffic in seattle")
+    assert cfg and "output=embed" in cfg["url"] and "layer=t" in cfg["url"]
+    # from A to B → a route embed
+    cfg = m.build_traffic_map_config("directions from boston to nyc")
+    assert cfg and "saddr=boston" in cfg["url"] and "daddr=nyc" in cfg["url"]
+    # "near me" falls back to the saved city (client-side embed, not server region)
+    cfg = m.build_traffic_map_config("traffic near me")
+    assert cfg and "Seattle" in cfg["url"]
+    # no place and no saved city → None so caller uses the travel-time answer card
+    monkeypatch.setattr(db, "get_user_facts", lambda: {})
+    assert m.build_traffic_map_config("traffic") is None
+
+
+def test_traffic_gate_does_not_hijack_translation():
+    """The 'from X to Y' route form lives INSIDE the directions gate, so a
+    'translate from english to spanish' can never be read as a map route."""
+    from app.main import DIRECTIONS_ASK_RE, EAT_MAP_RE
+    q = "translate from english to spanish"
+    assert not DIRECTIONS_ASK_RE.search(q)   # never enters the traffic branch
+
+
 @pytest.mark.asyncio
 async def test_build_map_config_prompts_when_no_location(monkeypatch):
     """No place named and no saved city → build_map_config must NOT call Places

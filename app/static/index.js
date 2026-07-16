@@ -1,3 +1,52 @@
+// ─── HN: browser-console debug logger ─────────────────────────────
+// Prints every turn's routing + render decisions to the Chrome DevTools
+// console so "the result was in the wrong format" is diagnosable on the spot:
+// the query, the server's route breadcrumb (fast-path vs agent, which widget),
+// each status line, tool calls, and the actual widget types that got rendered.
+// Toggle off with `localStorage.setItem('hn_debug','0')` in the console.
+window.HN = (function () {
+    const on = () => localStorage.getItem('hn_debug') !== '0';
+    const S = 'color:#8b5cf6;font-weight:bold';
+    // Pull the widget types out of a rendered canvas so a misrender is obvious.
+    function widgetTypes(html) {
+        const out = [];
+        try {
+            const tmp = document.createElement('div');
+            tmp.innerHTML = html || '';
+            tmp.querySelectorAll('.widget-container, .rendered-component').forEach(el => {
+                const cls = [...el.classList].find(c => c.endsWith('-widget'));
+                const icon = el.querySelector('.material-symbols-outlined, .text-xl');
+                out.push(cls || icon?.textContent?.trim() || el.className.split(' ')[1] || 'widget');
+            });
+        } catch (e) { /* best-effort */ }
+        return out;
+    }
+    return {
+        turn(query) {
+            if (!on()) return;
+            try { console.groupEnd(); } catch (e) {}
+            console.group('%c[html-notes] ▶ ' + JSON.stringify(query), S);
+        },
+        route(data) {
+            if (!on()) return;
+            if (data.path === 'agent') {
+                console.log('%c[html-notes] 🧭 route: AGENT (no fast-path matched)', 'color:#f59e0b;font-weight:bold', data);
+            } else {
+                console.log('%c[html-notes] 🧭 route: fast-path → ' + data.widget_type, 'color:#22c55e;font-weight:bold', data);
+            }
+        },
+        log(kind, ...rest) { if (on()) console.log(`[html-notes] ${kind}:`, ...rest); },
+        component(html) {
+            if (!on()) return;
+            const types = widgetTypes(html);
+            console.log('%c[html-notes] 🎨 rendered widgets:', S, types.length ? types : '(none)', { chars: (html || '').length });
+            console.debug('[html-notes] component html ↓', html);
+        },
+        error(msg) { console.error('[html-notes] ❌', msg); },
+        groupEnd() { if (on()) { try { console.groupEnd(); } catch (e) {} } },
+    };
+})();
+
 // ─── LEGO: WIDGET MANAGER ─────────────────────────────────────────
 window.WidgetManager = {
     getDismissed() {
@@ -862,6 +911,7 @@ document.addEventListener("DOMContentLoaded", () => {
             elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
         }
 
+        HN.turn(text);
         addLogStep("Connecting to agent...", "🔗");
 
         if (elements.btnSendMessage) elements.btnSendMessage.style.display = "none";
@@ -922,13 +972,21 @@ document.addEventListener("DOMContentLoaded", () => {
                     // sibling turn committed. Only `component` paints.
                     handleIncomingChunk(token);
                 } else if (data.type === "status") {
+                    HN.log("status", data.message);
                     addLogStep(data.message || "Thinking...", "🧠");
+                } else if (data.type === "debug") {
+                    // Server routing breadcrumb — which path/widget the query hit.
+                    // Surfaced in DevTools so a misroute is visible without server logs.
+                    HN.route(data);
                 } else if (data.type === "done") {
+                    HN.log("done", "generation finished");
+                    HN.groupEnd();
                     renderDynamicComponents(elements.liveCanvas);
                     addLogStep("Finished generation.", "✨");
                     flushSentenceBuffer();
                     appendChatMessageToHistory("assistant", fullText, Boolean(fullComponentHtml));
                 } else if (data.type === "component") {
+                    HN.component(data.content || "");
                     addLogStep("Rendered visual component", "🎨");
                     fullComponentHtml = data.content || "";
                     if (renderContent(fullText, fullComponentHtml, data.version)) {
@@ -942,8 +1000,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     }
                     scrollToBottom();
                 } else if (data.type === "tool_call") {
+                    HN.log("tool", data.tool, data.args || data.input || "");
                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
                 } else if (data.type === "error") {
+                    HN.error(data.message);
                     addLogStep(`Error: ${data.message}`, "❌");
                     renderError(data.message || "An error occurred.");
                 }

@@ -1603,8 +1603,13 @@ LIST_INTENT_RE = re.compile(
 # shape. Merged into the existing widget in place; see _extract_existing_checklist.
 LIST_EDIT_RE = re.compile(
     r'\b(add|append|include|put|throw in|toss in)\b.*\b(to|onto|on)\b.*\blists?\b'
-    r'|\balso\s+(add|include|put|need)\b'
-    r'|\b(add|put|append|include)\b.*\bto (the|my|our|this|that)\b')
+    r'|\balso\s+(add|include|put|need|get|grab)\b'
+    r'|\b(add|put|append|include)\b.*\bto (the|my|our|this|that)\b'
+    # Conversational follow-ups after a list already exists: "oh and add steak",
+    # "and throw in some milk", "add eggs too/as well". The route only fires when
+    # a checklist is actually on the canvas, so these can't misfire into a new list.
+    r'|\b(oh )?and\s+(add|include|put|append|throw in|toss in)\b'
+    r'|\b(add|include|put|append)\b[^.]*\b(as well|too)\b')
 # "delete the veggies FROM the grocery list" / "cross milk off the list" — an
 # in-place item edit, NOT removing the whole widget. Distinguished from "delete
 # the list" by the "…from/off/out of the … list" container shape (an item named
@@ -2416,6 +2421,58 @@ def build_location_prompt_config(query: str) -> dict:
     }
 
 
+# "from A to B" (a route) vs a single place. The route form gets Google's
+# traffic-aware directions; a single place gets a map of that area.
+_DIR_FROM_TO_RE = re.compile(r'\bfrom\s+(.+?)\s+to\s+(.+?)(?:[.?!]|$)', re.I)
+# Strip the framing words so what's left is the place. Keeps "in/near/at" OUT
+# (they're stripped) so "traffic in Seattle" → "Seattle".
+_DIR_STRIP_RE = re.compile(
+    r'\b(directions?|routes?|traffic|navigate|navigation|drive|driving|way|ways|'
+    r'how|long|far|travel|time|commute|to|from|in|on|for|around|at|near|by|'
+    r'get|getting|the|my|our|is|it|whats|there|show|me|tell|give|please|a|an|'
+    r'what\'?s?)\b', re.I)
+# A directions ask that specifically wants the MAP (traffic/route/navigation),
+# not just the travel-time number — the latter stays on the answer card.
+TRAFFIC_MAP_RE = re.compile(
+    r'\b(traffic|directions?|routes?|navigate|navigation)\b|\bfrom\s+.+\s+to\s+', re.I)
+
+
+def _extract_directions_place(message: str) -> str:
+    cleaned = re.sub(r'[^\w\s]', ' ', message or '')
+    cleaned = _DIR_STRIP_RE.sub(' ', cleaned)
+    cleaned = ' '.join(cleaned.split()).strip()
+    return cleaned[:60] if len(cleaned) >= 2 else ''
+
+
+def build_traffic_map_config(message: str) -> Optional[dict]:
+    """A traffic/directions ask → a real, pannable Google Maps embed via the
+    keyless classic `output=embed` URL. It loads in the USER's browser, so it
+    centers on THEM (not the server). 'from A to B' → a traffic-aware route; a
+    single place or 'near me' → a map of that area. Returns None when no place can
+    be pulled out, so the caller falls back to the travel-time answer card."""
+    msg = (message or "").strip()
+    city = (database.get_user_facts().get("location") or "").strip()
+    is_traffic = bool(re.search(r'\btraffic\b', msg, re.I))
+    m = _DIR_FROM_TO_RE.search(msg)
+    if m:
+        saddr, daddr = m.group(1).strip()[:60], m.group(2).strip()[:60]
+        params = {"saddr": saddr, "daddr": daddr, "output": "embed"}
+        if is_traffic:
+            params["layer"] = "t"
+        url = "https://maps.google.com/maps?" + urllib.parse.urlencode(params)
+        return {"url": url, "title": f"{saddr} → {daddr}"[:60], "icon": "🚗"}
+    place = _extract_directions_place(msg) or city
+    if not place:
+        return None
+    params = {"q": place, "z": "12", "output": "embed"}
+    if is_traffic:
+        params["layer"] = "t"
+    url = "https://maps.google.com/maps?" + urllib.parse.urlencode(params)
+    label = "Traffic" if is_traffic else "Directions"
+    return {"url": url, "title": f"{label}: {place}"[:60],
+            "icon": "🚦" if is_traffic else "🧭"}
+
+
 async def _fetch_secret(name: str) -> str:
     """One secret by name: env var first, then vault-service (bearer token),
     cached. Returns "" when unavailable so callers degrade gracefully."""
@@ -2651,6 +2708,12 @@ async def send_message(req: MessageRequest):
             """
             async def stream():
                 message = status or f"heuristic-path: spawning {widget_type} widget..."
+                # Debug breadcrumb for the browser console: which route fired and
+                # what widget it chose. The client console.logs this so a misroute
+                # ("grocery list" → map) is visible in DevTools without server logs.
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path", "widget_type": widget_type,
+                    "id_prefix": id_prefix, "query": req.message}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": message})}\n\n'
 
                 widget_config = dict(config or {})
@@ -2744,6 +2807,13 @@ async def send_message(req: MessageRequest):
         # not spawn a clock/checklist off a substring match.
         is_video_ask = bool(VIDEO_ASK_RE.search(text_clean))
         is_data_ask = bool(DATA_ASK_RE.search(text_clean))
+        # A grocery/shopping/checklist ask ("add potato salad to the grocery list")
+        # names "grocery", which is ALSO a POI noun in POI_MAP_RE — so the map
+        # branch used to steal it and (with no city) show the "which city?" prompt.
+        # Any query that names a *list* is list-management, never a store map.
+        is_list_ask = bool(re.search(r'\b(list|checklist|to-?dos?)\b', text_clean)
+                           or LIST_EDIT_RE.search(text_clean)
+                           or LIST_ITEM_REMOVE_RE.search(text_clean))
 
         wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         league = resolve_league(text_clean)
@@ -2963,6 +3033,16 @@ async def send_message(req: MessageRequest):
         if (DIRECTIONS_ASK_RE.search(text_clean)
                 and not EAT_MAP_RE.search(text_clean)
                 and not wants_removal and not is_video_ask):
+            # "traffic in X", "directions to Y", "from A to B" → a real Google Maps
+            # embed (keyless, client-side, traffic-aware) instead of a text card.
+            # A pure travel-TIME ask ("how long to the airport") keeps the answer
+            # card, which gives the actual minutes.
+            if TRAFFIC_MAP_RE.search(text_clean):
+                traffic_cfg = build_traffic_map_config(req.message)
+                if traffic_cfg:
+                    return spawn_widget_stream(
+                        "iframe_app", "traffic", config=traffic_cfg,
+                        status="pulling up the map and live traffic...")
             return spawn_widget_stream(
                 "data_card", "directions",
                 config_builder=lambda: build_answer_config(req.message),
@@ -2975,7 +3055,7 @@ async def send_message(req: MessageRequest):
         #    map; the POI branch stays gated so "restaurant news" still goes to news.
         if ((MAP_ASK_RE.search(text_clean)
              or ((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
-                 and not is_data_ask))
+                 and not is_data_ask and not is_list_ask))
                 and not wants_removal and not is_video_ask):
             # A POI/eat ask ("where can I get food", "coffee near me") with no place
             # named and no saved city would otherwise map the SERVER's region. Ask
@@ -3621,6 +3701,10 @@ async def send_message(req: MessageRequest):
                     logger.error(f"Failed to execute canvas mutation: {ex}")
 
             try:
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "agent",
+                    "note": "no fast-path matched — falling back to the LLM agent",
+                    "query": req.message}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": "connecting to agent..."})}\n\n'
 
                 async with httpx.AsyncClient(timeout=600.0) as client:

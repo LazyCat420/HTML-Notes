@@ -509,6 +509,7 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
         # page server-side so the iframe always shows real content.
         _FRAME_OK = ("youtube.com/embed", "youtube-nocookie.com", "youtu.be",
                      "openstreetmap.org/export", "google.com/maps/embed",
+                     "output=embed",  # classic keyless Google Maps embed (traffic/directions)
                      "player.vimeo.com", "codepen.io", "en.m.wikipedia.org")
         lu = url.lower()
         embeddable = any(h in lu for h in _FRAME_OK)
