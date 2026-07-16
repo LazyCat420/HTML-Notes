@@ -1092,7 +1092,7 @@ import pathlib
 import time
 import uuid
 from bs4 import BeautifulSoup
-from app.widgets.factory import generate_widget_html, _host_of, map_document_html, map_payload
+from app.widgets.factory import generate_widget_html, _host_of, map_document_html, map_payload, _render_markdown, esc
 import base64 as _base64
 
 
@@ -1761,6 +1761,52 @@ async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dic
         return None
 
 
+# Place name → IANA timezone, so "time in Tokyo" resolves server-side instead of
+# depending on the LLM to emit "Asia/Tokyo" (it usually didn't, so the clock
+# silently showed LOCAL time labelled as the city).
+_TZ_BY_PLACE = {
+    "new york": "America/New_York", "nyc": "America/New_York",
+    "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles",
+    "san francisco": "America/Los_Angeles", "sf": "America/Los_Angeles",
+    "seattle": "America/Los_Angeles", "portland": "America/Los_Angeles",
+    "chicago": "America/Chicago", "austin": "America/Chicago",
+    "denver": "America/Denver", "phoenix": "America/Phoenix",
+    "toronto": "America/Toronto", "canada": "America/Toronto",
+    "mexico city": "America/Mexico_City", "sao paulo": "America/Sao_Paulo",
+    "london": "Europe/London", "uk": "Europe/London", "england": "Europe/London",
+    "paris": "Europe/Paris", "berlin": "Europe/Berlin", "madrid": "Europe/Madrid",
+    "rome": "Europe/Rome", "amsterdam": "Europe/Amsterdam", "moscow": "Europe/Moscow",
+    "dubai": "Asia/Dubai", "india": "Asia/Kolkata", "mumbai": "Asia/Kolkata",
+    "delhi": "Asia/Kolkata", "tokyo": "Asia/Tokyo", "japan": "Asia/Tokyo",
+    "beijing": "Asia/Shanghai", "shanghai": "Asia/Shanghai", "china": "Asia/Shanghai",
+    "hong kong": "Asia/Hong_Kong", "singapore": "Asia/Singapore",
+    "seoul": "Asia/Seoul", "korea": "Asia/Seoul", "bangkok": "Asia/Bangkok",
+    "sydney": "Australia/Sydney", "melbourne": "Australia/Melbourne",
+    "australia": "Australia/Sydney", "auckland": "Pacific/Auckland",
+    "utc": "UTC", "gmt": "UTC",
+}
+
+
+def _resolve_timezone(text: str) -> str:
+    """IANA timezone for a place named in the message, or "" if none is found."""
+    t = (text or "").lower()
+    for place in sorted(_TZ_BY_PLACE, key=len, reverse=True):  # "new york" before "york"
+        if re.search(r'\b' + re.escape(place) + r'\b', t):
+            return _TZ_BY_PLACE[place]
+    return ""
+
+
+def _parse_duration_seconds(text: str) -> int:
+    """Total seconds from "5 minutes", "1 hour 30 min", "90 seconds", "2h". 0 if none."""
+    total = 0
+    for num, unit in re.findall(
+            r'(\d+)\s*(h(?:ours?|rs?)?|m(?:in(?:utes?)?)?|s(?:ec(?:onds?)?)?)\b',
+            (text or "").lower()):
+        n = int(num)
+        total += n * 3600 if unit.startswith("h") else n * 60 if unit.startswith("m") else n
+    return total
+
+
 async def build_list_config(message: str) -> dict:
     """Checklist config with real items, written by one direct completion."""
     data = await fast_llm_json(
@@ -1946,9 +1992,81 @@ _LOCATION_STOPWORDS = {
 }
 
 
+# ── Persistent user profile: capture "I'm from Seattle" / "my name is Alex" ──
+_NAME_CAP_RE = re.compile(r"\bmy name(?:'?s| is)\s+([A-Za-z][\w .'-]{1,38})", re.I)
+_CALLME_RE = re.compile(r"\bcall me\s+([A-Za-z][\w .'-]{1,38})", re.I)
+_FROM_CAP_RE = re.compile(
+    r"\bi(?:'?m| am)?\s+(?:from|based in|live in|living in|located in)\s+"
+    r"([A-Za-z][\w .,'-]{1,38})", re.I)
+_LIKE_CAP_RE = re.compile(
+    r"\bremember (?:that )?i (?:really )?(?:like|love|enjoy|prefer|am a fan of)\s+"
+    r"([\w][\w .,'&-]{1,48})", re.I)
+
+
+def _clean_fact(s: str) -> str:
+    s = re.sub(r'\s+', ' ', (s or '')).strip()
+    s = re.split(r'\b(?:and|but|so|because|although|though|please)\b', s, maxsplit=1)[0]
+    # Trailing temporal/filler ("Boston now", "Seattle currently") isn't part of
+    # the fact.
+    s = re.sub(r'\s+(now|today|currently|these days|right now|at the moment|anymore)\s*$',
+               '', s, flags=re.I)
+    s = s.strip(" .,'\"!?")
+    return (s.title() if s.islower() else s)[:60]
+
+
+def capture_user_facts(message: str) -> dict:
+    """Persist first-person profile facts from a message. Returns {key: value} for
+    whatever was captured (empty if nothing). Overwrites in place (a new city
+    replaces the old)."""
+    captured = {}
+    for rx in (_NAME_CAP_RE, _CALLME_RE):
+        mm = rx.search(message or "")
+        if mm:
+            name = _clean_fact(mm.group(1))
+            if name:
+                database.set_user_fact("name", name)
+                captured["name"] = name
+            break
+    mm = _FROM_CAP_RE.search(message or "")
+    if mm:
+        loc = _clean_fact(mm.group(1))
+        if loc:
+            database.set_user_fact("location", loc)
+            captured["location"] = loc
+    mm = _LIKE_CAP_RE.search(message or "")
+    if mm:
+        like = _clean_fact(mm.group(1))
+        if like:
+            facts = database.get_user_facts()
+            existing = [x.strip() for x in facts.get("likes", "").split(",") if x.strip()]
+            if like.lower() not in [e.lower() for e in existing]:
+                existing.append(like)
+                database.set_user_fact("likes", ", ".join(existing[:12]))
+            captured["likes"] = like
+    return captured
+
+
+def _user_facts_prompt() -> str:
+    """An 'ABOUT THE USER' line for the agent system prompt, or '' if unknown."""
+    facts = database.get_user_facts()
+    parts = []
+    if facts.get("name"):
+        parts.append(f"their name is {facts['name']}")
+    if facts.get("location"):
+        parts.append(f"they are based in {facts['location']}")
+    if facts.get("likes"):
+        parts.append(f"they like {facts['likes']}")
+    if not parts:
+        return ""
+    return ("ABOUT THE USER: " + "; ".join(parts) + ". Use this when relevant — "
+            "default any location request (weather, maps, 'near me') to their city "
+            "unless they name another place.\n\n")
+
+
 def extract_location(message: str) -> str:
     """Pull a place name out of a weather ask. 'weather in San Francisco' → 'San
-    Francisco'; 'tokyo weather' → 'tokyo'; bare 'weather' → 'New York' default."""
+    Francisco'; 'tokyo weather' → 'tokyo'; bare 'weather' → the user's remembered
+    city, else 'New York'."""
     m = (message or "").strip()
     match = re.search(r'\b(?:in|for|at|near)\s+([A-Za-zÀ-ɏ .,\'-]+)', m, re.IGNORECASE)
     if match:
@@ -1957,7 +2075,10 @@ def extract_location(message: str) -> str:
             return loc
     cleaned = re.sub(r'[^\w\s]', ' ', m.lower())
     words = [w for w in cleaned.split() if w not in _LOCATION_STOPWORDS]
-    return " ".join(words).strip() or "New York"
+    remaining = " ".join(words).strip()
+    if remaining:
+        return remaining
+    return database.get_user_facts().get("location") or "New York"
 
 
 async def build_news_config(message: str) -> dict:
@@ -1975,6 +2096,16 @@ async def build_news_config(message: str) -> dict:
               "update", "updates", "today", "story", "stories", "about"}
     raw = extract_topic(message)
     topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip()
+    # "what's going on in the news", "anything interesting", "what's happening"
+    # are GENERAL asks — fetch TOP stories, don't literal-search "whats going".
+    # If every surviving word is question/filler, treat the topic as empty.
+    _GENERAL = {"whats", "what", "s", "going", "on", "happening", "up", "new",
+                "current", "events", "event", "anything", "something", "interesting",
+                "any", "the", "is", "are", "in", "world", "lately", "now", "right",
+                "hows", "how", "things", "there", "out", "cool", "hey", "so",
+                "tell", "me", "show", "give", "whatsup", "sup", "good"}
+    if topic and all(w in _GENERAL for w in topic.split()):
+        topic = ""
     display = topic or "top stories"
     results = await news_search(topic, limit=6)
     if not results:
@@ -2291,7 +2422,14 @@ async def build_map_config(query: str) -> dict:
     # Business/POI pins via Google Places — but not for hazard/event maps, which
     # the web+geocode path handles better.
     if POI_MAP_RE.search(q0.lower()) and not _NON_POI_GEO_RE.search(q0.lower()):
-        place_markers = await google_places_search(q0)
+        pq = q0
+        # "coffee near me" has no anchor city — resolve it to the user's remembered
+        # location so Places has somewhere to search.
+        if re.search(r'\bnear ?(me|by)\b|\bnearby\b', pq.lower()):
+            city = database.get_user_facts().get("location", "")
+            if city:
+                pq = re.sub(r'\bnear ?(me|by)\b|\bnearby\b', f"in {city}", pq, flags=re.I)
+        place_markers = await google_places_search(pq)
         if place_markers:
             n = len(place_markers)
             return {
@@ -2416,6 +2554,13 @@ async def send_message(req: MessageRequest):
         
         text_lower = req.message.lower().strip()
         text_clean = text_lower.strip()
+
+        # Remember first-person profile facts ("I'm from Seattle", "my name is
+        # Alex") so later turns can use them (default weather/map location, etc).
+        try:
+            capture_user_facts(req.message)
+        except Exception as e:
+            logger.warning(f"[USER PROFILE] capture failed: {e}")
 
         def spawn_widget_stream(widget_type: str, id_prefix: str, config: dict = None,
                                 config_builder=None, status: str = None,
@@ -2747,15 +2892,18 @@ async def send_message(req: MessageRequest):
                 config_builder=lambda: build_answer_config(req.message),
                 status="checking the route and travel time...")
 
-        # 6. MAP — geo/location queries. Pulled OUT of the is_data_ask gate below:
-        #    "weather" (a DATA_ASK word) used to suppress the entire map branch, so
-        #    "weather in X and a map of Y" never drew a map. A real geo signal wins.
-        if (MAP_ASK_RE.search(text_clean)
+        # 6. MAP — geo/location queries, and business/POI asks ("coffee shops in
+        #    Seattle") which have NO map/where token so MAP_ASK_RE misses them and
+        #    they fell through to the agent (a wall-of-links data_card). Pulled OUT
+        #    of the is_data_ask gate so "weather in X and a map of Y" still draws a
+        #    map; the POI branch stays gated so "restaurant news" still goes to news.
+        if ((MAP_ASK_RE.search(text_clean)
+             or (POI_MAP_RE.search(text_clean) and not is_data_ask))
                 and not wants_removal and not is_video_ask):
             return spawn_widget_stream(
                 "map", "map",
                 config_builder=lambda: build_map_config(req.message),
-                status="finding the locations and building your map...")
+                status="finding the places and building your map...")
 
         # 6b. LIST EDIT — "add greek salad to the grocery list", "also add milk".
         #     Merge into the EXISTING checklist (reuse its widget_id) rather than
@@ -2777,11 +2925,24 @@ async def send_message(req: MessageRequest):
             is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
             topic = extract_topic(req.message)
 
-            # 2. Clock (word boundary: "clockwork" must not match)
-            is_clock = bool(re.search(r'\bclock\b', text_clean))
-            has_timezone = any(tz in text_clean for tz in ("in ", "for ", "time ", "zone", "city", "york", "london", "tokyo", "paris", "sydney", "canada"))
-            if is_clock and not has_timezone:
-                return spawn_widget_stream("clock", "clock", {})
+            # 2. TIME / CLOCK / TIMER — broadened from bare "clock", which missed
+            #    every "time"-phrased ask ("what time is it", "time in tokyo") so
+            #    they fell to the agent and "just broke". Also handles timers and
+            #    stopwatches, and resolves a place name to an IANA timezone.
+            if (re.search(r'\bclock\b|\bwhat\'?s? ?(the )?time\b|\b(the|current) time\b'
+                          r'|\btime in\b|\btimer\b|\bcountdown\b|\bstopwatch\b|\bpomodoro\b',
+                          text_clean) and not is_searching):
+                if re.search(r'\b(timer|countdown|pomodoro)\b', text_clean):
+                    secs = _parse_duration_seconds(req.message) or (
+                        25 * 60 if "pomodoro" in text_clean else 60)
+                    return spawn_widget_stream("clock", "clock",
+                        {"mode": "countdown", "duration_seconds": secs},
+                        status=f"starting a {secs//60 or secs}-{'min' if secs>=60 else 'sec'} timer...")
+                if "stopwatch" in text_clean:
+                    return spawn_widget_stream("clock", "clock", {"mode": "stopwatch"})
+                tz = _resolve_timezone(req.message)
+                return spawn_widget_stream("clock", "clock",
+                                           {"timezone": tz} if tz else {})
 
             # 3. Music — asking for a music widget always means "start playing
             # it", so autoplay unconditionally instead of requiring the word
@@ -2874,7 +3035,8 @@ async def send_message(req: MessageRequest):
             "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first.\n"
             "For a data_card, prefer the search_query path above: pass config={'search_query': '<query>'} and let the server write the summarised answer with sources. Only hand-build config.items when you have specific structured rows that no search summary would capture — and then every item still needs a 'description' with the real information, never just a title and a link.\n\n"
             "WIDGETS COEXIST. Adding one never removes the others. The exceptions are youtube_player and mini_music_player: only one of each can play, so a new one automatically swaps out the old — just add it, do not remove first.\n\n"
-            f"CURRENT CANVAS:\n```markdown\n{canvas_summary}\n```"
+            + _user_facts_prompt()
+            + f"CURRENT CANVAS:\n```markdown\n{canvas_summary}\n```"
         )
 
         # Ensure all possible tools are enabled
@@ -4045,6 +4207,63 @@ def widget_map(d: str = ""):
             logger.warning(f"/widgets/map bad payload: {e}")
     return HTMLResponse(map_document_html(payload),
                         headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/widgets/embed", include_in_schema=False)
+async def widget_embed(u: str = ""):
+    """Reader view for the App Window iframe. External sites send X-Frame-Options
+    / Cloudflare bot walls and refuse to embed ("Max challenge attempts exceeded"),
+    so we fetch the page server-side (read_web_page's Playwright fallback gets past
+    the wall) and serve its readable content from THIS origin — the iframe is then
+    same-origin and always renders."""
+    url = urllib.parse.unquote(u or "").strip()
+    title = url or "App Window"
+    if not re.match(r'^https?://', url):
+        body = "<p class='muted'>No valid URL was provided.</p>"
+    else:
+        try:
+            page = await read_web_page(url, max_chars=12000)
+        except Exception as e:
+            logger.warning(f"/widgets/embed fetch failed for {url!r}: {e}")
+            page = {"is_error": True}
+        if page.get("is_error"):
+            body = (f"<p class='muted'>Couldn't load this page in the reader.</p>"
+                    f"<p><a href='{esc(url)}' target='_blank' rel='noopener'>"
+                    f"Open it in a new tab ↗</a></p>")
+        else:
+            body = (f"<div class='src'><a href='{esc(url)}' target='_blank' rel='noopener'>"
+                    f"{esc(_host_of(url))} ↗</a></div>"
+                    + _render_markdown(page.get("content") or ""))
+    doc = f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ margin:0; padding:20px 24px; background:#0b1020; color:#e6e9f2;
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }}
+  a {{ color:#a78bfa; }} .muted {{ color:#94a3b8; }}
+  .src {{ font-size:12px; margin-bottom:14px; opacity:.8; }}
+  img {{ max-width:100%; height:auto; border-radius:8px; }}
+  h1,h2,h3 {{ line-height:1.25; }} hr {{ border:none; border-top:1px solid rgba(255,255,255,.1); }}
+  pre {{ overflow:auto; background:#111827; padding:12px; border-radius:8px; }}
+  code {{ background:#111827; padding:2px 5px; border-radius:4px; }}
+</style></head><body>{body}</body></html>"""
+    return HTMLResponse(doc, headers={"Cache-Control": "public, max-age=600"})
+
+
+@app.get("/user/memory", include_in_schema=False)
+async def get_user_memory():
+    """The persistent user profile the agent remembers (name/location/likes)."""
+    return database.get_user_facts()
+
+
+@app.delete("/user/memory", include_in_schema=False)
+async def forget_user():
+    """Wipe the persistent user profile — the 'Forget me' settings control."""
+    try:
+        n = database.wipe_user_facts()
+        return {"ok": True, "forgotten": n}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Mount UI static files at root

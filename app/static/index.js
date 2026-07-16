@@ -202,6 +202,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btnToggleLog: document.getElementById("btn-toggle-log"),
         modelSelect: document.getElementById("model-select"),
         btnMute: document.getElementById("btn-mute"),
+        btnForget: document.getElementById("btn-forget"),
         queueBadge: document.getElementById("queue-badge"),
         chatHistoryPanel: document.getElementById("chat-history-panel"),
         chatHistoryMessages: document.getElementById("chat-history-messages"),
@@ -332,6 +333,23 @@ document.addEventListener("DOMContentLoaded", () => {
                 // toggling mute appeared to do nothing.
                 markTtsHealthy();
                 primeAudioPlayback();
+            }
+        });
+    }
+
+    // Forget-me listener — wipe the persistent user profile (name/location/likes).
+    if (elements.btnForget) {
+        elements.btnForget.addEventListener("click", async () => {
+            if (!confirm("Forget everything the assistant remembers about you (name, location, preferences)?")) return;
+            try {
+                const res = await fetch("/user/memory", { method: "DELETE" });
+                const data = await res.json().catch(() => ({}));
+                appendChatMessageToHistory("assistant",
+                    data && data.forgotten ? `Done — forgot ${data.forgotten} thing${data.forgotten === 1 ? "" : "s"} about you.`
+                                           : "There was nothing remembered about you.");
+            } catch (e) {
+                console.error("Forget-me failed:", e);
+                appendChatMessageToHistory("assistant", "Couldn't clear your memory right now.");
             }
         });
     }

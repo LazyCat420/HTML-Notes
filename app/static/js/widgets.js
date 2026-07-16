@@ -331,14 +331,22 @@ document.addEventListener('alpine:init', () => {
             const optionsDate = { weekday: 'short', month: 'short', day: 'numeric' };
 
             if (this.selectedTimezone !== 'local') {
-                try {
-                    optionsTime.timeZone = this.selectedTimezone;
-                    optionsDate.timeZone = this.selectedTimezone;
-                } catch (e) {}
+                optionsTime.timeZone = this.selectedTimezone;
+                optionsDate.timeZone = this.selectedTimezone;
             }
 
-            this.time = nowDate.toLocaleTimeString([], optionsTime);
-            this.date = nowDate.toLocaleDateString([], optionsDate);
+            // toLocaleTimeString THROWS (RangeError) on an invalid timeZone — the
+            // real throw is here, not on the assignment above. Guard it so one bad
+            // timezone can't freeze the whole clock at --:--:-- every tick; fall
+            // back to local time instead.
+            try {
+                this.time = nowDate.toLocaleTimeString([], optionsTime);
+                this.date = nowDate.toLocaleDateString([], optionsDate);
+            } catch (e) {
+                this.selectedTimezone = 'local';
+                this.time = nowDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                this.date = nowDate.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+            }
         }
     }));
 

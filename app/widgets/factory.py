@@ -502,8 +502,19 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
         )
         open_link = ""
     else:
+        # Most sites send X-Frame-Options / Cloudflare bot walls and refuse to be
+        # framed directly (the "Max challenge attempts exceeded" black box). Frame-
+        # friendly hosts (video/map embeds, wikipedia mobile) embed as-is; everything
+        # else loads through the same-origin /widgets/embed reader, which fetches the
+        # page server-side so the iframe always shows real content.
+        _FRAME_OK = ("youtube.com/embed", "youtube-nocookie.com", "youtu.be",
+                     "openstreetmap.org/export", "google.com/maps/embed",
+                     "player.vimeo.com", "codepen.io", "en.m.wikipedia.org")
+        lu = url.lower()
+        embeddable = any(h in lu for h in _FRAME_OK)
+        src = url if embeddable else f"/widgets/embed?u={urllib.parse.quote(url, safe='')}"
         body = (
-            f'<iframe src="{esc(url)}" class="w-full flex-grow border-none bg-slate-950" '
+            f'<iframe src="{esc(src)}" class="w-full flex-grow border-none bg-slate-950" '
             f'sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>'
         )
         open_link = (

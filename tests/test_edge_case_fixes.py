@@ -18,8 +18,11 @@ def test_iframe_app_blank_url_shows_placeholder_not_black_iframe():
 
 def test_iframe_app_real_url_renders_iframe():
     html = render_iframe_app("w1", {"url": "https://example.com/x"})
-    assert '<iframe src="https://example.com/x"' in html
-    assert "open_in_new" in html  # the "open full app" link is present
+    # A framed-blocked external site renders an iframe (not the placeholder) that
+    # points at the same-origin reader proxy, with an "open full app" link.
+    assert "<iframe" in html
+    assert "/widgets/embed?u=" in html
+    assert "open_in_new" in html
 
 
 # ── Universal empty-widget guard ────────────────────────────────────────────
@@ -264,3 +267,72 @@ async def test_build_map_config_uses_places_for_poi(monkeypatch):
     cfg = await m.build_map_config("coffee shops in seattle")
     assert cfg["markers"] and cfg["markers"][0]["label"] == "Shop"
     assert "1 place" in cfg["subtitle"]
+
+
+# ── News: general "what's going on" must fetch top stories, not literal-search ─
+@pytest.mark.asyncio
+async def test_general_news_uses_top_stories(monkeypatch):
+    import app.main as m
+    captured = {}
+    async def fake_news_search(topic, limit=6):
+        captured["topic"] = topic
+        return []  # short-circuits the rest of build_news_config
+    monkeypatch.setattr(m, "news_search", fake_news_search)
+
+    await m.build_news_config("whats going on in the news")
+    assert captured["topic"] == "", "general ask must search top stories (empty topic)"
+
+    await m.build_news_config("news about AI")
+    assert captured["topic"] == "ai", "a real topic must still be searched"
+
+
+# ── Time / clock / timer ────────────────────────────────────────────────────
+def test_timezone_resolver():
+    from app.main import _resolve_timezone
+    assert _resolve_timezone("time in tokyo") == "Asia/Tokyo"
+    assert _resolve_timezone("what time is it in new york") == "America/New_York"
+    assert _resolve_timezone("what time is it") == ""
+
+
+def test_duration_parser():
+    from app.main import _parse_duration_seconds
+    assert _parse_duration_seconds("set a timer for 5 minutes") == 300
+    assert _parse_duration_seconds("1 hour 30 minutes") == 5400
+    assert _parse_duration_seconds("90 seconds") == 90
+    assert _parse_duration_seconds("no duration here") == 0
+
+
+# ── Website embed reader routing ────────────────────────────────────────────
+def test_iframe_app_routes_external_through_reader():
+    from app.widgets.factory import render_iframe_app
+    ext = render_iframe_app("w1", {"url": "https://en.wikipedia.org/wiki/Cat"})
+    assert "/widgets/embed?u=" in ext          # framed sites go through the reader
+    yt = render_iframe_app("w2", {"url": "https://www.youtube.com/embed/abc"})
+    assert 'src="https://www.youtube.com/embed/abc"' in yt  # embed-friendly = direct
+
+
+# ── Persistent user memory ──────────────────────────────────────────────────
+def test_capture_user_facts_and_default_location():
+    import app.main as m, app.database as db
+    db.init_db(); db.wipe_user_facts()
+    got = m.capture_user_facts("hey my name is Alex and im from Seattle")
+    assert got.get("name") == "Alex" and got.get("location") == "Seattle"
+    assert db.get_user_facts()["location"] == "Seattle"
+    # bare weather ask now defaults to the remembered city, not New York
+    assert m.extract_location("whats the weather") == "Seattle"
+    # a changed city OVERWRITES (upsert), not appends
+    m.capture_user_facts("actually i live in Boston now")
+    assert db.get_user_facts()["location"] == "Boston"
+    # wipe clears everything
+    db.wipe_user_facts()
+    assert db.get_user_facts() == {}
+    assert m.extract_location("whats the weather") == "New York"
+
+
+def test_user_facts_prompt():
+    import app.main as m, app.database as db
+    db.init_db(); db.wipe_user_facts()
+    assert m._user_facts_prompt() == ""          # nothing known → no injection
+    db.set_user_fact("location", "Seattle")
+    assert "based in Seattle" in m._user_facts_prompt()
+    db.wipe_user_facts()

@@ -503,3 +503,53 @@ def list_widget_states(prefix: str = "") -> List[Dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Persistent user profile ─────────────────────────────────────────────────
+# What the user tells us about themselves ("I'm from Seattle", "my name is Alex",
+# "I like jazz"). Stored in agent_memory under category 'user_profile', keyed by
+# fact (name/location/likes), OVERWRITE-in-place (a changed city must replace the
+# old one — so upsert, NOT add_agent_memory's INSERT OR IGNORE). Global + durable.
+_USER_PROFILE_CAT = "user_profile"
+
+
+def set_user_fact(key: str, value: str) -> None:
+    """Remember (overwriting) one fact about the user, e.g. set_user_fact('location','Seattle')."""
+    now = datetime.utcnow().isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO agent_memory (category, key, value, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(category, key) DO UPDATE SET value = excluded.value,
+                                                 created_at = excluded.created_at
+        """,
+        (_USER_PROFILE_CAT, key, value, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_facts() -> Dict[str, str]:
+    """The whole user profile as a {key: value} dict (empty if nothing known)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT key, value FROM agent_memory WHERE category = ?",
+        (_USER_PROFILE_CAT,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return {r["key"]: r["value"] for r in rows if r["value"] is not None}
+
+
+def wipe_user_facts() -> int:
+    """Forget everything about the user. Returns the number of facts removed."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM agent_memory WHERE category = ?", (_USER_PROFILE_CAT,))
+    n = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return n
