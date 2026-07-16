@@ -462,17 +462,22 @@ document.addEventListener('alpine:init', () => {
                     ytData = await fetchJson(mixUrl, 12000);
                 }
 
-                // Match a local track against the requested genre. Compare on ANY
-                // word of the filter, not the whole phrase: a request for "smooth
-                // jazz" must still match the library's "jazz" tracks (the literal
-                // phrase "smooth jazz" appears on no track, so a whole-string
-                // includes() matched nothing and dumped the entire library).
+                // Match a local track against the requested genre/artist. Word
+                // boundaries matter: an unbounded includes() let "john" (from
+                // "john lennon") match "Johnny Big Mouth", pulling a reggae track
+                // into a John Lennon request. A named ARTIST must match ALL words
+                // ("john" AND "lennon"); a GENRE matches ANY word so "smooth jazz"
+                // still hits the library's "jazz" tracks.
+                const isArtistQuery = mixType === 'artist';
                 const filterWords = (this.genreFilter || '')
                     .toLowerCase().split(/\s+/).filter(w => w.length > 2);
+                const wordHit = (hay, w) =>
+                    new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(hay);
                 const matchesGenre = (t) => {
                     if (!filterWords.length) return true;
                     const hay = `${t.genre || ''} ${t.title || ''} ${t.artist || ''}`.toLowerCase();
-                    return filterWords.some(w => hay.includes(w));
+                    return isArtistQuery ? filterWords.every(w => wordHit(hay, w))
+                                         : filterWords.some(w => wordHit(hay, w));
                 };
 
                 const ytVideos = (ytData && ytData.videos) || [];
@@ -495,31 +500,37 @@ document.addEventListener('alpine:init', () => {
                     return;
                 }
 
-                // No mix for this genre — fall back to the local library, then a
-                // direct YouTube search.
-                const localData = await localPromise;
-                const allLocalTracks = (localData && localData.tracks) || [];
-                let loadedTracks = allLocalTracks.filter(matchesGenre);
-
-                if (loadedTracks.length === 0) {
+                // No mix. A named ARTIST must come from YouTube, never the local
+                // library — a personal collection rarely has the artist, and a
+                // loose match plays the wrong thing (a "john lennon" ask matched a
+                // reggae "Johnny" track). So for an artist, go straight to YouTube
+                // search and, on a miss, surface an honest error. A GENRE may still
+                // draw from the local library first, then YouTube.
+                const ytSearch = async () => {
                     const searchData = await fetchJson(
                         `http://${host}:8002/api/youtube/search?query=${encodeURIComponent(ytGenre + " music")}`, 15000);
                     const hits = Array.isArray(searchData) ? searchData : (searchData ? [searchData] : []);
-                    loadedTracks = hits.filter(v => v && v.id).map(asTrack);
-                }
+                    return hits.filter(v => v && v.id).map(asTrack);
+                };
 
-                if (loadedTracks.length === 0 && allLocalTracks.length > 0) {
-                    // Only fall back to the whole library when NO specific genre was
-                    // asked for (a bare "play music"). If the user asked for "smooth
-                    // jazz" and we found nothing, dumping the full unfiltered library
-                    // plays whatever is first in it — for this library, Burzum — which
-                    // is the exact opposite of the request. Better to surface the miss
-                    // than to play contradicting music.
-                    if (!filterWords.length) {
+                let loadedTracks = [];
+                let allLocalTracks = [];
+                if (isArtistQuery) {
+                    loadedTracks = await ytSearch();
+                } else {
+                    const localData = await localPromise;
+                    allLocalTracks = (localData && localData.tracks) || [];
+                    loadedTracks = allLocalTracks.filter(matchesGenre);
+                    if (loadedTracks.length === 0) {
+                        loadedTracks = await ytSearch();
+                    }
+                    if (loadedTracks.length === 0 && allLocalTracks.length > 0 && !filterWords.length) {
+                        // Only dump the whole library for a bare "play music" — never
+                        // for a specific genre (that plays whatever's first, e.g. Burzum).
                         console.warn('[MusicPlayer] No genre specified — playing full library.');
                         this.genreFilter = '';
                         loadedTracks = allLocalTracks;
-                    } else {
+                    } else if (loadedTracks.length === 0) {
                         console.warn(`[MusicPlayer] Nothing found for "${ytGenre}" (mix + local both empty).`);
                     }
                 }
