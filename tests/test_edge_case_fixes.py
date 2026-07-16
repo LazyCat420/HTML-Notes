@@ -317,6 +317,39 @@ async def test_build_map_config_food_anchors_to_user_city(monkeypatch):
     assert cfg["markers"] and cfg["markers"][0]["label"] == "Joe's Pizza"
 
 
+# ── Require a stated location; never map the server's region ─────────────────
+def test_poi_query_has_location(monkeypatch):
+    import app.main as m, app.database as db
+    # explicit place in the query → always OK, regardless of saved city
+    monkeypatch.setattr(db, "get_user_facts", lambda: {})
+    assert m.poi_query_has_location("tacos in Austin")
+    assert m.poi_query_has_location("food banks near downtown Chicago")
+    # no place + no saved city → NOT ok (would fall back to server region)
+    assert not m.poi_query_has_location("where can i get food")
+    assert not m.poi_query_has_location("restaurants near me")
+    # no place but a saved city → OK
+    monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "Seattle"})
+    assert m.poi_query_has_location("where can i get food")
+
+
+@pytest.mark.asyncio
+async def test_build_map_config_prompts_when_no_location(monkeypatch):
+    """No place named and no saved city → build_map_config must NOT call Places
+    (which would return the server region); it returns a location-prompt card."""
+    import app.main as m, app.database as db
+    monkeypatch.setattr(db, "get_user_facts", lambda: {})
+    called = {"places": False}
+    async def fake_places(q, limit=12):
+        called["places"] = True
+        return [{"lat": 1, "lon": 2, "label": "X", "detail": "", "color": "#8b5cf6"}]
+    monkeypatch.setattr(m, "google_places_search", fake_places)
+    cfg = await m.build_map_config("where can i get food")
+    assert cfg.get("prompt_for_location") is True
+    assert not cfg.get("markers")
+    assert called["places"] is False           # never searched the server region
+    assert "where you are" in cfg["answer"]
+
+
 # ── News: general "what's going on" must fetch top stories, not literal-search ─
 @pytest.mark.asyncio
 async def test_general_news_uses_top_stories(monkeypatch):

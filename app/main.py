@@ -2373,12 +2373,23 @@ _EXPLICIT_PLACE_RE = re.compile(
     r'(?!(?:me|by|here|my|the|a|an|you|us|home)\b)[a-z0-9]', re.I)
 
 
+def poi_query_has_location(query: str) -> bool:
+    """True when we can search Places somewhere the user actually meant: the query
+    names a place ("food in Brooklyn") OR the user has a saved city. False means the
+    only anchor left would be the SERVER's IP region — the caller must ask the user
+    where they are instead of quietly mapping the datacenter's neighborhood."""
+    if _EXPLICIT_PLACE_RE.search((query or "").lower()):
+        return True
+    return bool((database.get_user_facts().get("location") or "").strip())
+
+
 def anchor_places_query(query: str) -> str:
     """Give Google Places a location to search. A bare POI/eat ask ("where can I
     get food", "food bank") or a "near me" ask is anchored to the user's remembered
     city so a New York user doesn't get the server region's results; a query that
-    already names a place ("tacos in Austin") is left untouched. Degrades to the raw
-    query (Places falls back to IP-geo) when we have no saved city."""
+    already names a place ("tacos in Austin") is left untouched. Only called once
+    poi_query_has_location() is True, so a saved city always exists here when the
+    query itself names no place."""
     q = query or ""
     city = (database.get_user_facts().get("location") or "").strip()
     if _NEAR_ME_RE.search(q.lower()):
@@ -2386,6 +2397,23 @@ def anchor_places_query(query: str) -> str:
     elif city and not _EXPLICIT_PLACE_RE.search(q.lower()):
         q = f"{q} in {city}"
     return q
+
+
+def build_location_prompt_config(query: str) -> dict:
+    """A POI/eat map ask with no place named and no saved city → ask the user where
+    they are rather than mapping the server region. Rendered as a data_card."""
+    return {
+        "title": "Which city?",
+        "icon": "location_on",
+        "answer": (
+            "I can map the closest spots, but I need to know **where you are** — "
+            "I won't guess from the server's location.\n\n"
+            "Try again with a place, or tell me where you are:\n\n"
+            "- **\"where can I get food in Brooklyn\"**\n"
+            "- **\"food banks near downtown Chicago\"**\n"
+            "- or say **\"I'm in Seattle\"** once and I'll remember it."
+        ),
+    }
 
 
 async def _fetch_secret(name: str) -> str:
@@ -2466,6 +2494,13 @@ async def build_map_config(query: str) -> dict:
     ql = q0.lower()
     if ((POI_MAP_RE.search(ql) or EAT_MAP_RE.search(ql))
             and not _NON_POI_GEO_RE.search(ql)):
+        # No place named and no saved city → don't map the server's region; hand
+        # back a prompt asking where they are (the fast-path gates this too, but the
+        # agent path also lands here). Reuses the data_card via a `prompt` marker.
+        if not poi_query_has_location(q0):
+            cfg = build_location_prompt_config(q0)
+            cfg["prompt_for_location"] = True
+            return cfg
         # "coffee near me" / bare "where can I get food" have no anchor city —
         # resolve to the user's remembered location so Places searches locally.
         pq = anchor_places_query(q0)
@@ -2942,6 +2977,17 @@ async def send_message(req: MessageRequest):
              or ((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
                  and not is_data_ask))
                 and not wants_removal and not is_video_ask):
+            # A POI/eat ask ("where can I get food", "coffee near me") with no place
+            # named and no saved city would otherwise map the SERVER's region. Ask
+            # the user where they are instead of guessing. Hazard/"where is X" asks
+            # (MAP_ASK_RE only) name their own places and skip this.
+            _is_poi = bool((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
+                           and not _NON_POI_GEO_RE.search(text_clean))
+            if _is_poi and not poi_query_has_location(req.message):
+                return spawn_widget_stream(
+                    "data_card", "askloc",
+                    config=build_location_prompt_config(req.message),
+                    status="one sec — which city are you in?")
             return spawn_widget_stream(
                 "map", "map",
                 config_builder=lambda: build_map_config(req.message),
@@ -3379,9 +3425,17 @@ async def send_message(req: MessageRequest):
                             # model never hand-types coordinates.
                             mq = str(config.get("map_query", "")).strip()
                             map_cfg = await build_map_config(mq)
-                            logger.info(f"[WIDGET INJECTOR] Built map for {mq!r} ({len(map_cfg.get('markers', []))} markers)")
-                            config = {**map_cfg, **{k: v for k, v in config.items()
-                                                    if v and k != "map_query"}}
+                            if map_cfg.get("prompt_for_location"):
+                                # POI/eat ask with no place and no saved city — render
+                                # the "which city?" card, not a blank server-region map.
+                                logger.info(f"[WIDGET INJECTOR] Map for {mq!r} needs a location — asking")
+                                widget_type = "data_card"
+                                config = {k: v for k, v in map_cfg.items()
+                                          if k != "prompt_for_location"}
+                            else:
+                                logger.info(f"[WIDGET INJECTOR] Built map for {mq!r} ({len(map_cfg.get('markers', []))} markers)")
+                                config = {**map_cfg, **{k: v for k, v in config.items()
+                                                        if v and k != "map_query"}}
 
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
