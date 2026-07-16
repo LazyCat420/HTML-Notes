@@ -337,6 +337,90 @@ def render_image(widget_id: str, config: dict) -> str:
     </div>
     """
 
+def render_products(widget_id: str, config: dict) -> str:
+    """Product / shopping-recommendation grid. Each item is a big REFERENCE PHOTO
+    that is itself a link to the source page, so the user sees what the thing looks
+    like and clicks the picture to buy/read more — the shape asked for by "help me
+    find good outdoor shoes": pictures as reference, click-through to the source.
+
+    Contract: {title, subtitle?, icon?, items:[{title|name, description?, image?,
+        url?, price?, badge?, meta?}]}. An item with no image degrades to a
+    monogram tile so the grid never shows a broken frame.
+    """
+    title = config.get("title", "Recommendations")
+    subtitle = config.get("subtitle", "")
+    icon = config.get("icon", "shopping_bag")
+    items = config.get("items") or config.get("sources") or config.get("products") or []
+    if isinstance(items, dict):
+        items = [items]
+
+    cards = []
+    for item in items[:8]:
+        if isinstance(item, str):
+            item = {"title": item}
+        if not isinstance(item, dict):
+            continue
+        i_title = item.get("title") or item.get("name") or item.get("text") or ""
+        i_desc = item.get("description") or item.get("summary") or item.get("snippet") or ""
+        i_image = item.get("image") or item.get("thumbnail") or ""
+        i_url = item.get("url") or item.get("link") or ""
+        i_price = item.get("price") or ""
+        i_badge = item.get("badge") or item.get("tag") or ""
+        i_meta = item.get("meta") or item.get("source") or (_host_of(i_url) if i_url else "")
+
+        # The whole card is the link when there's a url — image, name and all —
+        # so clicking the picture opens the source, exactly as requested.
+        tag, href = ("a", f'href="{esc(i_url)}" target="_blank" rel="noopener"') if i_url else ("div", "")
+
+        if i_image:
+            media = f"""
+                <div class="product-media relative w-full h-36 overflow-hidden bg-slate-950 shrink-0">
+                    <img src="{esc(i_image)}" alt="{esc(i_title)}" loading="lazy"
+                         class="w-full h-full object-cover group-hover/card:scale-105 transition-transform duration-300">
+                    {f'<span class="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/70 text-emerald-300 backdrop-blur-sm">{esc(i_price)}</span>' if i_price else ''}
+                    {f'<span class="absolute top-2 left-2 text-[0.6rem] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/70 text-white backdrop-blur-sm">{esc(i_badge)}</span>' if i_badge else ''}
+                </div>
+            """
+        else:
+            media = f"""
+                <div class="product-media relative w-full h-36 overflow-hidden bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center shrink-0">
+                    <span class="text-4xl font-bold text-white/40">{esc((i_title or '?')[:1].upper())}</span>
+                    {f'<span class="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/70 text-emerald-300">{esc(i_price)}</span>' if i_price else ''}
+                </div>
+            """
+
+        cards.append(f"""
+            <{tag} {href} class="product-card group/card flex flex-col rounded-2xl overflow-hidden bg-white/5 hover:bg-white/10 ring-1 ring-white/10 hover:ring-purple-400/40 transition-all no-underline">
+                {media}
+                <div class="p-2.5 flex flex-col gap-1 flex-grow">
+                    <span class="text-sm font-semibold text-white leading-snug line-clamp-2">{esc(i_title)}</span>
+                    {f'<p class="text-xs text-slate-300 leading-relaxed line-clamp-3">{esc(i_desc)}</p>' if i_desc else ''}
+                    {f'<span class="mt-auto pt-1 text-[0.65rem] text-purple-300/70 truncate">{esc(i_meta)} ↗</span>' if i_meta else ''}
+                </div>
+            </{tag}>
+        """)
+
+    if cards:
+        body = f"""
+            <div class="products-grid grid grid-cols-2 gap-3 p-3 overflow-y-auto flex-grow custom-scrollbar">
+                {''.join(cards)}
+            </div>
+        """
+    else:
+        body = """
+            <div class="flex flex-col items-center justify-center flex-grow text-slate-400 gap-2">
+                <span class="material-symbols-outlined text-4xl opacity-40">shopping_bag</span>
+                <span class="text-xs italic">No recommendations found</span>
+            </div>
+        """
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container products-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(title, icon, subtitle)}
+        {body}
+    </div>
+    """
+
 def render_chart(widget_id: str, config: dict) -> str:
     """Chart widget. Contract: {title?, chart: <full Chart.js config>} or
     {title?, type?, labels: [str], values: [num]} — normalized here, baked as a
@@ -1044,6 +1128,7 @@ WIDGET_RENDERERS = {
     "youtube_player": render_youtube_player,
     "data_card": render_data_card,
     "image": render_image,
+    "products": render_products,
     "chart": render_chart,
     "stock_card": render_stock_card,
     "weather": render_weather,

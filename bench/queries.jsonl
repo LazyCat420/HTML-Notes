@@ -1,0 +1,15 @@
+{"message": "chocolate chip cookie recipe video", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "a how-to recipe video; any reputable cooking channel; freshness irrelevant"}
+{"message": "show me a video on how photosynthesis works", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "an educational explainer; clarity and a known-good channel matter; freshness irrelevant"}
+{"message": "latest news video about the fifa world cup", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "NEWS: must be a recent upload, not an old recap; verified news channel preferred"}
+{"message": "cnn live news stream", "want_fresh": false, "want_live": true, "want_short": false, "intent_notes": "an actual 24/7 live stream, not a recorded clip"}
+{"message": "beginner full body workout no equipment", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "a follow-along workout of reasonable length; not a 30s Short; reputable fitness channel"}
+{"message": "how to tie a tie video", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "a short clear tutorial; a Short is acceptable here"}
+{"message": "python asyncio tutorial for beginners", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "a programming tutorial; prefer a current version and a known teaching channel"}
+{"message": "receta de tortilla de patatas", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "SPANISH content expected; a Spanish-language cooking video"}
+{"message": "comment faire des crêpes maison", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "FRENCH content expected; a French-language recipe video"}
+{"message": "how to make paneer butter masala in Hindi", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "explicit override: HINDI content expected even though the request is in English"}
+{"message": "パスタの作り方", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "JAPANESE content expected; a Japanese-language pasta cooking video"}
+{"message": "Wie macht man einen Kaiserschmarrn", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "GERMAN content expected; a German-language recipe video"}
+{"message": "как поменять масло в машине", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "RUSSIAN content expected; a car oil-change how-to in Russian"}
+{"message": "quick 1 minute meditation", "want_fresh": false, "want_live": false, "want_short": true, "intent_notes": "explicitly SHORT; a ~1 minute clip / Short is ideal"}
+{"message": "nba highlights today", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "NEWS/recency: today's highlights, not a years-old game; official league channel preferred"}

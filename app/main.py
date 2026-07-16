@@ -1554,6 +1554,32 @@ STOCK_WORD_RE = re.compile(r'\b(stock|stocks|ticker|shares|share price|crypto|na
 # "market news" without a stock word — still a finance-news ask, routed with them.
 MARKET_WORD_RE = re.compile(r'\bmarkets?\b')
 
+# TRIP planning — "plan a trip to Japan", "3 days in Rome", "Kyoto itinerary",
+# "things to do in Lisbon". High-precision: requires an explicit trip/itinerary word
+# or an "N days in <place>" shape, so it never steals a plain "map of X".
+TRIP_ASK_RE = re.compile(
+    r'\bitinerary\b'
+    r'|\b(?:plan|planning)\b[^.?!]{0,40}\b(?:trip|vacation|holiday|getaway)\b'
+    r'|\b(?:trip|vacation|getaway)\s+(?:to|for|in)\s+\w'
+    r'|\b\d+\s*(?:day|days|week|weeks)\s+(?:in|trip)\b'
+    r'|\bthings\s+to\s+do\s+in\b',
+    re.IGNORECASE)
+
+# SHOPPING / product recommendations — "good outdoor shoes", "best budget laptop",
+# "where to buy a tent", "gift for a hiker". High-precision: an explicit buy/shop
+# phrase, or a quality adjective sitting near a product-category noun. Keeps
+# "best restaurants in NYC" (a map/POI) and "stock price" out.
+SHOP_ASK_RE = re.compile(
+    r'\b(?:shop(?:ping)?\s+for|where\s+(?:can\s+i\s+|to\s+)buy|looking\s+to\s+buy'
+    r'|want\s+to\s+buy|gift\s+(?:for|idea))\b'
+    r'|\b(?:best|good|top|great|recommend(?:ed)?|budget|cheap|affordable|quality|decent)\b'
+    r'[^.?!]{0,30}\b(?:shoes|boots|sneakers|sandals|laptops?|headphones|earbuds|'
+    r'phones?|smartphones?|watch|smartwatch|backpacks?|jackets?|coats?|cameras?|tvs?|'
+    r'monitors?|keyboards?|mouse|mattress|chairs?|desks?|bikes?|bicycles?|tents?|'
+    r'sleeping\s+bags?|cookware|blender|vacuum|gifts?|gear|sunglasses|wallets?|'
+    r'luggage|suitcases?|speakers?|drones?)\b',
+    re.IGNORECASE)
+
 # "cnn live news" is a thing to WATCH, but it contains "news", so DATA_ASK_RE
 # claimed it and the model was told to build a data_card — a text list of
 # headlines, when what was asked for was a stream. Live intent has to outrank the
@@ -2097,6 +2123,45 @@ def extract_location(message: str) -> str:
     return database.get_user_facts().get("location") or "New York"
 
 
+# Strip stray inline citation markers ("[0]", "[1, 2]", "[0, 2, 3]") that a
+# summariser sometimes leaves in the answer prose despite being told to list source
+# indices separately. Only bracketed runs of digits/commas/spaces are removed, so
+# real markdown like "[label](url)" and "[1] Do the thing" checklists survive.
+_CITATION_RE = re.compile(r'\s*\[\s*\d+(?:\s*,\s*\d+)*\s*\]')
+
+
+def _strip_citation_markers(text: str) -> str:
+    return _CITATION_RE.sub("", text or "").strip()
+
+
+# Preposition/filler words to strip when pulling a destination out of a trip ask.
+_TRIP_STOPWORDS = {
+    "plan", "planning", "trip", "vacation", "holiday", "getaway", "itinerary",
+    "travel", "traveling", "travelling", "visit", "visiting", "tour", "journey",
+    "me", "my", "a", "an", "the", "to", "for", "in", "of", "please", "help",
+    "week", "weekend", "day", "days", "long", "some", "go", "going",
+}
+
+
+def extract_trip_destination(message: str) -> str:
+    """Pull the destination out of a trip ask. 'plan me a trip to japan' → 'japan';
+    'kyoto 5 day itinerary' → 'kyoto'. Prefers an explicit 'to/in/for X' clause,
+    else falls back to the residual words after stripping trip-planning filler."""
+    m = (message or "").strip()
+    match = re.search(r'\b(?:to|in|for|around|through|across)\s+([A-Za-zÀ-ɏ .,\'-]+)',
+                      m, re.IGNORECASE)
+    if match:
+        loc = match.group(1).strip(" .,")
+        # Drop a trailing duration clause: "japan for 5 days" already handled by the
+        # 'to' capture, but "japan in spring" shouldn't keep "in spring".
+        loc = re.split(r'\bfor\s+\d|\b\d+\s*(?:day|week)', loc, flags=re.IGNORECASE)[0].strip(" .,")
+        if loc and loc.lower() not in _TRIP_STOPWORDS:
+            return loc
+    cleaned = re.sub(r'[^\w\s]', ' ', m.lower())
+    words = [w for w in cleaned.split() if w not in _TRIP_STOPWORDS and not w.isdigit()]
+    return " ".join(words).strip()
+
+
 # Words extract_topic keeps but that shouldn't survive into a news/market topic —
 # "news about AI" → topic "ai", not a doubled "News: News Ai" title.
 _NEWSY = {"news", "headline", "headlines", "latest", "recent", "breaking",
@@ -2208,13 +2273,34 @@ async def build_stock_news_config(message: str) -> dict:
         # which searches GDELT/Google News with the full topic.
         return await build_news_config(message)
 
+    # Yahoo's finance search returns NO snippet, and its linked article pages are
+    # JS-heavy/paywalled so read_web_page often comes back empty — which left the
+    # editor pass with only a headline and forced it into one-line restatements
+    # ("never gave me a summary"). Enrich the URLs with og:description first: a
+    # cheap 6s meta-fetch that yields a real 1-2 sentence blurb per story even when
+    # the full page won't scrape, giving the editor real material AND a fallback.
+    enrich_items = [{"url": n.get("url", ""), "snippet": "", "image": n.get("image", "")}
+                    for n in news[:6]]
+    try:
+        await asyncio.wait_for(_enrich_news(enrich_items, timeout=6.0), timeout=7.0)
+    except asyncio.TimeoutError:
+        pass
+    for n, e in zip(news[:6], enrich_items):
+        if e.get("snippet"):
+            n["og_desc"] = e["snippet"]
+        if not n.get("image") and e.get("image"):
+            n["image"] = e["image"]
+
     def raw_items(summaries: dict = None):
         out = []
         for i, n in enumerate(news[:6]):
             tickers = ", ".join(n.get("related_tickers") or [])
+            # Fallback chain for the description: the LLM summary, else the og:desc
+            # blurb, else the headline — never an empty body.
+            desc = ((summaries or {}).get(i) or n.get("og_desc") or "")[:500]
             out.append({
                 "title": (n.get("title") or "")[:140],
-                "description": ((summaries or {}).get(i) or "")[:500],
+                "description": desc,
                 "url": n.get("url", ""),
                 "image": n.get("image", ""),
                 "meta": " · ".join(x for x in [n.get("publisher"), n.get("published")] if x),
@@ -2242,7 +2328,9 @@ async def build_stock_news_config(message: str) -> dict:
 
     source_lines = []
     for i, n in enumerate(news[:6]):
-        body = page_texts[i] if i < len(page_texts) else ""
+        # Prefer the scraped body; fall back to the og:description blurb so the
+        # editor has real prose to summarise even when the page didn't scrape.
+        body = (page_texts[i] if i < len(page_texts) else "") or n.get("og_desc") or ""
         tickers = ", ".join(n.get("related_tickers") or [])
         head = f'[{i}] {n.get("title","")} ({n.get("publisher","")}, {n.get("published","")})'
         if tickers:
@@ -2263,7 +2351,8 @@ async def build_stock_news_config(message: str) -> dict:
     )
     title = ("Market News" if is_general else f"Market News: {display}").title()[:60]
     if not data or not isinstance(data.get("items"), list) or not data["items"]:
-        # LLM pass failed → article excerpts as descriptions, not bare links.
+        # LLM pass failed → article excerpts (scrape or og:desc) as descriptions,
+        # not bare links. raw_items already falls back to og_desc per story.
         excerpts = {i: t[:220] for i, t in enumerate(page_texts) if t}
         return {"title": title, "icon": "trending_up", "items": raw_items(excerpts)}
     summaries = {it.get("index"): (it.get("summary") or "").strip()
@@ -2396,7 +2485,7 @@ async def build_answer_config(query: str, results: Optional[list] = None,
         "subtitle": (data.get("overview") or "")[:140],
         "icon": _ANSWER_ICONS.get(fmt, "article"),
         "image": hero,
-        "answer": (data.get("answer") or "").strip(),
+        "answer": _strip_citation_markers((data.get("answer") or "").strip()),
         "items": summarised_items(used),
     }
 
@@ -2827,6 +2916,8 @@ ROUTER_WIDGETS = {
     "image":      ("image",     'a PICTURE of something. query = the subject ("golden retriever puppy")'),
     "music":      ("music",     'background music / radio. query = a genre ("lofi", "jazz") or empty'),
     "answer":     ("answer",    'a fact / recipe / how-to / definition / comparison / explanation. query = the question'),
+    "products":   ("products",  'shopping / product recommendations to BUY or compare ("good outdoor shoes", "best budget laptop", "gift for a hiker"). query = the product ask. Renders a grid of picture cards linking to sources'),
+    "trip":       ("trip",      'plan a TRIP / vacation / multi-day itinerary to a place ("plan a trip to Japan", "3 days in Rome"). query = the destination + any duration. Renders an itinerary card + a map of the spots'),
     "wikipedia":  ("wikipedia", 'an explicit Wikipedia-article request. query = the subject'),
     "list":       ("checklist", 'a checklist / to-do / shopping list to CREATE. query = the whole request'),
     "notes":      ("notes",     'a notepad, optionally pre-filled. query = the whole request'),
@@ -2902,6 +2993,188 @@ async def build_image_config(query: str) -> Optional[dict]:
     if not images:
         return None
     return {"title": q[:70].title(), "images": images}
+
+
+async def build_products_config(query: str) -> dict:
+    """Shopping / recommendation grid: web-search the product ask, enrich each
+    result with its og:image (the REFERENCE PHOTO) and og:description, then one LLM
+    pass tightens each into a product name + one-line "why" + price if stated.
+
+    Every card keeps its own image and links to its own source, so the user sees
+    what each thing looks like and clicks the picture to go buy/read more — the
+    exact shape asked for by "find good outdoor shoes ... show pictures I can click
+    that take me to the source". Falls back to enriched results if the LLM pass
+    fails; never a wall of naked links.
+    """
+    q = (query or "").strip()
+    if not q:
+        return {"title": "Recommendations", "icon": "shopping_bag", "items": []}
+    results = await web_search(q, limit=10)
+    if not results:
+        return {"title": q[:60].title(), "icon": "shopping_bag",
+                "subtitle": "No results", "items": []}
+    items = [{"title": r.get("title", ""), "snippet": r.get("snippet", ""),
+              "url": r.get("url", ""), "image": r.get("image", "")}
+             for r in results if r.get("url")]
+    # og:image / og:description give every card a real reference photo + blurb.
+    try:
+        await asyncio.wait_for(_enrich_news(items, timeout=6.0), timeout=7.0)
+    except asyncio.TimeoutError:
+        pass
+    # A visual grid is the whole point — prefer results that actually have a photo.
+    with_img = [it for it in items if it.get("image")]
+    pool = (with_img or items)[:8]
+
+    numbered = "\n".join(
+        f'[{i}] {it.get("title","")} — {(it.get("snippet") or "")[:200]} ({_host_of(it.get("url",""))})'
+        for i, it in enumerate(pool))
+    data = await fast_llm_json(
+        'You are a shopping assistant turning search results into a clean product '
+        'recommendation grid. Return ONLY JSON, no prose, no fence:\n'
+        '{"overview": "<one sentence on what to look for>", '
+        '"items": [{"index": <the [N] of the source>, "name": "<tight product or pick name>", '
+        '"why": "<one short line: what it is best for / why it is a good pick>", '
+        '"price": "<a price like \\"$120\\" ONLY if clearly stated in the source, else empty>"}]}\n\n'
+        f'QUERY: "{q}"\n\nSOURCES:\n' + numbered + '\n\n'
+        'One entry per distinct source (max 8). Base names and prices ONLY on the '
+        'source text — never invent a price. If a source is a "best of" listicle, name '
+        'the overall guide and say what it covers.',
+        max_tokens=900,
+    )
+
+    def _fallback_items():
+        return [{"title": (it.get("title") or "")[:100],
+                 "description": (it.get("snippet") or "")[:200],
+                 "image": it.get("image", ""), "url": it.get("url", ""),
+                 "meta": _host_of(it.get("url", ""))} for it in pool]
+
+    if not data or not isinstance(data.get("items"), list) or not data["items"]:
+        return {"title": q[:60].title(), "icon": "shopping_bag",
+                "subtitle": "Top picks", "items": _fallback_items()}
+
+    out = []
+    for it in data["items"]:
+        idx = it.get("index")
+        if not isinstance(idx, int) or not (0 <= idx < len(pool)):
+            continue
+        src = pool[idx]
+        out.append({
+            "title": (it.get("name") or src.get("title") or "")[:100],
+            "description": (it.get("why") or src.get("snippet") or "")[:220],
+            "price": (it.get("price") or "")[:16],
+            "image": src.get("image", ""),
+            "url": src.get("url", ""),
+            "meta": _host_of(src.get("url", "")),
+        })
+    if not out:
+        out = _fallback_items()
+    return {"title": q[:60].title(), "icon": "shopping_bag",
+            "subtitle": (data.get("overview") or "")[:120], "items": out}
+
+
+async def build_trip_widgets(query: str) -> list:
+    """Plan a trip to a place as TWO widgets built from ONE research pass: a real
+    day-by-day itinerary card AND a map pinned with the actual places named in it.
+
+    "plan me a trip to japan" previously composed a generic how-to answer card + a
+    country-centred (marker-less) map, because build_answer_config just summarises a
+    "how to plan a trip" web search and the map only geocoded "japan". Here we search
+    for the destination's real attractions, have the LLM WRITE an itinerary and pull
+    the named places out of it, geocode those, and drop markers — so the user gets
+    usable, place-specific data instead of a paragraph.
+
+    Returns [(widget_type, id_prefix, config), ...] to spawn together. Degrades to
+    just the itinerary card if geocoding yields nothing, and to a plain answer card
+    if the research pass fails — never an empty turn.
+    """
+    place = extract_trip_destination(query) or query.strip()
+    if not place:
+        return [("data_card", "trip", await build_answer_config(query))]
+
+    results = await web_search(f"top attractions and 5 day itinerary in {place}", limit=8)
+    if not results:
+        return [("data_card", "trip", await build_answer_config(query))]
+
+    async def _page_text(r):
+        url = r.get("url", "")
+        if not url:
+            return ""
+        try:
+            page = await read_web_page(url, max_chars=2500)
+            return "" if page.get("is_error") else (page.get("content") or "")
+        except Exception:
+            return ""
+    try:
+        page_texts = await asyncio.wait_for(
+            asyncio.gather(*[_page_text(r) for r in results[:3]]), timeout=14.0)
+    except asyncio.TimeoutError:
+        page_texts = []
+
+    src = []
+    for i, r in enumerate(results[:6]):
+        body = page_texts[i] if i < len(page_texts) else ""
+        src.append(f'[{i}] {r.get("title","")}\n{(body or r.get("snippet") or "")[:1600]}')
+
+    data = await fast_llm_json(
+        'You are a travel planner. Write a concrete, usable trip plan and list the '
+        'real places it names so they can be mapped. Return ONLY JSON, no fence:\n'
+        '{"title": "<e.g. \\"5 Days in Japan\\">", '
+        '"overview": "<one sentence>", '
+        '"answer": "<the itinerary in GitHub-flavored Markdown: a short intro, then '
+        '\\"## Day 1\\" ... headings with 2-4 bulleted specifics each (neighbourhoods, '
+        'sights, food), plus a short \\"## Getting Around\\" and \\"## Tips\\" section. '
+        'Name REAL places, not generic advice>", '
+        '"places": [{"place": "<a specific, geocodable place: \\"Fushimi Inari, Kyoto, Japan\\">", '
+        '"label": "<short marker label>", "detail": "<one line: what it is>"}]}\n\n'
+        f'DESTINATION: "{place}"\nUSER ASKED: "{query}"\n\nSOURCES:\n' + "\n\n".join(src) + '\n\n'
+        'RULES:\n'
+        '- WRITE A REAL ITINERARY grounded in the SOURCES — specific neighbourhoods, '
+        'landmarks, and dishes, not "research the best time to visit".\n'
+        '- Do NOT put bracketed source numbers like [0] or [1,2] in the answer text.\n'
+        '- `places` = up to 10 specific, mappable spots you mention, each "Place, City, Country".',
+        max_tokens=1800,
+    )
+
+    if not data or not (data.get("answer") or "").strip():
+        return [("data_card", "trip", await build_answer_config(query))]
+
+    answer_cfg = {
+        "title": (data.get("title") or f"Trip to {place}")[:70],
+        "subtitle": (data.get("overview") or "")[:140],
+        "icon": "luggage",
+        "answer": _strip_citation_markers((data.get("answer") or "").strip()),
+        "items": [{"title": r.get("title", ""), "description": (r.get("snippet") or "")[:200],
+                   "url": r.get("url", ""), "image": r.get("image", ""),
+                   "meta": _host_of(r.get("url", "")), "badge": "Source"} for r in results[:4]],
+    }
+    widgets = [("data_card", "trip", answer_cfg)]
+
+    # Geocode the named places → real markers. Same two-pass flow as build_map_config.
+    locs = [l for l in (data.get("places") or [])
+            if isinstance(l, dict) and (l.get("place") or "").strip()][:10]
+    if locs:
+        geocoded = await asyncio.gather(*[geocode_place(l.get("place", "")) for l in locs])
+        markers, misses = [], []
+        for l, g in zip(locs, geocoded):
+            if g:
+                markers.append({"lat": g["lat"], "lon": g["lon"],
+                                "label": (l.get("label") or l.get("place") or g["resolved"])[:90],
+                                "detail": (l.get("detail") or "")[:180], "color": "#8b5cf6"})
+            else:
+                misses.append(l)
+        for l in misses[:5]:
+            g = await geocode_nominatim(l.get("place", ""))
+            if g:
+                markers.append({"lat": g["lat"], "lon": g["lon"],
+                                "label": (l.get("label") or l.get("place"))[:90],
+                                "detail": (l.get("detail") or "")[:180], "color": "#8b5cf6"})
+        if markers:
+            widgets.append(("map", "trip-map", {
+                "title": f"{place.title()} — the map"[:70],
+                "subtitle": f"{len(markers)} spot{'s' if len(markers) != 1 else ''} from your plan",
+                "markers": markers, "center": None,
+            }))
+    return widgets
 
 
 async def _resolve_ticker(query: str) -> str:
@@ -2988,6 +3261,13 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
 
         if wtype == "answer":
             return ("data_card", "answer", await build_answer_config(query or message))
+
+        if wtype == "products":
+            return ("products", "products", await build_products_config(query or message))
+
+        if wtype == "trip":
+            # Returns a LIST of widgets (itinerary card + map); the caller flattens.
+            return await build_trip_widgets(query or message)
 
         if wtype == "wikipedia":
             return ("data_card", "wikipedia", await build_wikipedia_config(query or message))
@@ -3170,7 +3450,14 @@ async def send_message(req: MessageRequest):
                 built = await asyncio.gather(
                     *[build_router_widget(s, req.session_id, req.message) for s in specs],
                     return_exceptions=True)
-                good = [b for b in built if isinstance(b, tuple) and b]
+                # A spec builds to one widget (tuple) OR several (list of tuples, e.g.
+                # a trip → itinerary card + map). Flatten both shapes into one list.
+                good = []
+                for b in built:
+                    if isinstance(b, list):
+                        good.extend(x for x in b if isinstance(x, tuple) and x)
+                    elif isinstance(b, tuple) and b:
+                        good.append(b)
                 if not good:
                     logger.info("[ROUTER] all builds empty — degrading to an answer card")
                     good = [("data_card", "answer", await build_answer_config(req.message))]
@@ -3471,6 +3758,27 @@ async def send_message(req: MessageRequest):
                 "data_card", "directions",
                 config_builder=lambda: build_answer_config(req.message),
                 status="checking the route and travel time...")
+
+        # 5c. TRIP PLANNING — "plan a trip to Japan", "3 days in Rome". Builds a real
+        #     day-by-day itinerary card AND a map pinned with the actual places it
+        #     names (via build_trip_widgets). Checked BEFORE the map branch so
+        #     "trip to japan" isn't grabbed as a bare place map, and reuses
+        #     spawn_router_stream so both widgets land in one commit.
+        if (TRIP_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask and not is_list_ask):
+            return spawn_router_stream(
+                [{"type": "trip", "query": req.message}], reason="planning your trip")
+
+        # 5d. SHOPPING / PRODUCT PICKS — "good outdoor shoes", "best budget laptop".
+        #     A grid of reference-photo cards, each linking to its source, instead of
+        #     a wall of links. Checked before the map/POI branch (a product ask names
+        #     no place) and outside the is_data_ask gate.
+        if (SHOP_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask and not is_list_ask):
+            return spawn_widget_stream(
+                "products", "products",
+                config_builder=lambda: build_products_config(req.message),
+                status="finding recommendations with photos...")
 
         # 6. MAP — geo/location queries, and business/POI asks ("coffee shops in
         #    Seattle") which have NO map/where token so MAP_ASK_RE misses them and

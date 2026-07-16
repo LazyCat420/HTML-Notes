@@ -154,3 +154,65 @@ def test_singleton_media_sig_changes_when_song_changes():
     jazz = _content_sig("mini_music_player", {"genre": "jazz"})
     assert jazz == _content_sig("mini_music_player", {"genre": "jazz"})
     assert jazz != _content_sig("mini_music_player", {"genre": "rock"})
+
+
+def test_products_widget_image_links_to_source():
+    """The products grid must show a reference photo per item and make the whole
+    card a link to the source, so clicking the picture opens the buy/read page."""
+    config = {
+        "title": "Outdoor Shoes",
+        "items": [
+            {"title": "Salomon X Ultra", "description": "Great trail grip",
+             "image": "https://ex.com/a.jpg", "url": "https://rei.com/salomon",
+             "price": "$150", "meta": "rei.com"},
+            {"title": "Merrell Moab", "url": "https://amazon.com/moab"},  # no image
+        ],
+    }
+    html_output = generate_widget_html("products", "products-1", config)
+    assert "products-grid" in html_output
+    # The image card is wrapped in an anchor to its source.
+    assert 'href="https://rei.com/salomon"' in html_output
+    assert "https://ex.com/a.jpg" in html_output
+    assert "$150" in html_output
+    # No-image item still renders a clickable card (monogram fallback).
+    assert 'href="https://amazon.com/moab"' in html_output
+    # Content-sig is stamped so the client reconciler tracks it.
+    assert "data-sig=" in html_output
+
+
+def test_products_widget_never_blank():
+    """Empty items degrade to a friendly empty state, never a broken frame."""
+    html_output = generate_widget_html("products", "products-2", {"title": "X", "items": []})
+    assert "No recommendations found" in html_output
+
+
+def test_trip_and_shop_intent_routing():
+    """The trip/shopping fast-paths must catch their asks without stealing plain
+    map / restaurant / news queries."""
+    from app.main import TRIP_ASK_RE, SHOP_ASK_RE, extract_trip_destination
+    trip_yes = ["plan me a trip to japan", "3 days in Rome", "kyoto itinerary",
+                "things to do in Lisbon"]
+    trip_no = ["map of japan", "weather in tokyo", "best budget laptop"]
+    for q in trip_yes:
+        assert TRIP_ASK_RE.search(q.lower()), q
+    for q in trip_no:
+        assert not TRIP_ASK_RE.search(q.lower()), q
+
+    shop_yes = ["help me find good outdoor shoes", "best budget laptop",
+                "where to buy a tent", "gift for a hiker"]
+    shop_no = ["best restaurants in nyc", "stock price of tesla",
+               "plan a trip to japan", "news about shoes"]
+    for q in shop_yes:
+        assert SHOP_ASK_RE.search(q.lower()), q
+    for q in shop_no:
+        assert not SHOP_ASK_RE.search(q.lower()), q
+
+    assert extract_trip_destination("plan me a trip to japan") == "japan"
+
+
+def test_strip_citation_markers():
+    """Stray [N] source markers are removed from answer prose, but real markdown
+    links and numbered-list markers survive."""
+    from app.main import _strip_citation_markers
+    assert _strip_citation_markers("Visit Kyoto [0, 2, 3] and Osaka [1].") == "Visit Kyoto and Osaka."
+    assert _strip_citation_markers("See [guide](http://x.com)") == "See [guide](http://x.com)"
