@@ -1748,9 +1748,15 @@ async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dic
     the agentic loop costs ~60s of reasoning and tool-call churn; a direct
     completion answers in ~2s. Returns None on any failure so the caller can
     still spawn an empty widget rather than erroring.
+
+    Timeout is sized for the WORST consumer, not the typical one: the news/answer
+    passes emit 500-1000 tokens and the backend generates ~20 tok/s under load,
+    so a 30s cap silently killed every news summary (httpx timeouts stringify to
+    "" — the logs just said "failed:") and the cards degraded to snippet items.
+    Fast callers still return in seconds; the ceiling only matters on the slow ones.
     """
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             model = _fast_model["name"]
             if not model:
                 resp = await client.get(f"{VLLM_URL}/v1/models")
@@ -1766,7 +1772,8 @@ async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dic
         match = re.search(r'\{.*\}', text, re.DOTALL)  # tolerate ``` fences / stray prose
         return json.loads(match.group(0)) if match else None
     except Exception as e:
-        logger.warning(f"fast_llm_json failed: {e}")
+        # type name matters: httpx timeout exceptions stringify to ""
+        logger.warning(f"fast_llm_json failed: {type(e).__name__}: {e}")
         return None
 
 
