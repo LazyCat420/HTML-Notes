@@ -1080,7 +1080,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL
+from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN
 import asyncio
 import contextvars
 import datetime
@@ -2193,14 +2193,114 @@ async def geocode_nominatim(query: str) -> Optional[dict]:
     return None
 
 
+# Runtime secret cache (vault-backed). Populated lazily by _fetch_secret.
+_secret_cache: Dict[str, str] = {}
+
+# A map ask that wants BUSINESS/POI pins ("coffee shops in Seattle", "pharmacies
+# near me") rather than a hazard/event map ("where are the fires"). These resolve
+# via Google Places (real listings with coordinates) instead of the LLM-guess +
+# city geocoder, which can't find individual shops.
+POI_MAP_RE = re.compile(
+    r'\b(\w*shops?|\w*stores?|restaurants?|cafe?s?|coffee|bars?|pubs?|breweries|brewery|'
+    r'pharmac(y|ies)|grocer(y|ies)|supermarkets?|gyms?|hotels?|motels?|banks?|atms?|'
+    r'gas ?stations?|petrol|parks?|museums?|librar(y|ies)|hospitals?|clinics?|'
+    r'dentists?|doctors?|salons?|barbers?|bakeries|bakery|malls?|markets?|'
+    r'dispensar(y|ies)|clubs?|theat(er|re)s?|cinemas?|diners?|delis?|'
+    r'places to (eat|drink|stay|shop|visit|go)|things to do|points? of interest)\b'
+    r'|\bnear ?(me|by)\b|\bnearby\b')
+
+# Hazard/event geo queries stay on the web+geocode path — Places would just search
+# for businesses literally named after the event.
+_NON_POI_GEO_RE = re.compile(
+    r'\b(fires?|wildfires?|earthquakes?|floods?|flooding|hurricanes?|tornado(es)?|'
+    r'storms?|outages?|protests?|war|conflict|border)\b')
+
+
+async def _fetch_secret(name: str) -> str:
+    """One secret by name: env var first, then vault-service (bearer token),
+    cached. Returns "" when unavailable so callers degrade gracefully."""
+    if name in _secret_cache:
+        return _secret_cache[name]
+    val = os.getenv(name, "") or ""
+    if not val and VAULT_SERVICE_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as c:
+                r = await c.get(f"{VAULT_SERVICE_URL}/secrets",
+                                params={"keys": name},
+                                headers={"Authorization": f"Bearer {VAULT_SERVICE_TOKEN}"})
+                if r.status_code == 200:
+                    val = str((r.json() or {}).get(name, "") or "")
+        except Exception as e:
+            logger.warning(f"[VAULT] fetch {name!r} failed: {e}")
+    _secret_cache[name] = val
+    return val
+
+
+async def google_places_search(query: str, limit: int = 12) -> list:
+    """Real business/POI pins from Google Places API (New) searchText. Returns a
+    markers list in render_map's shape ([{lat, lon, label, detail, color}]), or []
+    when the key is missing or the search fails (caller falls back)."""
+    key = await _fetch_secret("GOOGLE_API_KEY")
+    if not key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as c:
+            r = await c.post(
+                "https://places.googleapis.com/v1/places:searchText",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Goog-Api-Key": key,
+                    "X-Goog-FieldMask": ("places.displayName,places.location,"
+                                         "places.formattedAddress,places.rating,"
+                                         "places.userRatingCount"),
+                },
+                json={"textQuery": query, "maxResultCount": min(max(limit, 1), 20)})
+        r.raise_for_status()
+        out = []
+        for p in (r.json().get("places") or []):
+            loc = p.get("location") or {}
+            lat, lon = loc.get("latitude"), loc.get("longitude")
+            if lat is None or lon is None:
+                continue
+            name = (p.get("displayName") or {}).get("text") or "Place"
+            addr = p.get("formattedAddress") or ""
+            rating = p.get("rating")
+            reviews = p.get("userRatingCount")
+            if rating:
+                detail = f"★ {rating}" + (f" ({reviews})" if reviews else "")
+                detail += f" · {addr}" if addr else ""
+            else:
+                detail = addr
+            out.append({"lat": lat, "lon": lon, "label": name[:90],
+                        "detail": detail[:180], "color": "#8b5cf6"})
+        return out
+    except Exception as e:
+        logger.warning(f"[PLACES] search failed for {query!r}: {e}")
+        return []
+
+
 async def build_map_config(query: str) -> dict:
-    """Turn a geo query ("where are the fires in California", "map of X") into a
-    `map` widget: search the web, have the LLM PULL the place names out of the
-    results, geocode them, and drop markers. Fully agentic on the data side — the
-    model decides WHICH places matter; the server renders the template.
+    """Turn a geo query into a `map` widget. A business/POI ask ("coffee shops in
+    Seattle") gets real pins from Google Places; a hazard/event or "where is X"
+    ask ("where are the fires in California") searches the web, has the LLM PULL
+    the place names out of the results, geocodes them, and drops markers.
 
     Degrades to a region-centred (marker-less) map so the card is never blank.
     """
+    q0 = (query or "").strip()
+    # Business/POI pins via Google Places — but not for hazard/event maps, which
+    # the web+geocode path handles better.
+    if POI_MAP_RE.search(q0.lower()) and not _NON_POI_GEO_RE.search(q0.lower()):
+        place_markers = await google_places_search(q0)
+        if place_markers:
+            n = len(place_markers)
+            return {
+                "title": q0[:70] or "Places",
+                "subtitle": f"{n} place{'s' if n != 1 else ''} found",
+                "markers": place_markers,
+                "center": None,
+            }
+        # else: no key / no results → fall through to the web+geocode flow.
     q = (query or "").strip()
     results = await web_search(q, limit=6)
 

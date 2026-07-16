@@ -12,6 +12,10 @@ services:
       - DATABASE_URL=/app/data/notes.db
       - VLLM_URL=http://10.0.0.141:8000
       - PRISM_URL=http://10.0.0.16:7777
+      # Vault-backed secrets (GOOGLE_API_KEY for the Places map). Interpolated from
+      # the staged .env at deploy — the key itself is never written to the repo.
+      - VAULT_SERVICE_URL=${VAULT_SERVICE_URL:-http://10.0.0.16:5599}
+      - VAULT_SERVICE_TOKEN=${VAULT_SERVICE_TOKEN:-}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

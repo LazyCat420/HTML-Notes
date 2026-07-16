@@ -205,3 +205,62 @@ async def test_build_list_remove_no_match_keeps_list(monkeypatch):
     items = [{"text": "milk", "done": False}]
     out = await m.build_list_remove_config("delete the veggies", "Groceries", items)
     assert [i["text"] for i in out["items"]] == ["milk"]  # unchanged, not emptied
+
+
+# ── Google Places map pins ──────────────────────────────────────────────────
+def test_poi_map_detection():
+    from app.main import POI_MAP_RE, _NON_POI_GEO_RE
+    for q in ["coffee shops in seattle", "pharmacies near me", "best sushi nearby",
+              "gas stations in austin", "bookstores in portland", "bars near me"]:
+        assert POI_MAP_RE.search(q), q
+    # hazard / where-is stays on the web+geocode path, NOT Places
+    assert _NON_POI_GEO_RE.search("where are the fires in california")
+    assert not POI_MAP_RE.search("where are the fires in california")
+
+
+@pytest.mark.asyncio
+async def test_google_places_search_maps_markers(monkeypatch):
+    import app.main as m
+    async def fake_secret(name): return "FAKE_KEY"
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"places": [
+                {"displayName": {"text": "Mintish Coffee"},
+                 "location": {"latitude": 47.62, "longitude": -122.32},
+                 "formattedAddress": "123 Pine St", "rating": 5, "userRatingCount": 88},
+                {"displayName": {"text": "No Coords"}, "location": {}},  # dropped: no coords
+            ]}
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return FakeResp()
+    monkeypatch.setattr(m, "_fetch_secret", fake_secret)
+    monkeypatch.setattr(m.httpx, "AsyncClient", FakeClient)
+    out = await m.google_places_search("coffee shops in seattle")
+    assert len(out) == 1                        # the coord-less place is dropped
+    mk = out[0]
+    assert mk["lat"] == 47.62 and mk["lon"] == -122.32
+    assert mk["label"] == "Mintish Coffee"
+    assert "★ 5" in mk["detail"] and "123 Pine St" in mk["detail"]
+
+
+@pytest.mark.asyncio
+async def test_google_places_search_no_key_returns_empty(monkeypatch):
+    import app.main as m
+    async def no_secret(name): return ""
+    monkeypatch.setattr(m, "_fetch_secret", no_secret)
+    assert await m.google_places_search("coffee shops") == []
+
+
+@pytest.mark.asyncio
+async def test_build_map_config_uses_places_for_poi(monkeypatch):
+    import app.main as m
+    async def fake_places(q, limit=12):
+        return [{"lat": 1.0, "lon": 2.0, "label": "Shop", "detail": "", "color": "#8b5cf6"}]
+    monkeypatch.setattr(m, "google_places_search", fake_places)
+    cfg = await m.build_map_config("coffee shops in seattle")
+    assert cfg["markers"] and cfg["markers"][0]["label"] == "Shop"
+    assert "1 place" in cfg["subtitle"]
