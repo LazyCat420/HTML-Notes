@@ -2346,6 +2346,47 @@ _NON_POI_GEO_RE = re.compile(
     r'\b(fires?|wildfires?|earthquakes?|floods?|flooding|hurricanes?|tornado(es)?|'
     r'storms?|outages?|protests?|war|conflict|border)\b')
 
+# Hunger/meal intent that names NO POI noun (so POI_MAP_RE misses it) and NO geo
+# token (so MAP_ASK_RE misses it), yet clearly wants nearby food places on a map:
+# "where can I get food", "somewhere to eat", "grab lunch", "food bank near me".
+# These used to fall through to the slow agent path, which web-searched "food
+# assistance", couldn't geocode the national directories it found, and rendered a
+# blank whole-US map. Routed to the Google Places pin path instead (see build_map_config).
+EAT_MAP_RE = re.compile(
+    r'\bwhere (can|could|should|do|to)\b[^?.!]*\b(eat|food|meal|lunch|dinner|breakfast|brunch|coffee|drinks?|takeout|bite|groceries)\b'
+    r'|\bwhere to eat\b'
+    r'|\b(somewhere|someplace|any\s?where|a place|any place|good places?|best places?|spots?) to (eat|drink|dine|grab)\b'
+    r'|\b(get|grab|order|buy|want|need|find) (me )?(some ?)?(food|lunch|dinner|breakfast|brunch|coffee|takeout|a bite|groceries|a meal)\b'
+    r'|\bfood ?(banks?|pantr(?:y|ies)|trucks?)\b'
+    r'|\bsoup ?kitchens?\b'
+    r'|\b(i\'?m |im |feeling |really )?hungry\b')
+
+# "near me"/"nearby"/"close by" — a POI ask with no explicit anchor city.
+_NEAR_ME_RE = re.compile(
+    r'\bnear ?(me|by)\b|\bnearby\b|\baround (me|here)\b|\bclose by\b', re.I)
+# A preposition followed by a real place token ("in Seattle", "near Chicago") —
+# used to tell "coffee in Seattle" (already anchored) from "where can I get food"
+# (needs the user's city appended). The negative lookahead skips filler followers
+# ("in the airport", "near me") that aren't a place name.
+_EXPLICIT_PLACE_RE = re.compile(
+    r'\b(in|near|around|at|by|within|close to)\s+'
+    r'(?!(?:me|by|here|my|the|a|an|you|us|home)\b)[a-z0-9]', re.I)
+
+
+def anchor_places_query(query: str) -> str:
+    """Give Google Places a location to search. A bare POI/eat ask ("where can I
+    get food", "food bank") or a "near me" ask is anchored to the user's remembered
+    city so a New York user doesn't get the server region's results; a query that
+    already names a place ("tacos in Austin") is left untouched. Degrades to the raw
+    query (Places falls back to IP-geo) when we have no saved city."""
+    q = query or ""
+    city = (database.get_user_facts().get("location") or "").strip()
+    if _NEAR_ME_RE.search(q.lower()):
+        q = _NEAR_ME_RE.sub(f"in {city}" if city else "nearby", q)
+    elif city and not _EXPLICIT_PLACE_RE.search(q.lower()):
+        q = f"{q} in {city}"
+    return q
+
 
 async def _fetch_secret(name: str) -> str:
     """One secret by name: env var first, then vault-service (bearer token),
@@ -2419,16 +2460,15 @@ async def build_map_config(query: str) -> dict:
     Degrades to a region-centred (marker-less) map so the card is never blank.
     """
     q0 = (query or "").strip()
-    # Business/POI pins via Google Places — but not for hazard/event maps, which
-    # the web+geocode path handles better.
-    if POI_MAP_RE.search(q0.lower()) and not _NON_POI_GEO_RE.search(q0.lower()):
-        pq = q0
-        # "coffee near me" has no anchor city — resolve it to the user's remembered
-        # location so Places has somewhere to search.
-        if re.search(r'\bnear ?(me|by)\b|\bnearby\b', pq.lower()):
-            city = database.get_user_facts().get("location", "")
-            if city:
-                pq = re.sub(r'\bnear ?(me|by)\b|\bnearby\b', f"in {city}", pq, flags=re.I)
+    # Business/POI pins via Google Places — POI nouns ("coffee shops in Seattle")
+    # OR bare hunger/meal intent ("where can I get food", "food bank"), but NOT
+    # hazard/event maps, which the web+geocode path handles better.
+    ql = q0.lower()
+    if ((POI_MAP_RE.search(ql) or EAT_MAP_RE.search(ql))
+            and not _NON_POI_GEO_RE.search(ql)):
+        # "coffee near me" / bare "where can I get food" have no anchor city —
+        # resolve to the user's remembered location so Places searches locally.
+        pq = anchor_places_query(q0)
         place_markers = await google_places_search(pq)
         if place_markers:
             n = len(place_markers)
@@ -2886,6 +2926,7 @@ async def send_message(req: MessageRequest):
         #     path (a travel question isn't a "where is X" marker map) and OUTSIDE
         #     the is_data_ask gate so a "weather AND how long to..." still resolves.
         if (DIRECTIONS_ASK_RE.search(text_clean)
+                and not EAT_MAP_RE.search(text_clean)
                 and not wants_removal and not is_video_ask):
             return spawn_widget_stream(
                 "data_card", "directions",
@@ -2898,7 +2939,8 @@ async def send_message(req: MessageRequest):
         #    of the is_data_ask gate so "weather in X and a map of Y" still draws a
         #    map; the POI branch stays gated so "restaurant news" still goes to news.
         if ((MAP_ASK_RE.search(text_clean)
-             or (POI_MAP_RE.search(text_clean) and not is_data_ask))
+             or ((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
+                 and not is_data_ask))
                 and not wants_removal and not is_video_ask):
             return spawn_widget_stream(
                 "map", "map",

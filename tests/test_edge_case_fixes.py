@@ -269,6 +269,54 @@ async def test_build_map_config_uses_places_for_poi(monkeypatch):
     assert "1 place" in cfg["subtitle"]
 
 
+# ── Hunger/meal intent → Places map (was falling to the slow blank-US agent) ──
+def test_eat_map_detection():
+    from app.main import EAT_MAP_RE, POI_MAP_RE, MAP_ASK_RE
+    # These are exactly the phrasings that named no POI noun and no geo token, so
+    # BOTH pre-existing regexes missed them and they hit the slow agent path.
+    for q in ["where can i get food?", "where can i eat", "where to eat",
+              "somewhere to eat", "food bank near me", "food pantry",
+              "soup kitchen", "grab some lunch", "get some food", "im hungry",
+              "good places to eat", "where should i eat dinner"]:
+        ql = q.lower()
+        assert EAT_MAP_RE.search(ql), q
+    # Must NOT hijack informational/other food asks
+    for q in ["food recipe", "how to cook food", "food news",
+              "why is food expensive", "what is the healthiest food"]:
+        assert not EAT_MAP_RE.search(q.lower()), q
+
+
+def test_anchor_places_query(monkeypatch):
+    import app.main as m, app.database as db
+    monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "New York"})
+    # bare eat/POI ask → anchored to the user's city
+    assert m.anchor_places_query("where can i get food") == "where can i get food in New York"
+    assert m.anchor_places_query("food bank") == "food bank in New York"
+    # "near me" → the city, not a literal Places search for "near me"
+    assert m.anchor_places_query("restaurants near me") == "restaurants in New York"
+    # an explicit place is left untouched
+    assert m.anchor_places_query("tacos in Austin") == "tacos in Austin"
+    # no saved city → degrade gracefully (Places falls back to IP-geo)
+    monkeypatch.setattr(db, "get_user_facts", lambda: {})
+    assert m.anchor_places_query("where can i get food") == "where can i get food"
+
+
+@pytest.mark.asyncio
+async def test_build_map_config_food_anchors_to_user_city(monkeypatch):
+    """'where can i get food' must reach Google Places with the user's city
+    appended — the exact bug where a New York user got a blank whole-US map."""
+    import app.main as m, app.database as db
+    monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "New York"})
+    seen = {}
+    async def fake_places(q, limit=12):
+        seen["q"] = q
+        return [{"lat": 40.7, "lon": -74.0, "label": "Joe's Pizza", "detail": "", "color": "#8b5cf6"}]
+    monkeypatch.setattr(m, "google_places_search", fake_places)
+    cfg = await m.build_map_config("where can i get food")
+    assert seen["q"] == "where can i get food in New York"   # anchored, not bare
+    assert cfg["markers"] and cfg["markers"][0]["label"] == "Joe's Pizza"
+
+
 # ── News: general "what's going on" must fetch top stories, not literal-search ─
 @pytest.mark.asyncio
 async def test_general_news_uses_top_stories(monkeypatch):
