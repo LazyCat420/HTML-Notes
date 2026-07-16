@@ -2796,6 +2796,224 @@ def is_valid_tool_args(tool_name: str, args: dict) -> bool:
         return bool(args.get("widgetId"))
     return False
 
+
+# ── AGENTIC ROUTER ───────────────────────────────────────────────────────────
+# The regex cascade in the handler is the fast lane: unambiguous, edge-case-
+# hardened asks (timers, weather, video, the traffic route logic, list edits,
+# media swaps) resolve there with zero LLM latency. Everything it doesn't catch
+# used to drop into the full agentic loop, whose failure mode is a 30-60s
+# reasoning spin that often lands a wall-of-links data_card.
+#
+# The router replaces that fall-through for the common case: ONE ~200-token
+# classify pass picks the right server-side builder — the SAME builders the fast
+# lane uses — or several of them for a composite ask ("plan my Saturday in
+# Seattle" → weather + map + things-to-do). We then build and spawn directly, no
+# agent loop. The full agent still owns what needs real tools (removals, DOM
+# edits, note CRUD, custom hand-built widgets); the router returns
+# {"defer": true} for those and for anything it isn't confident about, so nothing
+# it can't do well is forced through it.
+
+# type → (id_prefix, one-line spec for the classify prompt). The prompt text is
+# what the model sees; the id_prefix is the widget id stem we spawn with.
+ROUTER_WIDGETS = {
+    "weather":    ("weather",   'current conditions / forecast. query = the place ("Tokyo")'),
+    "news":       ("news",      'general current headlines. query = the topic (empty for top stories)'),
+    "stock_news": ("stock-news", 'stock / market / company NEWS. query = ticker, company, or "stock market"'),
+    "stock":      ("stock",     'a ticker\'s price + chart + technicals. query = company or symbol ("Apple", "TSLA")'),
+    "sports":     ("scores",    'scores / fixtures / standings. query = the league or team ("nba", "arsenal")'),
+    "map":        ("map",       'where something IS / a map of places. query = the subject ("fires in California")'),
+    "traffic":    ("traffic",   'live traffic or directions. query = the place, or "from A to B"'),
+    "video":      ("video",     'something to WATCH. query = the subject ("cookie recipe")'),
+    "image":      ("image",     'a PICTURE of something. query = the subject ("golden retriever puppy")'),
+    "music":      ("music",     'background music / radio. query = a genre ("lofi", "jazz") or empty'),
+    "answer":     ("answer",    'a fact / recipe / how-to / definition / comparison / explanation. query = the question'),
+    "wikipedia":  ("wikipedia", 'an explicit Wikipedia-article request. query = the subject'),
+    "list":       ("checklist", 'a checklist / to-do / shopping list to CREATE. query = the whole request'),
+    "notes":      ("notes",     'a notepad, optionally pre-filled. query = the whole request'),
+    "clock":      ("clock",     'a clock / world clock / timer / countdown / stopwatch. query = the whole request'),
+}
+
+
+async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
+    """Classify an ask the fast lane missed into one or more server-buildable
+    widgets, or a deferral. Returns:
+      {"widgets": [{"type", "query", "modifiers"}], "reason"} to build+spawn, or
+      {"defer": true} to hand off to the full agent (removals, edits, note
+      dictation, custom widgets, small talk), or
+      None on any model failure — the caller then falls back to the agent, so the
+    router is a pure latency/quality optimization and never a hard gate."""
+    catalog = "\n".join(f"- {name}: {spec}" for name, (_p, spec) in ROUTER_WIDGETS.items())
+    data = await fast_llm_json(
+        "You are the router for a live dashboard. Choose the widget(s) that best "
+        "serve the user and the search query for each. Return ONLY a JSON object, "
+        "no prose, no code fence:\n"
+        '{"widgets": [{"type": "<type>", "query": "<query>", "modifiers": {}}], '
+        '"reason": "<=8 words"}\n'
+        "Rules:\n"
+        "- ONE widget for one need. Use MULTIPLE only when the ask genuinely spans "
+        'them (e.g. "plan my Saturday in Seattle" -> weather + map + things-to-do; '
+        '"tesla stock and news" -> stock + stock_news). Max 4.\n'
+        "- For a traffic ask add modifiers {\"traffic\": true}.\n"
+        "- If the ask is to REMOVE / close / clear / edit an EXISTING widget, to "
+        "take dictation into a note, to build a custom/one-off widget, or is small "
+        'talk with no widget need, return {"defer": true} instead of widgets.\n'
+        "- Never invent a type. Use only the types listed.\n\n"
+        "WIDGET TYPES:\n" + catalog +
+        (f"\n\nWIDGETS ALREADY ON THE CANVAS:\n{canvas_summary[:700]}" if canvas_summary else "") +
+        f'\n\nUSER: "{message}"',
+        max_tokens=400,
+    )
+    if not isinstance(data, dict):
+        return None
+    if data.get("defer"):
+        return {"defer": True, "reason": data.get("reason", "")}
+    widgets = data.get("widgets")
+    if not isinstance(widgets, list):
+        return None
+    clean = []
+    for w in widgets[:4]:
+        if not isinstance(w, dict):
+            continue
+        wtype = str(w.get("type", "")).strip().lower()
+        if wtype not in ROUTER_WIDGETS:
+            continue
+        clean.append({"type": wtype,
+                      "query": str(w.get("query", "") or "").strip(),
+                      "modifiers": w.get("modifiers") if isinstance(w.get("modifiers"), dict) else {}})
+    if not clean:
+        return None
+    return {"widgets": clean, "reason": str(data.get("reason", ""))[:80]}
+
+
+async def build_image_config(query: str) -> Optional[dict]:
+    """A picture-of-X widget, built server-side: web-search the subject, then pull
+    real photos from the results' og:images (reusing the news enricher). Returns
+    None when nothing usable is found, so the caller skips the widget rather than
+    rendering an empty frame."""
+    q = (query or "").strip()
+    if not q:
+        return None
+    results = await web_search(q, limit=6)
+    if not results:
+        return None
+    items = [{"url": r.get("url", ""), "image": r.get("image", "")} for r in results if r.get("url")]
+    await _enrich_news(items, timeout=5.0)
+    images = [{"url": it["image"], "caption": ""} for it in items if it.get("image")][:4]
+    if not images:
+        return None
+    return {"title": q[:70].title(), "images": images}
+
+
+async def _resolve_ticker(query: str) -> str:
+    """Company name / free text → a ticker symbol. A bare ticker ('TSLA') passes
+    through; anything else is resolved via Yahoo's search matches ('Apple' -> AAPL)."""
+    q = (query or "").strip()
+    if not q:
+        return ""
+    if re.fullmatch(r"[A-Za-z.\-]{1,6}", q) and q.upper() == q:
+        return q.upper()
+    data = await stock_news(q, limit=1)
+    for m in (data.get("matches") or []):
+        if m.get("symbol"):
+            return m["symbol"]
+    # Uppercase single token is very likely already a symbol ('tsla' typed lower).
+    if re.fullmatch(r"[A-Za-z.\-]{1,6}", q):
+        return q.upper()
+    return ""
+
+
+async def build_router_widget(spec: dict, session_id: str, message: str) -> Optional[tuple]:
+    """One router widget spec -> (widget_type, id_prefix, config) ready to spawn,
+    by calling the same builders the fast lane uses. Returns None when the spec
+    can't be built (unknown type, or a data pull came back empty) so the caller
+    skips it. Never raises — a builder error degrades to None."""
+    wtype = spec.get("type", "")
+    query = (spec.get("query") or "").strip()
+    mods = spec.get("modifiers") or {}
+    id_prefix = ROUTER_WIDGETS.get(wtype, (wtype, ""))[0]
+    try:
+        if wtype == "weather":
+            w = await get_weather(extract_location(query or message))
+            return None if w.get("is_error") else ("weather", "weather", w)
+
+        if wtype == "news":
+            return ("data_card", "news", await build_news_config(query or message))
+
+        if wtype == "stock_news":
+            return ("data_card", "stock-news", await build_stock_news_config(query or message))
+
+        if wtype == "stock":
+            sym = await _resolve_ticker(query or message)
+            if not sym:
+                return None
+            snap = await stock_snapshot(sym)
+            return None if snap.get("is_error") else ("stock_card", "stock", snap)
+
+        if wtype == "sports":
+            board = await sports_scores(resolve_league(query) or query or message)
+            # Off-season / empty → a synthesized answer card, never an empty board.
+            if board.get("is_error"):
+                return ("data_card", "sports-answer", await build_answer_config(query or message))
+            return ("scoreboard", "scores", board)
+
+        if wtype == "map":
+            cfg = await build_map_config(query or message)
+            if cfg.get("prompt_for_location"):
+                return ("data_card", "askloc",
+                        {k: v for k, v in cfg.items() if k != "prompt_for_location"})
+            return ("map", "map", cfg)
+
+        if wtype == "traffic":
+            twtype, tcfg = await build_traffic_widget(query or message)
+            return None if not tcfg else (twtype, "traffic", tcfg)
+
+        if wtype == "video":
+            vq = clean_video_query(query or message)
+            hits = filter_blocked_videos(await search_youtube_videos(vq, limit=8))
+            top, cands = pick_varied_video(hits, k=5)
+            if not top:
+                return None
+            _remember_current_video(session_id, top, vq)
+            return ("youtube_player", "video", {
+                "video_id": top["video_id"], "title": top.get("title") or vq,
+                "query": vq, "candidates": cands})
+
+        if wtype == "image":
+            cfg = await build_image_config(query or message)
+            return None if not cfg else ("image", "image", cfg)
+
+        if wtype == "music":
+            genre = extract_music_genre(query or message) or (query.strip() or "lofi")
+            return ("mini_music_player", "music", {"genre": genre, "autoplay": True})
+
+        if wtype == "answer":
+            return ("data_card", "answer", await build_answer_config(query or message))
+
+        if wtype == "wikipedia":
+            return ("data_card", "wikipedia", await build_wikipedia_config(query or message))
+
+        if wtype == "list":
+            return ("checklist", "checklist", await build_list_config(query or message))
+
+        if wtype == "notes":
+            return ("notes", "notes", await build_notes_config(query or message))
+
+        if wtype == "clock":
+            text = (query or message).lower()
+            if re.search(r"\b(timer|countdown|pomodoro)\b", text):
+                secs = _parse_duration_seconds(query or message) or (
+                    25 * 60 if "pomodoro" in text else 60)
+                return ("clock", "clock", {"mode": "countdown", "duration_seconds": secs})
+            if "stopwatch" in text:
+                return ("clock", "clock", {"mode": "stopwatch"})
+            tz = _resolve_timezone(query or message)
+            return ("clock", "clock", {"timezone": tz} if tz else {})
+    except Exception as e:
+        logger.warning(f"[ROUTER] build {wtype!r} failed for {query!r}: {type(e).__name__}: {e}")
+        return None
+    return None
+
+
 @app.post("/session/message")
 async def send_message(req: MessageRequest):
     try:
@@ -2919,6 +3137,62 @@ async def send_message(req: MessageRequest):
                             c.decompose()
 
                 event = await commit_canvas(req.session_id, _clear)
+                if event:
+                    database.save_chat_message(
+                        message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                        session_id=req.session_id,
+                        role="assistant",
+                        content=f"\n\n<!--CANVAS_HTML_START-->\n{get_session_canvas(req.session_id)}\n<!--CANVAS_HTML_END-->"
+                    )
+                    yield event
+                yield 'data: {"type": "done"}\n\n'
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream),
+                media_type="text/event-stream",
+            )
+
+        def spawn_router_stream(specs: list, reason: str = None):
+            """Build the router's chosen widget(s) and append them to the canvas in
+            ONE commit. Building happens inside the stream (with a status line) so
+            a slow pull — news summarising, page reads — shows progress instead of
+            a dead spinner. Widgets that fail to build are skipped; if EVERY one
+            fails, we degrade to an answer card on the original ask so the user
+            still gets something rather than an empty turn."""
+            async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "router", "widgets": [s.get("type") for s in specs],
+                    "reason": reason or "", "query": req.message}) + '\n\n')
+                label = (", ".join(s.get("type", "") for s in specs)
+                         if len(specs) > 1 else (specs[0].get("type", "widget") if specs else "widget"))
+                yield f'data: {json.dumps({"type": "status", "message": f"building {label}..."})}\n\n'
+
+                built = await asyncio.gather(
+                    *[build_router_widget(s, req.session_id, req.message) for s in specs],
+                    return_exceptions=True)
+                good = [b for b in built if isinstance(b, tuple) and b]
+                if not good:
+                    logger.info("[ROUTER] all builds empty — degrading to an answer card")
+                    good = [("data_card", "answer", await build_answer_config(req.message))]
+
+                def _append(soup):
+                    target = soup.select_one('#dashboard-grid')
+                    if target is None:
+                        grid = BeautifulSoup(
+                            '<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
+                        soup.append(grid)
+                        target = soup.select_one('#dashboard-grid')
+                    for wtype, id_prefix, wcfg in good:
+                        rid = f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+                        # Media widgets (video, music) swap the current player in
+                        # place; everything else appends.
+                        if _place_media_widget(soup, wtype, rid, wcfg or {}, req_seq):
+                            continue
+                        node = BeautifulSoup(render_widget(wtype, rid, wcfg or {}), 'html.parser')
+                        _stamp_media_seq(node, wtype, req_seq)
+                        target.append(node)
+
+                event = await commit_canvas(req.session_id, _append)
                 if event:
                     database.save_chat_message(
                         message_id=f"msg_{uuid.uuid4().hex[:8]}",
@@ -3305,15 +3579,29 @@ async def send_message(req: MessageRequest):
                     status="researching and writing your answer...",
                 )
 
-        # Start loading history
-
-        history = database.get_session_messages(req.session_id)
-
         # Adopting the client's snapshot is _run_turn's job now (it only does so
         # when no other turn is in flight, so a concurrent turn's stale snapshot
         # can't undo a widget that just landed).
         canvas_summary = get_canvas_summary(
             get_session_canvas(req.session_id) or req.current_canvas)
+
+        # ── AGENTIC ROUTER (steps 2 & 3) ─────────────────────────────────────
+        # Nothing in the fast lane matched. Before dropping into the ~30-60s agent
+        # loop (whose miss mode is a wall-of-links card), try a cheap LLM classify
+        # → server-built widget(s). Skipped for removals/DOM edits, which need the
+        # agent's canvas_modify_dom; the router's own {"defer": true} sends note
+        # dictation, custom widgets and small talk to the agent too. A None result
+        # (model hiccup) also falls through — the router is never a hard gate.
+        if not wants_removal:
+            router_plan = await route_with_llm(req.message, canvas_summary)
+            if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
+                logger.info(f"[ROUTER] {[w['type'] for w in router_plan['widgets']]} "
+                            f"— {router_plan.get('reason','')}")
+                return spawn_router_stream(router_plan["widgets"], router_plan.get("reason"))
+            logger.info(f"[ROUTER] deferring to agent ({(router_plan or {}).get('reason','no plan')})")
+
+        # Start loading history
+        history = database.get_session_messages(req.session_id)
 
         # Build system prompt with canvas context.
         #

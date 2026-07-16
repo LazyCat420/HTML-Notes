@@ -572,3 +572,96 @@ def test_user_facts_prompt():
     db.set_user_fact("location", "Seattle")
     assert "based in Seattle" in m._user_facts_prompt()
     db.wipe_user_facts()
+
+
+# ── Agentic router (LLM widget selection + composition) ─────────────────────
+@pytest.mark.asyncio
+async def test_route_with_llm_validates_and_filters(monkeypatch):
+    """The router must accept only known types, cap at 4, and pass a defer through
+    untouched — a malformed model reply degrades to None (→ agent), never a crash."""
+    import app.main as m
+
+    async def run(fake):
+        async def fake_llm(instruction, max_tokens=400):
+            return fake
+        monkeypatch.setattr(m, "fast_llm_json", fake_llm)
+        return await m.route_with_llm("whatever", "")
+
+    # valid multi-widget plan, plus one bogus type that must be dropped
+    plan = await run({
+        "widgets": [{"type": "weather", "query": "Seattle"},
+                    {"type": "map", "query": "things to do in Seattle"},
+                    {"type": "bogus", "query": "x"}],
+        "reason": "plan the day"})
+    assert [w["type"] for w in plan["widgets"]] == ["weather", "map"]
+    # explicit deferral is preserved
+    assert (await run({"defer": True}))["defer"] is True
+    # no valid widgets → None (caller falls back to the agent)
+    assert await run({"widgets": [{"type": "nope"}]}) is None
+    # model failure (None) → None
+    assert await run(None) is None
+    # cap at 4
+    big = await run({"widgets": [{"type": "answer", "query": str(i)} for i in range(9)]})
+    assert len(big["widgets"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_build_router_widget_dispatches_each_type(monkeypatch):
+    """Each router type routes to the matching builder and returns a spawnable
+    (widget_type, id_prefix, config) triple — or None when the pull is empty."""
+    import app.main as m
+
+    async def ok_weather(loc, units="fahrenheit"):
+        return {"location": loc, "current": {}}
+    async def bad_weather(loc, units="fahrenheit"):
+        return {"is_error": True}
+    async def fake_answer(msg, results=None, read_top=2):
+        return {"title": "A", "answer": "text"}
+    async def fake_map(msg):
+        return {"title": "M", "markers": [{"lat": 1, "lon": 2}]}
+    monkeypatch.setattr(m, "get_weather", ok_weather)
+    monkeypatch.setattr(m, "build_answer_config", fake_answer)
+    monkeypatch.setattr(m, "build_map_config", fake_map)
+
+    wt, pfx, cfg = await m.build_router_widget({"type": "weather", "query": "Tokyo"}, "s", "msg")
+    # extract_location normalises to lowercase before geocoding
+    assert (wt, pfx) == ("weather", "weather") and cfg["location"].lower() == "tokyo"
+
+    wt, pfx, cfg = await m.build_router_widget({"type": "answer", "query": "why is the sky blue"}, "s", "msg")
+    assert wt == "data_card" and cfg["answer"] == "text"
+
+    wt, pfx, cfg = await m.build_router_widget({"type": "map", "query": "fires"}, "s", "msg")
+    assert wt == "map" and cfg["markers"]
+
+    # a failed weather pull → None (skipped, not an empty widget)
+    monkeypatch.setattr(m, "get_weather", bad_weather)
+    assert await m.build_router_widget({"type": "weather", "query": "Nowhere"}, "s", "msg") is None
+
+    # unknown type → None
+    assert await m.build_router_widget({"type": "mystery", "query": "x"}, "s", "msg") is None
+
+
+@pytest.mark.asyncio
+async def test_build_router_widget_clock_and_traffic(monkeypatch):
+    import app.main as m
+    # timer parsing lands a countdown, not a bare clock
+    wt, pfx, cfg = await m.build_router_widget(
+        {"type": "clock", "query": "set a timer for 5 minutes"}, "s", "msg")
+    assert cfg["mode"] == "countdown" and cfg["duration_seconds"] == 300
+    # traffic delegates to build_traffic_widget's (type, cfg) contract
+    async def fake_traffic(msg):
+        return "iframe_app", {"url": "https://maps.google.com/maps?q=x&output=embed"}
+    monkeypatch.setattr(m, "build_traffic_widget", fake_traffic)
+    wt, pfx, cfg = await m.build_router_widget(
+        {"type": "traffic", "query": "traffic in LA", "modifiers": {"traffic": True}}, "s", "msg")
+    assert wt == "iframe_app" and "output=embed" in cfg["url"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_ticker(monkeypatch):
+    import app.main as m
+    assert await m._resolve_ticker("TSLA") == "TSLA"      # bare symbol passes through
+    async def fake_news(q, limit=8):
+        return {"news": [], "matches": [{"symbol": "AAPL", "name": "Apple Inc."}]}
+    monkeypatch.setattr(m, "stock_news", fake_news)
+    assert await m._resolve_ticker("Apple") == "AAPL"     # name resolves via matches
