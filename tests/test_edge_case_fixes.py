@@ -385,6 +385,11 @@ async def test_traffic_widget_fallbacks_without_tomtom_key(monkeypatch):
     # "near me" falls back to the saved city (client-side embed, not server region)
     wtype, cfg = await m.build_traffic_widget("traffic near me")
     assert cfg and "Seattle" in cfg["url"]
+    # "how's/hows" is framing, not part of the place name
+    wtype, cfg = await m.build_traffic_widget("hows the traffic in los angeles")
+    assert cfg and "q=los+angeles" in cfg["url"], cfg["url"]
+    wtype, cfg = await m.build_traffic_widget("how's the traffic in los angeles")
+    assert cfg and "q=los+angeles" in cfg["url"], cfg["url"]
     # no place and no saved city → None so caller uses the travel-time answer card
     monkeypatch.setattr(db, "get_user_facts", lambda: {})
     wtype, cfg = await m.build_traffic_widget("traffic")

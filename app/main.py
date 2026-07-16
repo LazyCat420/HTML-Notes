@@ -2544,8 +2544,8 @@ _DIR_FROM_TO_RE = re.compile(r'\bfrom\s+(.+?)\s+to\s+(.+?)(?:[.?!]|$)', re.I)
 # (they're stripped) so "traffic in Seattle" → "Seattle".
 _DIR_STRIP_RE = re.compile(
     r'\b(directions?|routes?|traffic|navigate|navigation|drive|driving|way|ways|'
-    r'how|long|far|travel|time|commute|to|from|in|on|for|around|at|near|by|'
-    r'get|getting|the|my|our|is|it|whats|there|show|me|tell|give|please|a|an|'
+    r'hows?|long|far|travel|time|commute|to|from|in|on|for|around|at|near|by|'
+    r'get|getting|the|my|our|is|it|whats|there|show|me|tell|give|please|a|an|s|'
     r'what\'?s?)\b', re.I)
 # A directions ask that specifically wants the MAP (traffic/route/navigation),
 # not just the travel-time number — the latter stays on the answer card.
