@@ -2857,7 +2857,15 @@ async def build_stock_report_config(message: str) -> dict:
     grounded strictly in that material. Degrades to the stock-news card if the
     ticker can't be resolved, and to a numbers-only report if the LLM pass fails.
     """
-    sym = await _resolve_ticker(message)
+    # Isolate the company/ticker from the request: "full report on NVDA stock" →
+    # "NVDA". Without this, _resolve_ticker searches Yahoo for the whole phrase,
+    # matches nothing, and the report silently degrades to the news card.
+    subject = STOCK_REPORT_RE.sub(" ", message)
+    subject = re.sub(r'\b(on|of|the|a|an|about|for|me|please|give|do|show|get|'
+                     r'stock|stocks|shares?|ticker|company|market|price|prices)\b',
+                     " ", subject, flags=re.I)
+    subject = re.sub(r'\s+', " ", subject).strip() or message
+    sym = await _resolve_ticker(subject)
     if not sym:
         # Can't pin a ticker → the stock-news card still gives them something real.
         return await build_stock_news_config(message)
