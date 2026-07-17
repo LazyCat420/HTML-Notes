@@ -2201,6 +2201,15 @@ COMPOSE_ASK_RE = re.compile(
     r'(rundown|overview|breakdown|primer|picture)\b|teach me about|walk me through|'
     r'introduce me to|overview of|(a|an) (overview|introduction|primer) (on|of|to)|'
     r'what should i know about|get me up to speed on|brief me on)\b', re.I)
+# Informational framing on a NEWS ask that wants a SYNTHESIZED brief (a written
+# answer + sources), not a wall of headline links. "tell me about the stock market
+# news", "what's happening in the markets", "summarize today's news", "catch me up".
+# Checked BEFORE the news link-list branches so the synthesis wins.
+_NEWS_SYNTH_RE = re.compile(
+    r'\b(tell me about|what\'?s (happening|going on|new|the latest)|'
+    r'whats (happening|going on|new|the latest)|summar(y|ize|ise)|brief me|'
+    r'catch me up|get me up to speed|fill me in|whats going on|'
+    r'give me the (rundown|scoop|latest|breakdown))\b', re.I)
 # A geo/location query that wants a MAP with markers, not a text answer. Checked
 # before ANSWER so "where are the fires in California" pulls up a map. Kept to
 # strong geo signals so a conceptual "why is X" never gets a map.
@@ -3063,6 +3072,64 @@ async def build_market_research_config(message: str) -> dict:
         "title": (brief.get("title") or "Market Research").title()[:60],
         "subtitle": (brief.get("overview") or "")[:140],
         "icon": "trending_up",
+        "answer": _strip_citation_markers((brief.get("answer") or "").strip()),
+        "items": items[:8],
+    }
+
+
+async def build_news_brief_config(message: str, finance: bool = False) -> dict:
+    """A SYNTHESIZED news brief — a written answer + sources — NOT a headline
+    link-list. For informational 'tell me about / what's happening in / summarize
+    the [X] news' asks: the user wants to KNOW what's going on, not click six links.
+
+    Uses grounded_research (multi-source aggregate → scrape top-N → ONE synthesis
+    pass), the same reliable path as the market brief. Finance asks get the market
+    treatment; anything unavailable degrades to the fast link-list builders so the
+    user still gets something.
+    """
+    if finance:
+        return await build_market_research_config(message)
+    try:
+        from lazycat.grounded_research import grounded_research
+    except Exception as e:
+        logger.warning(f"build_news_brief_config: grounded_research unavailable "
+                       f"({type(e).__name__}: {e}) — link-list news card")
+        return await build_news_config(message)
+    try:
+        brief = await grounded_research(
+            f"the most important current news for this request: {message!r}. "
+            "Summarize the top stories happening now and why each matters.",
+            schema={
+                "title": "a short headline for the news brief (<= 60 chars)",
+                "overview": "one-sentence bottom line on the biggest story right now",
+                "answer": "the brief in GitHub-flavored Markdown: a 1-2 sentence intro, "
+                          "then a bulleted 'Top Stories' list where each bullet says what "
+                          "happened AND why it matters, citing [1][2]. Name the real "
+                          "people, places, companies and figures — never vague filler "
+                          "like 'this source provides information about'.",
+                "sources": [{"title": "headline", "url": "link", "publisher": "source"}],
+            },
+            max_articles=8, scrape_top_n=3, timeout=70.0)
+    except Exception as e:
+        logger.error(f"build_news_brief_config: grounded_research error ({e}) — link card")
+        return await build_news_config(message)
+    if not brief or not (brief.get("answer") or "").strip():
+        logger.info("[DEGRADED] news brief returned nothing — link-list news card")
+        return await build_news_config(message)
+    items = []
+    for s in (brief.get("sources") or []):
+        if isinstance(s, dict) and s.get("url"):
+            items.append({
+                "title": (s.get("title") or "")[:120], "description": "",
+                "url": s.get("url", ""), "image": s.get("image", ""),
+                "meta": s.get("publisher") or _host_of(s.get("url", "")),
+                "badge": "Source"})
+    logger.info(f"[NEWS-BRIEF] synthesized brief ({len(brief.get('answer',''))} chars, "
+                f"{len(items)} sources)")
+    return {
+        "title": (brief.get("title") or "News Brief").title()[:60],
+        "subtitle": (brief.get("overview") or "")[:140],
+        "icon": "newspaper",
         "answer": _strip_citation_markers((brief.get("answer") or "").strip()),
         "items": items[:8],
     }
@@ -4761,6 +4828,29 @@ async def send_message(req: MessageRequest):
                 "data_card", "stock-report",
                 config_builder=lambda: build_stock_report_config(req.message),
                 status="building a full report — quotes, news, and analyst commentary...")
+
+        # 5-pre2. SYNTHESIZED NEWS BRIEF — informational framing on a news ask
+        #    ("tell me about the stock market news", "what's happening in the
+        #    markets", "summarize today's news", "catch me up") wants a WRITTEN
+        #    brief, not a wall of headline links. Route to grounded_research
+        #    synthesis (finance or general) — an `answer` card with real content +
+        #    sources. MUST come before the link-list news branches below, which
+        #    otherwise grab any query containing "news" first. A plain "stock market
+        #    news" (no informational framing) still gets the fast link card.
+        # Also catches "what's happening in the markets" (informational + a general
+        # MARKET word, no specific ticker) even without the literal word "news".
+        # Gated to markets?/stock market + no ticker so it never steals a single-
+        # ticker ask ("what's happening with AAPL" -> stock card, handled elsewhere).
+        _market_general = bool(re.search(r'\b(stock )?markets?\b', text_clean)
+                               and not re.search(r'\b[A-Z]{2,5}\b', req.message))
+        if (_NEWS_SYNTH_RE.search(text_clean)
+                and (NEWS_ASK_RE.search(text_clean) or _market_general)
+                and not wants_removal and not is_video_ask and not LIVE_ASK_RE.search(text_clean)):
+            _finance = bool(STOCK_WORD_RE.search(text_clean) or MARKET_WORD_RE.search(text_clean))
+            return spawn_widget_stream(
+                "data_card", "news-brief",
+                config_builder=lambda: build_news_brief_config(req.message, finance=_finance),
+                status="researching and writing your news brief...")
 
         # 5-pre. STOCK/MARKET NEWS — branch 5 deliberately excludes stock words,
         #    which used to drop these asks to the agent, whose stock_news tool
