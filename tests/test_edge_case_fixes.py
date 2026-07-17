@@ -365,31 +365,33 @@ def test_list_edit_matches_conversational_followups():
 
 @pytest.mark.asyncio
 async def test_traffic_widget_fallbacks_without_tomtom_key(monkeypatch):
-    """Google's classic layer=t embed param is DEAD (the legacy URL redirects to
-    the modern /maps/embed?pb= endpoint which silently drops the layer token), so
-    without a TomTom key a traffic ask degrades to a PLAIN area embed — and the
-    URL must no longer pretend to carry a traffic layer."""
+    """Without a TomTom key a traffic ask no longer pretends to show live flow:
+    when the place geocodes it degrades to OUR themed area map (traffic off) with
+    an honest 'needs a TomTom key' subtitle, instead of a plain Google embed
+    misleadingly titled 'Traffic:'."""
     import app.main as m, app.database as db
     monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "Seattle"})
 
     async def no_key(name):
         return ""
+
+    async def geo(name):
+        return {"lat": 47.6, "lon": -122.33, "resolved": "Seattle"}
     monkeypatch.setattr(m, "_fetch_secret", no_key)
+    monkeypatch.setattr(m, "geocode_place", geo)
+
     wtype, cfg = await m.build_traffic_widget("traffic in seattle")
-    assert wtype == "iframe_app" and cfg and "output=embed" in cfg["url"]
-    assert "layer" not in cfg["url"]
-    # from A to B → a route embed (its route line is still congestion-coloured)
+    assert wtype == "map" and cfg and cfg.get("traffic") is not True
+    assert "TomTom key" in cfg.get("subtitle", "") and cfg["markers"]
+    assert not cfg["title"].startswith("Traffic")  # honest — not live traffic
+    # from A to B → a route embed (its route line is still congestion-coloured);
+    # this path returns before any geocode, so it stays an iframe_app.
     wtype, cfg = await m.build_traffic_widget("directions from boston to nyc")
     assert wtype == "iframe_app" and cfg
     assert "saddr=boston" in cfg["url"] and "daddr=nyc" in cfg["url"]
-    # "near me" falls back to the saved city (client-side embed, not server region)
+    # "near me" falls back to the saved city, geocoded onto our map
     wtype, cfg = await m.build_traffic_widget("traffic near me")
-    assert cfg and "Seattle" in cfg["url"]
-    # "how's/hows" is framing, not part of the place name
-    wtype, cfg = await m.build_traffic_widget("hows the traffic in los angeles")
-    assert cfg and "q=los+angeles" in cfg["url"], cfg["url"]
-    wtype, cfg = await m.build_traffic_widget("how's the traffic in los angeles")
-    assert cfg and "q=los+angeles" in cfg["url"], cfg["url"]
+    assert wtype == "map" and cfg["center"]["lat"] == 47.6
     # no place and no saved city → None so caller uses the travel-time answer card
     monkeypatch.setattr(db, "get_user_facts", lambda: {})
     wtype, cfg = await m.build_traffic_widget("traffic")

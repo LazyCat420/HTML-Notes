@@ -1024,11 +1024,16 @@ def map_payload(config: dict) -> dict:
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             continue
         color = str(m.get("color", "") or "")
+        # An emoji marker reads far faster than an identical colored dot ("where's
+        # the coffee" → ☕). Kept short and escaped; the map document renders it as a
+        # divIcon when present, else falls back to the colored circle.
+        emoji = str(m.get("emoji", "") or "").strip()[:4]
         clean.append({
             "lat": lat, "lon": lon,
             "label": esc(str(m.get("label", ""))[:90]),
             "detail": esc(str(m.get("detail", ""))[:180]),
             "color": color if color.startswith("#") and len(color) <= 9 else "",
+            "emoji": esc(emoji),
         })
     center = config.get("center")
     if not (isinstance(center, dict) and "lat" in center and "lon" in center):
@@ -1064,14 +1069,18 @@ def map_document_html(payload: dict, traffic_key: str = "") -> str:
         traffic_js = (
             "L.tileLayer('https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key="
             + urllib.parse.quote(traffic_key)
-            + "',{maxZoom:18,opacity:0.9,attribution:'© TomTom'}).addTo(map);")
+            + "',{maxZoom:18,opacity:0.8,attribution:'© TomTom'}).addTo(map);")
     # Plain string (not f-string): keep Leaflet's {s}/{z}/{x}/{y}{r} tile tokens and
     # the JS braces literal; only __DATA__ is substituted.
     body = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>html,body,#map{height:100%;margin:0;background:#0f172a}.leaflet-popup-content{font:13px system-ui}</style>
+<style>html,body,#map{height:100%;margin:0;background:#0f172a}.leaflet-popup-content{font:13px system-ui}
+.emoji-pin{display:flex;align-items:center;justify-content:center;width:32px;height:32px;font-size:20px;line-height:1;
+  background:rgba(15,23,42,0.92);border:2px solid var(--pc,#f97316);border-radius:50% 50% 50% 0;
+  transform:rotate(-45deg);box-shadow:0 2px 6px rgba(0,0,0,0.5)}
+.emoji-pin span{transform:rotate(45deg)}</style>
 </head><body><div id="map"></div><script>
 var d=__DATA__;
 var map=L.map('map',{scrollWheelZoom:false,attributionControl:true}).setView([d.center.lat,d.center.lon],d.zoom);
@@ -1080,7 +1089,15 @@ __TRAFFIC_LAYER__
 var pts=[];
 (d.markers||[]).forEach(function(m){
   var c=m.color||'#f97316';
-  var mk=L.circleMarker([m.lat,m.lon],{radius:8,color:c,fillColor:c,fillOpacity:0.65,weight:2}).addTo(map);
+  var mk;
+  if(m.emoji){
+    // A teardrop pin carrying the category emoji — far more legible than a dot.
+    var icon=L.divIcon({className:'',iconSize:[32,32],iconAnchor:[16,32],popupAnchor:[0,-30],
+      html:'<div class="emoji-pin" style="--pc:'+c+'"><span>'+m.emoji+'</span></div>'});
+    mk=L.marker([m.lat,m.lon],{icon:icon}).addTo(map);
+  }else{
+    mk=L.circleMarker([m.lat,m.lon],{radius:8,color:c,fillColor:c,fillOpacity:0.65,weight:2}).addTo(map);
+  }
   mk.bindPopup('<b>'+(m.label||'')+'</b>'+(m.detail?'<br>'+m.detail:''));
   if(m.label){mk.bindTooltip(m.label,{direction:'top'});}
   pts.push([m.lat,m.lon]);

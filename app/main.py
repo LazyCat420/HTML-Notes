@@ -4,59 +4,135 @@ import random
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
+from collections import deque
 from html import unescape as _html_unescape
+
+# Enriched YouTube layer (views/duration/age/verified/live signals + language +
+# 4-axis heuristic scorer). Shared with the bench harness; the live scraper below
+# is a thin wrapper that fetches, scores, and diversifies on top of it.
+from app.youtube_search import (
+    fetch_videos as _yt_fetch_videos,
+    score_videos as _yt_score_videos,
+    detect_language as _yt_detect_language,
+    clean_query as _yt_clean_query,
+    Intent as _YtIntent,
+)
 
 # Needed up here, not in the import block further down: the helper functions
 # below are defined before it, and their annotations are evaluated at def time.
 from typing import Any, Dict, List, Optional
 
-async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance") -> list:
-    """Search YouTube and return video dicts with video_id/id, title, and channel.
+def _diversify_by_channel(videos: list, per_channel: int = 2) -> list:
+    """Cap how many hits from one channel survive, preserving score order. A broad
+    ask ("cooking videos") otherwise returns five clips from the same channel — the
+    literal 'same videos over and over' complaint. Keeps the best `per_channel` per
+    channel, then appends the rest so the pool never shrinks below what was asked."""
+    kept, overflow, counts = [], [], {}
+    for v in videos:
+        ch = (v.get("channel") or "").lower()
+        if ch and counts.get(ch, 0) >= per_channel:
+            overflow.append(v)
+            continue
+        counts[ch] = counts.get(ch, 0) + 1
+        kept.append(v)
+    return kept + overflow
 
-    order="date" sorts results newest-first (for "latest video from <channel>" asks).
-    order="live" applies YouTube's LIVE filter — the only reliable way to reach an
-    actual stream. A plain search for "cnn live news" returns recorded clips; the
-    filtered one returns "CNN Headlines: 24/7 Live News".
+
+# Queries where the heuristic scorer structurally misses and a one-shot LLM rerank
+# earns its ~1s (per the bench): intent-ambiguous format words + explicit-language
+# asks. "nba highlights" heuristically picks a recent awards clip; the LLM picks
+# actual game highlights.
+_HARD_VIDEO_RE = re.compile(
+    r'\b(highlights?|news|best|top\s*\d*|vs\.?|versus|review|tutorial|how\s?to|'
+    r'recap|explained|comparison|ranked)\b', re.IGNORECASE)
+
+
+async def _llm_rerank_videos(query: str, videos: list) -> list:
+    """One-shot LLM rerank of the top candidates for a 'hard' query. Returns them
+    reordered best-first; on ANY failure returns the input unchanged, so the
+    heuristic order always stands as a floor."""
+    top = videos[:8]
+    if len(top) < 2:
+        return videos
+    lines = []
+    for i, v in enumerate(top):
+        meta = []
+        if v.get("channel"):
+            meta.append(v["channel"])
+        if v.get("duration_sec"):
+            meta.append(f"{v['duration_sec'] // 60}m")
+        if v.get("age_days") is not None:
+            meta.append(f"{int(v['age_days'])}d old")
+        if v.get("is_live"):
+            meta.append("LIVE")
+        lines.append(f'[{i}] {v.get("title","")} ({", ".join(meta)})')
+    data = await fast_llm_json(
+        'You pick the best YouTube results for a request. Return ONLY JSON:\n'
+        '{"order": [<candidate indices, best first>]}\n'
+        f'REQUEST: "{query}"\n\nCANDIDATES:\n' + "\n".join(lines) + '\n\n'
+        "Judge by how well each title matches the REQUEST's real intent (a "
+        '"highlights" ask wants game highlights not an awards show; a language '
+        "request wants that language; a review wants a review). Prefer real, "
+        "watchable videos over clickbait. List every index once, best first.",
+        max_tokens=200,
+    )
+    order = (data or {}).get("order")
+    if isinstance(order, list):
+        idxs = [i for i in order if isinstance(i, int) and 0 <= i < len(top)]
+        if idxs:
+            picked = [top[i] for i in idxs]
+            rest = [v for j, v in enumerate(top) if j not in idxs] + videos[8:]
+            return picked + rest
+    return videos
+
+
+async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance",
+                                rerank: bool = False) -> list:
+    """Enriched, scored YouTube search. Returns dicts with the SAME keys the old
+    scraper did (video_id, id, title, channel) PLUS the parsed signals (views,
+    duration_sec, age_days, verified, is_live, is_short, score), best-first.
+
+    Over the old title-only scrape it: parses each result's real signals, ranks on
+    intent/authority/freshness/watchability (app/youtube_search.py), blends in
+    date-sorted results for a recency ask, and caps per-channel so a broad query
+    stops returning the same handful of clips. order="date"/"live" pass through.
+
+    `rerank=True` adds a one-shot LLM rerank, but ONLY on 'hard' queries (ambiguous
+    format words / explicit language) where the bench showed it helps — clear
+    queries keep the zero-latency heuristic order.
     """
-    def _unescape(s: str) -> str:
-        try:
-            return json.loads('"' + s + '"')
-        except Exception:
-            return s
-
+    q = (query or "").strip()
+    if not q:
+        return []
     try:
-        url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-        if order == "date":
-            url += "&sp=CAI%253D"
-        elif order == "live":
-            url += "&sp=EgJAAQ%253D%253D"
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"Accept-Language": "en-US,en;q=0.9"})
-            html = resp.text
-            results = []
-            seen = set()
-            for block in html.split('"videoRenderer":')[1:]:
-                vid_match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', block)
-                title_match = re.search(r'"title":\{"runs":\[\{"text":"(.*?)"\}\]', block)
-                channel_match = re.search(r'"longBylineText":\{"runs":\[\{"text":"(.*?)"', block)
-                if not vid_match or not title_match:
-                    continue
-                vid = vid_match.group(1)
-                if vid in seen:
-                    continue
-                seen.add(vid)
-                results.append({
-                    "video_id": vid,
-                    "id": vid,
-                    "title": _unescape(title_match.group(1)),
-                    "channel": _unescape(channel_match.group(1)) if channel_match else None,
-                })
-                if len(results) >= limit:
-                    break
-            return results
+        lang, explicit = _yt_detect_language(q)
+        cleaned = _yt_clean_query(q, explicit_lang=explicit) or q
+        want_fresh = bool(RECENCY_RE.search(q.lower()))
+        intent = _YtIntent(query=cleaned, lang=lang, want_fresh=want_fresh,
+                           want_live=(order == "live"), explicit_lang=explicit)
+        # Fetch a deeper pool than requested so scoring + channel-diversity have
+        # room to work; a recency ask also blends in date-sorted hits.
+        pool = await _yt_fetch_videos(cleaned, limit=max(limit * 3, 15),
+                                      order=order, lang=lang)
+        if want_fresh and order == "relevance":
+            pool += await _yt_fetch_videos(cleaned, limit=10, order="date", lang=lang)
+        seen, deduped = set(), []
+        for v in pool:
+            if v.video_id and v.video_id not in seen:
+                seen.add(v.video_id)
+                deduped.append(v)
+        scored = _yt_score_videos(deduped, intent)
+        # Live asks keep YouTube's own order (the LIVE filter already did the work).
+        ranked = [v.to_dict() for v in scored]
+        if order != "live":
+            ranked = _diversify_by_channel(ranked, per_channel=2)
+        # Escalate to the LLM only where it pays off — a hard query with real choice.
+        if rerank and order != "live" and (explicit or _HARD_VIDEO_RE.search(q)):
+            ranked = await _llm_rerank_videos(q, ranked)
+        return ranked[:max(limit, 1)]
     except Exception as e:
         logger.error(f"search_youtube_videos error: {e}")
-    return []
+        return []
 
 
 # crawl4ai renders Brave's result page as markdown with the outbound hrefs
@@ -1246,41 +1322,79 @@ async def _run_turn(session_id: str, current_canvas: str, generator_factory):
             async with _canvas_lock(session_id):
                 _session_inflight[session_id] = max(0, _session_inflight.get(session_id, 0) - 1)
 
+# Container 2nd-class → the widget_type the fast lane / router / add_widget uses.
+# Keeps the summary's type names identical to canvas_add_widget's widget_type so a
+# reuse decision ("there's already a map") maps straight to an id the caller can
+# pass back. Without this, maps/weather/products/stock were all reported as
+# "custom", so the router couldn't tell one was already open and spawned a second.
+_CANVAS_CLASS_TYPE = {
+    "map-widget": "map", "weather-widget": "weather", "data-card": "data_card",
+    "image-widget": "image", "products-widget": "products", "chart-widget": "chart",
+    "scoreboard": "scoreboard",
+}
+_CANVAS_XDATA_TYPE = {
+    "checklistWidget": "checklist", "clockWidget": "clock", "notesWidget": "notes",
+    "musicPlayerWidget": "mini_music_player", "youtubePlayerWidget": "youtube_player",
+    "stockCardWidget": "stock_card",
+}
+
+
+def _classify_canvas_widget(card) -> str:
+    """The widget_type of a canvas node, from its container class then its x-data.
+    Returns 'custom' only for genuinely hand-built widgets."""
+    for cls in card.get("class", []):
+        if cls in _CANVAS_CLASS_TYPE:
+            return _CANVAS_CLASS_TYPE[cls]
+    xdata = card.get("x-data", "") or ""
+    for marker, wtype in _CANVAS_XDATA_TYPE.items():
+        if marker in xdata:
+            return wtype
+    return "custom"
+
+
+def _iter_canvas_widgets(html: str):
+    """Yield (widget_id, widget_type, title) for every widget on the canvas, most
+    recent last (DOM order). Shared by the summary and the reuse lookup."""
+    if not html or not html.strip() or html == "Canvas is empty.":
+        return
+    soup = BeautifulSoup(html, "html.parser")
+    for card in soup.select(".glass-card, .widget-container"):
+        title_el = card.select_one(".glass-card-title, h3, h2, h4")
+        title = title_el.get_text(strip=True) if title_el else ""
+        yield card.get("id", "unknown"), _classify_canvas_widget(card), title
+
+
+def find_existing_widget(session_id: str, widget_type: str) -> Optional[str]:
+    """The id of the most-recent widget of `widget_type` on the session canvas, or
+    None. Lets a singleton ask (a second map, a refreshed weather) UPDATE the widget
+    in place — passing its id back re-renders it rather than stacking a duplicate."""
+    found = None
+    try:
+        for wid, wtype, _title in _iter_canvas_widgets(get_session_canvas(session_id)):
+            if wtype == widget_type and wid and wid != "unknown":
+                found = wid  # last match wins — the most recently added
+    except Exception as e:
+        logger.warning(f"find_existing_widget failed: {e}")
+    return found
+
+
+# Types that should exist at most once on the canvas: a new ask UPDATES the open
+# one instead of adding a second. Media (video/music) already swap via
+# _place_media_widget; these are the data widgets that were stacking duplicates.
+SINGLETON_WIDGET_TYPES = {"map", "weather"}
+
+
 def get_canvas_summary(html: str) -> str:
-    """Parses raw canvas HTML and extracts widget details into a tiny, token-efficient summary."""
+    """Raw canvas HTML → a tiny, token-efficient inventory the router/agent reads to
+    stay DOM-aware. Each line names the widget's id, its real widget_type, and what
+    it shows, so a follow-up can reuse an id instead of spawning a duplicate."""
     if not html or html.strip() == "" or html == "Canvas is empty.":
         return "Canvas is currently empty."
     try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
         widgets = []
-        for card in soup.select(".glass-card, .widget-container"):
-            widget_id = card.get("id", "unknown")
-            xdata = card.get("x-data", "")
-            
-            # Find title
-            title_el = card.select_one(".glass-card-title, h3, h2")
-            title = title_el.get_text(strip=True) if title_el else "Untitled"
-            
-            # Identify widget type
-            wtype = "custom"
-            classes = card.get("class", [])
-            for cls in classes:
-                if cls in ("checklist", "clock", "notes", "iframe_app", "mini_music_player", "youtube_player"):
-                    wtype = cls
-                    break
-                if cls in ("data-card", "image-widget", "chart-widget"):
-                    wtype = cls.replace("-widget", "").replace("-", "_")
-                    break
-            if wtype == "custom" and xdata:
-                if "checklistWidget" in xdata: wtype = "checklist"
-                elif "clockWidget" in xdata: wtype = "clock"
-                elif "notesWidget" in xdata: wtype = "notes"
-                elif "musicPlayerWidget" in xdata: wtype = "mini_music_player"
-                elif "youtubePlayerWidget" in xdata: wtype = "youtube_player"
-                
-            widgets.append(f"- Widget ID: #{widget_id}, Type: {wtype}, Title: '{title}'")
-        
+        for wid, wtype, title in _iter_canvas_widgets(html):
+            desc = f' "{title}"' if title else ""
+            widgets.append(f"- #{wid} · {wtype}{desc}")
         if not widgets:
             return "Canvas contains no recognizable widgets."
         return "\n".join(widgets)
@@ -1448,7 +1562,7 @@ def clean_video_query(text: str) -> str:
     return " ".join(kept).strip() or (text or "").strip()
 
 
-def pick_varied_video(hits: list, k: int = 5):
+def pick_varied_video(hits: list, k: int = 5, exclude_ids: set = None):
     """Choose a video from the top-`k` results at random, for VARIETY.
 
     A broad ask ("a cookie recipe video", "funny cats") always returned the same
@@ -1459,15 +1573,25 @@ def pick_varied_video(hits: list, k: int = 5):
     ORDER — so the widget's embed-error fallback still hops to the next-best video,
     not another random one.
 
+    `exclude_ids` drops videos already shown this session so a repeat ask ("another
+    one") lands on something genuinely new; if EVERY hit was already shown we ignore
+    the exclusion rather than return nothing.
+
     Deterministic callers (live streams, a named channel) must NOT use this: they
     want the single canonical result, so they keep indexing hits[0] directly.
     """
     if not hits:
         return None, []
-    pool = hits[: max(1, k)]
+    fresh = [h for h in hits if h.get("video_id") not in exclude_ids] if exclude_ids else hits
+    fresh = fresh or hits  # all already seen → fall back to the full list
+    pool = fresh[: max(1, k)]
     chosen = random.choice(pool)
     cid = chosen.get("video_id")
-    others = [v["video_id"] for v in hits if v.get("video_id") and v.get("video_id") != cid]
+    # Fallback candidates: fresh ones first (in order), so an embed error also hops
+    # to something unseen before falling back to the rest.
+    others = [v["video_id"] for v in fresh if v.get("video_id") and v.get("video_id") != cid]
+    others += [v["video_id"] for v in hits
+               if v.get("video_id") and v.get("video_id") != cid and v["video_id"] not in others]
     return chosen, others
 
 
@@ -1523,15 +1647,33 @@ def filter_blocked_videos(hits: list) -> list:
 # while the block itself is what persists in the DB.
 _session_current_video: Dict[str, dict] = {}
 
+# A rolling window of video ids already shown this session, so a repeat ask lands
+# on something new instead of recycling the same top hit. Bounded so it can't grow
+# without limit; oldest ids age out and can reappear later (fine — variety, not a
+# permanent block, which is what the DB-backed blocklist is for).
+_session_shown_videos: Dict[str, deque] = {}
+_SHOWN_HISTORY = 24
+
+
+def _shown_video_ids(session_id: str) -> set:
+    """Video ids already shown this session — pass to pick_varied_video as
+    exclude_ids so a follow-up doesn't repeat one."""
+    return set(_session_shown_videos.get(session_id) or ())
+
 
 def _remember_current_video(session_id: str, hit_or_cfg: dict, query: str) -> None:
     if not session_id:
         return
+    vid = hit_or_cfg.get("video_id")
     _session_current_video[session_id] = {
-        "video_id": hit_or_cfg.get("video_id"),
+        "video_id": vid,
         "channel": hit_or_cfg.get("channel"),
         "query": query or "",
     }
+    if vid:
+        hist = _session_shown_videos.setdefault(session_id, deque(maxlen=_SHOWN_HISTORY))
+        if vid not in hist:
+            hist.append(vid)
 
 
 _load_blocklists()
@@ -2353,6 +2495,8 @@ async def build_stock_news_config(message: str) -> dict:
     if not data or not isinstance(data.get("items"), list) or not data["items"]:
         # LLM pass failed → article excerpts (scrape or og:desc) as descriptions,
         # not bare links. raw_items already falls back to og_desc per story.
+        logger.info(f"[DEGRADED] stock_news editor pass empty for {query!r} — "
+                    "serving og:desc/excerpt items")
         excerpts = {i: t[:220] for i, t in enumerate(page_texts) if t}
         return {"title": title, "icon": "trending_up", "items": raw_items(excerpts)}
     summaries = {it.get("index"): (it.get("summary") or "").strip()
@@ -2429,6 +2573,18 @@ async def build_answer_config(query: str, results: Optional[list] = None,
         logger.info(f"build_answer_config: page reads timed out for {q!r}, using snippets")
         page_texts = []
 
+    # The results NOT read in full (index >= read_top) reach the LLM as their SERP
+    # snippet, which DDG-lite often leaves thin/empty. Backfill those with
+    # og:description (cheap 5s meta-fetch) so the synthesis has real material for
+    # every source, not just the top two — the same og-first lever that fixed the
+    # stock-news summaries.
+    thin = [r for r in results[read_top:6] if not (r.get("snippet") or "").strip()]
+    if thin:
+        try:
+            await asyncio.wait_for(_enrich_news(thin, timeout=5.0), timeout=6.0)
+        except asyncio.TimeoutError:
+            pass
+
     source_blocks = []
     for i, r in enumerate(results[:6]):
         body = page_texts[i] if i < len(page_texts) else ""
@@ -2474,6 +2630,7 @@ async def build_answer_config(query: str, results: Optional[list] = None,
 
     if not data or not (data.get("answer") or "").strip():
         # LLM pass failed — still give a useful, summarised card (not naked links).
+        logger.info(f"[DEGRADED] answer synthesis empty for {q!r} — serving summarised sources")
         return {"title": (q or "Answer")[:60].title(), "icon": "search",
                 "subtitle": "Top results", "image": hero, "items": summarised_items()}
 
@@ -2676,22 +2833,25 @@ async def build_traffic_widget(message: str) -> tuple[str, Optional[dict]]:
         return "iframe_app", None
     if is_traffic:
         key = await _fetch_secret("TOMTOM_API_KEY")
-        if key:
-            geo = await geocode_place(place) or await geocode_nominatim(place)
-            if geo:
-                return "map", {
-                    "title": f"Traffic: {geo['resolved']}"[:60],
-                    "subtitle": "live flow · green moving · red jammed",
-                    "traffic": True,
-                    "center": {"lat": geo["lat"], "lon": geo["lon"]},
-                    "zoom": 13,
-                    "markers": [{"lat": geo["lat"], "lon": geo["lon"],
-                                 "label": geo["resolved"]}],
-                }
-            logger.warning(f"[TRAFFIC] geocode miss for {place!r} — plain embed fallback")
-        else:
-            logger.warning("[TRAFFIC] TOMTOM_API_KEY not in env/vault — plain map, "
-                           "no traffic overlay (free key: developer.tomtom.com)")
+        geo = await geocode_place(place) or await geocode_nominatim(place)
+        if geo:
+            base = {
+                "center": {"lat": geo["lat"], "lon": geo["lon"]},
+                "zoom": 13,
+                "markers": [{"lat": geo["lat"], "lon": geo["lon"],
+                             "label": geo["resolved"], "emoji": "🚦"}],
+            }
+            if key:
+                return "map", {**base, "title": f"Traffic: {geo['resolved']}"[:60],
+                               "subtitle": "live flow · green moving · red jammed",
+                               "traffic": True}
+            # No key → be honest instead of a plain map falsely labelled "Traffic":
+            # show our themed map of the area and say the live layer needs setup.
+            logger.warning("[TRAFFIC] TOMTOM_API_KEY not in env/vault — showing the "
+                           "area without a live overlay (free key: developer.tomtom.com)")
+            return "map", {**base, "title": f"{geo['resolved']}"[:60],
+                           "subtitle": "live traffic needs a TomTom key — showing the area"}
+        logger.warning(f"[TRAFFIC] geocode miss for {place!r} — plain embed fallback")
     url = "https://maps.google.com/maps?" + urllib.parse.urlencode(
         {"q": place, "z": "12", "output": "embed"})
     label = "Traffic" if is_traffic else "Directions"
@@ -2719,10 +2879,50 @@ async def _fetch_secret(name: str) -> str:
     return val
 
 
+# Google Places primaryType → a category emoji for the map pin. Longest/most
+# specific handled first via substring match in _emoji_for_place_type. Keeps the
+# map readable at a glance instead of a field of identical dots.
+_PLACE_TYPE_EMOJI = {
+    "coffee": "☕", "cafe": "☕", "bakery": "🥐", "bar": "🍸", "pub": "🍺",
+    "night_club": "🎶", "restaurant": "🍽️", "meal_takeaway": "🥡", "meal_delivery": "🥡",
+    "food": "🍴", "supermarket": "🛒", "grocery": "🛒", "convenience": "🏪",
+    "lodging": "🏨", "hotel": "🏨", "campground": "⛺",
+    "tourist_attraction": "📸", "museum": "🏛️", "art_gallery": "🖼️",
+    "park": "🌳", "zoo": "🦁", "aquarium": "🐠", "amusement": "🎢", "stadium": "🏟️",
+    "beach": "🏖️", "church": "⛪", "hindu_temple": "🛕", "mosque": "🕌", "synagogue": "🕍",
+    "place_of_worship": "⛩️", "school": "🏫", "university": "🎓", "library": "📚",
+    "hospital": "🏥", "pharmacy": "💊", "doctor": "🩺", "dentist": "🦷",
+    "gym": "🏋️", "spa": "💆", "beauty_salon": "💇", "hair_care": "💈",
+    "shoe_store": "👟", "clothing_store": "👕", "jewelry_store": "💍", "book_store": "📖",
+    "electronics_store": "🔌", "hardware_store": "🔧", "furniture_store": "🛋️",
+    "shopping_mall": "🛍️", "store": "🛍️", "gas_station": "⛽", "car_repair": "🔧",
+    "parking": "🅿️", "bank": "🏦", "atm": "🏧", "airport": "✈️", "train_station": "🚉",
+    "bus_station": "🚌", "subway_station": "🚇", "movie_theater": "🎬", "casino": "🎰",
+    "police": "🚓", "fire_station": "🚒", "post_office": "📮", "veterinary": "🐾",
+}
+
+
+def _emoji_for_place_type(primary_type: str, types: list) -> str:
+    """Best category emoji for a Places result, from its primaryType then its
+    type list. Falls back to a generic pin so every marker still gets an icon."""
+    candidates = [primary_type or ""] + list(types or [])
+    for t in candidates:
+        t = (t or "").lower()
+        if t in _PLACE_TYPE_EMOJI:
+            return _PLACE_TYPE_EMOJI[t]
+    # Substring pass — "italian_restaurant", "book_store" etc.
+    for t in candidates:
+        t = (t or "").lower()
+        for key, emo in _PLACE_TYPE_EMOJI.items():
+            if key in t:
+                return emo
+    return "📍"
+
+
 async def google_places_search(query: str, limit: int = 12) -> list:
     """Real business/POI pins from Google Places API (New) searchText. Returns a
-    markers list in render_map's shape ([{lat, lon, label, detail, color}]), or []
-    when the key is missing or the search fails (caller falls back)."""
+    markers list in render_map's shape ([{lat, lon, label, detail, color, emoji}]),
+    or [] when the key is missing or the search fails (caller falls back)."""
     key = await _fetch_secret("GOOGLE_API_KEY")
     if not key:
         return []
@@ -2735,7 +2935,8 @@ async def google_places_search(query: str, limit: int = 12) -> list:
                     "X-Goog-Api-Key": key,
                     "X-Goog-FieldMask": ("places.displayName,places.location,"
                                          "places.formattedAddress,places.rating,"
-                                         "places.userRatingCount"),
+                                         "places.userRatingCount,places.primaryType,"
+                                         "places.types"),
                 },
                 json={"textQuery": query, "maxResultCount": min(max(limit, 1), 20)})
         r.raise_for_status()
@@ -2755,7 +2956,8 @@ async def google_places_search(query: str, limit: int = 12) -> list:
             else:
                 detail = addr
             out.append({"lat": lat, "lon": lon, "label": name[:90],
-                        "detail": detail[:180], "color": "#8b5cf6"})
+                        "detail": detail[:180], "color": "#8b5cf6",
+                        "emoji": _emoji_for_place_type(p.get("primaryType"), p.get("types"))})
         return out
     except Exception as e:
         logger.warning(f"[PLACES] search failed for {query!r}: {e}")
@@ -2825,14 +3027,17 @@ async def build_map_config(query: str) -> dict:
         '{"title": "<short map title>", "overview": "<one sentence>", '
         '"region": "<a broad geocodable area to centre on, e.g. \'California\'>", '
         '"locations": [{"place": "<the nearest NAMED TOWN or CITY, plus state/country>", '
-        '"label": "<short marker label>", "detail": "<one short line: what/when/how big>"}]}\n\n'
+        '"label": "<short marker label>", "detail": "<one short line: what/when/how big>", '
+        '"emoji": "<ONE emoji for what this marker is: 🔥 fire, ⛈️ storm, 🏔️ peak, '
+        '🏛️ museum, ☕ cafe, 🍽️ restaurant, 📸 attraction, 🏨 hotel, 🌳 park — pick the '
+        'fitting one>"}]}\n\n'
         f'QUERY: "{q}"\n\nSOURCES:\n' + "\n\n".join(src) + '\n\n'
         'Give up to 12 locations. CRITICAL: `place` must be a NAMED TOWN or CITY that a '
         'geocoder can find (e.g. "Chico, California") — NOT a county ("Butte County"), NOT '
         'the event name ("Park Fire"), NOT a highway or park. If the source only names a '
         'county or region, pick the largest town in it. Put the descriptive name in `label` '
         'instead. Base everything on the SOURCES; do not invent places. One place → one location.',
-        max_tokens=1100,
+        max_tokens=1200,
     )
 
     locs = (data or {}).get("locations") or []
@@ -2843,7 +3048,8 @@ async def build_map_config(query: str) -> dict:
     def _marker(l, g):
         return {"lat": g["lat"], "lon": g["lon"],
                 "label": (l.get("label") or l.get("place") or g["resolved"])[:90],
-                "detail": (l.get("detail") or "")[:180], "color": "#ef4444"}
+                "detail": (l.get("detail") or "")[:180], "color": "#ef4444",
+                "emoji": (l.get("emoji") or "")[:4]}
 
     markers, misses = [], []
     for l, g in zip(locs, geocoded):
@@ -2858,6 +3064,8 @@ async def build_map_config(query: str) -> dict:
 
     center = None
     if not markers:
+        logger.info(f"[DEGRADED] map for {q!r} pinned 0/{len(locs)} places — "
+                    "showing the region only")
         region = (data or {}).get("region") or q
         g = await geocode_place(region) or await geocode_nominatim(region)
         if g:
@@ -2945,6 +3153,10 @@ async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
         'them (e.g. "plan my Saturday in Seattle" -> weather + map + things-to-do; '
         '"tesla stock and news" -> stock + stock_news). Max 4.\n'
         "- For a traffic ask add modifiers {\"traffic\": true}.\n"
+        "- REUSE what's open. If a widget of the SAME kind is already on the canvas "
+        "(see the list below) and the ask refines it (another place on the map, a "
+        "refreshed forecast), pick that same type — the server updates the existing "
+        "one in place. Do NOT try to open a second map/weather/stock of the same kind.\n"
         "- If the ask is to REMOVE / close / clear / edit an EXISTING widget, to "
         "take dictation into a note, to build a custom/one-off widget, or is small "
         'talk with no widget need, return {"defer": true} instead of widgets.\n'
@@ -3125,14 +3337,16 @@ async def build_trip_widgets(query: str) -> list:
         'sights, food), plus a short \\"## Getting Around\\" and \\"## Tips\\" section. '
         'Name REAL places, not generic advice>", '
         '"places": [{"place": "<a specific, geocodable place: \\"Fushimi Inari, Kyoto, Japan\\">", '
-        '"label": "<short marker label>", "detail": "<one line: what it is>"}]}\n\n'
+        '"label": "<short marker label>", "detail": "<one line: what it is>", '
+        '"emoji": "<ONE fitting emoji: ⛩️ shrine, 🏛️ museum, 🍜 food, 🏯 castle, '
+        '🌸 garden, 📸 sight, 🏨 hotel, 🛍️ shopping>"}]}\n\n'
         f'DESTINATION: "{place}"\nUSER ASKED: "{query}"\n\nSOURCES:\n' + "\n\n".join(src) + '\n\n'
         'RULES:\n'
         '- WRITE A REAL ITINERARY grounded in the SOURCES — specific neighbourhoods, '
         'landmarks, and dishes, not "research the best time to visit".\n'
         '- Do NOT put bracketed source numbers like [0] or [1,2] in the answer text.\n'
         '- `places` = up to 10 specific, mappable spots you mention, each "Place, City, Country".',
-        max_tokens=1800,
+        max_tokens=1900,
     )
 
     if not data or not (data.get("answer") or "").strip():
@@ -3159,7 +3373,8 @@ async def build_trip_widgets(query: str) -> list:
             if g:
                 markers.append({"lat": g["lat"], "lon": g["lon"],
                                 "label": (l.get("label") or l.get("place") or g["resolved"])[:90],
-                                "detail": (l.get("detail") or "")[:180], "color": "#8b5cf6"})
+                                "detail": (l.get("detail") or "")[:180], "color": "#8b5cf6",
+                                "emoji": (l.get("emoji") or "📍")[:4]})
             else:
                 misses.append(l)
         for l in misses[:5]:
@@ -3167,7 +3382,8 @@ async def build_trip_widgets(query: str) -> list:
             if g:
                 markers.append({"lat": g["lat"], "lon": g["lon"],
                                 "label": (l.get("label") or l.get("place"))[:90],
-                                "detail": (l.get("detail") or "")[:180], "color": "#8b5cf6"})
+                                "detail": (l.get("detail") or "")[:180], "color": "#8b5cf6",
+                                "emoji": (l.get("emoji") or "📍")[:4]})
         if markers:
             widgets.append(("map", "trip-map", {
                 "title": f"{place.title()} — the map"[:70],
@@ -3242,8 +3458,8 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
 
         if wtype == "video":
             vq = clean_video_query(query or message)
-            hits = filter_blocked_videos(await search_youtube_videos(vq, limit=8))
-            top, cands = pick_varied_video(hits, k=5)
+            hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
+            top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id))
             if not top:
                 return None
             _remember_current_video(session_id, top, vq)
@@ -3470,14 +3686,24 @@ async def send_message(req: MessageRequest):
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
                     for wtype, id_prefix, wcfg in good:
-                        rid = f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+                        # Singleton types (map, weather) UPDATE the open one instead
+                        # of stacking a second — reuse its id so the commit replaces
+                        # it in place. This is what stops "two maps" when a follow-up
+                        # ask lands on the router.
+                        reuse = (find_existing_widget(req.session_id, wtype)
+                                 if wtype in SINGLETON_WIDGET_TYPES else None)
+                        rid = reuse or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
                         # Media widgets (video, music) swap the current player in
                         # place; everything else appends.
                         if _place_media_widget(soup, wtype, rid, wcfg or {}, req_seq):
                             continue
                         node = BeautifulSoup(render_widget(wtype, rid, wcfg or {}), 'html.parser')
                         _stamp_media_seq(node, wtype, req_seq)
-                        target.append(node)
+                        existing = soup.find(id=rid)
+                        if existing is not None:
+                            existing.replace_with(node)
+                        else:
+                            target.append(node)
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
@@ -3572,9 +3798,9 @@ async def send_message(req: MessageRequest):
                 logger.info(f"[VIDEO PREF] blocked video {current_vid.get('video_id')!r}")
 
             async def _find_another():
-                hits = await search_youtube_videos(vquery, limit=10)
+                hits = await search_youtube_videos(vquery, limit=12)
                 hits = filter_blocked_videos(hits)
-                top, cands = pick_varied_video(hits, k=5)
+                top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(req.session_id))
                 if not top:
                     return None
                 _remember_current_video(req.session_id, top, vquery)
@@ -3620,7 +3846,7 @@ async def send_message(req: MessageRequest):
             hits = filter_blocked_videos(hits)
             # Vary among the top few NEWEST clips: still recent (that's what "news"
             # means), but not the identical video on every repeat ask.
-            top, cands = pick_varied_video(hits, k=3)
+            top, cands = pick_varied_video(hits, k=3, exclude_ids=_shown_video_ids(req.session_id))
             if top:
                 _remember_current_video(req.session_id, top, query)
                 return spawn_widget_stream("youtube_player", "news-video", {
@@ -3658,8 +3884,8 @@ async def send_message(req: MessageRequest):
             # same subject rather than falling through to the agent (which broke).
             # "dunkey livestreams" when dunkey is offline → a dunkey video.
             vod_hits = filter_blocked_videos(
-                await search_youtube_videos(lquery, limit=8))
-            top, cands = pick_varied_video(vod_hits, k=5)
+                await search_youtube_videos(lquery, limit=10))
+            top, cands = pick_varied_video(vod_hits, k=5, exclude_ids=_shown_video_ids(req.session_id))
             if top:
                 _remember_current_video(req.session_id, top, lquery)
                 return spawn_widget_stream("youtube_player", "video", {
@@ -3678,9 +3904,9 @@ async def send_message(req: MessageRequest):
         #     interesting. Music videos keep going to the player, not here.
         if is_video_ask and not wants_removal and not wants_music:
             vquery = clean_video_query(req.message)
-            vhits = await search_youtube_videos(vquery, limit=8)
+            vhits = await search_youtube_videos(vquery, limit=10, rerank=True)
             vhits = filter_blocked_videos(vhits)
-            top, cands = pick_varied_video(vhits, k=5)
+            top, cands = pick_varied_video(vhits, k=5, exclude_ids=_shown_video_ids(req.session_id))
             if top:
                 _remember_current_video(req.session_id, top, vquery)
                 return spawn_widget_stream("youtube_player", "video", {
@@ -3698,7 +3924,8 @@ async def send_message(req: MessageRequest):
             if not weather.get("is_error"):
                 return spawn_widget_stream(
                     "weather", "weather", weather,
-                    status=f"checking the weather in {weather.get('location', '')}...")
+                    status=f"checking the weather in {weather.get('location', '')}...",
+                    widget_id=find_existing_widget(req.session_id, "weather"))
             # An unresolved place falls through to the agent instead of a dead card.
 
         # 5-pre. STOCK/MARKET NEWS — branch 5 deliberately excludes stock words,
@@ -3803,7 +4030,8 @@ async def send_message(req: MessageRequest):
             return spawn_widget_stream(
                 "map", "map",
                 config_builder=lambda: build_map_config(req.message),
-                status="finding the places and building your map...")
+                status="finding the places and building your map...",
+                widget_id=find_existing_widget(req.session_id, "map"))
 
         # 6b. LIST EDIT — "add greek salad to the grocery list", "also add milk".
         #     Merge into the EXISTING checklist (reuse its widget_id) rather than
@@ -4296,7 +4524,8 @@ async def send_message(req: MessageRequest):
                                 # hop to the best non-blocked alternative.
                                 if primary in _blocked_video_ids or (channel or "").lower() in _blocked_channels:
                                     kept = filter_blocked_videos(alts)
-                                    alt_top, alt_cands = pick_varied_video(kept, k=5)
+                                    alt_top, alt_cands = pick_varied_video(
+                                        kept, k=5, exclude_ids=_shown_video_ids(req.session_id))
                                     if alt_top:
                                         primary = alt_top["video_id"]
                                         channel = alt_top.get("channel")
