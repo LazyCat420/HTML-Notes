@@ -712,6 +712,25 @@ document.addEventListener("DOMContentLoaded", () => {
         return clone;
     }
 
+    // A freshly inserted/replaced widget is measured by the masonry script for its
+    // grid-row span. If it holds an <img>/<iframe> that has not finished loading,
+    // the span is computed against a too-short height and the next widget rides up
+    // over it (the reported "widgets on top of each other"). The window 'load'
+    // listener only fires ONCE at page load, so dynamically-added media never
+    // triggers a relayout on its own. Re-run masonry when each media element
+    // settles. (Already-cached media won't re-fire 'load', but those are measured
+    // correctly on the first pass anyway.)
+    function relayoutOnMediaSettle(node) {
+        if (!node || !node.querySelectorAll) return;
+        node.querySelectorAll('img, iframe').forEach(function (el) {
+            if (el.__masonryLoadHooked) return;
+            el.__masonryLoadHooked = true;
+            var relayout = function () { if (window.__masonryLayout) window.__masonryLayout(); };
+            el.addEventListener('load', relayout);
+            el.addEventListener('error', relayout);
+        });
+    }
+
     function reconcileCanvas(container, rawHtml) {
         const clean = DOMPurify.sanitize(rawHtml, CANVAS_DOMPURIFY_CONFIG);
         const doc = new DOMParser().parseFromString(clean, 'text/html');
@@ -744,6 +763,7 @@ document.addEventListener("DOMContentLoaded", () => {
             // No id to key on — safest to treat as new content every time.
             if (!id) {
                 grid.appendChild(newWidget);
+                relayoutOnMediaSettle(newWidget);
                 changed = true;
                 return;
             }
@@ -778,6 +798,7 @@ document.addEventListener("DOMContentLoaded", () => {
             } else {
                 grid.appendChild(newWidget);
             }
+            relayoutOnMediaSettle(newWidget);
             changed = true;
         });
 
@@ -786,6 +807,13 @@ document.addEventListener("DOMContentLoaded", () => {
         window.WidgetLayout.apply(grid);
 
         grid.style.removeProperty('min-height');
+        // Drive the masonry recompute ourselves instead of waiting on the
+        // MutationObserver's timing — a replaced node lost its observer
+        // registration, and a too-short span left standing for even one frame is a
+        // visible overlap. The observer/second-pass still run as backups.
+        if (changed && window.__masonryLayout) {
+            requestAnimationFrame(window.__masonryLayout);
+        }
         return changed;
     }
 

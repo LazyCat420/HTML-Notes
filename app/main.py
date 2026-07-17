@@ -1179,8 +1179,46 @@ def _data_card_quality_gap(config: dict) -> str:
                  and (it.get("url") or it.get("link"))]
         bare = [it for it in linky if not (it.get("description")
                 or it.get("summary") or it.get("snippet"))]
-        if linky and len(bare) >= max(1, len(linky) // 2):
+        # ANY bare link is unacceptable: "if it shows links it must summarise them".
+        # (Was ">= half"; a single naked link is still a wall-of-links to the user.)
+        if linky and bare:
             return "bare_links"
+    return ""
+
+
+def _linky_items(config: dict) -> list:
+    items = config.get("items") or config.get("sources") or []
+    if isinstance(items, dict):
+        items = [items]
+    return [it for it in items if isinstance(it, dict) and (it.get("url") or it.get("link"))]
+
+
+def _bare_items(items: list) -> list:
+    return [it for it in items if not (it.get("description")
+            or it.get("summary") or it.get("snippet"))]
+
+
+async def _synthesize_answer_from_items(config: dict, query_hint: str = "") -> str:
+    """Last-resort prose so a card is NEVER just links: write a short overview from
+    the item titles/descriptions we already have. Faithful (no new facts beyond the
+    rows) and cheap. Returns '' only if the model call fails."""
+    items = _linky_items(config)
+    if not items:
+        return ""
+    rows = "\n".join(
+        f'- {it.get("title","")}'
+        + (f': {(it.get("description") or it.get("summary") or it.get("snippet") or "")[:160]}'
+           if (it.get("description") or it.get("summary") or it.get("snippet")) else "")
+        for it in items[:8])
+    q = (query_hint or config.get("title") or "").strip()
+    data = await fast_llm_json(
+        "You write a 2-3 sentence plain-language overview that ties together the "
+        "items below into a direct answer. Use ONLY what the items state — invent "
+        "no facts. Return ONLY JSON: {\"answer\": \"...\"}\n\n"
+        + (f"QUESTION: {q}\n\n" if q else "") + "ITEMS:\n" + rows,
+        max_tokens=400)
+    if isinstance(data, dict):
+        return (data.get("answer") or "").strip()
     return ""
 
 
@@ -1191,8 +1229,12 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
     where a hand-built config bypasses every rehydration branch).
 
     - bare_links: backfill each summary-less linked item from its og:description
-      (cheap meta fetch); any still-bare rows get one faithful LLM one-liner pass.
+      (cheap meta fetch); any still-bare rows get one faithful LLM one-liner pass;
+      if rows are STILL bare after that, synthesize a top-level answer so the card
+      renders as prose-over-sources rather than naked links.
     - no_sources: fetch a few real sources for the answer's subject and attach.
+    Fails SAFE, not open: on any error a card with links but no summary at least
+    gets a minimal answer stitched from its titles, so links never render alone.
     """
     gap = _data_card_quality_gap(config)
     if not gap:
@@ -1232,6 +1274,14 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
                         if by_i.get(i):
                             it["description"] = by_i[i][:300]
             config["items"] = items
+            # Backstop: if any row is STILL bare (enrichment + editor both failed),
+            # synthesize a top-level answer so the card is prose-over-sources, never
+            # a naked link list. Only when there's no answer already.
+            if _bare_items(_linky_items(config)) and not (config.get("answer") or "").strip():
+                ans = await _synthesize_answer_from_items(config, query_hint)
+                if ans:
+                    config["answer"] = ans
+                    logger.info("[QUALITY] synthesized a summary for an otherwise link-only card")
         elif gap == "no_sources":
             q = (query_hint or config.get("title") or "").strip()
             if q:
@@ -1249,6 +1299,17 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
                     logger.info(f"[QUALITY] attached {len(srcs)} sources to a sourceless answer for {q!r}")
     except Exception as e:
         logger.warning(f"_ensure_data_card_quality ({gap}) failed: {e}")
+    # Fail SAFE: whatever happened above, a card that still shows links with neither
+    # a top-level answer nor any per-item description must not go out naked. Give the
+    # bare rows a minimal honest description derived from their own title.
+    try:
+        if not (config.get("answer") or "").strip():
+            for it in _bare_items(_linky_items(config)):
+                t = (it.get("title") or "").strip()
+                if t:
+                    it["description"] = t
+    except Exception:
+        pass
     return config
 
 
@@ -1728,6 +1789,76 @@ def find_existing_widget(session_id: str, widget_type: str) -> Optional[str]:
 # one instead of adding a second. Media (video/music) already swap via
 # _place_media_widget; these are the data widgets that were stacking duplicates.
 SINGLETON_WIDGET_TYPES = {"map", "weather"}
+
+# Answer-style cards where a *follow-up on the same thread* should refine the open
+# card in place instead of stacking a new one — but a genuinely NEW subject still
+# gets its own card. Unlike SINGLETON_WIDGET_TYPES (always one), reuse here is
+# conditional: the ask must read as a follow-up (deictic phrasing) or share a
+# subject with the open card. This is the deterministic half of the "stop making a
+# fresh widget for every follow-up" fix; the model-driven target decision is P2.
+TOPIC_SINGLETON_TYPES = {"data_card", "scoreboard", "stock_card"}
+
+# Deictic follow-up phrasing: the ask points back at the current thread rather than
+# opening a new subject. "tell me about X" is deliberately NOT here (it's a fresh
+# topic); "what about X", "wait...", "tell me more", a leading pronoun, etc. are.
+_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:wait|hold on|hmm+|ok(?:ay)?|so|but|actually|and|also|oh)\b"
+    r"|(?:what|how)\s+about\b"
+    r"|what\s+(?:happened|else|other)\b"
+    r"|tell\s+me\s+more\b|(?:more|go\s+deeper|expand|elaborate|dig\s+in)\b"
+    r"|^\s*(?:it|its|it's|that|this|those|these|they|them|their|he|she|his|her)\b"
+    r"|^\s*(?:why|how\s+come|and\s+then|what\s+next)\b",
+    re.I,
+)
+
+# Tokens that carry no subject signal — dropped before measuring topic overlap.
+_SUBJECT_STOP = {
+    "the", "a", "an", "of", "in", "on", "for", "to", "and", "or", "is", "are",
+    "was", "were", "what", "whats", "how", "about", "me", "my", "i", "need",
+    "you", "please", "tell", "show", "give", "with", "get", "want", "some",
+    "latest", "news", "update", "updates", "now", "today", "current", "recent",
+}
+
+
+def _subject_tokens(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+            if w not in _SUBJECT_STOP and len(w) > 2}
+
+
+def _subject_overlap(a: str, b: str) -> float:
+    """Overlap coefficient of the content words in two short strings (0..1).
+    Robust to length differences (a 2-word query vs a longer widget title)."""
+    ta, tb = _subject_tokens(a), _subject_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / min(len(ta), len(tb))
+
+
+def find_reuse_target(session_id: str, widget_type: str,
+                      message: str = "", subject: str = "") -> Optional[str]:
+    """The id of an open widget this ask should UPDATE in place, or None to spawn a
+    fresh one. Unifies both reuse policies:
+      - SINGLETON_WIDGET_TYPES (map/weather): always reuse the open one.
+      - TOPIC_SINGLETON_TYPES (answer cards): reuse only when the ask is a
+        follow-up on the open card — deictic phrasing OR a shared subject. A new,
+        distinct subject falls through to None and gets its own card.
+    Any other type returns None (multiple instances are fine)."""
+    if widget_type in SINGLETON_WIDGET_TYPES:
+        return find_existing_widget(session_id, widget_type)
+    if widget_type not in TOPIC_SINGLETON_TYPES:
+        return None
+    is_followup = bool(_FOLLOWUP_RE.search(message or ""))
+    probe = subject or message or ""
+    found = None
+    try:
+        for wid, wtype, title in _iter_canvas_widgets(get_session_canvas(session_id)):
+            if wtype != widget_type or not wid or wid == "unknown":
+                continue
+            if is_followup or _subject_overlap(probe, title) >= 0.5:
+                found = wid  # last match wins — the most recently added
+    except Exception as e:
+        logger.warning(f"find_reuse_target failed: {e}")
+    return found
 
 
 def get_canvas_summary(html: str) -> str:
@@ -4427,7 +4558,14 @@ async def send_message(req: MessageRequest):
                     widget_config = await _ensure_data_card_quality(
                         widget_config, query_hint=req.message)
 
-                resolved_id = widget_id or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+                # No explicit id → reuse the open widget this ask refines (a
+                # follow-up on the same thread), else mint a fresh one. This is what
+                # stops a new data_card/scoreboard/stock_card stacking on every
+                # conversational follow-up.
+                resolved_id = (widget_id
+                               or find_reuse_target(req.session_id, widget_type, req.message,
+                                                    subject=widget_config.get("title", ""))
+                               or f"{id_prefix}-{uuid.uuid4().hex[:8]}")
 
                 def _append(soup):
                     # Media widgets (video, music) are players: a new one replaces
@@ -4540,12 +4678,12 @@ async def send_message(req: MessageRequest):
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
                     for wtype, id_prefix, wcfg in good:
-                        # Singleton types (map, weather) UPDATE the open one instead
-                        # of stacking a second — reuse its id so the commit replaces
-                        # it in place. This is what stops "two maps" when a follow-up
-                        # ask lands on the router.
-                        reuse = (find_existing_widget(req.session_id, wtype)
-                                 if wtype in SINGLETON_WIDGET_TYPES else None)
+                        # UPDATE the open widget this ask refines instead of stacking
+                        # a second. Singletons (map/weather) always reuse; answer
+                        # cards reuse only on a follow-up/shared-subject. This is what
+                        # stops "two maps" and "a fresh news card per follow-up".
+                        reuse = find_reuse_target(req.session_id, wtype, req.message,
+                                                  subject=(wcfg or {}).get("title", ""))
                         rid = reuse or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
                         # Media widgets (video, music) swap the current player in
                         # place; everything else appends.
