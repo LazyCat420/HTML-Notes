@@ -2488,15 +2488,19 @@ async def build_stock_news_config(message: str) -> dict:
             return "" if page.get("is_error") else (page.get("content") or "")
         except Exception:
             return ""
-    try:
-        # All 6 rendered stories get a real page read (they run in parallel, so
-        # the wall-clock cost over 3 is small) — before this, stories 4-6 only
-        # ever saw Yahoo's og:description, which is itself a teaser.
-        page_texts = await asyncio.wait_for(
-            asyncio.gather(*[_page_text(n) for n in news[:6]]), timeout=15.0)
-    except asyncio.TimeoutError:
-        logger.info(f"build_stock_news_config: page reads timed out for {query!r}")
-        page_texts = []
+    # All 6 rendered stories get a real page read — before this, stories 4-6 only
+    # ever saw Yahoo's og:description, which is itself a teaser. Timeout is PER
+    # PAGE, not per batch: a whole-batch wait_for(gather(...)) cancels everything
+    # when one slow page busts the wall, throwing away the reads that finished
+    # (observed live: 3 scrapes done, all discarded, every summary degraded).
+    results = await asyncio.gather(
+        *[asyncio.wait_for(_page_text(n), timeout=14.0) for n in news[:6]],
+        return_exceptions=True)
+    page_texts = [r if isinstance(r, str) else "" for r in results]
+    got = sum(1 for t in page_texts if t)
+    if got < len(page_texts):
+        logger.info(f"build_stock_news_config: {got}/{len(page_texts)} page reads "
+                    f"yielded text for {query!r}")
 
     source_lines = []
     for i, n in enumerate(news[:6]):
