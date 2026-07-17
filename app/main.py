@@ -2646,21 +2646,28 @@ async def build_stock_news_config(message: str) -> dict:
     data0 = await stock_news(query, limit=8)
     yahoo_news = [n for n in (data0.get("news") or []) if n.get("title")]
 
-    # Broaden coverage with the multi-provider finnews collector so a stock report
-    # isn't limited to Yahoo's handful of hits. For a specific company, reach the
-    # ticker-based providers (finnhub etc.) using the symbols Yahoo's search just
-    # resolved; for a general market ask, use the keyword providers. Best-effort
-    # and merged deduped — if finnews is slow/empty, Yahoo still stands.
+    # Broaden a SPECIFIC ticker's coverage with the multi-provider finnews
+    # collector (finnhub etc.) using the symbols Yahoo's search just resolved.
+    # Two guards keep the card clean:
+    #   - only for ticker queries — a general "stock market news" ask stays on the
+    #     Yahoo path, which already returns clean market/ETF stories; finnews's
+    #     keyword providers add PR-wire noise to a broad query.
+    #   - relevance filter — finnews's ticker fetch still runs keyword providers
+    #     that return off-ticker wire, so keep only items actually TAGGED with a
+    #     target ticker (drops "Macao Tourism"-type filler tagged to random
+    #     symbols; keeps finnhub's correctly NVDA-tagged articles).
     tickers = [m.get("symbol") for m in (data0.get("matches") or [])
                if m.get("symbol")][:3]
-    if is_general or not tickers:
-        fin_news = await _finnews_articles(query=query, limit=12)
-    else:
-        fin_news = await _finnews_articles(tickers=tickers, limit=12)
+    fin_news = []
+    if tickers and not is_general:
+        raw_fin = await _finnews_articles(tickers=tickers, limit=30)
+        tset = {t.upper() for t in tickers}
+        fin_news = [n for n in raw_fin
+                    if tset & {str(t).upper() for t in (n.get("related_tickers") or [])}][:10]
     news = _merge_news(yahoo_news, fin_news)
     if fin_news:
         logger.info(f"[STOCK-NEWS] {query!r}: {len(yahoo_news)} yahoo + "
-                    f"{len(fin_news)} finnews → {len(news)} merged")
+                    f"{len(fin_news)} finnews(ticker-filtered) → {len(news)} merged")
 
     if not news:
         # Both struck out (obscure company, crypto slang) → general news chain,
