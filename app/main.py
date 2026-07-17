@@ -848,6 +848,74 @@ async def stock_news(query: str, limit: int = 8) -> dict:
         return {"error": str(e), "is_error": True}
 
 
+async def _finnews_articles(query: str = "", tickers: Optional[list] = None,
+                            limit: int = 12) -> list:
+    """Multi-provider financial news via scraper-service's finnews collector.
+
+    Yahoo's search returns only a handful of hits from one source; finnews fans
+    out across ~10 keyed financial-news APIs (finnhub, marketaux, polygon,
+    newsapi, ...) and returns ticker-tagged, provider-SUMMARISED articles. Pass
+    `tickers` to reach the ticker-based providers (finnhub etc., the richest),
+    else `query` for the keyword providers. Normalised to the stock_news item
+    shape; `og_desc` is seeded from the provider summary so the editor has real
+    material even when the article page won't scrape. Best-effort — [] on failure.
+    """
+    payload: dict = {"source": "finnews", "days_back": 7}
+    if tickers:
+        payload["tickers"] = [t for t in tickers if t][:5]
+    elif query:
+        payload["query"] = query
+    else:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(f"{SCRAPER_SERVICE_URL}/collect", json=payload)
+            data = resp.json()
+    except Exception as e:
+        logger.warning(f"finnews fetch failed for {tickers or query!r}: {e}")
+        return []
+    out = []
+    for a in (data.get("items") or []):
+        title = (a.get("title") or "").strip()
+        url = a.get("url") or ""
+        if not title or not url:
+            continue
+        pub = a.get("published_at") or ""
+        published = (pub[:16].replace("T", " ") + " UTC") if len(pub) >= 16 else None
+        out.append({
+            "title": title,
+            "publisher": a.get("publisher") or a.get("provider") or "",
+            "published": published,
+            "url": url,
+            "image": "",
+            "related_tickers": a.get("tickers") or [],
+            "og_desc": (a.get("summary") or "").strip()[:400],
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _merge_news(*lists: list) -> list:
+    """Merge news-item lists, deduped by normalised title, preserving order
+    (Yahoo first, then finnews). Prefers the first occurrence but backfills an
+    empty image/og_desc from a later duplicate that has one."""
+    merged, by_key = [], {}
+    for lst in lists:
+        for n in lst:
+            key = _norm_title_key(n.get("title") or "")
+            if not key:
+                continue
+            if key in by_key:
+                keep = by_key[key]
+                keep["image"] = keep.get("image") or n.get("image")
+                keep["og_desc"] = keep.get("og_desc") or n.get("og_desc")
+                continue
+            by_key[key] = n
+            merged.append(n)
+    return merged
+
+
 # ESPN's scoreboard API is keyless and covers every league we care about. Friendly
 # names → ESPN paths, longest key first so "champions league" beats "league" and
 # "college football" beats "football".
@@ -2576,10 +2644,27 @@ async def build_stock_news_config(message: str) -> dict:
     query = "stock market" if is_general else topic
     display = "the market" if is_general else topic
     data0 = await stock_news(query, limit=8)
-    news = [n for n in (data0.get("news") or []) if n.get("title")]
+    yahoo_news = [n for n in (data0.get("news") or []) if n.get("title")]
+
+    # Broaden coverage with the multi-provider finnews collector so a stock report
+    # isn't limited to Yahoo's handful of hits. For a specific company, reach the
+    # ticker-based providers (finnhub etc.) using the symbols Yahoo's search just
+    # resolved; for a general market ask, use the keyword providers. Best-effort
+    # and merged deduped — if finnews is slow/empty, Yahoo still stands.
+    tickers = [m.get("symbol") for m in (data0.get("matches") or [])
+               if m.get("symbol")][:3]
+    if is_general or not tickers:
+        fin_news = await _finnews_articles(query=query, limit=12)
+    else:
+        fin_news = await _finnews_articles(tickers=tickers, limit=12)
+    news = _merge_news(yahoo_news, fin_news)
+    if fin_news:
+        logger.info(f"[STOCK-NEWS] {query!r}: {len(yahoo_news)} yahoo + "
+                    f"{len(fin_news)} finnews → {len(news)} merged")
+
     if not news:
-        # Yahoo struck out (obscure company, crypto slang) → general news chain,
-        # which searches GDELT/Google News with the full topic.
+        # Both struck out (obscure company, crypto slang) → general news chain,
+        # which searches Google News/GDELT with the full topic.
         return await build_news_config(message)
 
     # Yahoo's finance search returns NO snippet, and its linked article pages are
