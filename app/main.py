@@ -104,6 +104,53 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     q = (query or "").strip()
     if not q:
         return []
+    ranked = await _search_youtube_scrape(q, limit, order, rerank)
+    if ranked:
+        return ranked
+    # The direct youtube.com scrape came back empty (markup shift, a consent wall
+    # on this IP, or a transient block). Fall back to the music-player proxy, which
+    # reaches YouTube by a different path (scraper-service's collector). It returns
+    # a single best match — enough to keep a video/music ask from dead-ending on
+    # "No videos found".
+    fb = await _youtube_proxy_fallback(q)
+    if fb:
+        logger.info(f"[YOUTUBE] direct scrape empty for {q!r}; served proxy fallback")
+    return fb
+
+
+async def _youtube_proxy_fallback(query: str) -> list:
+    """Single-best-match YouTube result via the music-player proxy (a different
+    upstream path than our direct scrape). Normalised to the same keys."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{MUSIC_PLAYER_URL}/api/youtube/search",
+                                    params={"query": query})
+        if resp.status_code != 200:
+            return []
+        j = resp.json()
+        vid = j.get("id") or ""
+        if not vid:
+            return []
+        thumbs = j.get("thumbnails") or []
+        return [{
+            "video_id": vid, "id": vid,
+            "title": j.get("title") or query,
+            "channel": j.get("uploader") or "",
+            "thumbnail": (thumbs[0].get("url") if thumbs and isinstance(thumbs[0], dict) else ""),
+            "score": 0,
+        }]
+    except Exception as e:
+        logger.warning(f"youtube proxy fallback failed for {query!r}: {e}")
+        return []
+
+
+async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relevance",
+                                 rerank: bool = False) -> list:
+    """Direct youtube.com scrape + scoring (primary path). Returns [] on any
+    failure so search_youtube_videos can fall through to the proxy."""
+    q = (query or "").strip()
+    if not q:
+        return []
     try:
         lang, explicit = _yt_detect_language(q)
         cleaned = _yt_clean_query(q, explicit_lang=explicit) or q
@@ -174,8 +221,11 @@ async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -
     if not thin:
         return
 
+    # `auto` (http→playwright→vision), not crawl4ai: crawl4ai returns "Oops,
+    # something went wrong" nav chrome for many article pages (Yahoo etc.) — a
+    # non-empty junk body that then became the result's snippet.
     pages = await asyncio.gather(
-        *(_scrape(r["url"], engine="crawl4ai", timeout=25.0) for r in thin),
+        *(_scrape(r["url"], engine="auto", timeout=20.0) for r in thin),
         return_exceptions=True,
     )
     for result, page in zip(thin, pages):
@@ -242,64 +292,55 @@ async def _search_duckduckgo(query: str, limit: int) -> list:
     return results[:limit]
 
 
-async def _search_brave(query: str, limit: int) -> list:
-    """Brave SERP scraped through scraper-service. Kept as a fallback.
+async def _search_scraper_ddg(query: str, limit: int) -> list:
+    """Second web-search engine: scraper-service's DuckDuckGo collector.
 
-    A result's description is the prose that physically follows its link in the
-    markdown. An earlier version instead stripped every link out of the whole page,
-    kept the long paragraphs, and zipped paragraph N to result N — a pairing with no
-    association behind it, so result 2 would get the tail of result 1's paragraph and
-    most results arrived with an empty snippet.
+    Replaces the old Brave fallback, which has been fully bot-walled since
+    2026-07-14 (crawl4ai gets zero bytes, playwright gets a CAPTCHA) — it never
+    returned a result, only cost a scrape round-trip. This collector hits DDG's
+    `/html/` endpoint with a Playwright fallback on block/captcha, so it's a
+    genuinely independent engine from our direct `/lite/` call: if lite starts
+    failing, this can still come back with results.
     """
-    target = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
-    # Explicit short timeout: Brave has been bot-walled since 2026-07-14 (crawl4ai
-    # gets zero bytes), so this fallback almost always fails — without a cap it
-    # inherits _scrape's 90s default and every DuckDuckGo miss stalls the whole
-    # answer/search path for a minute and a half before returning [].
-    markdown = _MD_IMAGE_RE.sub("", await _scrape(target, engine="crawl4ai", timeout=12.0))
-    links = list(_MD_LINK_RE.finditer(markdown))
-    results, seen = [], set()
-
-    for i, match in enumerate(links):
-        href = match.group(2)
-        if any(h in href for h in _SEARCH_NOISE_HOSTS):
-            continue
-        title = match.group(1).strip()
-        if len(title) < 3:
-            continue
-        key = href.split("?utm")[0]
-        if key in seen:
-            continue
-        seen.add(key)
-
-        tail_end = links[i + 1].start() if i + 1 < len(links) else len(markdown)
-        snippet = " ".join(markdown[match.end():tail_end].split())
-        results.append({"title": title, "url": key, "snippet": snippet[:500]})
-        if len(results) >= limit:
-            break
-    return results
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{SCRAPER_SERVICE_URL}/collect",
+                json={"source": "duckduckgo", "query": query, "limit": limit},
+            )
+            payload = resp.json()
+    except Exception as e:
+        logger.warning(f"scraper ddg collector failed for {query!r}: {e}")
+        return []
+    out = []
+    for it in (payload.get("items") or [])[:limit]:
+        url = it.get("url") or ""
+        title = (it.get("title") or "").strip()
+        if title and url.startswith("http"):
+            out.append({"title": title, "url": url,
+                        "snippet": (it.get("snippet") or "").strip()[:500]})
+    return out
 
 
 async def web_search(query: str, limit: int = 6) -> list:
     """Keyless web search. Returns [{title, url, snippet}].
 
-    DuckDuckGo lite first, Brave second. Brave was the only engine that still got
-    through bot detection when this was written, and as of 2026-07-14 it no longer
-    does: crawl4ai gets zero bytes from it and playwright gets "Verifying you're not
-    a bot", so every search fell through to a synthetic single result whose snippet
-    was the text of the CAPTCHA page. DDG's lite endpoint is static HTML, is not
-    walled, answers in about a second, and ships a real description per result — the
-    thing a data_card needs in order to show the news instead of a link to the news.
+    DuckDuckGo lite (direct) first, scraper-service's DDG collector second. The
+    lite endpoint is static HTML, not bot-walled, answers in ~1s, and ships a real
+    description per result. The collector is an independent engine (DDG /html/ +
+    Playwright fallback) that can still return results if lite starts failing. The
+    old Brave fallback was removed: it has been fully bot-walled since 2026-07-14
+    and only ever cost a doomed scrape round-trip.
     """
-    for engine, search in (("ddg", _search_duckduckgo), ("brave", _search_brave)):
+    for engine, search in (("ddg-lite", _search_duckduckgo), ("ddg-collector", _search_scraper_ddg)):
         try:
             results = await search(query, limit)
         except Exception as e:
             logger.warning(f"{engine} search error for {query!r}: {e}")
             continue
         if results:
-            if engine != "ddg":
-                logger.info(f"[SEARCH] ddg returned nothing; served {query!r} from {engine}")
+            if engine != "ddg-lite":
+                logger.info(f"[SEARCH] ddg-lite returned nothing; served {query!r} from {engine}")
             await _backfill_snippets(results)
             return results
 
@@ -350,7 +391,11 @@ async def _gdelt_news(topic: str, limit: int) -> list:
         base = topic
     query = f"{base} sourcelang:english"
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        # 6s, not 15s: GDELT is now only a FALLBACK behind Google News RSS, and it
+        # frequently 429s (1 req/5s limit) with the throttle body itself taking
+        # 10-14s. A tight cap means a throttled GDELT gives up fast for the web
+        # fallback instead of stalling the news card.
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
             resp = await client.get(_GDELT_DOC, params={
                 "query": query, "mode": "ArtList", "maxrecords": str(limit * 4),
                 "format": "json", "sort": "DateDesc", "timespan": "3d",
@@ -432,8 +477,13 @@ async def _google_news_rss(topic: str, limit: int) -> list:
         items.append({
             "title": title.strip(),
             "url": link,
-            "image": (f"https://www.google.com/s2/favicons?domain={host}&sz=128"
-                      if host else ""),
+            # Leave image EMPTY so _enrich_news can fill a real og:image from the
+            # article page (verified: Google News article URLs do serve og:image/
+            # og:description). The favicon rides in a separate field and is only
+            # applied as a fallback for items enrichment couldn't reach.
+            "image": "",
+            "favicon": (f"https://www.google.com/s2/favicons?domain={host}&sz=128"
+                        if host else ""),
             "meta": source or host,
             "snippet": "",
             "date": it.findtext("pubDate") or "",
@@ -478,25 +528,37 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
 
 
 async def news_search(topic: str, limit: int = 6) -> list:
-    """Current headlines with real photos and summaries.
-
-    GDELT first (real article URLs + social images), Google News RSS as a
-    headline-only fallback, generic web search last. Returns
+    """Current headlines with real photos and summaries. Returns
     [{title, url, image, meta, snippet, date}].
+
+    Google News RSS FIRST: it answers in ~0.1s with ~100 deduped headlines and
+    is reliable, whereas GDELT (the old primary) takes ~14s even on success and
+    is rate-limited to 1 req/5s — its frequent 429s ALSO take 10-14s to return,
+    so it taxed every news query. Google News article URLs serve og:image and
+    og:description (verified), so _enrich_news gives them real photos + summaries
+    — the thing GDELT's socialimage used to be needed for. GDELT is kept only as
+    a fast-fail fallback (6s cap), then generic web search.
     """
-    items, source = await _gdelt_news(topic, limit), "gdelt"
+    items, source = await _google_news_rss(topic, limit), "google-news"
     if not items:
-        items, source = await _google_news_rss(topic, limit), "google-news"
+        items, source = await _gdelt_news(topic, limit), "gdelt"
     if not items:
         raw = await web_search(f"{topic} news" if topic else "top news headlines", limit)
         items = [{"title": r.get("title", ""), "url": r.get("url", ""), "image": "",
                   "meta": _host_of(r.get("url", "")), "snippet": r.get("snippet", ""),
                   "date": ""} for r in raw]
         source = "web"
-    # GDELT / DDG expose real article URLs, so enrich them with og:description and
-    # og:image. Google News links are redirects that don't resolve — skip those.
-    if items and source in ("gdelt", "web"):
+    # Enrich EVERY source with og:image + og:description from the article page.
+    # GDELT items keep their socialimage (enrich only fills what's missing);
+    # Google News items get a real photo in place of the favicon placeholder.
+    if items:
         await _enrich_news(items)
+        # Any Google News item enrichment couldn't reach falls back to its favicon
+        # so it isn't left imageless.
+        for it in items:
+            if not it.get("image") and it.get("favicon"):
+                it["image"] = it["favicon"]
+            it.pop("favicon", None)
     logger.info(f"[NEWS] {topic!r} → {len(items)} items via {source}")
     return items
 
