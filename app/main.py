@@ -5426,8 +5426,10 @@ async def widget_traffic_tile(z: int, x: int, y: int):
                            "(add it to the vault; free key: developer.tomtom.com)")
         return Response(content=_BLANK_PNG, media_type="image/png",
                         headers={"Cache-Control": "no-store"})
+    # No `thickness` param: raster flow tiles reject it with a 400 ("thickness
+    # param supported only for style s0/s1/..."), verified live 2026-07-16.
     url = (f"https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/"
-           f"{z}/{x}/{y}.png?key={urllib.parse.quote(key)}&thickness=10&tileSize=256")
+           f"{z}/{x}/{y}.png?key={urllib.parse.quote(key)}&tileSize=256")
     try:
         async with httpx.AsyncClient(timeout=8.0) as c:
             r = await c.get(url)

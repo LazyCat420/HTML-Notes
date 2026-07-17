@@ -24,7 +24,7 @@ VAULT_URL = os.getenv("VAULT_SERVICE_URL", "http://10.0.0.16:5599")
 VAULT_TOKEN = os.getenv("VAULT_SERVICE_TOKEN", "")
 # A Seattle-area tile at z13 — any valid key returns a PNG here.
 TILE = ("https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/"
-        "13/1310/2851.png?key={key}&thickness=10&tileSize=256")
+        "13/1310/2851.png?key={key}&tileSize=256")
 
 
 async def resolve_key() -> str:
