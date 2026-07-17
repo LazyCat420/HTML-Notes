@@ -2480,13 +2480,20 @@ async def build_stock_news_config(message: str) -> dict:
         if not url:
             return ""
         try:
-            page = await read_web_page(url, max_chars=2000)
+            # 4000 chars, not 2000: these syndicated finance articles open with a
+            # long teaser intro (and embedded ad copy), so a short read hands the
+            # editor only the tease and its summaries come out content-free
+            # ("a specific Vanguard ETF" — never naming it).
+            page = await read_web_page(url, max_chars=4000)
             return "" if page.get("is_error") else (page.get("content") or "")
         except Exception:
             return ""
     try:
+        # All 6 rendered stories get a real page read (they run in parallel, so
+        # the wall-clock cost over 3 is small) — before this, stories 4-6 only
+        # ever saw Yahoo's og:description, which is itself a teaser.
         page_texts = await asyncio.wait_for(
-            asyncio.gather(*[_page_text(n) for n in news[:3]]), timeout=12.0)
+            asyncio.gather(*[_page_text(n) for n in news[:6]]), timeout=15.0)
     except asyncio.TimeoutError:
         logger.info(f"build_stock_news_config: page reads timed out for {query!r}")
         page_texts = []
@@ -2500,7 +2507,7 @@ async def build_stock_news_config(message: str) -> dict:
         head = f'[{i}] {n.get("title","")} ({n.get("publisher","")}, {n.get("published","")})'
         if tickers:
             head += f" [tickers: {tickers}]"
-        source_lines.append(head + ("\n" + body[:1500] if body else ""))
+        source_lines.append(head + ("\n" + body[:2500] if body else ""))
 
     data = await fast_llm_json(
         'You are a financial news editor. Return ONLY a JSON object, no prose, no '
@@ -2510,8 +2517,13 @@ async def build_stock_news_config(message: str) -> dict:
         '"summary": "<2-3 sentence plain-English summary: what happened and why it matters>"}]}\n'
         f'Topic: "{display}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
         'Write one entry per distinct story (max 6). Base every summary ONLY on that '
-        "source's text — never invent numbers, prices, or moves not present in it. If a "
-        "source is only a headline, keep its summary to a faithful one-line restatement.",
+        "source's text — never invent numbers, prices, or moves not present in it. "
+        'BE CONCRETE: name the actual tickers, funds, companies, and figures the source '
+        'gives (say "the Vanguard Total Stock Market ETF (VTI)", never "a specific '
+        'Vanguard ETF" or "an overlooked opportunity"). Skip ad copy embedded in the '
+        'article text. A summary that just restates the headline is a failure — if the '
+        "source is only a headline with no body, write its summary from the headline's "
+        'facts and keep it to one line.',
         max_tokens=1000,
     )
     title = ("Market News" if is_general else f"Market News: {display}").title()[:60]
