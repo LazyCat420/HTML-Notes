@@ -1923,6 +1923,14 @@ NEWS_ASK_RE = re.compile(r'\b(news|headlines?)\b')
 STOCK_WORD_RE = re.compile(r'\b(stock|stocks|ticker|shares|share price|crypto|nasdaq|equities?)\b')
 # "market news" without a stock word — still a finance-news ask, routed with them.
 MARKET_WORD_RE = re.compile(r'\bmarkets?\b')
+# A COMPREHENSIVE stock report ask ("full report on NVDA", "deep dive tesla stock",
+# "analyze apple stock", "due diligence on nvidia") — synthesizes every category
+# (quotes+news+finnews+transcripts), distinct from the price CARD or news card.
+STOCK_REPORT_RE = re.compile(
+    r'\b(deep[\s-]?dive|full (?:report|analysis|breakdown|rundown|picture)|'
+    r'comprehensive (?:report|analysis|overview)|(?:research|analyst) report|'
+    r'due diligence|\bdd\b|report on|deep research|analyz[e]|analysis (?:on|of)|'
+    r'breakdown of|tell me everything about)\b', re.I)
 
 # TRIP planning — "plan a trip to Japan", "3 days in Rome", "Kyoto itinerary",
 # "things to do in Lisbon". High-precision: requires an explicit trip/itinerary word
@@ -2783,6 +2791,196 @@ async def build_stock_news_config(message: str) -> dict:
     }
 
 
+async def _stock_video_commentary(symbol: str, company: str = "", limit: int = 2) -> list:
+    """Analyst/commentary TRANSCRIPTS for a ticker via scraper-service's youtube
+    collector (yt-dlp + youtube-transcript-api). This is the one path that gives
+    us what a human analyst actually SAID, not just a headline — real material for
+    the sentiment section of a report. Slow (yt-dlp, ~10-25s) and best-effort;
+    returns [{title, channel, transcript}] or [] on failure/timeout."""
+    q = f"{company or symbol} stock analysis"
+    try:
+        # 25s cap: transcripts are the slowest source and gate the whole report
+        # (everything is gathered concurrently). If yt-dlp is slow/rate-limited the
+        # report ships without the Sentiment section rather than hanging.
+        async with httpx.AsyncClient(timeout=25.0) as c:
+            r = await c.post(f"{SCRAPER_SERVICE_URL}/collect", json={
+                "source": "youtube", "query": q, "require_transcript": True,
+                "limit": limit, "days_back": 30, "sort": "date"})
+            data = r.json()
+    except Exception as e:
+        logger.warning(f"stock video commentary failed for {symbol!r}: {e}")
+        return []
+    out = []
+    for v in (data.get("items") or [])[:limit]:
+        tr = v.get("transcript") or ""
+        if isinstance(tr, str) and len(tr) > 400:
+            out.append({"title": v.get("title", ""), "channel": v.get("channel", ""),
+                        "transcript": tr})
+    return out
+
+
+def _fundamentals_lines(snap: dict) -> str:
+    """Compact, LLM-friendly rendering of the snapshot's numbers so the report
+    model gets clean facts instead of a raw dict."""
+    f = snap.get("fundamentals") or {}
+    t = snap.get("technicals") or {}
+    rows = [
+        ("Price", snap.get("price")), ("Change over range %", snap.get("change_pct")),
+        ("Sector", f.get("sector")), ("Industry", f.get("industry")),
+        ("Market cap", f.get("market_cap")), ("P/E (trailing)", f.get("pe_ratio")),
+        ("Forward P/E", f.get("forward_pe")), ("EPS", f.get("eps")),
+        ("Beta", f.get("beta")), ("Dividend yield", f.get("dividend_yield")),
+        ("Profit margin", f.get("profit_margin")), ("Revenue", f.get("revenue")),
+        ("Revenue growth", f.get("revenue_growth")),
+        ("Analyst target", f.get("analyst_target")),
+        ("Recommendation", f.get("recommendation")),
+        ("RSI(14)", t.get("rsi_14")), ("SMA50", t.get("sma_50")),
+        ("SMA200", t.get("sma_200")), ("Trend", t.get("trend")),
+        ("Price vs SMA50 %", t.get("vs_sma_50")),
+        ("52wk high", t.get("week52_high")), ("52wk low", t.get("week52_low")),
+        ("52wk position %", t.get("week52_position")),
+        ("Annualized volatility %", t.get("volatility")),
+    ]
+    return "\n".join(f"- {k}: {v}" for k, v in rows if v is not None and v != "")
+
+
+async def build_stock_report_config(message: str) -> dict:
+    """A COMPREHENSIVE, single-ticker research report rendered as a data_card.
+
+    Unlike the stock CARD (price+chart) or the stock-NEWS card (headlines), this
+    synthesizes every data category we have into one structured Markdown brief:
+      - quotes / fundamentals / technicals  (Yahoo, via stock_snapshot)
+      - recent news with real article bodies (Yahoo search + read_web_page)
+      - multi-provider coverage              (finnews, ticker-tag-filtered)
+      - analyst/community commentary          (YouTube transcripts)
+    All four are gathered concurrently, then ONE local-LLM pass writes the report
+    grounded strictly in that material. Degrades to the stock-news card if the
+    ticker can't be resolved, and to a numbers-only report if the LLM pass fails.
+    """
+    sym = await _resolve_ticker(message)
+    if not sym:
+        # Can't pin a ticker → the stock-news card still gives them something real.
+        return await build_stock_news_config(message)
+
+    # Gather every category at once. return_exceptions so one slow/failed source
+    # (e.g. the yt-dlp transcript fetch) never sinks the whole report.
+    snap, yahoo, fin_items, videos = await asyncio.gather(
+        stock_snapshot(sym),
+        stock_news(sym, limit=8),
+        _finnews_articles(tickers=[sym], limit=25),
+        _stock_video_commentary(sym),
+        return_exceptions=True,
+    )
+    snap = snap if isinstance(snap, dict) and not snap.get("is_error") else {}
+    yahoo_news = [n for n in ((yahoo or {}).get("news") or [])
+                  if isinstance(yahoo, dict) and n.get("title")]
+    fin_items = fin_items if isinstance(fin_items, list) else []
+    videos = videos if isinstance(videos, list) else []
+
+    company = snap.get("name") or sym
+    tset = {sym.upper()}
+    fin_rel = [n for n in fin_items
+               if tset & {str(t).upper() for t in (n.get("related_tickers") or [])}]
+
+    # Read the top few article bodies for real substance (the auto engine gets the
+    # full text now); the rest contribute their provider summary / headline.
+    async def _body(url):
+        try:
+            p = await read_web_page(url, max_chars=2000)
+            return "" if p.get("is_error") else (p.get("content") or "")
+        except Exception:
+            return ""
+    top_urls = [n.get("url", "") for n in yahoo_news[:3] if n.get("url")]
+    try:
+        bodies = await asyncio.wait_for(
+            asyncio.gather(*[_body(u) for u in top_urls]), timeout=16.0)
+    except asyncio.TimeoutError:
+        bodies = []
+
+    news_blocks = []
+    for i, n in enumerate(yahoo_news[:6]):
+        body = (bodies[i] if i < len(bodies) else "")[:1400]
+        head = f'- {n.get("title","")} ({n.get("publisher","")}, {n.get("published","")})'
+        news_blocks.append(head + (f"\n  {body}" if body else ""))
+    for n in fin_rel[:8]:
+        summ = (n.get("og_desc") or "")[:220]
+        news_blocks.append(f'- {n.get("title","")} ({n.get("publisher","")})'
+                           + (f"\n  {summ}" if summ else ""))
+
+    video_blocks = []
+    for v in videos[:2]:
+        video_blocks.append(f'- "{v.get("title","")}" ({v.get("channel","")}):\n'
+                            f'  {v.get("transcript","")[:2200]}')
+
+    facts = _fundamentals_lines(snap)
+    material = (
+        f"TICKER: {sym}   COMPANY: {company}\n\n"
+        f"QUOTE / FUNDAMENTALS / TECHNICALS:\n{facts or '(unavailable)'}\n\n"
+        f"RECENT NEWS (headlines + article text where available):\n"
+        + ("\n".join(news_blocks) if news_blocks else "(none found)") + "\n\n"
+        f"ANALYST / COMMUNITY VIDEO COMMENTARY (transcripts):\n"
+        + ("\n".join(video_blocks) if video_blocks else "(none found)")
+    )
+
+    data = await fast_llm_json(
+        "You are an equity research analyst writing a BALANCED, factual briefing "
+        "for a retail investor. Return ONLY a JSON object (no prose, no code "
+        "fence):\n"
+        '{"title": "<Company (TICKER) — Report>", '
+        '"overview": "<one-sentence bottom line>", '
+        '"answer": "<the full report in GitHub-flavored Markdown>"}\n\n'
+        "Write `answer` with these ## sections, in order, using ONLY the material "
+        "below — never invent numbers, prices, ratings, or events not present:\n"
+        "## Snapshot  — price, trend, and the one-line state of the stock.\n"
+        "## Fundamentals — valuation (P/E, margins, growth, analyst target) in "
+        "plain English; a small Markdown table is good.\n"
+        "## Technicals — RSI, SMA50 vs SMA200 trend, 52-week position, volatility "
+        "— what they imply.\n"
+        "## Recent News & Catalysts — the concrete stories and why they matter.\n"
+        "## Sentiment — what the video commentary/analysts are saying (attribute "
+        "to the channel). Omit this section entirely if there is no commentary.\n"
+        "## Bull vs Bear — a two-column table or paired bullets of the case each "
+        "way.\n"
+        "## Risks — the key risks a holder should watch.\n"
+        "End with a one-line **Not financial advice.** disclaimer.\n"
+        "Be specific and cite the actual figures from the material. If a whole "
+        "category is missing, note it briefly rather than padding.\n\n"
+        f"MATERIAL:\n{material}",
+        max_tokens=2000,
+    )
+
+    hero = next((n.get("image") for n in yahoo_news if n.get("image")), "")
+    sources = []
+    for n in (yahoo_news[:5] + fin_rel[:5]):
+        if n.get("url"):
+            sources.append({
+                "title": (n.get("title") or "")[:120],
+                "description": (n.get("og_desc") or "")[:200],
+                "url": n.get("url", ""), "image": n.get("image", ""),
+                "meta": n.get("publisher") or _host_of(n.get("url", "")),
+                "badge": "Source",
+            })
+
+    if not data or not (data.get("answer") or "").strip():
+        # LLM pass failed — still ship a real, numbers-first report, never blank.
+        logger.info(f"[DEGRADED] stock report synthesis empty for {sym} — numbers only")
+        md = (f"## {company} ({sym})\n\n{facts or 'No fundamentals available.'}\n\n"
+              "_News summaries unavailable right now._")
+        return {"title": f"{company} ({sym}) — Report"[:70], "icon": "trending_up",
+                "subtitle": "Snapshot", "image": hero, "answer": md, "items": sources}
+
+    logger.info(f"[STOCK-REPORT] {sym}: {len(yahoo_news)} yahoo + {len(fin_rel)} finnews "
+                f"+ {len(videos)} transcripts synthesized")
+    return {
+        "title": (data.get("title") or f"{company} ({sym}) — Report")[:70],
+        "subtitle": (data.get("overview") or "")[:140],
+        "icon": "trending_up",
+        "image": hero,
+        "answer": _strip_citation_markers((data.get("answer") or "").strip()),
+        "items": sources,
+    }
+
+
 # Map the LLM-chosen answer `format` to a header icon. The model picks the format;
 # this is just the visual affordance for it. Unknown formats fall back to "article".
 _ANSWER_ICONS = {
@@ -3399,6 +3597,7 @@ ROUTER_WIDGETS = {
     "news":       ("news",      'general current headlines. query = the topic (empty for top stories)'),
     "stock_news": ("stock-news", 'stock / market / company NEWS. query = ticker, company, or "stock market"'),
     "stock":      ("stock",     'a ticker\'s price + chart + technicals. query = company or symbol ("Apple", "TSLA")'),
+    "stock_report": ("stock-report", 'a COMPREHENSIVE research report on ONE stock — synthesizes price, fundamentals, technicals, recent news AND analyst commentary into a written brief. Use for "full report on X", "deep dive / due diligence on X", "analyze X stock". query = company or symbol'),
     "sports":     ("scores",    'scores / fixtures / standings. query = the league or team ("nba", "arsenal")'),
     "map":        ("map",       'where something IS / a map of places. query = the subject ("fires in California")'),
     "traffic":    ("traffic",   'live traffic or directions. query = the place, or "from A to B"'),
@@ -3717,6 +3916,9 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
 
         if wtype == "stock_news":
             return ("data_card", "stock-news", await build_stock_news_config(query or message))
+
+        if wtype == "stock_report":
+            return ("data_card", "stock-report", await build_stock_report_config(query or message))
 
         if wtype == "stock":
             sym = await _resolve_ticker(query or message)
@@ -4214,6 +4416,21 @@ async def send_message(req: MessageRequest):
                     status=f"checking the weather in {weather.get('location', '')}...",
                     widget_id=find_existing_widget(req.session_id, "weather"))
             # An unresolved place falls through to the agent instead of a dead card.
+
+        # 5-pre0. COMPREHENSIVE STOCK REPORT — "full report on NVDA", "deep dive
+        #    tesla stock", "analyze apple stock". Synthesizes quotes+fundamentals+
+        #    technicals+full-text news+finnews+YouTube-transcript commentary into
+        #    one report card. Gated on a stock context (stock word OR an all-caps
+        #    ticker token) so "analyze this photo" or "full breakdown of the plot"
+        #    don't hijack it. Checked BEFORE the news/price branches so "report"
+        #    wins over "news"/"stock".
+        if (STOCK_REPORT_RE.search(text_clean) and not wants_removal and not is_video_ask
+                and (STOCK_WORD_RE.search(text_clean) or MARKET_WORD_RE.search(text_clean)
+                     or re.search(r'\b[A-Z]{2,5}\b', req.message))):
+            return spawn_widget_stream(
+                "data_card", "stock-report",
+                config_builder=lambda: build_stock_report_config(req.message),
+                status="building a full report — quotes, news, and analyst commentary...")
 
         # 5-pre. STOCK/MARKET NEWS — branch 5 deliberately excludes stock words,
         #    which used to drop these asks to the agent, whose stock_news tool
