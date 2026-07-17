@@ -2870,40 +2870,45 @@ async def build_stock_report_config(message: str) -> dict:
         # Can't pin a ticker → the stock-news card still gives them something real.
         return await build_stock_news_config(message)
 
-    # Gather every category at once. return_exceptions so one slow/failed source
-    # (e.g. the yt-dlp transcript fetch) never sinks the whole report.
-    snap, yahoo, fin_items, videos = await asyncio.gather(
-        stock_snapshot(sym),
-        stock_news(sym, limit=8),
-        _finnews_articles(tickers=[sym], limit=25),
-        _stock_video_commentary(sym),
-        return_exceptions=True,
-    )
-    snap = snap if isinstance(snap, dict) and not snap.get("is_error") else {}
+    # Yahoo news first (fast, ~0.2s) so we know which article URLs to read; then
+    # read those bodies CONCURRENTLY with the slow sources (snapshot, finnews, and
+    # especially the yt-dlp transcript fetch) instead of after them — the report's
+    # wall-clock is then bounded by the single slowest source, not their sum.
+    yahoo = await stock_news(sym, limit=8)
     yahoo_news = [n for n in ((yahoo or {}).get("news") or [])
                   if isinstance(yahoo, dict) and n.get("title")]
-    fin_items = fin_items if isinstance(fin_items, list) else []
-    videos = videos if isinstance(videos, list) else []
 
-    company = snap.get("name") or sym
-    tset = {sym.upper()}
-    fin_rel = [n for n in fin_items
-               if tset & {str(t).upper() for t in (n.get("related_tickers") or [])}]
-
-    # Read the top few article bodies for real substance (the auto engine gets the
-    # full text now); the rest contribute their provider summary / headline.
     async def _body(url):
         try:
             p = await read_web_page(url, max_chars=2000)
             return "" if p.get("is_error") else (p.get("content") or "")
         except Exception:
             return ""
+
+    async def _read_bodies(urls):
+        try:
+            return await asyncio.wait_for(
+                asyncio.gather(*[_body(u) for u in urls]), timeout=16.0)
+        except asyncio.TimeoutError:
+            return []
+
     top_urls = [n.get("url", "") for n in yahoo_news[:3] if n.get("url")]
-    try:
-        bodies = await asyncio.wait_for(
-            asyncio.gather(*[_body(u) for u in top_urls]), timeout=16.0)
-    except asyncio.TimeoutError:
-        bodies = []
+    snap, fin_items, videos, bodies = await asyncio.gather(
+        stock_snapshot(sym),
+        _finnews_articles(tickers=[sym], limit=25),
+        _stock_video_commentary(sym),
+        _read_bodies(top_urls),
+        return_exceptions=True,
+    )
+    snap = snap if isinstance(snap, dict) and not snap.get("is_error") else {}
+    fin_items = fin_items if isinstance(fin_items, list) else []
+    videos = videos if isinstance(videos, list) else []
+    bodies = bodies if isinstance(bodies, list) else []
+
+    company = snap.get("name") or sym
+    tset = {sym.upper()}
+    fin_rel = [n for n in fin_items
+               if tset & {str(t).upper() for t in (n.get("related_tickers") or [])}]
 
     news_blocks = []
     for i, n in enumerate(yahoo_news[:6]):
