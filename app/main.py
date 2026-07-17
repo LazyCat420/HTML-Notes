@@ -1014,12 +1014,48 @@ def find_singleton_media_widget(soup, widget_type: str):
     return None
 
 
+# Junk a scraper returns with success=True but zero real article text: stealth-
+# browser error interstitials and consent/bot walls. crawl4ai in particular hands
+# back "Oops, something went wrong" nav-chrome for Yahoo Finance's /m/ syndication
+# pages (4-5KB of skip-links, NOT the article) — non-empty, so the old crawl4ai→
+# playwright fallback never escalated and fed that garbage straight to the editor.
+_SCRAPE_JUNK_SIGNATURES = (
+    "oops, something went wrong",
+    "please enable javascript",
+    "enable cookies and javascript",
+    "verify you are human",
+    "pardon our interruption",
+    "access to this page has been denied",
+)
+
+
+def _looks_like_junk_page(text: str) -> bool:
+    if not text or len(text.strip()) < 120:
+        return True
+    head = text[:600].lower()
+    return any(sig in head for sig in _SCRAPE_JUNK_SIGNATURES)
+
+
 async def read_web_page(url: str, max_chars: int = 6000) -> dict:
-    """Fetch and return the readable text of a page."""
-    content = await _scrape(url, engine="crawl4ai")
-    if not content:
-        content = await _scrape(url, engine="playwright", timeout=60.0)
-    if not content:
+    """Fetch and return the readable text of a page.
+
+    Uses scraper-service's `auto` engine, which runs http (trafilatura article
+    extraction) → playwright → vision with block detection, rather than the old
+    crawl4ai-first path. crawl4ai's stealth browser returned "Oops, something
+    went wrong" chrome for Yahoo Finance article pages while a plain http GET
+    returns the full clean body — so the summaries were being written off nav
+    junk. `auto` gets the real text (usually on the fast http phase) and its
+    escalation still handles genuinely JS-heavy pages. A junk-content gate makes
+    any remaining error interstitial fall through instead of being served.
+    """
+    content = await _scrape(url, engine="auto")
+    if _looks_like_junk_page(content):
+        # Last-ditch: crawl4ai occasionally renders a page auto's chain can't
+        # (heavy SPA behind no bot wall). Only worth it when auto came back junk.
+        alt = await _scrape(url, engine="crawl4ai", timeout=45.0)
+        if not _looks_like_junk_page(alt):
+            content = alt
+    if _looks_like_junk_page(content):
         return {"error": f"Could not fetch {url}", "is_error": True}
     return {"url": url, "content": content[:max_chars]}
 
