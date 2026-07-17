@@ -278,6 +278,48 @@ body::after {
    on the handle itself, which still needs the moves. */
 .widget-container.is-resizing *:not(.widget-resize-handle) { pointer-events: none; }
 
+/* ─── Move handle (drag to reorder) ─────────────────────────────── */
+.widget-move-handle {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 26px;
+    height: 26px;
+    z-index: 41;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+    color: rgba(127, 212, 255, .9);
+    background: rgba(15, 23, 42, .55);
+    border-radius: 8px;
+    opacity: 0;
+    transition: opacity .15s ease, background .15s ease;
+    touch-action: none;
+}
+.widget-move-handle .material-symbols-outlined { font-size: 20px; line-height: 1; }
+/* Header used as the drag surface: signal grab on hover, but keep the close
+   button (and any header control) on the normal pointer. */
+.widget-drag-surface { cursor: grab; }
+.widget-drag-surface button,
+.widget-drag-surface a { cursor: pointer; }
+.widget-container.is-moving .widget-drag-surface { cursor: grabbing; }
+.widget-move-handle:hover { background: rgba(15, 23, 42, .85); }
+.widget-container:hover .widget-move-handle,
+.widget-container.is-moving .widget-move-handle { opacity: 1; }
+.widget-container.is-moving .widget-move-handle { cursor: grabbing; }
+
+/* The dragged widget floats above the others and stops easing toward the cursor. */
+.widget-container.is-moving {
+    transition: none !important;
+    user-select: none;
+    z-index: 60;
+    outline: 2px dashed rgba(127, 212, 255, .6);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, .55);
+    opacity: .92;
+}
+.widget-container.is-moving *:not(.widget-move-handle):not(.widget-drag-surface) { pointer-events: none; }
+
 /* Widget headings: thin, wide, uppercase */
 .widget-container h3,
 .canvas-widget h3,

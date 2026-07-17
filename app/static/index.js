@@ -199,6 +199,7 @@ window.WidgetResizer = {
         (root || document).querySelectorAll('.widget-container').forEach(el => {
             this.apply(el);
             this.decorate(el);
+            window.WidgetLayout.decorate(el);
         });
     },
 
@@ -209,6 +210,122 @@ window.WidgetResizer = {
         this.scan(canvas);
         new MutationObserver(() => this.scan(canvas))
             .observe(canvas, { childList: true, subtree: true });
+    }
+};
+
+// ─── LEGO: WIDGET LAYOUT (order persistence + drag-to-move) ────────
+// The grid packs widgets by DOM order (grid-auto-flow: dense), so "where a widget
+// sits" IS its position among its siblings. Two jobs:
+//   1. Persist that order in localStorage so a refresh restores the arrangement
+//      the user last saw — before this, history-restore repacked from scratch and
+//      widgets appeared to jump around / stack differently.
+//   2. Let the user drag a widget by its grip to reorder it, then remember it.
+// This is reorder-drag, not free absolute positioning — a free x/y would just
+// leave ragged holes in the grid, the same reason the resizer snaps width to
+// columns. apply() is only ever called explicitly (load / reconcile), never from
+// a MutationObserver, so reordering the DOM can't feed back into itself.
+window.WidgetLayout = {
+    KEY: 'widget_order',
+
+    getOrder() {
+        try { return JSON.parse(localStorage.getItem(this.KEY) || '[]'); }
+        catch { return []; }
+    },
+    saveOrder(ids) {
+        localStorage.setItem(this.KEY, JSON.stringify(ids));
+    },
+    /** Snapshot the grid's current child order as the saved arrangement. */
+    capture(grid) {
+        if (!grid) return;
+        const ids = Array.from(grid.querySelectorAll(':scope > .widget-container'))
+            .map(w => w.id).filter(Boolean);
+        // Preserve the rank of any saved ids not currently on the canvas (a widget
+        // dismissed this session shouldn't lose its slot for the next), by keeping
+        // them after the live ones in their previous relative order.
+        const live = new Set(ids);
+        const carried = this.getOrder().filter(id => !live.has(id));
+        this.saveOrder([...ids, ...carried]);
+    },
+    /** Reorder the grid's children to match the saved arrangement. Unknown/new
+     *  widgets keep their DOM order and land after the known ones. */
+    apply(grid) {
+        if (!grid) return;
+        const order = this.getOrder();
+        if (!order.length) return;
+        const rank = new Map(order.map((id, i) => [id, i]));
+        const kids = Array.from(grid.querySelectorAll(':scope > .widget-container'));
+        kids
+            .map((el, i) => ({ el, i, r: rank.has(el.id) ? rank.get(el.id) : Infinity }))
+            .sort((a, b) => (a.r - b.r) || (a.i - b.i)) // stable: DOM order breaks ties
+            .forEach(({ el }) => grid.appendChild(el));  // appendChild MOVES the node
+    },
+
+    decorate(el) {
+        if (!el.id || el.__moveWired) return;
+        // Drag by the header bar (the standard title-bar-drag affordance) so the
+        // handle never covers the widget's own content. Widgets with no header get
+        // a small corner grip instead.
+        let surface = el.querySelector(':scope > .widget-header');
+        if (!surface) {
+            surface = document.createElement('div');
+            surface.className = 'widget-move-handle';
+            surface.title = 'Drag to move';
+            surface.innerHTML = '<span class="material-symbols-outlined">drag_indicator</span>';
+            el.appendChild(surface);
+        } else {
+            surface.classList.add('widget-drag-surface');
+            surface.title = 'Drag to move';
+        }
+        el.__moveWired = true;
+        surface.addEventListener('pointerdown', e => this.startMove(e, el, surface));
+    },
+
+    startMove(e, el, surface) {
+        // A click on the close button (or anything interactive in the header) must
+        // not start a drag.
+        if (e.target.closest && e.target.closest('button, a, input, select, textarea')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        e.preventDefault();
+        const grid = el.closest('.dashboard-grid');
+        if (!grid) return;
+        el.classList.add('is-moving');
+        surface.setPointerCapture(e.pointerId);
+        const handle = surface;
+        let raf = null;
+        let moved = false;
+
+        const reorder = ev => {
+            raf = null;
+            // The widget under the cursor, ignoring the one being dragged.
+            const under = document.elementsFromPoint(ev.clientX, ev.clientY)
+                .map(n => (n.closest ? n.closest('.widget-container') : null))
+                .find(w => w && w !== el && w.parentElement === grid);
+            if (!under) return;
+            const rect = under.getBoundingClientRect();
+            const before = ev.clientY < rect.top + rect.height / 2;
+            if (before) grid.insertBefore(el, under);
+            else grid.insertBefore(el, under.nextSibling);
+            moved = true;
+            if (window.__masonryLayout) window.__masonryLayout();
+        };
+
+        const onMove = ev => {
+            if (raf) return;
+            raf = requestAnimationFrame(() => reorder(ev));
+        };
+        const onUp = () => {
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onUp);
+            handle.removeEventListener('pointercancel', onUp);
+            el.classList.remove('is-moving');
+            if (moved) {
+                this.capture(grid);
+                window.dispatchEvent(new Event('resize'));
+            }
+        };
+        handle.addEventListener('pointermove', onMove);
+        handle.addEventListener('pointerup', onUp);
+        handle.addEventListener('pointercancel', onUp);
     }
 };
 
@@ -642,6 +759,10 @@ document.addEventListener("DOMContentLoaded", () => {
             changed = true;
         });
 
+        // Restore the user's saved arrangement (and place any brand-new widget at
+        // the end) so the grid packs the same way every paint.
+        window.WidgetLayout.apply(grid);
+
         grid.style.removeProperty('min-height');
         return changed;
     }
@@ -727,6 +848,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         });
                         
                         elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, CANVAS_DOMPURIFY_CONFIG);
+                        window.WidgetLayout.apply(elements.liveCanvas.querySelector('#dashboard-grid'));
                         seedWidgetSnapshots(elements.liveCanvas);
                         renderDynamicComponents(elements.liveCanvas);
                     } else {
@@ -741,6 +863,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         
                         if (htmlOnly) {
                             elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, CANVAS_DOMPURIFY_CONFIG)}</div>`;
+                            window.WidgetLayout.apply(elements.liveCanvas.querySelector('#dashboard-grid'));
                             seedWidgetSnapshots(elements.liveCanvas);
                             renderDynamicComponents(elements.liveCanvas);
                         }
@@ -781,6 +904,26 @@ document.addEventListener("DOMContentLoaded", () => {
         temp.querySelectorAll('.crt-on, .crt-off').forEach(el => {
             el.classList.remove('crt-on', 'crt-off');
         });
+
+        // Strip client-computed LAYOUT styles before persisting. The masonry script
+        // writes an inline `grid-row-end: span <px>` onto every widget; if that span
+        // is baked into the saved canvas it re-applies on the next load BEFORE the
+        // masonry script recomputes — and a span that was measured while images were
+        // still loading (too short) then overrides the CSS anti-overlap default, so
+        // the widget below rides up over it (the "widgets stack on refresh" bug).
+        // grid-column / height come from the resizer, which restores them from its
+        // own localStorage, so dropping them here loses nothing. Non-layout inline
+        // styles (from server templates) are kept.
+        temp.querySelectorAll('.widget-container, .glass-card').forEach(el => {
+            if (!el.style) return;
+            ['grid-row-end', 'grid-row', 'grid-column', 'height'].forEach(p =>
+                el.style.removeProperty(p));
+            if (!el.getAttribute('style')) el.removeAttribute('style');
+        });
+
+        // Drag handles / resize handles are injected client-side; never persist them.
+        temp.querySelectorAll('.widget-move-handle, .widget-resize-handle')
+            .forEach(h => h.remove());
 
         return temp.innerHTML;
     }

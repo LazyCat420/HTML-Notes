@@ -2693,6 +2693,12 @@ async def geocode_nominatim(query: str) -> Optional[dict]:
 
 # Runtime secret cache (vault-backed). Populated lazily by _fetch_secret.
 _secret_cache: Dict[str, str] = {}
+# A secret that RESOLVED to a value is cached for the process lifetime. A secret
+# that came back EMPTY is cached only briefly, so a key added to the vault after
+# boot (the "I added the TOMTOM key but traffic still fails" case) gets picked up
+# on the next request instead of needing a container restart.
+_secret_miss_at: Dict[str, float] = {}
+_SECRET_MISS_TTL = 60.0
 
 # A map ask that wants BUSINESS/POI pins ("coffee shops in Seattle", "pharmacies
 # near me") rather than a hazard/event map ("where are the fires"). These resolve
@@ -2860,10 +2866,14 @@ async def build_traffic_widget(message: str) -> tuple[str, Optional[dict]]:
 
 
 async def _fetch_secret(name: str) -> str:
-    """One secret by name: env var first, then vault-service (bearer token),
-    cached. Returns "" when unavailable so callers degrade gracefully."""
+    """One secret by name: env var first, then vault-service (bearer token).
+    A resolved value is cached for the process lifetime; an empty result is cached
+    only for _SECRET_MISS_TTL seconds, so a key added to the vault after boot is
+    picked up without a restart. Returns "" when unavailable so callers degrade."""
     if name in _secret_cache:
         return _secret_cache[name]
+    if time.time() - _secret_miss_at.get(name, 0.0) < _SECRET_MISS_TTL:
+        return ""
     val = os.getenv(name, "") or ""
     if not val and VAULT_SERVICE_TOKEN:
         try:
@@ -2875,7 +2885,11 @@ async def _fetch_secret(name: str) -> str:
                     val = str((r.json() or {}).get(name, "") or "")
         except Exception as e:
             logger.warning(f"[VAULT] fetch {name!r} failed: {e}")
-    _secret_cache[name] = val
+    if val:
+        _secret_cache[name] = val
+        _secret_miss_at.pop(name, None)
+    else:
+        _secret_miss_at[name] = time.time()
     return val
 
 
@@ -3199,9 +3213,14 @@ async def build_image_config(query: str) -> Optional[dict]:
     results = await web_search(q, limit=6)
     if not results:
         return None
-    items = [{"url": r.get("url", ""), "image": r.get("image", "")} for r in results if r.get("url")]
+    # Keep each result's title/host so the picture carries a caption (context)
+    # instead of a bare frame — the "no naked image" contract on the widget side.
+    items = [{"url": r.get("url", ""), "image": r.get("image", ""),
+              "title": r.get("title", "")} for r in results if r.get("url")]
     await _enrich_news(items, timeout=5.0)
-    images = [{"url": it["image"], "caption": ""} for it in items if it.get("image")][:4]
+    images = [{"url": it["image"],
+               "caption": (it.get("title") or _host_of(it.get("url", "")) or "")[:90]}
+              for it in items if it.get("image")][:4]
     if not images:
         return None
     return {"title": q[:70].title(), "images": images}
@@ -5373,9 +5392,62 @@ async def widget_map(d: str = ""):
             payload = map_payload(json.loads(raw))  # re-sanitise; never trust the URL
         except Exception as e:
             logger.warning(f"/widgets/map bad payload: {e}")
-    traffic_key = await _fetch_secret("TOMTOM_API_KEY") if payload.get("traffic") else ""
-    return HTMLResponse(map_document_html(payload, traffic_key=traffic_key),
+    # Only turn on the overlay layer when a key actually exists, so a keyless map
+    # doesn't fire a screenful of doomed tile requests. The tiles themselves are
+    # proxied (see /widgets/map/traffic) so the key stays server-side.
+    tiles_url = ""
+    if payload.get("traffic") and await _fetch_secret("TOMTOM_API_KEY"):
+        tiles_url = "/widgets/map/traffic/{z}/{x}/{y}.png"
+    return HTMLResponse(map_document_html(payload, traffic_tiles_url=tiles_url),
                         headers={"Cache-Control": "public, max-age=3600"})
+
+
+# Transparent 1×1 PNG — served when a traffic tile can't be fetched, so the base
+# map shows through cleanly instead of a broken-image frame.
+_BLANK_PNG = _base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+# TomTom probe result is logged once per state-change so the reason traffic is/ isn't
+# showing is visible in the container logs without spamming every tile.
+_tomtom_last_status: Dict[str, int] = {}
+
+
+@app.get("/widgets/map/traffic/{z}/{x}/{y}.png", include_in_schema=False)
+async def widget_traffic_tile(z: int, x: int, y: int):
+    """Server-side proxy for TomTom traffic-flow tiles. Holds the key so it never
+    reaches the browser (no referrer-restricted-key 403 through the sandboxed map
+    iframe), and logs TomTom's HTTP status once per change so a failing key is
+    diagnosable from the logs. Falls back to a transparent tile so the base map
+    stays clean when the key is missing or a tile errors."""
+    key = await _fetch_secret("TOMTOM_API_KEY")
+    if not key:
+        if _tomtom_last_status.get("_") != -1:
+            _tomtom_last_status["_"] = -1
+            logger.warning("[TRAFFIC] no TOMTOM_API_KEY — serving blank tiles "
+                           "(add it to the vault; free key: developer.tomtom.com)")
+        return Response(content=_BLANK_PNG, media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+    url = (f"https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/"
+           f"{z}/{x}/{y}.png?key={urllib.parse.quote(key)}&thickness=10&tileSize=256")
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get(url)
+        if _tomtom_last_status.get("_") != r.status_code:
+            _tomtom_last_status["_"] = r.status_code
+            if r.status_code == 200:
+                logger.info("[TRAFFIC] TomTom tiles OK (200)")
+            else:
+                logger.warning(f"[TRAFFIC] TomTom returned {r.status_code} "
+                               f"({r.text[:160]!r}) — check the key is valid and has "
+                               "the Traffic API enabled, and is not IP/referrer-locked")
+        if r.status_code == 200 and r.headers.get("content-type", "").startswith("image"):
+            return Response(content=r.content, media_type="image/png",
+                            headers={"Cache-Control": "public, max-age=120"})
+    except Exception as e:
+        if _tomtom_last_status.get("_") != -2:
+            _tomtom_last_status["_"] = -2
+            logger.warning(f"[TRAFFIC] TomTom tile fetch failed: {e}")
+    return Response(content=_BLANK_PNG, media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.get("/widgets/embed", include_in_schema=False)

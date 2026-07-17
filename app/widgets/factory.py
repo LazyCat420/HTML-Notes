@@ -309,19 +309,23 @@ def render_image(widget_id: str, config: dict) -> str:
             normalized.append({"url": img["url"], "caption": img.get("caption", "")})
 
     if normalized:
+        shown = normalized[:4]
+        # One image → a single square hero; several → a square-tile grid. Either way
+        # each tile is a box (aspect-square + object-cover), never a cropped letterbox.
+        grid_cls = "grid-cols-1" if len(shown) == 1 else "grid-cols-2"
         figures = []
-        for img in normalized[:4]:
+        for img in shown:
             caption_html = (
-                f'<figcaption class="text-[0.68rem] text-slate-300 px-2 py-1 bg-black/40 backdrop-blur-sm absolute bottom-0 inset-x-0 truncate">{esc(img["caption"])}</figcaption>'
+                f'<figcaption class="text-[0.68rem] text-slate-200 px-2 py-1 bg-black/50 backdrop-blur-sm absolute bottom-0 inset-x-0 line-clamp-2">{esc(img["caption"])}</figcaption>'
                 if img.get("caption") else ""
             )
             figures.append(f"""
-                <figure class="relative flex-1 min-w-[45%] overflow-hidden rounded-xl bg-slate-950 ring-1 ring-white/10">
-                    <img src="{esc(img['url'])}" alt="{esc(img.get('caption') or title)}" loading="lazy" class="w-full h-full object-cover">
+                <figure class="relative aspect-square overflow-hidden rounded-xl bg-slate-950 ring-1 ring-white/10">
+                    <img src="{esc(img['url'])}" alt="{esc(img.get('caption') or title)}" loading="lazy" class="absolute inset-0 w-full h-full object-cover">
                     {caption_html}
                 </figure>
             """)
-        body = f'<div class="image-widget-body flex flex-wrap gap-2 p-3 flex-grow overflow-hidden">{"".join(figures)}</div>'
+        body = f'<div class="image-widget-body grid {grid_cls} gap-2 p-3 flex-grow overflow-y-auto custom-scrollbar content-start">{"".join(figures)}</div>'
     else:
         body = """
             <div class="flex flex-col items-center justify-center flex-grow text-slate-400 gap-2">
@@ -360,13 +364,19 @@ def render_products(widget_id: str, config: dict) -> str:
             item = {"title": item}
         if not isinstance(item, dict):
             continue
-        i_title = item.get("title") or item.get("name") or item.get("text") or ""
-        i_desc = item.get("description") or item.get("summary") or item.get("snippet") or ""
-        i_image = item.get("image") or item.get("thumbnail") or ""
         i_url = item.get("url") or item.get("link") or ""
+        # Contract: every card carries a NAME and a context line — never a naked
+        # image tile. Fall back through name→title→source host so a card is always
+        # labelled, and let the description degrade to the host when nothing better
+        # exists, so the user always knows what they're looking at / clicking.
+        i_title = (item.get("title") or item.get("name") or item.get("text")
+                   or (_host_of(i_url) if i_url else "") or "Result")
+        i_meta = item.get("meta") or item.get("source") or (_host_of(i_url) if i_url else "")
+        i_desc = (item.get("description") or item.get("summary") or item.get("snippet")
+                  or (f"From {i_meta}" if i_meta else ""))
+        i_image = item.get("image") or item.get("thumbnail") or ""
         i_price = item.get("price") or ""
         i_badge = item.get("badge") or item.get("tag") or ""
-        i_meta = item.get("meta") or item.get("source") or (_host_of(i_url) if i_url else "")
 
         # The whole card is the link when there's a url — image, name and all —
         # so clicking the picture opens the source, exactly as requested.
@@ -374,17 +384,17 @@ def render_products(widget_id: str, config: dict) -> str:
 
         if i_image:
             media = f"""
-                <div class="product-media relative w-full h-36 overflow-hidden bg-slate-950 shrink-0">
+                <div class="product-media relative w-full aspect-square overflow-hidden bg-slate-950 shrink-0">
                     <img src="{esc(i_image)}" alt="{esc(i_title)}" loading="lazy"
-                         class="w-full h-full object-cover group-hover/card:scale-105 transition-transform duration-300">
+                         class="absolute inset-0 w-full h-full object-cover group-hover/card:scale-105 transition-transform duration-300">
                     {f'<span class="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/70 text-emerald-300 backdrop-blur-sm">{esc(i_price)}</span>' if i_price else ''}
                     {f'<span class="absolute top-2 left-2 text-[0.6rem] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/70 text-white backdrop-blur-sm">{esc(i_badge)}</span>' if i_badge else ''}
                 </div>
             """
         else:
             media = f"""
-                <div class="product-media relative w-full h-36 overflow-hidden bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center shrink-0">
-                    <span class="text-4xl font-bold text-white/40">{esc((i_title or '?')[:1].upper())}</span>
+                <div class="product-media relative w-full aspect-square overflow-hidden bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center shrink-0">
+                    <span class="text-5xl font-bold text-white/40">{esc((i_title or '?')[:1].upper())}</span>
                     {f'<span class="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/70 text-emerald-300">{esc(i_price)}</span>' if i_price else ''}
                 </div>
             """
@@ -1050,7 +1060,7 @@ def map_payload(config: dict) -> dict:
             "markers": clean[:40], "traffic": bool(config.get("traffic"))}
 
 
-def map_document_html(payload: dict, traffic_key: str = "") -> str:
+def map_document_html(payload: dict, traffic_tiles_url: str = "") -> str:
     """A complete, standalone Leaflet HTML page for the map <iframe>. Rendered by
     the server (NOT sanitised by the canvas DOMPurify, since it's a separate
     document loaded via iframe src), so the map's own <script> runs normally —
@@ -1058,18 +1068,17 @@ def map_document_html(payload: dict, traffic_key: str = "") -> str:
     DOMPurify strips <script> tags. `payload` is already label-escaped by
     map_payload(); it's JSON-embedded with <-escaping to prevent </script> breakout.
 
-    `traffic_key` (a TomTom API key) + payload["traffic"] layers live traffic-flow
-    tiles over the base map — transparent PNGs, so the standard second-tile-layer
-    pattern. The key is necessarily visible to the browser (it fetches the tiles),
-    same exposure class as any client-side map key; restrict it by referrer in the
-    TomTom dashboard."""
+    `traffic_tiles_url` + payload["traffic"] layers live traffic-flow tiles over the
+    base map. It points at our OWN same-origin tile proxy (/widgets/map/traffic/...),
+    NOT api.tomtom.com directly, so the TomTom key never reaches the browser and the
+    referrer-restricted-key 403 (this iframe is sandboxed → Origin: null → no
+    referrer) can't happen. The proxy holds the key server-side."""
     data_json = json.dumps(payload).replace("<", "\\u003c")
     traffic_js = ""
-    if payload.get("traffic") and traffic_key:
+    if payload.get("traffic") and traffic_tiles_url:
         traffic_js = (
-            "L.tileLayer('https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key="
-            + urllib.parse.quote(traffic_key)
-            + "',{maxZoom:18,opacity:0.8,attribution:'© TomTom'}).addTo(map);")
+            "L.tileLayer('" + traffic_tiles_url
+            + "',{maxZoom:18,opacity:0.85,attribution:'© TomTom'}).addTo(map);")
     # Plain string (not f-string): keep Leaflet's {s}/{z}/{x}/{y}{r} tile tokens and
     # the JS braces literal; only __DATA__ is substituted.
     body = """<!doctype html><html><head><meta charset="utf-8">
