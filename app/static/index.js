@@ -370,6 +370,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btnMute: document.getElementById("btn-mute"),
         btnForget: document.getElementById("btn-forget"),
         queueBadge: document.getElementById("queue-badge"),
+        turnStatusContainer: document.getElementById("turn-status-container"),
         chatHistoryPanel: document.getElementById("chat-history-panel"),
         chatHistoryMessages: document.getElementById("chat-history-messages"),
         btnClearHistory: document.getElementById("btn-clear-history"),
@@ -955,6 +956,72 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.queueBadge.style.display = parts.length ? "inline-flex" : "none";
     }
 
+    // One slim progress bar per in-flight query, stacked above the command bar.
+    // The server never reports a completion percentage, so the fill is honest
+    // about what it knows: server events bump it to stage milestones, a slow
+    // asymptotic creep keeps it visibly alive between events, and the ticking
+    // elapsed timer is the real "how long is this taking" signal.
+    function createTurnStatus(text) {
+        const container = elements.turnStatusContainer;
+        if (!container) return { stage() {}, finish() {} };
+        container.style.display = "flex";
+        const row = document.createElement("div");
+        row.className = "turn-status";
+        row.innerHTML =
+            '<div class="turn-status-top">' +
+            '<span class="turn-status-label"></span>' +
+            '<span class="turn-status-stage">Connecting…</span>' +
+            '<span class="turn-status-elapsed">0s</span>' +
+            '</div>' +
+            '<div class="turn-status-track"><div class="turn-status-fill"></div></div>';
+        row.querySelector(".turn-status-label").textContent =
+            text.length > 60 ? `${text.slice(0, 60)}…` : text;
+        container.appendChild(row);
+
+        const stageEl = row.querySelector(".turn-status-stage");
+        const elapsedEl = row.querySelector(".turn-status-elapsed");
+        const fillEl = row.querySelector(".turn-status-fill");
+        const startedAt = performance.now();
+        let progress = 4;
+        fillEl.style.width = `${progress}%`;
+
+        const fmtElapsed = () => {
+            const secs = (performance.now() - startedAt) / 1000;
+            return secs < 60 ? `${Math.floor(secs)}s`
+                             : `${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
+        };
+        const ticker = setInterval(() => {
+            elapsedEl.textContent = fmtElapsed();
+            progress = Math.min(90, progress + (90 - progress) * 0.015);
+            fillEl.style.width = `${progress}%`;
+        }, 250);
+
+        let finished = false;
+        return {
+            stage(msg, milestone) {
+                if (finished || !msg) return;
+                stageEl.textContent = msg.length > 52 ? `${msg.slice(0, 52)}…` : msg;
+                if (milestone) progress = Math.max(progress, Math.min(92, milestone));
+            },
+            finish(kind, msg) {
+                if (finished) return;
+                finished = true;
+                clearInterval(ticker);
+                fillEl.style.width = "100%";
+                row.classList.add(kind === "error" ? "is-error"
+                                : kind === "stopped" ? "is-stopped" : "is-done");
+                stageEl.textContent = msg || (kind === "error" ? "Failed"
+                                            : kind === "stopped" ? "Stopped" : "Done");
+                elapsedEl.textContent = fmtElapsed();
+                // Leave failures on screen longer — they carry information.
+                setTimeout(() => {
+                    row.remove();
+                    if (!container.children.length) container.style.display = "none";
+                }, kind === "done" ? 3500 : 8000);
+            }
+        };
+    }
+
     function sendChatMessage() {
         const text = elements.chatInput.value.trim();
         if (!text) return;
@@ -1056,6 +1123,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         HN.turn(text);
         addLogStep("Connecting to agent...", "🔗");
+        const statusBar = createTurnStatus(text);
 
         if (elements.btnSendMessage) elements.btnSendMessage.style.display = "none";
         if (elements.btnStopMessage) elements.btnStopMessage.style.display = "flex";
@@ -1087,6 +1155,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!res.ok) {
                 console.error("Error from API:", await res.text());
                 renderError("Failed to process request. See console.");
+                statusBar.finish("error", `Request failed (${res.status})`);
                 return;
             }
 
@@ -1117,6 +1186,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else if (data.type === "status") {
                     HN.log("status", data.message);
                     addLogStep(data.message || "Thinking...", "🧠");
+                    statusBar.stage(data.message || "Thinking…", 40);
                 } else if (data.type === "debug") {
                     // Server routing breadcrumb — which path/widget the query hit.
                     // Surfaced in DevTools so a misroute is visible without server logs.
@@ -1126,11 +1196,13 @@ document.addEventListener("DOMContentLoaded", () => {
                     HN.groupEnd();
                     renderDynamicComponents(elements.liveCanvas);
                     addLogStep("Finished generation.", "✨");
+                    statusBar.finish("done");
                     flushSentenceBuffer();
                     appendChatMessageToHistory("assistant", fullText, Boolean(fullComponentHtml));
                 } else if (data.type === "component") {
                     HN.component(data.content || "");
                     addLogStep("Rendered visual component", "🎨");
+                    statusBar.stage("Rendering widget…", 85);
                     fullComponentHtml = data.content || "";
                     if (renderContent(fullText, fullComponentHtml, data.version)) {
                         // Initialize the moment the widget lands, not on
@@ -1145,10 +1217,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else if (data.type === "tool_call") {
                     HN.log("tool", data.tool, data.args || data.input || "");
                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
+                    statusBar.stage(`Tool: ${data.tool}`, 55);
                 } else if (data.type === "error") {
                     HN.error(data.message);
                     addLogStep(`Error: ${data.message}`, "❌");
                     renderError(data.message || "An error occurred.");
+                    statusBar.finish("error", data.message || "An error occurred");
                 }
             };
 
@@ -1185,15 +1259,20 @@ document.addEventListener("DOMContentLoaded", () => {
             // Final cleanup. No canvas repaint — `component` already painted the
             // newest version, and this turn's copy may be behind a sibling's.
             renderDynamicComponents(elements.liveCanvas);
+            // Streams that end without a `done` event (dropped connection mid-
+            // stream) would otherwise leave the bar spinning forever.
+            statusBar.finish("done");
             hideLogWhenIdle();
 
         } catch (err) {
             if (err.name === 'AbortError') {
                 console.log("Request was aborted by user.");
                 addLogStep("Generation stopped by user.", "🛑");
+                statusBar.finish("stopped");
             } else {
                 console.error("Network error:", err);
                 renderError("Network error. Is the server running?");
+                statusBar.finish("error", "Network error");
             }
             hideLogWhenIdle();
         } finally {

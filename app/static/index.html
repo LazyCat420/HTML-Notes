@@ -40,6 +40,10 @@
     <!-- Speech Overlay for live TTS / Word animation -->
     <div id="speech-overlay" class="speech-overlay"></div>
 
+    <!-- Per-query status bars: one row per in-flight turn, stacked above the
+         command bar (populated by createTurnStatus in index.js). -->
+    <div id="turn-status-container" class="turn-status-container" style="display: none;"></div>
+
     <!-- Command bar -->
     <div class="command-palette">
         <div class="input-row">

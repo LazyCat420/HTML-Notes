@@ -1728,6 +1728,104 @@ body::after { display: none !important; }
     margin-right: 0.2rem;
 }
 
+/* ─── Per-query status bars ─────────────────────────────────── */
+/* Stacked above the command palette; one .turn-status per in-flight query. */
+.turn-status-container {
+    position: fixed;
+    bottom: 118px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 90%;
+    max-width: 800px;
+    z-index: 49; /* just under the command palette */
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.turn-status {
+    background: linear-gradient(165deg, rgba(14, 30, 50, 0.82), rgba(5, 12, 24, 0.75));
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    padding: 8px 12px 10px;
+    animation: turn-status-in 0.25s ease;
+}
+
+@keyframes turn-status-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.turn-status-top {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 6px;
+    font-size: 0.74rem;
+}
+
+.turn-status-label {
+    color: #dbeafe;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 0 1 auto;
+}
+
+.turn-status-stage {
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    text-align: right;
+}
+
+.turn-status-elapsed {
+    color: var(--accent-color);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    flex: 0 0 auto;
+}
+
+.turn-status-track {
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(127, 212, 255, 0.12);
+    overflow: hidden;
+}
+
+.turn-status-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #4fc3f7, #7fd4ff);
+    transition: width 0.3s ease;
+}
+
+/* Shimmer so the bar reads as "alive" even when progress creeps slowly. */
+.turn-status:not(.is-done):not(.is-error):not(.is-stopped) .turn-status-fill {
+    background-size: 200% 100%;
+    background-image: linear-gradient(90deg, #4fc3f7, #7fd4ff, #4fc3f7);
+    animation: turn-status-shimmer 1.6s linear infinite;
+}
+
+@keyframes turn-status-shimmer {
+    from { background-position: 200% 0; }
+    to   { background-position: 0 0; }
+}
+
+.turn-status.is-done .turn-status-fill    { background: #34d399; }
+.turn-status.is-done .turn-status-stage   { color: #34d399; }
+.turn-status.is-error .turn-status-fill   { background: #f87171; }
+.turn-status.is-error .turn-status-stage  { color: #f87171; }
+.turn-status.is-stopped .turn-status-fill { background: #fbbf24; }
+.turn-status.is-stopped .turn-status-stage { color: #fbbf24; }
+
 /* ─── Activity log ──────────────────────────────────────────── */
 .execution-log-container {
     background: rgba(28, 28, 32, 0.9) !important;
