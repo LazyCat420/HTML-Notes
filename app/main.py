@@ -2641,8 +2641,14 @@ async def build_stock_news_config(message: str) -> dict:
                 "prices", "ticker", "tickers", "equities", "equity", "finance",
                 "financial", "trading", "the"}
     is_general = not topic or all(w in _MARKETY for w in topic.split())
-    query = "stock market" if is_general else topic
-    display = "the market" if is_general else topic
+    # Strip market filler ("stock"/"shares"/"price"/...) from the query. Yahoo's
+    # news search quote-matches on the company/ticker; a trailing "stock" makes it
+    # MISS the match and dump the generic market-wire feed — verified: "nvidia" →
+    # real Nvidia stories, but "nvidia stock" → Moët Hennessy / Cadeler / NAV
+    # noise. This was the actual cause of bad ticker news (not the news source).
+    core = " ".join(w for w in topic.split() if w not in _MARKETY).strip()
+    query = "stock market" if is_general else (core or topic)
+    display = "the market" if is_general else (core or topic)
     data0 = await stock_news(query, limit=8)
     yahoo_news = [n for n in (data0.get("news") or []) if n.get("title")]
 
