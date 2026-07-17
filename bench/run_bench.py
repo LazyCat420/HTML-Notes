@@ -9,9 +9,9 @@ and total tokens per strategy — so "is the agent worth it?" is answered by num
 
 Run:
   cd HTML-Notes
-  ../scraper-service/.venv/bin/python -m bench.run_bench            # full set, live LLM
-  ../scraper-service/.venv/bin/python -m bench.run_bench --limit 4  # first 4 queries
-  ../scraper-service/.venv/bin/python -m bench.run_bench --no-llm   # heuristic only (no gateway)
+  .venv/bin/python -m bench.run_bench            # full set, live LLM
+  .venv/bin/python -m bench.run_bench --limit 4  # first 4 queries
+  .venv/bin/python -m bench.run_bench --no-llm   # heuristic only (no gateway)
 
 Needs network (YouTube) and, unless --no-llm, VLLM_URL reachable.
 """

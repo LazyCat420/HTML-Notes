@@ -20,9 +20,9 @@ worth its latency/tokens, and where?**
 ## Run
 ```bash
 cd HTML-Notes
-../scraper-service/.venv/bin/python -m bench.run_bench             # full, live LLM+judge
-../scraper-service/.venv/bin/python -m bench.run_bench --limit 6   # first N
-../scraper-service/.venv/bin/python -m bench.run_bench --no-llm    # heuristic + latency only
+.venv/bin/python -m bench.run_bench             # full, live LLM+judge
+.venv/bin/python -m bench.run_bench --limit 6   # first N
+.venv/bin/python -m bench.run_bench --no-llm    # heuristic + latency only
 ```
 Needs network (YouTube) and, unless `--no-llm`, `VLLM_URL` reachable (default
 `http://10.0.0.141:8000`; override with `VLLM_URL=` / `BENCH_MODEL=`).
