@@ -2864,41 +2864,46 @@ async def build_market_research_config(message: str) -> dict:
     reads sources, and synthesizes a structured brief. Slower (~30-90s) but
     genuinely researched.
 
-    The research LOOP and all the /agent SSE plumbing live ONCE in
-    lazycat.research (shared by every repo); this only supplies the topic + output
-    contract and renders the result. lazycat-sdk is volume-mounted (see
-    docker-compose.yml / deploy.sh), so the import is lazy: if it's missing or the
-    agent returns nothing, degrade to the fast stock-news card — never blank.
+    Uses lazycat.grounded_research — the RELIABLE, fast path (retrieval-augmented:
+    fan out over news sources → dedupe → scrape top-N via the :3031 scraper →
+    ONE vLLM synthesis pass). This is the same logic behind trading's AI-chat web
+    search, and it beats the agentic research() here: the agent's read/scrape tools
+    fail on hard news URLs, so agentic runs were 45-284s and often figure-less;
+    grounded_research lands ~35s with real citations and figures.
+
+    lazycat-sdk is volume-mounted (see docker-compose.yml / deploy.sh), so the
+    import is lazy: if it's missing or returns nothing, degrade to the fast
+    stock-news card — never blank.
     """
     try:
-        from lazycat.research import research
+        from lazycat.grounded_research import grounded_research
     except Exception as e:
-        logger.warning(f"build_market_research_config: lazycat.research unavailable "
-                       f"({type(e).__name__}: {e}) — falling back to stock-news card")
+        logger.warning(f"build_market_research_config: lazycat.grounded_research "
+                       f"unavailable ({type(e).__name__}: {e}) — fast stock-news card")
         return await build_stock_news_config(message)
 
     try:
-        brief = await research(
-            "Research the current state of the US stock market for this user request: "
-            f"{message!r}. Identify the biggest stories moving markets right now, the "
-            "sectors and specific tickers involved, notable moves with real figures, "
-            "and what investors should watch next.",
+        brief = await grounded_research(
+            f"the biggest US stock market stories right now and why they matter, for "
+            f"this request: {message!r}. Name the sectors and specific tickers, notable "
+            "moves with real figures, and what investors should watch next.",
+            domain="finance",
             schema={
                 "title": "a short headline for the market brief (<= 60 chars)",
                 "overview": "one-sentence bottom line on what is moving markets and why",
                 "answer": "the full brief in GitHub-flavored Markdown with ## sections: "
                           "'What's Moving & Why', 'Key Stories' (bulleted, name the "
-                          "tickers and figures), 'Sectors & Tickers to Watch'. End with "
+                          "tickers and figures, cite [1][2]), 'What to Watch'. End with "
                           "a one-line **Not financial advice.** disclaimer.",
                 "sources": [{"title": "headline", "url": "link",
                              "publisher": "source name"}],
             },
-            domain="finance",
-            max_iterations=14,
-            timeout=200.0,
+            max_articles=8,
+            scrape_top_n=3,
+            timeout=70.0,
         )
     except Exception as e:
-        logger.error(f"build_market_research_config: research() error ({e}) — fast card")
+        logger.error(f"build_market_research_config: grounded_research error ({e}) — fast card")
         return await build_stock_news_config(message)
 
     if not brief or not (brief.get("answer") or "").strip():
