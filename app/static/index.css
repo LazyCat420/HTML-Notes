@@ -1728,6 +1728,25 @@ body::after { display: none !important; }
     margin-right: 0.2rem;
 }
 
+/* Broken-image placeholder — a tile whose <img> failed to load (hidden by the
+   capture-phase error gate in index.js) gets a clean centered icon instead of a
+   broken frame. */
+.img-failed {
+    position: relative;
+}
+.img-failed::after {
+    content: "image_not_supported";
+    font-family: "Material Symbols Outlined";
+    font-size: 2rem;
+    color: rgba(148, 163, 184, 0.4);
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(2, 6, 23, 0.6);
+}
+
 /* ─── Per-query status bars ─────────────────────────────────── */
 /* Stacked above the command palette; one .turn-status per in-flight query. */
 .turn-status-container {

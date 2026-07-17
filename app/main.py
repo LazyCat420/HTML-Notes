@@ -252,7 +252,11 @@ async def _search_brave(query: str, limit: int) -> list:
     most results arrived with an empty snippet.
     """
     target = f"https://search.brave.com/search?q={urllib.parse.quote(query)}"
-    markdown = _MD_IMAGE_RE.sub("", await _scrape(target, engine="crawl4ai"))
+    # Explicit short timeout: Brave has been bot-walled since 2026-07-14 (crawl4ai
+    # gets zero bytes), so this fallback almost always fails — without a cap it
+    # inherits _scrape's 90s default and every DuckDuckGo miss stalls the whole
+    # answer/search path for a minute and a half before returning [].
+    markdown = _MD_IMAGE_RE.sub("", await _scrape(target, engine="crawl4ai", timeout=12.0))
     links = list(_MD_LINK_RE.finditer(markdown))
     results, seen = [], set()
 
@@ -353,6 +357,11 @@ async def _gdelt_news(topic: str, limit: int) -> list:
             }, headers={"User-Agent": _BROWSER_UA})
         # A rate-limited GDELT answers 200/429 with a plain-text body, not JSON.
         if not resp.text.strip().startswith("{"):
+            # Log it: this silently dropped to the Google-News fallback (favicon
+            # thumbnails, headline-only summaries) with no signal about WHY the
+            # news card suddenly lost its photos and real summaries.
+            logger.warning(f"gdelt throttled for {topic!r} (non-JSON body) "
+                           "— falling back to Google News RSS")
             return []
         articles = resp.json().get("articles") or []
     except Exception as e:
@@ -439,11 +448,14 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
     image, its photo (og:image), by fetching the real article. Concurrent and
     best-effort — a slow or blocking site just leaves that item with its title
     as the summary."""
+    stats = {"ok": 0, "fail": 0}
+
     async def one(client: httpx.AsyncClient, item: dict) -> None:
         try:
             resp = await client.get(item["url"], headers={"User-Agent": _BROWSER_UA})
             html = resp.text
         except Exception:
+            stats["fail"] += 1
             return
         if not item.get("snippet"):
             m = _OG_DESC_RE.search(html)
@@ -453,10 +465,16 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
             m = _OG_IMAGE_RE.search(html)
             if m:
                 item["image"] = _html_unescape(m.group(1)).strip()
+        stats["ok"] += 1
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         await asyncio.gather(*(one(client, it) for it in items),
                              return_exceptions=True)
+    # One aggregate line so a SYSTEMIC enrichment outage (e.g. every article 403s
+    # the UA) is distinguishable from "these pages had no og:description".
+    if items and stats["fail"] > stats["ok"]:
+        logger.info(f"[ENRICH] {stats['ok']}/{len(items)} enriched "
+                    f"({stats['fail']} fetch failures)")
 
 
 async def news_search(topic: str, limit: int = 6) -> list:
@@ -582,6 +600,11 @@ async def _yahoo_fundamentals(client: httpx.AsyncClient, symbol: str) -> dict:
             "recommendation": financial.get("recommendationKey"),
         }
     except Exception as e:
+        # Clear the crumb on ANY failure, not just the None-result branch above:
+        # a 401/429/timeout here left a stale crumb cached for the process
+        # lifetime, so every later fundamentals call kept failing until restart
+        # (stock cards permanently missing sector/PE/margins after one blip).
+        _yahoo_crumb["crumb"] = None
         logger.warning(f"fundamentals({symbol}) failed: {e}")
         return {}
 
@@ -1048,11 +1071,15 @@ async def read_web_page(url: str, max_chars: int = 6000) -> dict:
     escalation still handles genuinely JS-heavy pages. A junk-content gate makes
     any remaining error interstitial fall through instead of being served.
     """
-    content = await _scrape(url, engine="auto")
+    # Bounded timeouts: the raw web-page tool and the embed reader call this
+    # WITHOUT an outer wait_for, so an un-capped auto (90s default) + crawl4ai
+    # fallback could hang a widget build ~135s. auto's fast http phase usually
+    # answers in seconds; 25s + 20s caps the worst case near 45s.
+    content = await _scrape(url, engine="auto", timeout=25.0)
     if _looks_like_junk_page(content):
         # Last-ditch: crawl4ai occasionally renders a page auto's chain can't
         # (heavy SPA behind no bot wall). Only worth it when auto came back junk.
-        alt = await _scrape(url, engine="crawl4ai", timeout=45.0)
+        alt = await _scrape(url, engine="crawl4ai", timeout=20.0)
         if not _looks_like_junk_page(alt):
             content = alt
     if _looks_like_junk_page(content):
@@ -1103,8 +1130,20 @@ async def geocode_location(name: str) -> Optional[dict]:
             results = resp.json().get("results") or []
     except Exception as e:
         logger.warning(f"geocode({name!r}) failed: {e}")
-        return None
+        results = []
     if not results:
+        # Open-Meteo only knows cities/towns; it misses landmarks, neighborhoods,
+        # small towns and misspellings ("Lake Tahoe", "Silicon Valley"), which
+        # then rendered "Couldn't find a place called X." Fall through to the same
+        # Nominatim geocoder the map path uses — it resolves those.
+        alt = await geocode_nominatim(name)
+        if alt and alt.get("lat") is not None:
+            return {
+                "name": alt.get("resolved") or name,
+                "label": alt.get("resolved") or name,
+                "latitude": alt["lat"],
+                "longitude": alt["lon"],
+            }
         return None
     r = results[0]
     label = r.get("name", name)
@@ -1983,7 +2022,10 @@ async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dic
     Fast callers still return in seconds; the ceiling only matters on the slow ones.
     """
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        # Long read budget for the 500-1000 token passes, but a SHORT connect cap:
+        # a down/overloaded backend should fail fast (5s) rather than making every
+        # card wait the full read ceiling to discover the host is unreachable.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
             model = _fast_model["name"]
             if not model:
                 resp = await client.get(f"{VLLM_URL}/v1/models")
@@ -1999,6 +2041,10 @@ async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dic
         match = re.search(r'\{.*\}', text, re.DOTALL)  # tolerate ``` fences / stray prose
         return json.loads(match.group(0)) if match else None
     except Exception as e:
+        # Drop the cached model id: if the backend restarted serving a DIFFERENT
+        # model, every call posts a stale `model` and 400s forever until the
+        # process restarts. Re-discover it on the next call.
+        _fast_model["name"] = None
         # type name matters: httpx timeout exceptions stringify to ""
         logger.warning(f"fast_llm_json failed: {type(e).__name__}: {e}")
         return None

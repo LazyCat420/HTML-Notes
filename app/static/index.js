@@ -354,6 +354,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.WidgetResizer.observe(document.getElementById("live-canvas"));
 
+    // Broken-image gate. Widget images come from third-party og:image / thumbnail
+    // URLs that frequently hotlink-block or 404, and an <img> that fails shows a
+    // broken-frame icon. Inline onerror handlers get stripped by the canvas
+    // DOMPurify pass, so instead we catch the (non-bubbling) `error` event in the
+    // CAPTURE phase on the canvas — one listener covers every current and future
+    // image widget. A failed image is hidden and its tile marked so CSS can show a
+    // clean placeholder instead of a broken frame.
+    (function installImageErrorGate() {
+        const canvas = document.getElementById("live-canvas");
+        if (!canvas) return;
+        canvas.addEventListener("error", (e) => {
+            const img = e.target;
+            if (!img || img.tagName !== "IMG") return;
+            if (img.dataset.imgFailed) return; // guard against loops
+            img.dataset.imgFailed = "1";
+            img.style.display = "none";
+            const tile = img.closest("figure, .product-media, .image-widget-body > *");
+            if (tile) tile.classList.add("img-failed");
+        }, true);
+    })();
+
     const elements = {
         liveCanvas: document.getElementById("live-canvas"),
         chatInput: document.getElementById("chat-input"),
