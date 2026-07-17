@@ -2646,28 +2646,15 @@ async def build_stock_news_config(message: str) -> dict:
     data0 = await stock_news(query, limit=8)
     yahoo_news = [n for n in (data0.get("news") or []) if n.get("title")]
 
-    # Broaden a SPECIFIC ticker's coverage with the multi-provider finnews
-    # collector (finnhub etc.) using the symbols Yahoo's search just resolved.
-    # Two guards keep the card clean:
-    #   - only for ticker queries — a general "stock market news" ask stays on the
-    #     Yahoo path, which already returns clean market/ETF stories; finnews's
-    #     keyword providers add PR-wire noise to a broad query.
-    #   - relevance filter — finnews's ticker fetch still runs keyword providers
-    #     that return off-ticker wire, so keep only items actually TAGGED with a
-    #     target ticker (drops "Macao Tourism"-type filler tagged to random
-    #     symbols; keeps finnhub's correctly NVDA-tagged articles).
-    tickers = [m.get("symbol") for m in (data0.get("matches") or [])
-               if m.get("symbol")][:3]
-    fin_news = []
-    if tickers and not is_general:
-        raw_fin = await _finnews_articles(tickers=tickers, limit=30)
-        tset = {t.upper() for t in tickers}
-        fin_news = [n for n in raw_fin
-                    if tset & {str(t).upper() for t in (n.get("related_tickers") or [])}][:10]
-    news = _merge_news(yahoo_news, fin_news)
-    if fin_news:
-        logger.info(f"[STOCK-NEWS] {query!r}: {len(yahoo_news)} yahoo + "
-                    f"{len(fin_news)} finnews(ticker-filtered) → {len(news)} merged")
+    # NOTE: finnews is deliberately NOT merged into this CARD. It fans out over 10
+    # providers but sorts by recency and tags fast-moving market-wire ("Cadeler
+    # receives 11th vessel") with whatever ticker was queried, so recent filler
+    # floats to the top and crowds out substantive stories — measurably noisier
+    # than Yahoo's already-loose ticker relevance. finnews (via _finnews_articles)
+    # is instead a source for the COMPREHENSIVE-REPORT path, where an LLM can
+    # synthesize and relevance-filter across many articles. The news card stays on
+    # Yahoo, which returns clean top stories.
+    news = yahoo_news
 
     if not news:
         # Both struck out (obscure company, crypto slang) → general news chain,
