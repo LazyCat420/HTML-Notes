@@ -265,6 +265,16 @@ def clean_query(text: str, explicit_lang: bool = False) -> str:
 clean_for_bench = clean_query
 
 
+# Consent-bypass cookies. From a datacenter/NAS IP, youtube.com/results serves a
+# consent interstitial (no videoRenderer blocks) unless a "consent given" cookie is
+# present — which made the parse return [] and the app fall back to a SINGLE proxy
+# video (the "same video for every broad query" bug). SOCS=CAI + a CONSENT token are
+# the values scrapers/yt-dlp use to get the real results page. A realistic UA helps too.
+_YT_CONSENT_COOKIE = "SOCS=CAI; CONSENT=YES+cb.20210328-17-p0.en+FX+100"
+_YT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+
 def build_search_url(query: str, order: str = "relevance", lang: str = "en") -> tuple[str, dict]:
     """(url, headers) for a language-aware search. gl/hl bias the regional catalog;
     Accept-Language reinforces it for the HTML the scraper gets back."""
@@ -274,7 +284,11 @@ def build_search_url(query: str, order: str = "relevance", lang: str = "en") -> 
     sp = _SP_BY_ORDER.get(order)
     if sp:
         url += f"&sp={sp}"
-    headers = {"Accept-Language": f"{hl},{hl[:2]};q=0.9,en;q=0.5"}
+    headers = {
+        "Accept-Language": f"{hl},{hl[:2]};q=0.9,en;q=0.5",
+        "User-Agent": _YT_UA,
+        "Cookie": _YT_CONSENT_COOKIE,
+    }
     return url, headers
 
 

@@ -107,15 +107,46 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     ranked = await _search_youtube_scrape(q, limit, order, rerank)
     if ranked:
         return ranked
-    # The direct youtube.com scrape came back empty (markup shift, a consent wall
-    # on this IP, or a transient block). Fall back to the music-player proxy, which
-    # reaches YouTube by a different path (scraper-service's collector). It returns
-    # a single best match — enough to keep a video/music ask from dead-ending on
-    # "No videos found".
+    # The direct httpx scrape came back empty (markup shift, a consent wall on this
+    # IP, or a transient block). Tier 2: re-fetch youtube.com/results THROUGH the
+    # scraper-service's real-browser 'auto' engine — it gets past the consent
+    # interstitial that blocks plain httpx and returns the full results HTML, which
+    # parses into a real POOL (so variety/dedup work, not a single repeated video).
+    pool = await _youtube_results_via_scraper(q, limit)
+    if pool:
+        logger.info(f"[YOUTUBE] direct scrape empty for {q!r}; served scraper-service pool ({len(pool)})")
+        return pool
+    # Tier 3 (last resort): the music-player proxy — a single best match, enough to
+    # keep a video ask from dead-ending on "No videos found".
     fb = await _youtube_proxy_fallback(q)
     if fb:
-        logger.info(f"[YOUTUBE] direct scrape empty for {q!r}; served proxy fallback")
+        logger.info(f"[YOUTUBE] scraper pool empty for {q!r}; served single proxy fallback")
     return fb
+
+
+async def _youtube_results_via_scraper(query: str, limit: int = 5) -> list:
+    """Fallback pool: scrape youtube.com/results via scraper-service (real browser,
+    gets past the consent wall) and parse it with the same parser as the direct
+    path. Returns a scored+diversified list (a POOL, unlike the single-video proxy)."""
+    try:
+        from app.youtube_search import build_search_url, parse_search_html
+        url, _ = build_search_url((query or "").strip(), order="relevance", lang="en")
+        html = await _scrape(url, engine="auto", timeout=20.0)
+        if not html:
+            return []
+        vids = parse_search_html(html, limit=max(limit * 3, 15))
+        if not vids:
+            return []
+        seen, out = set(), []
+        for v in vids:
+            d = v.to_dict()
+            if d.get("video_id") and d["video_id"] not in seen:
+                seen.add(d["video_id"])
+                out.append(d)
+        return _diversify_by_channel(out, per_channel=2)[:max(limit, 1)]
+    except Exception as e:
+        logger.warning(f"youtube scraper-service fallback failed for {query!r}: {e}")
+        return []
 
 
 async def _youtube_proxy_fallback(query: str) -> list:
@@ -1130,6 +1161,97 @@ def _graceful_fallback_config(config: dict) -> dict:
     }
 
 
+def _data_card_quality_gap(config: dict) -> str:
+    """SYNC classifier for the two quality symptoms. Returns 'bare_links' (a
+    list-mode card whose linked items mostly have no summary), 'no_sources' (an
+    answer card with no supporting items), or '' (fine). Used to decide whether
+    the async enrichment pass below is worth running."""
+    if not isinstance(config, dict):
+        return ""
+    answer = (config.get("answer") or "").strip()
+    items = config.get("items") or config.get("sources") or []
+    if isinstance(items, dict):
+        items = [items]
+    if answer and not items:
+        return "no_sources"
+    if not answer and items:
+        linky = [it for it in items if isinstance(it, dict)
+                 and (it.get("url") or it.get("link"))]
+        bare = [it for it in linky if not (it.get("description")
+                or it.get("summary") or it.get("snippet"))]
+        if linky and len(bare) >= max(1, len(linky) // 2):
+            return "bare_links"
+    return ""
+
+
+async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
+    """Quality floor for data_cards (async — enriches, so not usable inside the
+    sync render path). Guarantees the user never gets a wall of bare links or a
+    sourceless answer, no matter how the config arrived (esp. the agent path,
+    where a hand-built config bypasses every rehydration branch).
+
+    - bare_links: backfill each summary-less linked item from its og:description
+      (cheap meta fetch); any still-bare rows get one faithful LLM one-liner pass.
+    - no_sources: fetch a few real sources for the answer's subject and attach.
+    """
+    gap = _data_card_quality_gap(config)
+    if not gap:
+        return config
+    try:
+        if gap == "bare_links":
+            items = config.get("items") or config.get("sources") or []
+            if isinstance(items, dict):
+                items = [items]
+            bare = [it for it in items if isinstance(it, dict)
+                    and (it.get("url") or it.get("link"))
+                    and not (it.get("description") or it.get("summary") or it.get("snippet"))]
+            enrich = [{"url": it.get("url") or it.get("link"), "snippet": "",
+                       "image": it.get("image", "")} for it in bare]
+            try:
+                await asyncio.wait_for(_enrich_news(enrich, timeout=6.0), timeout=7.0)
+            except asyncio.TimeoutError:
+                pass
+            for it, e in zip(bare, enrich):
+                if e.get("snippet"):
+                    it["description"] = e["snippet"][:400]
+                if not it.get("image") and e.get("image"):
+                    it["image"] = e["image"]
+            still = [it for it in bare if not it.get("description")]
+            if still:
+                lines = "\n".join(f'[{i}] {it.get("title","")}' for i, it in enumerate(still))
+                data = await fast_llm_json(
+                    'You are a news editor. For each headline below write a faithful '
+                    'one-sentence summary of what it is about — do NOT invent facts '
+                    'beyond the headline. Return ONLY JSON: '
+                    '{"items":[{"index":<N>,"summary":"..."}]}\n\nHEADLINES:\n' + lines,
+                    max_tokens=600)
+                if data and isinstance(data.get("items"), list):
+                    by_i = {d.get("index"): (d.get("summary") or "").strip()
+                            for d in data["items"] if isinstance(d.get("index"), int)}
+                    for i, it in enumerate(still):
+                        if by_i.get(i):
+                            it["description"] = by_i[i][:300]
+            config["items"] = items
+        elif gap == "no_sources":
+            q = (query_hint or config.get("title") or "").strip()
+            if q:
+                try:
+                    hits = await asyncio.wait_for(news_search(q, limit=5), timeout=8.0)
+                except asyncio.TimeoutError:
+                    hits = []
+                srcs = [{"title": (h.get("title") or "")[:120], "description": "",
+                         "url": h.get("url", ""), "image": h.get("image", ""),
+                         "meta": h.get("publisher") or _host_of(h.get("url", "")),
+                         "badge": "Source"}
+                        for h in (hits or []) if h.get("url")][:5]
+                if srcs:
+                    config["items"] = srcs
+                    logger.info(f"[QUALITY] attached {len(srcs)} sources to a sourceless answer for {q!r}")
+    except Exception as e:
+        logger.warning(f"_ensure_data_card_quality ({gap}) failed: {e}")
+    return config
+
+
 def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
     """Single choke point for widget HTML: coerce the type, then render."""
     widget_type, config = coerce_widget_type(widget_type, widget_id, config)
@@ -1790,7 +1912,7 @@ def clean_video_query(text: str) -> str:
     return " ".join(kept).strip() or (text or "").strip()
 
 
-def pick_varied_video(hits: list, k: int = 5, exclude_ids: set = None):
+def pick_varied_video(hits: list, k: int = 5, exclude_ids: set = None, wide: bool = False):
     """Choose a video from the top-`k` results at random, for VARIETY.
 
     A broad ask ("a cookie recipe video", "funny cats") always returned the same
@@ -1810,9 +1932,14 @@ def pick_varied_video(hits: list, k: int = 5, exclude_ids: set = None):
     """
     if not hits:
         return None, []
-    fresh = [h for h in hits if h.get("video_id") not in exclude_ids] if exclude_ids else hits
-    fresh = fresh or hits  # all already seen → fall back to the full list
-    pool = fresh[: max(1, k)]
+    fresh_only = [h for h in hits if h.get("video_id") not in exclude_ids] if exclude_ids else list(hits)
+    exhausted = not fresh_only  # every top hit already shown this session
+    fresh = fresh_only or hits  # all already seen → fall back to the full list
+    # Widen the sampling window when the query is broad (`wide`) or the seen-set has
+    # exhausted the fresh pool — otherwise a broad/repeated ask recycles the same
+    # top-k evergreen hits forever. A wider window rotates genuinely different videos.
+    window = max(1, k * 2 if (wide or exhausted) else k)
+    pool = fresh[:window]
     chosen = random.choice(pool)
     cid = chosen.get("video_id")
     # Fallback candidates: fresh ones first (in order), so an embed error also hops
@@ -2065,6 +2192,15 @@ ANSWER_ASK_RE = re.compile(
     r'what is|what are|whats|what\'s|who is|who are|who was|when is|when was|'
     r'why is|why do|why does|explain|difference between|'
     r'vs\.?|versus|meaning of|definition of|instructions?|steps to)\b')
+# A BROAD, rich informational ask that deserves a multi-modal COMPOSITION (an
+# explanation + supporting image/video/news), not a single card. High-precision so
+# it never steals a narrow single-intent ask (weather, a ticker, a timer, "how to
+# boil an egg"): it wants the "give me the whole picture on <subject>" phrasings.
+COMPOSE_ASK_RE = re.compile(
+    r'\b(tell me (all |everything )?about|everything about|give me (a|the) '
+    r'(rundown|overview|breakdown|primer|picture)\b|teach me about|walk me through|'
+    r'introduce me to|overview of|(a|an) (overview|introduction|primer) (on|of|to)|'
+    r'what should i know about|get me up to speed on|brief me on)\b', re.I)
 # A geo/location query that wants a MAP with markers, not a text answer. Checked
 # before ANSWER so "where are the fires in California" pulls up a map. Kept to
 # strong geo signals so a conceptual "why is X" never gets a map.
@@ -3731,9 +3867,14 @@ async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
         '{"widgets": [{"type": "<type>", "query": "<query>", "modifiers": {}}], '
         '"reason": "<=8 words"}\n'
         "Rules:\n"
-        "- ONE widget for one need. Use MULTIPLE only when the ask genuinely spans "
-        'them (e.g. "plan my Saturday in Seattle" -> weather + map + things-to-do; '
-        '"tesla stock and news" -> stock + stock_news). Max 4.\n'
+        "- Match the widgets to the ask. A NARROW single-intent ask (a forecast, a "
+        "ticker, a timer) is ONE widget. A BROAD or rich ask should COMPOSE the "
+        "modalities that together serve it — lead with the explanation/answer, then "
+        "add supporting media that genuinely helps (an image of the subject, a video "
+        "to watch, recent news if it's current, a map if it's a place). Examples: "
+        '"plan my Saturday in Seattle" -> weather + map + things-to-do; "tesla stock '
+        'and news" -> stock + stock_news; "tell me about black holes" -> answer + '
+        "image + video. Do NOT pad with a modality that doesn't serve the subject. Max 4.\n"
         "- For a traffic ask add modifiers {\"traffic\": true}.\n"
         "- REUSE what's open. If a widget of the SAME kind is already on the canvas "
         "(see the list below) and the ask refines it (another place on the map, a "
@@ -3768,6 +3909,53 @@ async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
     if not clean:
         return None
     return {"widgets": clean, "reason": str(data.get("reason", ""))[:80]}
+
+
+# Modalities the composition planner is allowed to combine (a subset of
+# ROUTER_WIDGETS — the ones that make sense as parts of one rich answer).
+_COMPOSE_MODALITIES = ("answer", "image", "video", "news", "map")
+
+
+async def build_composition_plan(message: str) -> list:
+    """For a BROAD informational ask ("tell me about the James Webb telescope"),
+    plan an ordered SET of complementary modality widgets — an explanation plus
+    supporting media — instead of a lone text card. Returns router specs
+    ([{type, query, modifiers}]) for spawn_router_stream, or [] to fall through.
+
+    This is the composition step the pipeline otherwise lacks: the fast-path and
+    the single-biased router both collapse a rich subject to one widget."""
+    catalog = "\n".join(f"- {m}: {ROUTER_WIDGETS[m][1]}" for m in _COMPOSE_MODALITIES)
+    data = await fast_llm_json(
+        "You compose a multi-modal answer for a broad ask on a live dashboard. Pick "
+        "the 2-4 modalities that together BEST answer it, and a focused search query "
+        "for each. Always LEAD with an 'answer' (the explanation), then add the "
+        "supporting media that genuinely helps — an 'image' of the subject, a 'video' "
+        "to watch, recent 'news' if the subject is current, a 'map' if it's a place. "
+        "Do NOT add a modality that doesn't serve THIS subject. Return ONLY JSON:\n"
+        '{"widgets": [{"type": "<modality>", "query": "<focused query>"}], "reason": "<=8 words"}\n'
+        "MODALITIES:\n" + catalog +
+        f'\n\nUSER: "{message}"',
+        max_tokens=400,
+    )
+    if not isinstance(data, dict):
+        return []
+    widgets = data.get("widgets")
+    if not isinstance(widgets, list):
+        return []
+    specs, seen = [], set()
+    for w in widgets[:4]:
+        if not isinstance(w, dict):
+            continue
+        wtype = str(w.get("type", "")).strip().lower()
+        if wtype not in _COMPOSE_MODALITIES or wtype in seen:
+            continue
+        seen.add(wtype)
+        specs.append({"type": wtype,
+                      "query": str(w.get("query", "") or "").strip() or message,
+                      "modifiers": {}})
+    # A composition of one modality is just a normal single widget — let the
+    # regular fast-path/router handle it rather than mislabelling it "composed".
+    return specs if len(specs) >= 2 else []
 
 
 async def build_image_config(query: str) -> Optional[dict]:
@@ -4049,7 +4237,8 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
         if wtype == "video":
             vq = clean_video_query(query or message)
             hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
-            top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id))
+            top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id),
+                                           wide=is_query_vague(vq))
             if not top:
                 return None
             _remember_current_video(session_id, top, vq)
@@ -4162,6 +4351,14 @@ async def send_message(req: MessageRequest):
                     built = await config_builder()
                     if built:
                         widget_config.update(built)
+
+                # QUALITY FLOOR (fast-path mirror of the agent injector): never let
+                # a data_card render as a wall of bare links or a sourceless answer —
+                # covers the degraded builder paths (stock_report/market_research
+                # answer with no sources, news/stock-news items with no summaries).
+                if widget_type == "data_card" and _data_card_quality_gap(widget_config):
+                    widget_config = await _ensure_data_card_quality(
+                        widget_config, query_hint=req.message)
 
                 resolved_id = widget_id or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
 
@@ -4390,7 +4587,8 @@ async def send_message(req: MessageRequest):
             async def _find_another():
                 hits = await search_youtube_videos(vquery, limit=12)
                 hits = filter_blocked_videos(hits)
-                top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(req.session_id))
+                top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(req.session_id),
+                                               wide=is_query_vague(vquery))
                 if not top:
                     return None
                 _remember_current_video(req.session_id, top, vquery)
@@ -4740,6 +4938,19 @@ async def send_message(req: MessageRequest):
 
             # (MAP now runs earlier, outside the is_data_ask gate — see above.)
 
+            # 6.9 COMPOSE — a BROAD "tell me about X / give me the rundown on X" ask
+            #     deserves the whole picture: an explanation PLUS supporting media
+            #     (image, video, recent news), not a lone text card. Plan the
+            #     modalities and fan them out as ONE atomic multi-widget commit.
+            #     Falls through to the single-widget answer/router when planning
+            #     yields <2 modalities (i.e. it's really a narrow ask).
+            if COMPOSE_ASK_RE.search(text_clean) and not wants_removal and not is_video_ask:
+                plan = await build_composition_plan(req.message)
+                if len(plan) >= 2:
+                    logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
+                                f"{[w['type'] for w in plan]}")
+                    return spawn_router_stream(plan, reason="composed answer")
+
             # 7. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
             #    Synthesised into a readable answer card (Markdown answer + demoted
             #    sources) instead of dumping the user into the ~30-60s agent loop
@@ -4990,10 +5201,15 @@ async def send_message(req: MessageRequest):
             # spent another 60s reasoning and re-adding it. So we stop reading the
             # agent's stream as soon as a canvas mutation commits.
             #
-            # The exception is a request that asks for more than one thing ("a
-            # clock and a chart") — closing after the first widget would drop the
-            # second, so those are allowed to run the loop out.
-            wants_multiple = bool(re.search(r'\band\b|\balso\b|,|\bthen\b', text_clean))
+            # The exception is a request that wants more than one widget: an explicit
+            # conjunction ("a clock AND a chart"), OR a broad/compositional ask ("tell
+            # me about X") where an explanation + supporting media serve it better than
+            # a lone card. Those keep the loop open — but a hard cap stops a runaway
+            # model from stacking widgets forever.
+            wants_multiple = bool(re.search(r'\band\b|\balso\b|,|\bthen\b', text_clean)) \
+                or bool(COMPOSE_ASK_RE.search(text_clean))
+            _MAX_AGENT_WIDGETS = 4
+            widgets_committed = 0
             canvas_settled = False
 
             async def execute_mutation(tool_name, tool_args):
@@ -5139,6 +5355,17 @@ async def send_message(req: MessageRequest):
                                 config = {**map_cfg, **{k: v for k, v in config.items()
                                                         if v and k != "map_query"}}
 
+                        # QUALITY FLOOR: the rehydration branches above only fire
+                        # when the model OMITTED content. When it instead hand-builds
+                        # a data_card that would render as a wall of bare links (items
+                        # with no summaries) or a sourceless answer, none of them fire
+                        # and the bad card slips straight through. Enrich it in place.
+                        if widget_type == "data_card":
+                            gap = _data_card_quality_gap(config)
+                            if gap:
+                                logger.info(f"[WIDGET INJECTOR] data_card quality gap ({gap}) — enriching")
+                                config = await _ensure_data_card_quality(config, query_hint=req.message)
+
                         # Bake alternate video ids into youtube players so the
                         # widget can hop to an embeddable video when the first
                         # one blocks embedding ("Video unavailable").
@@ -5155,13 +5382,20 @@ async def send_message(req: MessageRequest):
                                     if v.get("video_id") == primary:
                                         channel = v.get("channel")
                                         break
-                                # Honor the persistent blocklist even on the agent
-                                # path: if the model picked a disliked video/channel,
-                                # hop to the best non-blocked alternative.
-                                if primary in _blocked_video_ids or (channel or "").lower() in _blocked_channels:
+                                # Apply variety on the agent path the same way the
+                                # fast-path does — not ONLY when the pick is blocked.
+                                # Otherwise the model's deterministic #1 hit is used
+                                # verbatim, so a broad/shallow ask ("a trading video")
+                                # returns the same video every time. Re-pick when: the
+                                # pick is blocked, OR the query is broad/vague, OR this
+                                # exact video was already shown this session.
+                                seen = _shown_video_ids(req.session_id)
+                                is_blocked = primary in _blocked_video_ids or (channel or "").lower() in _blocked_channels
+                                vague = is_query_vague(search_q)
+                                if is_blocked or vague or (primary and primary in seen) or not primary:
                                     kept = filter_blocked_videos(alts)
                                     alt_top, alt_cands = pick_varied_video(
-                                        kept, k=5, exclude_ids=_shown_video_ids(req.session_id))
+                                        kept, k=5, exclude_ids=seen, wide=vague)
                                     if alt_top:
                                         primary = alt_top["video_id"]
                                         channel = alt_top.get("channel")
@@ -5375,7 +5609,8 @@ async def send_message(req: MessageRequest):
                                         executed_active_tool = True
                                         active_tool_name = None
                                         active_tool_args = {}
-                                        if not wants_multiple:
+                                        widgets_committed += 1
+                                        if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
                                             canvas_settled = True
                                             break
 
@@ -5408,7 +5643,8 @@ async def send_message(req: MessageRequest):
                                             executed_active_tool = True
                                             active_tool_name = None
                                             active_tool_args = {}
-                                            if not wants_multiple:
+                                            widgets_committed += 1
+                                            if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
                                                 canvas_settled = True
                                                 break
                                         elif status in ("calling", "done", "success", "error"):
@@ -5926,7 +6162,19 @@ async def internal_tool_execute(req: InternalToolRequest):
             return result
 
         elif t == "html_notes_stock_news":
-            return await stock_news(a.get("query", ""), limit=int(a.get("limit", 8)))
+            # Returns bare title+publisher rows with NO snippets — the model must
+            # NOT render these directly (that is the wall-of-links bug). Steer it to
+            # the clean path: canvas_add_widget(data_card, {stock_news_query}) makes
+            # the server re-pull, read the pages and WRITE per-story summaries.
+            q = a.get("query", "")
+            result = await stock_news(q, limit=int(a.get("limit", 8)))
+            if isinstance(result, dict):
+                result["hint"] = (
+                    "These rows have NO summaries — do NOT build a data_card from them. "
+                    "Instead call canvas_add_widget(widget_type='data_card', "
+                    f"config={{'stock_news_query': '{q}'}}); the server writes the "
+                    "summaries and attaches sources.")
+            return result
 
         elif t == "html_notes_get_weather":
             location = a.get("location", "")

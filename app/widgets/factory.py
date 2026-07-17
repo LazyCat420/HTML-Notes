@@ -196,6 +196,11 @@ def render_data_card(widget_id: str, config: dict) -> str:
         i_url = item.get("url") or item.get("link") or ""
         i_badge = item.get("badge") or item.get("tag") or ""
         i_meta = item.get("meta") or item.get("source") or item.get("date") or ""
+        # Drop fully-empty rows (a malformed config with blank items would otherwise
+        # render as empty hover-boxes). Real quality-floor enrichment happens upstream
+        # in the async paths; this is just the sync last-resort against blank rows.
+        if not (i_title or i_desc or i_url or i_image):
+            continue
 
         thumb = (
             f'<img src="{esc(i_image)}" alt="" loading="lazy" class="item-thumb w-14 h-14 shrink-0 rounded-xl object-cover ring-1 ring-white/10 shadow-lg">'
