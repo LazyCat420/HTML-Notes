@@ -1932,6 +1932,17 @@ STOCK_REPORT_RE = re.compile(
     r'due diligence|\bdd\b|report on|deep research|analyz[e]|analysis (?:on|of)|'
     r'breakdown of|tell me everything about)\b', re.I)
 
+# DEEP MARKET RESEARCH — a research-intent word ("deep dive", "research",
+# "in-depth", "analyze") that, combined with a MARKET word and NO specific
+# company/ticker, means "research the market broadly" rather than the single-
+# ticker report (STOCK_REPORT_RE + a resolvable company) or the fast news card.
+# Routed to the shared DEEP_RESEARCH agent (multi-source fan-out + synthesis).
+MARKET_RESEARCH_RE = re.compile(
+    r'\b(deep[\s-]?dive|deep research|in[\s-]?depth|research|comprehensive|'
+    r'full (?:report|analysis|breakdown|rundown|picture)|analyz[e]|'
+    r'thorough(?:ly)?|dig into|dig in|what\'?s (?:going on|happening|moving))\b',
+    re.I)
+
 # TRIP planning — "plan a trip to Japan", "3 days in Rome", "Kyoto itinerary",
 # "things to do in Lisbon". High-precision: requires an explicit trip/itinerary word
 # or an "N days in <place>" shape, so it never steals a plain "map of X".
@@ -2842,6 +2853,78 @@ def _fundamentals_lines(snap: dict) -> str:
         ("Annualized volatility %", t.get("volatility")),
     ]
     return "\n".join(f"- {k}: {v}" for k, v in rows if v is not None and v != "")
+
+
+async def build_market_research_config(message: str) -> dict:
+    """A DEEP, multi-source market-research brief rendered as an answer data_card.
+
+    Where the fast stock-news card is 6 Yahoo headlines + one summarize pass, this
+    drives the shared DEEP_RESEARCH agent on the lazy-tool-service gateway: it
+    decomposes the ask, fans out parallel sub-researchers across the web/news,
+    reads sources, and synthesizes a structured brief. Slower (~30-90s) but
+    genuinely researched.
+
+    The research LOOP and all the /agent SSE plumbing live ONCE in
+    lazycat.research (shared by every repo); this only supplies the topic + output
+    contract and renders the result. lazycat-sdk is volume-mounted (see
+    docker-compose.yml / deploy.sh), so the import is lazy: if it's missing or the
+    agent returns nothing, degrade to the fast stock-news card — never blank.
+    """
+    try:
+        from lazycat.research import research
+    except Exception as e:
+        logger.warning(f"build_market_research_config: lazycat.research unavailable "
+                       f"({type(e).__name__}: {e}) — falling back to stock-news card")
+        return await build_stock_news_config(message)
+
+    try:
+        brief = await research(
+            "Research the current state of the US stock market for this user request: "
+            f"{message!r}. Identify the biggest stories moving markets right now, the "
+            "sectors and specific tickers involved, notable moves with real figures, "
+            "and what investors should watch next.",
+            schema={
+                "title": "a short headline for the market brief (<= 60 chars)",
+                "overview": "one-sentence bottom line on what is moving markets and why",
+                "answer": "the full brief in GitHub-flavored Markdown with ## sections: "
+                          "'What's Moving & Why', 'Key Stories' (bulleted, name the "
+                          "tickers and figures), 'Sectors & Tickers to Watch'. End with "
+                          "a one-line **Not financial advice.** disclaimer.",
+                "sources": [{"title": "headline", "url": "link",
+                             "publisher": "source name"}],
+            },
+            domain="finance",
+            max_iterations=14,
+            timeout=200.0,
+        )
+    except Exception as e:
+        logger.error(f"build_market_research_config: research() error ({e}) — fast card")
+        return await build_stock_news_config(message)
+
+    if not brief or not (brief.get("answer") or "").strip():
+        logger.info("[DEGRADED] market research returned nothing — fast stock-news card")
+        return await build_stock_news_config(message)
+
+    items = []
+    for s in (brief.get("sources") or []):
+        if isinstance(s, dict) and s.get("url"):
+            items.append({
+                "title": (s.get("title") or "")[:120],
+                "description": "",
+                "url": s.get("url", ""),
+                "image": s.get("image", ""),
+                "meta": s.get("publisher") or _host_of(s.get("url", "")),
+                "badge": "Source",
+            })
+    logger.info(f"[MARKET-RESEARCH] synthesized brief ({len(brief.get('answer',''))} chars, "
+                f"{len(items)} sources)")
+    return {
+        "title": (brief.get("title") or "Market Research").title()[:60],
+        "subtitle": (brief.get("overview") or "")[:140],
+        "icon": "trending_up",
+        "answer": _strip_citation_markers((brief.get("answer") or "").strip()),
+        "items": items[:8],
+    }
 
 
 async def build_stock_report_config(message: str) -> dict:
@@ -4437,6 +4520,37 @@ async def send_message(req: MessageRequest):
         #    ticker token) so "analyze this photo" or "full breakdown of the plot"
         #    don't hijack it. Checked BEFORE the news/price branches so "report"
         #    wins over "news"/"stock".
+        # 4-pre. DEEP MARKET RESEARCH — "research the market", "deep dive on the
+        #   stock market", "in-depth market analysis". Drives the shared
+        #   DEEP_RESEARCH agent (lazy-tool-service) to fan out across sources and
+        #   synthesize a brief, via the lazycat.research SDK helper. Gated to the
+        #   GENERAL market: fires only when a research word + a market word are
+        #   present AND no specific company/ticker is named — so "deep dive on
+        #   NVDA" still falls through to the single-ticker report below.
+        if (MARKET_RESEARCH_RE.search(text_clean)
+                and (MARKET_WORD_RE.search(text_clean) or STOCK_WORD_RE.search(text_clean))
+                and not wants_removal and not is_video_ask
+                and not re.search(r'\b[A-Z]{2,5}\b', req.message)):
+            # Strip research/market filler; if no specific subject remains, it's a
+            # general-market ask. A leftover noun ("apple") → let stock-report
+            # resolve it as a single-ticker deep dive instead.
+            _subj = re.sub(
+                r'\b(deep|dive|research|depth|in|full|report|analysis|analyz\w*|'
+                r'comprehensive|thorough\w*|breakdown|rundown|picture|overview|dig|'
+                r'into|what\'?s?|going|happening|moving|on|of|the|a|an|about|for|me|'
+                r'please|give|do|can|you|show|get|tell|today\w*|now|current\w*|'
+                r'latest|recent\w*|stock\w*|market\w*|share\w*|equit\w*|wall|street|'
+                r'econom\w*|trading|financ\w*|sector\w*|news|update\w*|'
+                # common stopwords so a trailing "and whats moving it" doesn't read
+                # as a specific subject and drop the ask to the single-ticker path.
+                r'and|or|it|its|us|why|how|are|is|was|to|with|whats?|going|right)\b',
+                ' ', text_clean, flags=re.I)
+            if not re.search(r'[a-z]{3,}', _subj):
+                return spawn_widget_stream(
+                    "data_card", "market-research",
+                    config_builder=lambda: build_market_research_config(req.message),
+                    status="researching the market across multiple sources — this takes a minute...")
+
         if (STOCK_REPORT_RE.search(text_clean) and not wants_removal and not is_video_ask
                 and (STOCK_WORD_RE.search(text_clean) or MARKET_WORD_RE.search(text_clean)
                      or re.search(r'\b[A-Z]{2,5}\b', req.message))):

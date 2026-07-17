@@ -16,8 +16,17 @@ services:
       # the staged .env at deploy — the key itself is never written to the repo.
       - VAULT_SERVICE_URL=${VAULT_SERVICE_URL:-http://10.0.0.16:5599}
       - VAULT_SERVICE_TOKEN=${VAULT_SERVICE_TOKEN:-}
+      # Deep-research route imports the shared lazycat.research helper, which is
+      # volume-mounted below (not baked into the image). Same pattern as
+      # trading-service/trading-client.
+      - PYTHONPATH=/app:/app/lazycat-sdk
+      # The DEEP_RESEARCH agent lives on the lazy-tool-service gateway.
+      - LAZY_AGENT_URL=${LAZY_AGENT_URL:-http://10.0.0.16:5591}
     volumes:
       - ./data:/app/data
+      # Shared SDK (research helper) — synced to the NAS by deploy.sh's
+      # EXTRA_SSH_SYNC. Read-only so the container can't mutate it.
+      - ../lazycat-sdk:/app/lazycat-sdk:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8035/health/app"]
