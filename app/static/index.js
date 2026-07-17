@@ -820,6 +820,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch(`/session/${state.sessionId}/history`);
             if (!res.ok) return;
             const data = await res.json();
+            // Adopt the server's canvas version: our snapshot now reflects every
+            // commit up to it, so the server won't judge our next current_canvas
+            // stale (see _run_turn's stale-snapshot guard).
+            if (data.canvas_version) canvasVersion = data.canvas_version;
             if (data.messages && data.messages.length > 0) {
                 // Populate chat history panel
                 if (elements.chatHistoryMessages) elements.chatHistoryMessages.innerHTML = "";
@@ -1143,6 +1147,11 @@ document.addEventListener("DOMContentLoaded", () => {
                     provider: provider,
                     model: model,
                     current_canvas: getCleanedCanvasHtml(),
+                    // The version this snapshot is based on — lets the server
+                    // refuse it if another turn committed since (stale-snapshot
+                    // guard in _run_turn; without it a fast sibling turn's
+                    // widget gets silently wiped).
+                    canvas_version: canvasVersion,
                     // Always the lazy gateway. Prism's loop silently drops the
                     // mcp__lazy-tool-service__* widget tools ("not in schema"), so
                     // the model retries the same call and never renders anything.

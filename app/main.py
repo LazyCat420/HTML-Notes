@@ -1302,18 +1302,37 @@ async def commit_canvas(session_id: str, mutate) -> Optional[str]:
     return f'data: {json.dumps({"type": "component", "content": html, "version": version})}\n\n'
 
 
-async def _run_turn(session_id: str, current_canvas: str, generator_factory):
+async def _run_turn(session_id: str, current_canvas: str, generator_factory,
+                    client_version: Optional[int] = None):
     """Gate a turn on the concurrency semaphore and track it as in-flight.
 
     While no turn is running for a session, the client's canvas is authoritative
     (it may have dismissed a widget locally), so we adopt its snapshot. Once a
     turn is in flight the server's copy wins — a concurrent turn's client
     snapshot predates whatever just landed.
+
+    `client_version` guards the adoption against a STALE snapshot: the client
+    stamps each request with the canvas version its snapshot is based on. Two
+    queries fired back-to-back both snapshot the pre-first-widget canvas; if the
+    first turn is fast (traffic/weather fast lane) it can fully COMMIT before
+    the second turn arrives, so inflight is 0 again — and adopting the second
+    snapshot would silently wipe the first turn's widget. If the server's canvas
+    is newer than what the snapshot saw, keep the server copy (a version of
+    None adopts unconditionally, preserving pre-upgrade client behavior).
     """
     async with _turn_semaphore:
         async with _canvas_lock(session_id):
             if current_canvas and _session_inflight.get(session_id, 0) == 0:
-                set_session_canvas(session_id, current_canvas)
+                server_version = _session_canvas_version.get(session_id, 0)
+                snapshot_is_stale = (client_version is not None
+                                     and get_session_canvas(session_id)
+                                     and client_version < server_version)
+                if snapshot_is_stale:
+                    logger.info(f"[CANVAS] refusing stale client snapshot "
+                                f"(client v{client_version} < server v{server_version}) "
+                                f"session={session_id[:8]}")
+                else:
+                    set_session_canvas(session_id, current_canvas)
             _session_inflight[session_id] = _session_inflight.get(session_id, 0) + 1
         try:
             async for chunk in generator_factory():
@@ -1417,6 +1436,10 @@ class MessageRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     current_canvas: Optional[str] = None
+    # Version of the canvas the client's current_canvas snapshot is based on
+    # (the last `component` version it painted, or the seed from history load).
+    # Lets _run_turn refuse a snapshot taken before another turn's commit.
+    canvas_version: Optional[int] = None
     use_lazy_agent: bool = True
 
 class CreateNoteRequest(BaseModel):
@@ -3632,7 +3655,7 @@ async def send_message(req: MessageRequest):
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
-                _run_turn(req.session_id, req.current_canvas or "", stream),
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
                 media_type="text/event-stream",
             )
 
@@ -3663,7 +3686,7 @@ async def send_message(req: MessageRequest):
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
-                _run_turn(req.session_id, req.current_canvas or "", stream),
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
                 media_type="text/event-stream",
             )
 
@@ -3736,7 +3759,7 @@ async def send_message(req: MessageRequest):
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
-                _run_turn(req.session_id, req.current_canvas or "", stream),
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
                 media_type="text/event-stream",
             )
 
@@ -4852,7 +4875,7 @@ async def send_message(req: MessageRequest):
             yield 'data: {"type": "done"}\n\n'
 
         return StreamingResponse(
-            _run_turn(req.session_id, req.current_canvas or "", proxy_prism_sse),
+            _run_turn(req.session_id, req.current_canvas or "", proxy_prism_sse, req.canvas_version),
             media_type="text/event-stream",
         )
 
@@ -5355,7 +5378,10 @@ async def get_session_history(session_id: str):
                 msg["canvas_html"] = m.group(1).strip()
                 msg["content"] = CANVAS_BLOCK_RE.sub("", content).strip()
             messages.append(msg)
-        return {"messages": messages}
+        # Seed the client's canvasVersion so its next request's snapshot isn't
+        # judged stale against commits it has in fact seen (via this restore).
+        return {"messages": messages,
+                "canvas_version": _session_canvas_version.get(session_id, 0)}
     except Exception as e:
         logger.error(f"Error fetching history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
