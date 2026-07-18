@@ -1,3 +1,4 @@
+import base64
 import httpx
 import logging
 import random
@@ -2572,6 +2573,193 @@ async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dic
         return None
 
 
+# ── Intent grounding + relevance gate ────────────────────────────────────────
+# The pipeline's quality problem was that a terse ask ("sandals") went straight to
+# a generic search and whatever came back was rendered with NO check that it
+# actually depicted the subject — so "sandals" returned Sandals-Resort promos,
+# beach scenery and feet-on-a-dock stock photos. These helpers add the missing
+# intent layer (turn the utterance into a disambiguated subject + an expanded
+# retrieval query + the list of WRONG-match categories to reject) and a vision
+# relevance gate that drops images that don't show the subject. Everything is
+# best-effort and FAILS OPEN: any grading outage degrades to the old behaviour,
+# never an empty canvas.
+
+_GROUND_CACHE: dict = {}          # message(lower) -> grounded intent (FIFO-capped)
+_GROUND_CACHE_MAX = 256
+
+
+async def ground_query(message: str) -> dict:
+    """Turn a raw utterance into a structured retrieval intent. ONE fast LLM pass,
+    memoised per-message so the image / products / video builders of a single turn
+    share it. Returns
+      {subject, intent, retrieval_query, hyde, negatives[], ambiguous, clarify}.
+    On any failure returns a permissive fallback (subject=message, no negatives) so
+    grounding is a pure quality boost and never blocks a turn.
+
+    `negatives` is the key field: for a word that is also a brand/place/other
+    meaning it names the wrong senses ("Sandals Resorts", "beach scenery") so the
+    relevance gate can reject them — this is the CLIP-negative-filter idea done with
+    a vision LLM."""
+    key = (message or "").strip().lower()
+    if not key:
+        return {"subject": "", "intent": "other", "retrieval_query": "",
+                "hyde": "", "negatives": [], "ambiguous": False, "clarify": ""}
+    if key in _GROUND_CACHE:
+        return _GROUND_CACHE[key]
+    data = await fast_llm_json(
+        "You are the intent-grounding step for a live visual dashboard. Turn the "
+        "user's ask into a precise retrieval spec so downstream image / video / web "
+        "search fetches the RIGHT thing, not something merely on-theme. Return ONLY "
+        "JSON, no prose, no code fence:\n"
+        '{"subject": "<the concrete subject in plain words, DISAMBIGUATED — if the '
+        'word is also a brand / place / other meaning, state the MOST LIKELY '
+        'intended one>", '
+        '"intent": "<one of: shopping, informational, media, place, data, other>", '
+        '"retrieval_query": "<an expanded, unambiguous web-search query for the '
+        'subject>", '
+        '"hyde": "<one line describing the IDEAL result; for a product, the ideal '
+        'PHOTO, e.g. \\"a product photo of open-toe leather sandals footwear\\">", '
+        '"negatives": ["<up to 5 categories a WRONG match would fall in: OTHER '
+        'meanings of the word, off-topic themes, ads, generic scenery>"], '
+        '"ambiguous": <true only if you genuinely cannot tell what they want>, '
+        '"clarify": "<if ambiguous, a one-line disambiguating question, else empty>"}\n\n'
+        'Example — ASK "sandals":\n'
+        '{"subject":"sandals (footwear to wear)","intent":"shopping",'
+        '"retrieval_query":"best sandals to buy footwear reviews","hyde":"a product '
+        'photo of sandals footwear on a plain background","negatives":["Sandals '
+        'Resorts / Caribbean all-inclusive vacation","beach or ocean scenery","feet '
+        'or legs lifestyle photo","advertisement"],"ambiguous":false,"clarify":""}\n\n'
+        f'USER: "{message}"',
+        max_tokens=400,
+    )
+    if not isinstance(data, dict) or not str(data.get("subject") or "").strip():
+        result = {"subject": (message or "").strip(), "intent": "other",
+                  "retrieval_query": (message or "").strip(), "hyde": "",
+                  "negatives": [], "ambiguous": False, "clarify": ""}
+    else:
+        negs = data.get("negatives")
+        result = {
+            "subject": str(data.get("subject") or message).strip()[:200],
+            "intent": str(data.get("intent") or "other").strip().lower(),
+            "retrieval_query": str(data.get("retrieval_query") or message).strip()[:200],
+            "hyde": str(data.get("hyde") or "").strip()[:300],
+            "negatives": ([str(n).strip()[:80] for n in negs if str(n).strip()][:6]
+                          if isinstance(negs, list) else []),
+            "ambiguous": bool(data.get("ambiguous")),
+            "clarify": str(data.get("clarify") or "").strip()[:200],
+        }
+    _GROUND_CACHE[key] = result
+    if len(_GROUND_CACHE) > _GROUND_CACHE_MAX:      # FIFO evict oldest
+        _GROUND_CACHE.pop(next(iter(_GROUND_CACHE)), None)
+    return result
+
+
+async def _fast_multimodal_json(content: list, max_tokens: int = 300,
+                                temperature: float = 0.1) -> Optional[dict]:
+    """fast_llm_json for a multimodal message. `content` is an OpenAI content array
+    (text + image_url blocks). Same model discovery, JSON parsing and fail-open
+    contract as fast_llm_json — returns None on any error."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
+            model = _fast_model["name"]
+            if not model:
+                resp = await client.get(f"{VLLM_URL}/v1/models")
+                model = resp.json()["data"][0]["id"]
+                _fast_model["name"] = model
+            resp = await client.post(f"{VLLM_URL}/v1/chat/completions", json={
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}],
+            })
+            text = resp.json()["choices"][0]["message"]["content"]
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        return json.loads(match.group(0)) if match else None
+    except Exception as e:
+        _fast_model["name"] = None
+        logger.warning(f"_fast_multimodal_json failed: {type(e).__name__}: {e}")
+        return None
+
+
+async def _fetch_image_data_url(client: httpx.AsyncClient, url: str,
+                                max_bytes: int = 1_800_000) -> Optional[str]:
+    """GET an image and return it as a base64 data: URL, or None. We pass images to
+    the vision model as data URLs rather than remote URLs because the model fetches
+    remote URLs server-side and many og:image CDNs block hotlinking (403/400) — a
+    data URL is judged reliably. Skips non-images and anything over `max_bytes`."""
+    try:
+        resp = await client.get(url, headers={"User-Agent": _BROWSER_UA})
+        if resp.status_code != 200:
+            return None
+        ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not ctype.startswith("image/"):
+            return None
+        blob = resp.content
+        if not blob or len(blob) > max_bytes:
+            return None
+        return f"data:{ctype};base64," + base64.b64encode(blob).decode("ascii")
+    except Exception:
+        return None
+
+
+async def filter_images_by_relevance(subject: str, negatives: list, items: list,
+                                     keep: int = 4, hyde: str = "",
+                                     min_keep: int = 0) -> list:
+    """Vision relevance gate. `items` are dicts carrying an 'image' (URL) and a
+    'caption'/'title'. Fetches each image server-side, base64-encodes it, and asks
+    the vision model in ONE batched call which ones genuinely depict `subject` (and
+    match none of `negatives`). Returns the surviving items in ORIGINAL order.
+
+    FAILS OPEN per-item: an image we can't fetch or the model can't judge is KEPT
+    (the old behaviour) — the gate only ever DROPS an image it actively judged
+    off-subject, so a grading/network outage never empties the grid. If the gate
+    would leave fewer than `min_keep`, the original list is returned instead."""
+    cands = [it for it in items if it.get("image")]
+    if not cands:
+        return items
+    judged = cands[:8]                       # bound the vision call
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=5.0),
+                                 follow_redirects=True) as client:
+        data_urls = await asyncio.gather(
+            *[_fetch_image_data_url(client, it.get("image", "")) for it in judged])
+    # Only images we successfully fetched can be judged; the rest fail open.
+    fetched = [(i, du) for i, du in enumerate(data_urls) if du]
+    if not fetched:
+        return items                         # couldn't fetch any → keep all (fail open)
+    neg_txt = ("; ".join(negatives)) if negatives else ""
+    content = [{"type": "text", "text": (
+        "You are a STRICT relevance filter for image search results. The user wants: "
+        f"\"{subject}\". " + (f"An ideal result looks like: {hyde}. " if hyde else "") +
+        (f"REJECT any image that instead shows: {neg_txt}. " if neg_txt else "") +
+        "You are shown numbered images. Return ONLY JSON: "
+        '{"keep": [<indices of images that CLEARLY and PRIMARILY depict what the '
+        "user wants>]}. Reject off-topic images: a different meaning of the word, "
+        "generic scenery, logos/brand art, ads, memes, or unrelated stock photos. "
+        "Keep a plausible match; drop the clearly-wrong.")}]
+    for i, du in fetched:
+        cap = (judged[i].get("caption") or judged[i].get("title") or "")[:90]
+        content.append({"type": "text", "text": f"Image [{i}] (caption: {cap}):"})
+        content.append({"type": "image_url", "image_url": {"url": du}})
+    data = await _fast_multimodal_json(content, max_tokens=120)
+    keep_set = None
+    if isinstance(data, dict) and isinstance(data.get("keep"), list):
+        keep_set = {i for i in data["keep"] if isinstance(i, int)}
+    if keep_set is None:
+        return items                         # model failed → keep all (fail open)
+    judged_idx = {i for i, _ in fetched}
+    # Drop ONLY judged images the model rejected; unfetched/unjudged pass through.
+    survivors = [it for j, it in enumerate(items)
+                 if not (j < len(judged) and j in judged_idx and j not in keep_set)]
+    if len(survivors) < max(min_keep, 1) and len(survivors) < len(items):
+        logger.info(f"[IMG GATE] all-but-{len(survivors)} rejected for {subject!r}; "
+                    f"keeping unfiltered to avoid an empty grid")
+        return items
+    if len(survivors) < len(items):
+        logger.info(f"[IMG GATE] {subject!r}: kept {len(survivors)}/{len(items)} "
+                    f"(dropped {len(items) - len(survivors)} off-subject)")
+    return survivors[:keep] if keep else survivors
+
+
 # Place name → IANA timezone, so "time in Tokyo" resolves server-side instead of
 # depending on the LLM to emit "Asia/Tokyo" (it usually didn't, so the clock
 # silently showed LOCAL time labelled as the city).
@@ -4127,7 +4315,7 @@ def is_valid_tool_args(tool_name: str, args: dict) -> bool:
 ROUTER_WIDGETS = {
     "weather":    ("weather",   'current conditions / forecast. query = the place ("Tokyo")'),
     "news":       ("news",      'general current headlines. query = the topic (empty for top stories)'),
-    "stock_news": ("stock-news", 'stock / market / company NEWS. query = ticker, company, or "stock market"'),
+    "stock_news": ("stock-news", 'stock / market / company NEWS. query = the ticker or company (e.g. "TSLA", "Apple"), or the market itself for a broad market-news ask. ONLY for a genuine finance/markets ask.'),
     "stock":      ("stock",     'a ticker\'s price + chart + technicals. query = company or symbol ("Apple", "TSLA")'),
     "stock_report": ("stock-report", 'a COMPREHENSIVE research report on ONE stock — synthesizes price, fundamentals, technicals, recent news AND analyst commentary into a written brief. Use for "full report on X", "deep dive / due diligence on X", "analyze X stock". query = company or symbol'),
     "sports":     ("scores",    'scores / fixtures / standings. query = the league or team ("nba", "arsenal")'),
@@ -4261,15 +4449,25 @@ async def build_composition_plan(message: str) -> list:
     return specs if len(specs) >= 2 else []
 
 
-async def build_image_config(query: str) -> Optional[dict]:
-    """A picture-of-X widget, built server-side: web-search the subject, then pull
-    real photos from the results' og:images (reusing the news enricher). Returns
-    None when nothing usable is found, so the caller skips the widget rather than
-    rendering an empty frame."""
+async def build_image_config(query: str, ground: dict = None) -> Optional[dict]:
+    """A picture-of-X widget, built server-side: GROUND the ask (disambiguate the
+    subject + expand the query), web-search WIDE, pull photos from the results'
+    og:images, then run the VISION RELEVANCE GATE so only pictures that actually
+    depict the subject survive. Returns None when nothing usable/relevant is found,
+    so the caller skips the widget rather than rendering an off-subject frame.
+
+    `ground` lets the caller pass an already-computed intent (so image/video/products
+    of one turn share the single grounding pass); omitted → grounded here."""
     q = (query or "").strip()
     if not q:
         return None
-    results = await web_search(q, limit=6)
+    g = ground or await ground_query(q)
+    subject = g.get("subject") or q
+    # Search the EXPANDED, disambiguated query ("sandals" -> "best sandals to buy
+    # footwear"), not the terse word that pulls generic/brand-collision images.
+    results = await web_search(g.get("retrieval_query") or q, limit=10)
+    if not results:
+        results = await web_search(q, limit=8)
     if not results:
         return None
     # Keep each result's title/host so the picture carries a caption (context)
@@ -4277,18 +4475,27 @@ async def build_image_config(query: str) -> Optional[dict]:
     items = [{"url": r.get("url", ""), "image": r.get("image", ""),
               "title": r.get("title", "")} for r in results if r.get("url")]
     await _enrich_news(items, timeout=5.0)
-    images = [{"url": it["image"],
-               "caption": (it.get("title") or _host_of(it.get("url", "")) or "")[:90]}
-              for it in items if it.get("image")][:4]
+    cands = [{"url": it["url"], "image": it["image"],
+              "caption": (it.get("title") or _host_of(it.get("url", "")) or "")[:90]}
+             for it in items if it.get("image")]
+    if not cands:
+        return None
+    # Vision gate: drop images that don't depict the subject (Grand-Canyon-for-
+    # "sandals"). Fails open, so a grading outage keeps the old top-N behaviour.
+    kept = await filter_images_by_relevance(subject, g.get("negatives", []), cands,
+                                            keep=4, hyde=g.get("hyde", ""))
+    images = [{"url": c["image"], "caption": c["caption"]} for c in kept][:4]
     if not images:
         return None
-    return {"title": q[:70].title(), "images": images}
+    return {"title": subject[:70].title(), "images": images}
 
 
-async def build_products_config(query: str) -> dict:
-    """Shopping / recommendation grid: web-search the product ask, enrich each
-    result with its og:image (the REFERENCE PHOTO) and og:description, then one LLM
-    pass tightens each into a product name + one-line "why" + price if stated.
+async def build_products_config(query: str, ground: dict = None) -> dict:
+    """Shopping / recommendation grid: GROUND the ask, web-search the product,
+    enrich each result with its og:image (the REFERENCE PHOTO) and og:description,
+    run the VISION RELEVANCE GATE so the reference photos actually show the product
+    (not the brand's beach ad), then one LLM pass tightens each into a product name
+    + one-line "why" + price if stated.
 
     Every card keeps its own image and links to its own source, so the user sees
     what each thing looks like and clicks the picture to go buy/read more — the
@@ -4299,9 +4506,13 @@ async def build_products_config(query: str) -> dict:
     q = (query or "").strip()
     if not q:
         return {"title": "Recommendations", "icon": "shopping_bag", "items": []}
-    results = await web_search(q, limit=10)
+    g = ground or await ground_query(q)
+    subject = g.get("subject") or q
+    results = await web_search(g.get("retrieval_query") or q, limit=10)
     if not results:
-        return {"title": q[:60].title(), "icon": "shopping_bag",
+        results = await web_search(q, limit=10)
+    if not results:
+        return {"title": subject[:60].title(), "icon": "shopping_bag",
                 "subtitle": "No results", "items": []}
     items = [{"title": r.get("title", ""), "snippet": r.get("snippet", ""),
               "url": r.get("url", ""), "image": r.get("image", "")}
@@ -4313,6 +4524,13 @@ async def build_products_config(query: str) -> dict:
         pass
     # A visual grid is the whole point — prefer results that actually have a photo.
     with_img = [it for it in items if it.get("image")]
+    # Vision gate: keep cards whose reference photo shows the product; drop the
+    # brand/scenery collisions. min_keep=3 so an over-strict pass can't empty the
+    # grid — a shopping ask must still return a usable set.
+    if with_img:
+        with_img = await filter_images_by_relevance(
+            subject, g.get("negatives", []), with_img, keep=0,
+            hyde=g.get("hyde", ""), min_keep=3)
     pool = (with_img or items)[:8]
 
     numbered = "\n".join(
@@ -4538,7 +4756,11 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             return None if not tcfg else (twtype, "traffic", tcfg)
 
         if wtype == "video":
-            vq = clean_video_query(query or message)
+            # Ground first so a brand/place collision ("sandals" the RESORT, "jaguar"
+            # the CAR) searches the disambiguated subject, not the bare word that
+            # returns promo/off-topic clips.
+            g = await ground_query(query or message)
+            vq = clean_video_query(g.get("retrieval_query") or query or message)
             hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
             top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id),
                                            wide=is_query_vague(vq))
@@ -4590,6 +4812,43 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
         logger.warning(f"[ROUTER] build {wtype!r} failed for {query!r}: {type(e).__name__}: {e}")
         return None
     return None
+
+
+async def _drop_offsubject_widgets(message: str, good: list) -> list:
+    """Cross-widget consistency backstop for the router's multi-widget fan-out.
+    The router can compose a set where one widget drifts off the ask (the live
+    "sandals -> a stock-market NEWS card + a Caribbean-resort VIDEO" failure).
+    Given the ask and each built widget's subject, drop the clearly-unrelated ones.
+
+    Conservative and FAILS OPEN: only runs for 2+ widgets, keeps anything the model
+    doesn't flag, and never empties the set. `good` items are
+    (wtype, id_prefix, wcfg, model_target) tuples; returns the same shape filtered."""
+    if len(good) < 2:
+        return good
+    lines = []
+    for i, (wtype, _p, wcfg, _t) in enumerate(good):
+        cfg = wcfg or {}
+        subj = cfg.get("title") or cfg.get("subtitle") or cfg.get("subject") or wtype
+        lines.append(f'[{i}] {wtype}: {str(subj)[:90]}')
+    data = await fast_llm_json(
+        "A live dashboard built these widgets for ONE user ask. Some may be "
+        "OFF-TOPIC — a different meaning of a word in the ask, or padding unrelated "
+        'to what was asked. Return ONLY JSON {"keep": [indices genuinely about the '
+        'ask]}. Keep every widget that plausibly serves the ask; drop ONLY the '
+        "clearly-unrelated ones.\n"
+        f'ASK: "{message}"\nWIDGETS:\n' + "\n".join(lines),
+        max_tokens=120)
+    keep = (data or {}).get("keep")
+    if not isinstance(keep, list):
+        return good
+    idxs = [i for i in keep if isinstance(i, int) and 0 <= i < len(good)]
+    kept = [good[i] for i in idxs]
+    if not kept:                      # model dropped everything → fail open
+        return good
+    if len(kept) < len(good):
+        dropped = [good[i][0] for i in range(len(good)) if i not in set(idxs)]
+        logger.info(f"[CONSISTENCY] dropped off-subject {dropped} for {message!r}")
+    return kept
 
 
 @app.post("/session/message")
@@ -4786,6 +5045,11 @@ async def send_message(req: MessageRequest):
                 if not good:
                     logger.info("[ROUTER] all builds empty — degrading to an answer card")
                     good = [("data_card", "answer", await build_answer_config(req.message), None)]
+
+                # Cross-widget consistency: drop any built widget that drifted off
+                # the ask (a stray stock-market card / resort video on a "sandals"
+                # ask) BEFORE they're committed to the canvas. Fails open.
+                good = await _drop_offsubject_widgets(req.message, good)
 
                 placed = []  # (rid, wtype, wcfg) for the ledger, filled during _append
 
