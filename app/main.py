@@ -5801,16 +5801,14 @@ async def send_message(req: MessageRequest):
                 # Last resort: the Jetson instance/model pair.
                 req.provider = "vllm"
                 model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
-        # Sync the gateway's settings dynamically so MemoryExtractor doesn't crash on outdated models
-        try:
-            with httpx.Client(timeout=1.0) as client:
-                client.put(f"{target_url}/settings", json={
-                    "memory": {
-                        "extractionModel": model_name
-                    }
-                })
-        except Exception as e:
-            logger.warning(f"Failed to sync memory extraction model to gateway: {e}")
+        # REMOVED: a PUT {target_url}/settings that rewrote the gateway's GLOBAL
+        # memory.extractionModel on EVERY turn. Three problems: (1) a client has no
+        # business mutating a shared gateway's global config — it raced every other
+        # project on prism; (2) it was sent with no x-project/x-username headers, so
+        # it landed in prism's "default" project and helped make that bucket
+        # unattributable; (3) it used a BLOCKING httpx.Client inside this async
+        # handler, stalling the event loop up to 1s per turn. We send
+        # memoryEnabled=False anyway, so nothing here needs the extractor.
 
         payload = {
             "provider": req.provider,
@@ -6542,11 +6540,16 @@ async def transcribe_audio(req: TranscribeRequest):
             "provider": "openai",
             "audio": req.audio,
             "skipConversation": True,
-            "project": "html-notes",
-            "username": "lazycat"
+            "project": AGENT_PROJECT,
+            "username": AGENT_USERNAME
         }
         async with httpx.AsyncClient(timeout=45.0) as client:
-            res = await client.post(url, json=payload)
+            # Same header contract as the /agent call: prism attributes by the
+            # x-project / x-username HEADERS, so without them voice transcription
+            # was also being filed under the unattributable "default" project.
+            res = await client.post(url, json=payload,
+                                    headers={"x-project": AGENT_PROJECT,
+                                             "x-username": AGENT_USERNAME})
             if res.status_code != 200:
                 logger.error(f"Prism STT failed with code {res.status_code}: {res.text}")
                 raise HTTPException(status_code=500, detail=f"Prism transcription failed: {res.text}")
