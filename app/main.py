@@ -5142,48 +5142,54 @@ async def send_message(req: MessageRequest):
         wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         league = resolve_league(text_clean)
 
-        # ── High-priority canvas-control intercepts (run before the removal
+        # ── Canvas-control intercepts: ALWAYS ON, prism mode included ───────
+        # NOT latency shortcuts — capability workarounds, so they deliberately
+        # sit OUTSIDE the prism-mode guard below. The agent removes ONE widget
+        # per iteration and stops after the first mutation, so it structurally
+        # CANNOT clear a full canvas ("close everything" silently failed while
+        # these were gated). A list-item edit sent to the agent decomposes the
+        # whole widget instead of editing it. These are unambiguous imperatives
+        # about LOCAL UI state needing no knowledge, tools or research, so a
+        # 60-90s agent turn is worse on every axis. Content asks go to prism.
+        # LIST ITEM REMOVE — "delete the veggies from the grocery list" edits the
+        # list in place. Checked before CLEAR_ALL and before wants_removal sends it
+        # to the agent (which would decompose the whole widget).
+        if LIST_ITEM_REMOVE_RE.search(text_clean) and not is_video_ask:
+            existing_list = _extract_existing_checklist(req.session_id)
+            if existing_list:
+                ex_id, ex_title, ex_items = existing_list
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config_builder=lambda: build_list_remove_config(
+                        req.message, ex_title, ex_items),
+                    status=f"updating “{ex_title}”...",
+                    widget_id=ex_id)
+
+        # CLOSE ALL — one server call, no agent. Guarded so a "…from the list" item
+        # edit (which can contain "all") never triggers a full wipe.
+        if CLEAR_ALL_RE.search(text_clean) and not LIST_ITEM_REMOVE_RE.search(text_clean):
+            return _stream_clear_canvas()
+
+        # LIST RESTORE — "bring back my grocery list": restore saved items instead
+        # of regenerating. Guarded against edits/removals so those still route
+        # normally; only fires when a matching saved list actually exists.
+        if (LIST_RESTORE_RE.search(text_clean)
+                and not LIST_EDIT_RE.search(text_clean)
+                and not LIST_ITEM_REMOVE_RE.search(text_clean)
+                and not is_video_ask and not is_data_ask):
+            restored = _resolve_restorable_list(req.message)
+            if restored and restored.get("items"):
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config={"title": restored.get("title") or "Checklist",
+                            "items": restored["items"]},
+                    status="bringing your list back...")
+
         # PRISM MODE (default): everything below is the "go around prism to
-        # save latency" fast-path cascade. It is SKIPPED so every ask runs
-        # through the prism agent + lazy-tool-service MCP tools. The router
-        # below is gated the same way. use_lazy_agent=True restores the
-        # local shortcuts.
+        # save latency" fast-path cascade. It is SKIPPED so every content ask
+        # runs through the prism agent + lazy-tool-service MCP tools. The
+        # router below is gated the same way. use_lazy_agent=True restores it.
         if req.use_lazy_agent:
-            #    funnel and the widget fast-paths) ────────────────────────────────
-
-            # LIST ITEM REMOVE — "delete the veggies from the grocery list" edits the
-            # list in place. Checked before CLEAR_ALL and before wants_removal sends it
-            # to the agent (which would decompose the whole widget).
-            if LIST_ITEM_REMOVE_RE.search(text_clean) and not is_video_ask:
-                existing_list = _extract_existing_checklist(req.session_id)
-                if existing_list:
-                    ex_id, ex_title, ex_items = existing_list
-                    return spawn_widget_stream(
-                        "checklist", "checklist",
-                        config_builder=lambda: build_list_remove_config(
-                            req.message, ex_title, ex_items),
-                        status=f"updating “{ex_title}”...",
-                        widget_id=ex_id)
-
-            # CLOSE ALL — one server call, no agent. Guarded so a "…from the list" item
-            # edit (which can contain "all") never triggers a full wipe.
-            if CLEAR_ALL_RE.search(text_clean) and not LIST_ITEM_REMOVE_RE.search(text_clean):
-                return _stream_clear_canvas()
-
-            # LIST RESTORE — "bring back my grocery list": restore saved items instead
-            # of regenerating. Guarded against edits/removals so those still route
-            # normally; only fires when a matching saved list actually exists.
-            if (LIST_RESTORE_RE.search(text_clean)
-                    and not LIST_EDIT_RE.search(text_clean)
-                    and not LIST_ITEM_REMOVE_RE.search(text_clean)
-                    and not is_video_ask and not is_data_ask):
-                restored = _resolve_restorable_list(req.message)
-                if restored and restored.get("items"):
-                    return spawn_widget_stream(
-                        "checklist", "checklist",
-                        config={"title": restored.get("title") or "Checklist",
-                                "items": restored["items"]},
-                        status="bringing your list back...")
 
             # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
             #    the dislike forever. Checked before every other video path so a
