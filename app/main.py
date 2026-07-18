@@ -1996,7 +1996,12 @@ class MessageRequest(BaseModel):
     # (the last `component` version it painted, or the seed from history load).
     # Lets _run_turn refuse a snapshot taken before another turn's commit.
     canvas_version: Optional[int] = None
-    use_lazy_agent: bool = True
+    # False (default) = PRISM MODE: the agent runs on prism-service (:7777) with the
+    # lazy-tool-service MCP research tools/harnesses, AND research/content asks
+    # (products, general answers, images) are routed to that agent instead of being
+    # short-circuited by local search-scrape builders. True = legacy: the :5591 fork
+    # gateway + local fast-path builders (faster, but no real research).
+    use_lazy_agent: bool = False
 
 class CreateNoteRequest(BaseModel):
     title: str
@@ -4333,6 +4338,14 @@ ROUTER_WIDGETS = {
     "clock":      ("clock",     'a clock / world clock / timer / countdown / stopwatch. query = the whole request'),
 }
 
+# In PRISM MODE (use_lazy_agent=False), these router widget types are RESEARCH asks
+# and get handed to the prism agent (which runs the lazy-tool-service MCP
+# web_search/read_page harnesses → a synthesised, sourced answer) instead of a local
+# search-scrape builder. Everything else (weather/stock/sports/map/traffic/music/
+# clock/list/notes/trip) stays on the fast local path — deterministic, fast, and
+# already high quality, so a 30-60s research loop would only make it worse.
+_AGENT_RESEARCH_TYPES = {"products", "answer", "image", "wikipedia"}
+
 
 async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
     """Classify an ask the fast lane missed into one or more server-buildable
@@ -5449,8 +5462,11 @@ async def send_message(req: MessageRequest):
         #     A grid of reference-photo cards, each linking to its source, instead of
         #     a wall of links. Checked before the map/POI branch (a product ask names
         #     no place) and outside the is_data_ask gate.
-        if (SHOP_ASK_RE.search(text_clean)
+        if (req.use_lazy_agent and SHOP_ASK_RE.search(text_clean)
                 and not wants_removal and not is_video_ask and not is_list_ask):
+            # PRISM MODE skips this: a shopping ask is real RESEARCH, so it falls
+            # through to the prism agent (web_search + read_page harnesses → a
+            # synthesised, sourced pick list) instead of a local search-scrape grid.
             return spawn_widget_stream(
                 "products", "products",
                 config_builder=lambda: build_products_config(req.message),
@@ -5559,7 +5575,8 @@ async def send_message(req: MessageRequest):
             #     modalities and fan them out as ONE atomic multi-widget commit.
             #     Falls through to the single-widget answer/router when planning
             #     yields <2 modalities (i.e. it's really a narrow ask).
-            if COMPOSE_ASK_RE.search(text_clean) and not wants_removal and not is_video_ask:
+            if (req.use_lazy_agent and COMPOSE_ASK_RE.search(text_clean)
+                    and not wants_removal and not is_video_ask):
                 plan = await build_composition_plan(req.message)
                 if len(plan) >= 2:
                     logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
@@ -5570,7 +5587,10 @@ async def send_message(req: MessageRequest):
             #    Synthesised into a readable answer card (Markdown answer + demoted
             #    sources) instead of dumping the user into the ~30-60s agent loop
             #    that returns a wall of links.
-            if ANSWER_ASK_RE.search(text_clean):
+            if req.use_lazy_agent and ANSWER_ASK_RE.search(text_clean):
+                # PRISM MODE skips this too: a fact/how-to/definition ask is research —
+                # the prism agent searches + reads pages + synthesises, rather than the
+                # local one-shot answer builder.
                 return spawn_widget_stream(
                     "data_card", "answer",
                     config_builder=lambda: build_answer_config(req.message),
@@ -5595,9 +5615,18 @@ async def send_message(req: MessageRequest):
         if not wants_removal:
             router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
             if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
-                logger.info(f"[ROUTER] {[w['type'] for w in router_plan['widgets']]} "
-                            f"— {router_plan.get('reason','')}")
-                return spawn_router_stream(router_plan["widgets"], router_plan.get("reason"))
+                widgets = router_plan["widgets"]
+                # PRISM MODE: if the router picked ANY research/content widget
+                # (products/answer/image/wikipedia), defer the whole turn to the prism
+                # agent so it researches via the MCP harnesses instead of a local
+                # search-scrape. Deterministic instant widgets still build locally.
+                if req.use_lazy_agent or not any(
+                        w["type"] in _AGENT_RESEARCH_TYPES for w in widgets):
+                    logger.info(f"[ROUTER] {[w['type'] for w in widgets]} "
+                                f"— {router_plan.get('reason','')}")
+                    return spawn_router_stream(widgets, router_plan.get("reason"))
+                logger.info(f"[ROUTER] prism-mode: deferring research "
+                            f"{[w['type'] for w in widgets]} to the agent")
             logger.info(f"[ROUTER] deferring to agent ({(router_plan or {}).get('reason','no plan')})")
 
         # Start loading history
@@ -5772,13 +5801,6 @@ async def send_message(req: MessageRequest):
         payload = {
             "provider": req.provider,
             "model": model_name,
-            # Tailor-made persona in the gateway (personas/clients/
-            # HtmlNotesPersona.ts): scopes the run to the widget tool set with
-            # no forced core/orchestrator tools in the system prompt, and
-            # defaults thinking off. Without it this ran as the generic "Omni
-            # Agent" — ~35 unrelated tools documented into every turn and ~180
-            # <think> chunks streamed before the first tool call.
-            "agent": "HTML_NOTES",
             # Belt and braces with the persona's thinkingDefault: a widget
             # router gains nothing from chain-of-thought and the user is
             # watching a spinner while it streams.
@@ -5802,6 +5824,14 @@ async def send_message(req: MessageRequest):
             "autoApprove": True,
             "memoryEnabled": False
         }
+        # The HTML_NOTES persona (personas/clients/HtmlNotesPersona.ts — scopes the
+        # run to the widget tool set, thinking off) ships ONLY in the :5591 fork.
+        # Canonical prism (:7777) 404s on it ("unknown agent: html_notes"). When we
+        # target prism we run persona-less: the explicit SYSTEM_PROMPT + enabledTools
+        # already scope the turn, and the connected lazy-tool-service MCP server
+        # supplies the same mcp__lazy-tool-service__* research tools (verified live).
+        if req.use_lazy_agent:
+            payload["agent"] = "HTML_NOTES"
 
         async def proxy_prism_sse():
             """
