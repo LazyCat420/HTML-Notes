@@ -1179,8 +1179,46 @@ def _data_card_quality_gap(config: dict) -> str:
                  and (it.get("url") or it.get("link"))]
         bare = [it for it in linky if not (it.get("description")
                 or it.get("summary") or it.get("snippet"))]
-        if linky and len(bare) >= max(1, len(linky) // 2):
+        # ANY bare link is unacceptable: "if it shows links it must summarise them".
+        # (Was ">= half"; a single naked link is still a wall-of-links to the user.)
+        if linky and bare:
             return "bare_links"
+    return ""
+
+
+def _linky_items(config: dict) -> list:
+    items = config.get("items") or config.get("sources") or []
+    if isinstance(items, dict):
+        items = [items]
+    return [it for it in items if isinstance(it, dict) and (it.get("url") or it.get("link"))]
+
+
+def _bare_items(items: list) -> list:
+    return [it for it in items if not (it.get("description")
+            or it.get("summary") or it.get("snippet"))]
+
+
+async def _synthesize_answer_from_items(config: dict, query_hint: str = "") -> str:
+    """Last-resort prose so a card is NEVER just links: write a short overview from
+    the item titles/descriptions we already have. Faithful (no new facts beyond the
+    rows) and cheap. Returns '' only if the model call fails."""
+    items = _linky_items(config)
+    if not items:
+        return ""
+    rows = "\n".join(
+        f'- {it.get("title","")}'
+        + (f': {(it.get("description") or it.get("summary") or it.get("snippet") or "")[:160]}'
+           if (it.get("description") or it.get("summary") or it.get("snippet")) else "")
+        for it in items[:8])
+    q = (query_hint or config.get("title") or "").strip()
+    data = await fast_llm_json(
+        "You write a 2-3 sentence plain-language overview that ties together the "
+        "items below into a direct answer. Use ONLY what the items state — invent "
+        "no facts. Return ONLY JSON: {\"answer\": \"...\"}\n\n"
+        + (f"QUESTION: {q}\n\n" if q else "") + "ITEMS:\n" + rows,
+        max_tokens=400)
+    if isinstance(data, dict):
+        return (data.get("answer") or "").strip()
     return ""
 
 
@@ -1191,8 +1229,12 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
     where a hand-built config bypasses every rehydration branch).
 
     - bare_links: backfill each summary-less linked item from its og:description
-      (cheap meta fetch); any still-bare rows get one faithful LLM one-liner pass.
+      (cheap meta fetch); any still-bare rows get one faithful LLM one-liner pass;
+      if rows are STILL bare after that, synthesize a top-level answer so the card
+      renders as prose-over-sources rather than naked links.
     - no_sources: fetch a few real sources for the answer's subject and attach.
+    Fails SAFE, not open: on any error a card with links but no summary at least
+    gets a minimal answer stitched from its titles, so links never render alone.
     """
     gap = _data_card_quality_gap(config)
     if not gap:
@@ -1232,6 +1274,14 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
                         if by_i.get(i):
                             it["description"] = by_i[i][:300]
             config["items"] = items
+            # Backstop: if any row is STILL bare (enrichment + editor both failed),
+            # synthesize a top-level answer so the card is prose-over-sources, never
+            # a naked link list. Only when there's no answer already.
+            if _bare_items(_linky_items(config)) and not (config.get("answer") or "").strip():
+                ans = await _synthesize_answer_from_items(config, query_hint)
+                if ans:
+                    config["answer"] = ans
+                    logger.info("[QUALITY] synthesized a summary for an otherwise link-only card")
         elif gap == "no_sources":
             q = (query_hint or config.get("title") or "").strip()
             if q:
@@ -1249,6 +1299,17 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
                     logger.info(f"[QUALITY] attached {len(srcs)} sources to a sourceless answer for {q!r}")
     except Exception as e:
         logger.warning(f"_ensure_data_card_quality ({gap}) failed: {e}")
+    # Fail SAFE: whatever happened above, a card that still shows links with neither
+    # a top-level answer nor any per-item description must not go out naked. Give the
+    # bare rows a minimal honest description derived from their own title.
+    try:
+        if not (config.get("answer") or "").strip():
+            for it in _bare_items(_linky_items(config)):
+                t = (it.get("title") or "").strip()
+                if t:
+                    it["description"] = t
+    except Exception:
+        pass
     return config
 
 
@@ -1728,6 +1789,173 @@ def find_existing_widget(session_id: str, widget_type: str) -> Optional[str]:
 # one instead of adding a second. Media (video/music) already swap via
 # _place_media_widget; these are the data widgets that were stacking duplicates.
 SINGLETON_WIDGET_TYPES = {"map", "weather"}
+
+# Answer-style cards where a *follow-up on the same thread* should refine the open
+# card in place instead of stacking a new one — but a genuinely NEW subject still
+# gets its own card. Unlike SINGLETON_WIDGET_TYPES (always one), reuse here is
+# conditional: the ask must read as a follow-up (deictic phrasing) or share a
+# subject with the open card. This is the deterministic half of the "stop making a
+# fresh widget for every follow-up" fix; the model-driven target decision is P2.
+TOPIC_SINGLETON_TYPES = {"data_card", "scoreboard", "stock_card"}
+
+# Deictic follow-up phrasing: the ask points back at the current thread rather than
+# opening a new subject. "tell me about X" is deliberately NOT here (it's a fresh
+# topic); "what about X", "wait...", "tell me more", a leading pronoun, etc. are.
+_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:wait|hold on|hmm+|ok(?:ay)?|so|but|actually|and|also|oh)\b"
+    r"|(?:what|how)\s+about\b"
+    r"|what\s+(?:happened|else|other)\b"
+    r"|tell\s+me\s+more\b|(?:more|go\s+deeper|expand|elaborate|dig\s+in)\b"
+    r"|^\s*(?:it|its|it's|that|this|those|these|they|them|their|he|she|his|her)\b"
+    r"|^\s*(?:why|how\s+come|and\s+then|what\s+next)\b",
+    re.I,
+)
+
+# Tokens that carry no subject signal — dropped before measuring topic overlap.
+_SUBJECT_STOP = {
+    "the", "a", "an", "of", "in", "on", "for", "to", "and", "or", "is", "are",
+    "was", "were", "what", "whats", "how", "about", "me", "my", "i", "need",
+    "you", "please", "tell", "show", "give", "with", "get", "want", "some",
+    "latest", "news", "update", "updates", "now", "today", "current", "recent",
+}
+
+
+def _subject_tokens(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+            if w not in _SUBJECT_STOP and len(w) > 2}
+
+
+def _subject_overlap(a: str, b: str) -> float:
+    """Overlap coefficient of the content words in two short strings (0..1).
+    Robust to length differences (a 2-word query vs a longer widget title)."""
+    ta, tb = _subject_tokens(a), _subject_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / min(len(ta), len(tb))
+
+
+def find_reuse_target(session_id: str, widget_type: str,
+                      message: str = "", subject: str = "") -> Optional[str]:
+    """The id of an open widget this ask should UPDATE in place, or None to spawn a
+    fresh one. Unifies both reuse policies:
+      - SINGLETON_WIDGET_TYPES (map/weather): always reuse the open one.
+      - TOPIC_SINGLETON_TYPES (answer cards): reuse only when the ask is a
+        follow-up on the open card — deictic phrasing OR a shared subject. A new,
+        distinct subject falls through to None and gets its own card.
+    Any other type returns None (multiple instances are fine)."""
+    if widget_type in SINGLETON_WIDGET_TYPES:
+        return find_existing_widget(session_id, widget_type)
+    if widget_type not in TOPIC_SINGLETON_TYPES:
+        return None
+    is_followup = bool(_FOLLOWUP_RE.search(message or ""))
+    probe = subject or message or ""
+    found = None
+    try:
+        for wid, wtype, title in _iter_canvas_widgets(get_session_canvas(session_id)):
+            if wtype != widget_type or not wid or wid == "unknown":
+                continue
+            if is_followup or _subject_overlap(probe, title) >= 0.5:
+                found = wid  # last match wins — the most recently added
+    except Exception as e:
+        logger.warning(f"find_reuse_target failed: {e}")
+    return found
+
+
+# ── Conversation self-awareness: the turn ledger ─────────────────────────────
+# A compact per-session record of what each turn did — the message, the route,
+# and the widgets it produced with a short gist of their content. This is the
+# substrate that lets every routing tier reason about the thread ("3 turns ago I
+# built a news card about military health; this follow-up refines it") instead of
+# re-reading canvas HTML or a message log with widget contents stripped out.
+# In-memory: same lifetime as the canvas version / media cursors — it only needs
+# to survive within a conversation.
+_session_turn_ledger: Dict[str, List[dict]] = {}
+_LEDGER_MAX_TURNS = 10
+
+
+def _widget_detail(config: dict) -> str:
+    """A <=160-char gist of what a widget shows, for the ledger: the first line of
+    its answer, or its top item/story titles. This is what lets a later follow-up
+    ('what about the taco bell one?') be tied back to the right widget."""
+    if not isinstance(config, dict):
+        return ""
+    ans = (config.get("answer") or "").strip()
+    if ans:
+        return re.sub(r"\s+", " ", ans)[:160]
+    items = config.get("items") or config.get("sources") or []
+    if isinstance(items, dict):
+        items = [items]
+    titles = [(it.get("title") or "").strip() for it in items
+              if isinstance(it, dict)][:3]
+    titles = [t for t in titles if t]
+    if titles:
+        return " · ".join(titles)[:160]
+    return (config.get("subtitle") or config.get("title") or "").strip()[:160]
+
+
+def record_turn(session_id: str, message: str, route: str, widgets: list) -> None:
+    """Append one turn to the session ledger. `widgets` is a list of
+    (widget_id, widget_type, subject, detail) tuples for what the turn produced
+    (empty for a turn that only cleared/answered). Best-effort — never raises."""
+    if not session_id:
+        return
+    try:
+        entry = {
+            "message": (message or "").strip()[:200],
+            "route": route or "",
+            "widgets": [{"id": wid, "type": wt, "subject": (subj or "")[:80],
+                         "detail": (det or "")[:160]}
+                        for (wid, wt, subj, det) in widgets if wid],
+        }
+        led = _session_turn_ledger.setdefault(session_id, [])
+        led.append(entry)
+        if len(led) > _LEDGER_MAX_TURNS:
+            del led[:-_LEDGER_MAX_TURNS]
+    except Exception as e:
+        logger.warning(f"record_turn failed: {e}")
+
+
+def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
+    """The shared awareness bundle every routing tier reads: what's on the canvas
+    now, what recent turns built (with a content gist), and the focus widget (the
+    most recent one produced). Returns {inventory, context_block, focus_id}."""
+    canvas_html = get_session_canvas(session_id) or current_canvas or ""
+    inventory = get_canvas_summary(canvas_html)
+    led = _session_turn_ledger.get(session_id, [])[-6:]
+    lines = []
+    for e in led:
+        wpart = ", ".join(
+            f'{w["type"]} #{w["id"]}' + (f' — {w["detail"]}' if w["detail"] else "")
+            for w in e["widgets"]) or "(no widget)"
+        lines.append(f'- "{e["message"]}" → {wpart}')
+    ledger_text = "\n".join(lines)
+    focus_id = None
+    for e in reversed(led):
+        if e["widgets"]:
+            focus_id = e["widgets"][-1]["id"]
+            break
+    block = ""
+    if ledger_text:
+        block += "RECENT TURNS (oldest first — reuse these widget ids for follow-ups):\n"
+        block += ledger_text + "\n\n"
+    block += "CURRENT CANVAS:\n" + inventory
+    return {"inventory": inventory, "context_block": block, "focus_id": focus_id}
+
+
+def _resolve_widget_target(session_id: str, widget_type: str, model_target: str,
+                           message: str = "", subject: str = "") -> Optional[str]:
+    """The id to render into: the model's explicit `target` when it names a REAL
+    canvas widget of the same type (P2, model-driven), else the deterministic
+    follow-up reuse (P0). Returns None to mint a fresh id."""
+    if model_target:
+        mt = str(model_target).lstrip("#").strip()
+        try:
+            for wid, wtype, _title in _iter_canvas_widgets(get_session_canvas(session_id)):
+                if wid == mt and wtype == widget_type:
+                    return wid
+        except Exception:
+            pass
+    return find_reuse_target(session_id, widget_type, message, subject)
 
 
 def get_canvas_summary(html: str) -> str:
@@ -3918,10 +4146,13 @@ ROUTER_WIDGETS = {
 }
 
 
-async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
+async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
     """Classify an ask the fast lane missed into one or more server-buildable
-    widgets, or a deferral. Returns:
-      {"widgets": [{"type", "query", "modifiers"}], "reason"} to build+spawn, or
+    widgets, or a deferral. `context_block` is build_turn_context()'s bundle:
+    recent turns (with a content gist) + the widgets on the canvas now — so the
+    router can recognise a follow-up and target the widget it refines. Returns:
+      {"widgets": [{"type", "query", "modifiers", "target"}], "reason"} to
+        build+spawn (target = a canvas widget id to UPDATE in place, or omitted), or
       {"defer": true} to hand off to the full agent (removals, edits, note
       dictation, custom widgets, small talk), or
       None on any model failure — the caller then falls back to the agent, so the
@@ -3931,8 +4162,8 @@ async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
         "You are the router for a live dashboard. Choose the widget(s) that best "
         "serve the user and the search query for each. Return ONLY a JSON object, "
         "no prose, no code fence:\n"
-        '{"widgets": [{"type": "<type>", "query": "<query>", "modifiers": {}}], '
-        '"reason": "<=8 words"}\n'
+        '{"widgets": [{"type": "<type>", "query": "<query>", "modifiers": {}, '
+        '"target": "<canvas widget id or omit>"}], "reason": "<=8 words"}\n'
         "Rules:\n"
         "- Match the widgets to the ask. A NARROW single-intent ask (a forecast, a "
         "ticker, a timer) is ONE widget. A BROAD or rich ask should COMPOSE the "
@@ -3943,16 +4174,19 @@ async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
         'and news" -> stock + stock_news; "tell me about black holes" -> answer + '
         "image + video. Do NOT pad with a modality that doesn't serve the subject. Max 4.\n"
         "- For a traffic ask add modifiers {\"traffic\": true}.\n"
-        "- REUSE what's open. If a widget of the SAME kind is already on the canvas "
-        "(see the list below) and the ask refines it (another place on the map, a "
-        "refreshed forecast), pick that same type — the server updates the existing "
-        "one in place. Do NOT try to open a second map/weather/stock of the same kind.\n"
-        "- If the ask is to REMOVE / close / clear / edit an EXISTING widget, to "
+        "- FOLLOW-UPS UPDATE, THEY DON'T STACK. Read RECENT TURNS and the canvas "
+        "below. If the ask refines something you already built (\"what about the "
+        "away team?\" after a scoreboard, \"tell me more\", \"and taco bell?\" after a "
+        "news card, another place on an open map), set \"target\" to that widget's "
+        "id so the server rewrites it in place. Only omit target when the ask opens "
+        "a genuinely NEW subject. Never open a second map/weather/stock of the same kind.\n"
+        "- If the ask is to REMOVE / close / clear an EXISTING widget, to "
         "take dictation into a note, to build a custom/one-off widget, or is small "
         'talk with no widget need, return {"defer": true} instead of widgets.\n'
-        "- Never invent a type. Use only the types listed.\n\n"
+        "- Never invent a type or a widget id. Use only the types listed and the "
+        "ids shown below.\n\n"
         "WIDGET TYPES:\n" + catalog +
-        (f"\n\nWIDGETS ALREADY ON THE CANVAS:\n{canvas_summary[:700]}" if canvas_summary else "") +
+        (f"\n\n{context_block[:1200]}" if context_block else "") +
         f'\n\nUSER: "{message}"',
         max_tokens=400,
     )
@@ -3970,9 +4204,11 @@ async def route_with_llm(message: str, canvas_summary: str) -> Optional[dict]:
         wtype = str(w.get("type", "")).strip().lower()
         if wtype not in ROUTER_WIDGETS:
             continue
+        tgt = w.get("target")
         clean.append({"type": wtype,
                       "query": str(w.get("query", "") or "").strip(),
-                      "modifiers": w.get("modifiers") if isinstance(w.get("modifiers"), dict) else {}})
+                      "modifiers": w.get("modifiers") if isinstance(w.get("modifiers"), dict) else {},
+                      "target": str(tgt).lstrip("#").strip() if tgt else None})
     if not clean:
         return None
     return {"widgets": clean, "reason": str(data.get("reason", ""))[:80]}
@@ -4427,7 +4663,14 @@ async def send_message(req: MessageRequest):
                     widget_config = await _ensure_data_card_quality(
                         widget_config, query_hint=req.message)
 
-                resolved_id = widget_id or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+                # No explicit id → reuse the open widget this ask refines (a
+                # follow-up on the same thread), else mint a fresh one. This is what
+                # stops a new data_card/scoreboard/stock_card stacking on every
+                # conversational follow-up.
+                resolved_id = (widget_id
+                               or find_reuse_target(req.session_id, widget_type, req.message,
+                                                    subject=widget_config.get("title", ""))
+                               or f"{id_prefix}-{uuid.uuid4().hex[:8]}")
 
                 def _append(soup):
                     # Media widgets (video, music) are players: a new one replaces
@@ -4457,6 +4700,10 @@ async def send_message(req: MessageRequest):
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
+                    record_turn(req.session_id, req.message, f"fast-path:{widget_type}",
+                                [(resolved_id, widget_type,
+                                  widget_config.get("title", "") or req.message,
+                                  _widget_detail(widget_config))])
                     database.save_chat_message(
                         message_id=f"msg_{uuid.uuid4().hex[:8]}",
                         session_id=req.session_id,
@@ -4488,6 +4735,10 @@ async def send_message(req: MessageRequest):
 
                 event = await commit_canvas(req.session_id, _clear)
                 if event:
+                    # Canvas wiped — reset the ledger so stale widget ids can't be
+                    # offered as follow-up targets next turn.
+                    _session_turn_ledger.pop(req.session_id, None)
+                    record_turn(req.session_id, req.message, "clear", [])
                     database.save_chat_message(
                         message_id=f"msg_{uuid.uuid4().hex[:8]}",
                         session_id=req.session_id,
@@ -4521,16 +4772,22 @@ async def send_message(req: MessageRequest):
                     *[build_router_widget(s, req.session_id, req.message) for s in specs],
                     return_exceptions=True)
                 # A spec builds to one widget (tuple) OR several (list of tuples, e.g.
-                # a trip → itinerary card + map). Flatten both shapes into one list.
-                good = []
-                for b in built:
+                # a trip → itinerary card + map). Flatten both shapes, carrying the
+                # spec's model-chosen `target` (P2) alongside each built widget. A
+                # multi-widget spec can't map a single target, so those get None.
+                good = []  # (wtype, id_prefix, wcfg, model_target)
+                for s, b in zip(specs, built):
+                    tgt = s.get("target") if isinstance(s, dict) else None
                     if isinstance(b, list):
-                        good.extend(x for x in b if isinstance(x, tuple) and x)
+                        good.extend((x[0], x[1], x[2], None)
+                                    for x in b if isinstance(x, tuple) and x)
                     elif isinstance(b, tuple) and b:
-                        good.append(b)
+                        good.append((b[0], b[1], b[2], tgt))
                 if not good:
                     logger.info("[ROUTER] all builds empty — degrading to an answer card")
-                    good = [("data_card", "answer", await build_answer_config(req.message))]
+                    good = [("data_card", "answer", await build_answer_config(req.message), None)]
+
+                placed = []  # (rid, wtype, wcfg) for the ledger, filled during _append
 
                 def _append(soup):
                     target = soup.select_one('#dashboard-grid')
@@ -4539,14 +4796,15 @@ async def send_message(req: MessageRequest):
                             '<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
-                    for wtype, id_prefix, wcfg in good:
-                        # Singleton types (map, weather) UPDATE the open one instead
-                        # of stacking a second — reuse its id so the commit replaces
-                        # it in place. This is what stops "two maps" when a follow-up
-                        # ask lands on the router.
-                        reuse = (find_existing_widget(req.session_id, wtype)
-                                 if wtype in SINGLETON_WIDGET_TYPES else None)
+                    for wtype, id_prefix, wcfg, model_target in good:
+                        # UPDATE the widget this ask refines instead of stacking a
+                        # second: the model's explicit target when valid (P2), else
+                        # the deterministic follow-up reuse (P0). Stops "two maps" and
+                        # "a fresh news card per follow-up".
+                        reuse = _resolve_widget_target(req.session_id, wtype, model_target,
+                                                       req.message, (wcfg or {}).get("title", ""))
                         rid = reuse or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+                        placed.append((rid, wtype, wcfg or {}))
                         # Media widgets (video, music) swap the current player in
                         # place; everything else appends.
                         if _place_media_widget(soup, wtype, rid, wcfg or {}, req_seq):
@@ -4561,6 +4819,9 @@ async def send_message(req: MessageRequest):
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
+                    record_turn(req.session_id, req.message, "router",
+                                [(rid, wt, (wc.get("title", "") or req.message),
+                                  _widget_detail(wc)) for (rid, wt, wc) in placed])
                     database.save_chat_message(
                         message_id=f"msg_{uuid.uuid4().hex[:8]}",
                         session_id=req.session_id,
@@ -5055,8 +5316,10 @@ async def send_message(req: MessageRequest):
         # Adopting the client's snapshot is _run_turn's job now (it only does so
         # when no other turn is in flight, so a concurrent turn's stale snapshot
         # can't undo a widget that just landed).
-        canvas_summary = get_canvas_summary(
-            get_session_canvas(req.session_id) or req.current_canvas)
+        # The shared awareness bundle (recent turns + canvas inventory + focus)
+        # feeds BOTH the router and the agent, so every tier reasons about the
+        # conversation thread the same way.
+        turn_ctx = build_turn_context(req.session_id, req.current_canvas or "")
 
         # ── AGENTIC ROUTER (steps 2 & 3) ─────────────────────────────────────
         # Nothing in the fast lane matched. Before dropping into the ~30-60s agent
@@ -5066,7 +5329,7 @@ async def send_message(req: MessageRequest):
         # dictation, custom widgets and small talk to the agent too. A None result
         # (model hiccup) also falls through — the router is never a hard gate.
         if not wants_removal:
-            router_plan = await route_with_llm(req.message, canvas_summary)
+            router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
             if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
                 logger.info(f"[ROUTER] {[w['type'] for w in router_plan['widgets']]} "
                             f"— {router_plan.get('reason','')}")
@@ -5114,8 +5377,13 @@ async def send_message(req: MessageRequest):
             "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first.\n"
             "For a data_card, prefer the search_query path above: pass config={'search_query': '<query>'} and let the server write the summarised answer with sources. Only hand-build config.items when you have specific structured rows that no search summary would capture — and then every item still needs a 'description' with the real information, never just a title and a link.\n\n"
             "WIDGETS COEXIST. Adding one never removes the others. The exceptions are youtube_player and mini_music_player: only one of each can play, so a new one automatically swaps out the old — just add it, do not remove first.\n\n"
+            "FOLLOW-UPS UPDATE THE OPEN WIDGET. RECENT TURNS below shows what each "
+            "widget already covers. If the user is refining one of them (\"what "
+            "about the taco bell story?\", \"tell me more\", \"and the away team?\"), "
+            "call canvas_add_widget with that widget's SAME id to rewrite it in "
+            "place — do not add a near-duplicate card.\n\n"
             + _user_facts_prompt()
-            + f"CURRENT CANVAS:\n```markdown\n{canvas_summary}\n```"
+            + f"{turn_ctx['context_block']}"
         )
 
         # Ensure all possible tools are enabled
@@ -5540,6 +5808,10 @@ async def send_message(req: MessageRequest):
 
                         event = await emit(_add)
                         if event:
+                            record_turn(req.session_id, req.message, f"agent:{widget_type}",
+                                        [(widget_id, widget_type,
+                                          config.get("title", "") or req.message,
+                                          _widget_detail(config))])
                             yield event
 
                         logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
