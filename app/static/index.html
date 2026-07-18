@@ -89,7 +89,10 @@
         <div id="health-indicator" class="health-dot offline" title="System Status"></div>
     </div>
 
-    <script src="index.js?v=3.0"></script>
+    <!-- Bump this on every index.js change or browsers keep running the cached
+         copy (v3.0 was frozen while index.js changed underneath it). v3.1: stop
+         sending use_lazy_agent so the server's PRISM MODE default governs. -->
+    <script src="index.js?v=3.1"></script>
     <!-- Masonry layout: pairs with the .dashboard-grid CSS (1px row track). Gives
          each widget a grid-row span equal to its height so varying-height widgets
          pack tightly with no whitespace, and reflows as widgets are added, removed

@@ -1200,13 +1200,19 @@ document.addEventListener("DOMContentLoaded", () => {
                     // refuse it if another turn committed since (stale-snapshot
                     // guard in _run_turn; without it a fast sibling turn's
                     // widget gets silently wiped).
-                    canvas_version: canvasVersion,
-                    // Always the lazy gateway. Prism's loop silently drops the
-                    // mcp__lazy-tool-service__* widget tools ("not in schema"), so
-                    // the model retries the same call and never renders anything.
-                    // This was a checkbox that was checked by default and had no
-                    // working "off" state, so it is now just always on.
-                    use_lazy_agent: true
+                    canvas_version: canvasVersion
+                    // use_lazy_agent is deliberately NOT sent — the SERVER decides
+                    // (MessageRequest defaults it to False = PRISM MODE).
+                    //
+                    // It used to be pinned to `true` (the :5591 fork) because prism
+                    // dropped the mcp__lazy-tool-service__* widget tools ("not in
+                    // schema") and never rendered. That premise is dead:
+                    // lazy-tool-service is now a CONNECTED MCP server in prism, so
+                    // prism serves all html_notes_*/canvas_* tools and runs the real
+                    // research harnesses (verified live). Hardcoding it here silently
+                    // overrode the server default and forced every browser turn back
+                    // onto the local search-scrape builders — keep this un-sent so
+                    // there is ONE source of truth for the routing mode.
                 })
             });
 
