@@ -1295,18 +1295,49 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
         elif gap == "no_sources":
             q = (query_hint or config.get("title") or "").strip()
             if q:
-                try:
-                    hits = await asyncio.wait_for(news_search(q, limit=5), timeout=8.0)
-                except asyncio.TimeoutError:
-                    hits = []
-                srcs = [{"title": (h.get("title") or "")[:120], "description": "",
+                # Cite what the answer was actually WRITTEN FROM.
+                #
+                # This used to call news_search() for every sourceless card, so
+                # "best espresso machines under $500" — answered by the model
+                # from html_notes_web_search results — got five unrelated Google
+                # News articles stapled on under a "Sources" badge. Wrong corpus
+                # for a non-news question, and worse, a groundedness lie: the
+                # card cited pages the answer had never seen. (They also all
+                # resolved to the same Google News og:image, so every thumbnail
+                # was the same picture.)
+                #
+                # The real sources are already in hand — html_notes_web_search
+                # caches under "search:<query>", so the model's own reading list
+                # is a dict lookup away. Fall back to a fresh web search for the
+                # right corpus, and reach for news only when the ask is actually
+                # news-shaped.
+                hits = get_cached_tool_result(f"search:{q}")
+                origin = "cached web_search"
+                if not hits:
+                    searcher = news_search if NEWS_ASK_RE.search(q) else web_search
+                    origin = searcher.__name__
+                    try:
+                        hits = await asyncio.wait_for(searcher(q, limit=5), timeout=8.0)
+                    except asyncio.TimeoutError:
+                        hits = []
+                hits = (hits or [])[:5]
+                # Same starve-the-image-path problem as build_answer_config: these
+                # carry no og:image until something fetches for one.
+                if hits:
+                    try:
+                        await asyncio.wait_for(_enrich_news(hits, timeout=5.0), timeout=6.0)
+                    except asyncio.TimeoutError:
+                        pass
+                srcs = [{"title": (h.get("title") or "")[:120],
+                         "description": (h.get("snippet") or "")[:240],
                          "url": h.get("url", ""), "image": h.get("image", ""),
                          "meta": h.get("publisher") or _host_of(h.get("url", "")),
                          "badge": "Source"}
-                        for h in (hits or []) if h.get("url")][:5]
+                        for h in hits if h.get("url")][:5]
                 if srcs:
                     config["items"] = srcs
-                    logger.info(f"[QUALITY] attached {len(srcs)} sources to a sourceless answer for {q!r}")
+                    logger.info(f"[QUALITY] attached {len(srcs)} sources "
+                                f"({origin}) to a sourceless answer for {q!r}")
     except Exception as e:
         logger.warning(f"_ensure_data_card_quality ({gap}) failed: {e}")
     # Fail SAFE: whatever happened above, a card that still shows links with neither

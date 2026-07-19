@@ -136,3 +136,89 @@ async def _unreachable_page(url, max_chars=2500):
 async def _fake_llm(prompt, max_tokens=1400):
     return {"format": "explainer", "title": "T", "overview": "o",
             "answer": "## Answer\n\nSome real prose.", "sources": [0, 1, 2]}
+
+
+# ── the sourceless-answer floor must cite what the answer came from ──
+#
+# The espresso case: the model answered from html_notes_web_search results, then
+# the quality floor stapled on five Google News articles under a "Sources" badge.
+# Wrong corpus for a product question — and a groundedness lie, because the card
+# cited pages the answer had never read. They also all resolved to the same
+# Google News og:image, so every thumbnail was identical.
+
+@pytest.mark.asyncio
+async def test_sourceless_answer_cites_the_cached_search_it_read(monkeypatch):
+    """The model's own reading list is cached — cite THAT, don't go find new pages."""
+    q = "best espresso machines under $500"
+    cached = [{"title": "Real Review", "url": "https://coffee.example/review",
+               "snippet": "We tested twelve machines."}]
+
+    called = []
+
+    async def should_not_run(*a, **k):
+        called.append("searched")
+        return []
+
+    monkeypatch.setattr(m, "get_cached_tool_result", lambda k: cached if k == f"search:{q}" else None)
+    monkeypatch.setattr(m, "news_search", should_not_run)
+    monkeypatch.setattr(m, "web_search", should_not_run)
+    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
+
+    cfg = await m._ensure_data_card_quality(
+        {"title": q, "answer": "Some real prose about espresso machines."}, q)
+
+    assert called == [], "the sources were already cached; nothing should have been searched"
+    assert [i["url"] for i in cfg["items"]] == ["https://coffee.example/review"]
+
+
+@pytest.mark.asyncio
+async def test_non_news_question_never_falls_back_to_news_search(monkeypatch):
+    """With no cache, a product question searches the WEB, not the news wire."""
+    q = "best espresso machines under $500"
+    used = []
+
+    async def fake_web(query, limit=5):
+        used.append("web")
+        return [{"title": "Guide", "url": "https://coffee.example/g", "snippet": "s"}]
+
+    async def fake_news(query, limit=5):
+        used.append("news")
+        return [{"title": "Article", "url": "https://news.google.com/rss/x", "snippet": ""}]
+
+    monkeypatch.setattr(m, "get_cached_tool_result", lambda k: None)
+    monkeypatch.setattr(m, "web_search", fake_web)
+    monkeypatch.setattr(m, "news_search", fake_news)
+    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
+
+    cfg = await m._ensure_data_card_quality({"title": q, "answer": "prose"}, q)
+
+    assert used == ["web"], f"a product ask must not hit the news wire, got {used}"
+    assert "news.google.com" not in cfg["items"][0]["url"]
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_news_ask_still_uses_the_news_wire(monkeypatch):
+    """The news path is still right for news — don't overcorrect into breaking it."""
+    q = "latest news on the election"
+    used = []
+
+    async def fake_web(query, limit=5):
+        used.append("web")
+        return []
+
+    async def fake_news(query, limit=5):
+        used.append("news")
+        return [{"title": "Story", "url": "https://ap.example/s", "snippet": "s"}]
+
+    monkeypatch.setattr(m, "get_cached_tool_result", lambda k: None)
+    monkeypatch.setattr(m, "web_search", fake_web)
+    monkeypatch.setattr(m, "news_search", fake_news)
+    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
+
+    await m._ensure_data_card_quality({"title": q, "answer": "prose"}, q)
+
+    assert used == ["news"], f"a news ask should use news_search, got {used}"
+
+
+async def _noop_enrich(items, timeout=5.0):
+    return None
