@@ -4412,7 +4412,14 @@ ROUTER_WIDGETS = {
 # search-scrape builder. Everything else (weather/stock/sports/map/traffic/music/
 # clock/list/notes/trip) stays on the fast local path — deterministic, fast, and
 # already high quality, so a 30-60s research loop would only make it worse.
-_AGENT_RESEARCH_TYPES = {"products", "answer", "image", "wikipedia"}
+_AGENT_RESEARCH_TYPES = {"products", "answer", "image", "wikipedia",
+                         # News is research, not a lookup: the value is in
+                         # corroborating across outlets and saying what they
+                         # DISAGREE on, which only a read-then-synthesise pass
+                         # can do. The local builder summarised each story in
+                         # isolation, so the card was N disconnected blurbs with
+                         # no through-line and no cross-checking.
+                         "news", "stock_news"}
 
 
 async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
@@ -5749,11 +5756,21 @@ async def send_message(req: MessageRequest):
             "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
             "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
-            "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → mcp__lazy-tool-service__html_notes_stock_news; its 'matches' array gives you tickers to feed into html_notes_stock_history. To show the news, call canvas_add_widget(widget_type='data_card', config={'stock_news_query': '<same query>'}) — the server re-pulls the stories and WRITES a summary per story; do NOT hand-build items from the raw title+link rows. Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
+            "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → RESEARCH IT, same discipline as general news:\n"
+            "    1. mcp__lazy-tool-service__html_notes_stock_news(query='<company or ticker>') — its 'matches' array also gives you tickers to feed into html_notes_stock_history.\n"
+            "    2. mcp__lazy-tool-service__html_notes_read_page on the 2-3 stories that actually move the thesis.\n"
+            "    3. canvas_add_widget(widget_type='data_card', config={'stock_news_query': '<the SAME query>', 'answer': '<your brief>'}) — the server re-pulls the stories and writes a summary per story; do NOT hand-build items from raw title+link rows. Your 'answer' sits on top.\n"
+            "    The brief must separate FACT from EXPECTATION: what was actually reported/filed/announced (with dates and figures) vs what analysts merely predict. Name the outlet on any contested or single-sourced claim, and say plainly when the move has no clear reported cause rather than inventing one. Never present a price move as explained when the sources do not explain it.\n"
+            "    Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
             "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
             "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
             "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
-            "- news, headlines, 'top stories' → mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories). It returns a ready data_card config of current stories, each with a photo, a tightened headline and a written summary. Then call canvas_add_widget(widget_type='data_card', config={'news_topic': '<same topic>'}) — the server rehydrates the stories, so do NOT re-type them. Do NOT use html_notes_web_search for news (it returns news-site homepages, not stories, and no photos).\n"
+            "- news, headlines, 'what's happening with X', 'top stories' → RESEARCH IT. Do not stop at a list of headlines:\n"
+            "    1. mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories) — returns current stories, each already carrying a photo and a summary.\n"
+            "    2. mcp__lazy-tool-service__html_notes_read_page on the 2-3 MOST IMPORTANT stories. Never write the brief from headlines alone: headlines are where outlets differ most and detail is thinnest.\n"
+            "    3. canvas_add_widget(widget_type='data_card', config={'news_topic': '<the SAME topic>', 'answer': '<your brief>'}). Passing news_topic makes the server attach the sourced stories with their photos — do NOT re-type them. Your 'answer' is the value you add ON TOP of them.\n"
+            "    The brief is GitHub-flavored Markdown, ~120-200 words, and MUST: lead with WHAT HAPPENED and WHEN (absolute dates, not 'today'); say what MULTIPLE outlets agree on; explicitly flag where they DISAGREE, where a claim is single-sourced, or where something is still unconfirmed; attribute contested claims ('Reuters reports…'); and close with what to watch next. Never state as settled what only one outlet claims, and never invent a detail that was not in what you actually read.\n"
+            "    Do NOT use html_notes_web_search for news (it returns news-site homepages, not stories, and no photos).\n"
             "- facts, recipes, how-tos, 'what/who/when is X', comparisons → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph) and attaches the pages as sources. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
             "- WHERE something is / a map / locations ('where are the fires in California', 'map of X') → canvas_add_widget(widget_type='map', config={'map_query': '<the query>'}). The server web-searches, geocodes the places and drops the markers — do NOT type coordinates.\n"
             "- picture of X → canvas_add_widget(widget_type='image')\n"
@@ -5976,7 +5993,14 @@ async def send_message(req: MessageRequest):
             # tool call landed at ~8s but the turn ran 70s, with 91-189 reasoning
             # events, most of them AFTER the widget was already on screen.
             "temperature": 0.15,
-            "maxIterations": 6,
+            # 6 was sized for "one data tool, then render". A tier-3 research turn
+            # is now search -> read 2-3 pages -> render, which is 5-6 calls before
+            # the model has said anything — at 6 it could burn the budget mid-read
+            # and finish with no canvas mutation. 9 leaves headroom for one failed
+            # tool call (the MCP layer does intermittently error) without the turn
+            # ending empty. The proxy still stops reading at the first canvas
+            # commit, so this raises the ceiling, not the typical cost.
+            "maxIterations": 9,
             "project": AGENT_PROJECT,
             "username": AGENT_USERNAME,
             "skipConversation": True,

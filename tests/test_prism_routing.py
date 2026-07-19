@@ -120,9 +120,14 @@ def test_canvas_history_summary_degrades_safely():
 
 # ── the tier split ───────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("wtype", ["products", "answer", "image", "wikipedia"])
+@pytest.mark.parametrize("wtype", ["products", "answer", "image", "wikipedia",
+                                   "news", "stock_news"])
 def test_research_types_go_to_the_agent(wtype):
-    """These need search -> read pages -> synthesis, which is what an agent is for."""
+    """These need search -> read pages -> synthesis, which is what an agent is for.
+
+    news/stock_news are here deliberately: the value in news is corroborating
+    across outlets and naming what they DISAGREE on, which a per-story summariser
+    structurally cannot do."""
     assert wtype in m._AGENT_RESEARCH_TYPES
 
 
