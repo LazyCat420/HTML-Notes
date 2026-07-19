@@ -6902,6 +6902,32 @@ async def health_model():
     except Exception as e:
         return {"status": "offline", "detail": str(e)}
 
+async def _mcp_scopes_serving_us(client: httpx.AsyncClient) -> list:
+    """Scopes where lazy-tool-service IS connected, for diagnosing a mismatch.
+
+    Prism scopes /mcp-servers by the x-project/x-username headers, so there is
+    no "list every scope" call — we probe the scopes we know this ecosystem
+    registers under. Best-effort and purely diagnostic.
+    """
+    candidates = [(AGENT_PROJECT, "lazycat"), (AGENT_PROJECT, "admin"),
+                  ("coding", "admin"), ("vllm-trading-bot", "lazy-trader")]
+    found = []
+    for project, username in candidates:
+        if (project, username) == (AGENT_PROJECT, AGENT_USERNAME):
+            continue
+        try:
+            rows = (await client.get(
+                f"{PRISM_URL}/mcp-servers",
+                headers={"x-project": project, "x-username": username})).json()
+            rows = rows if isinstance(rows, list) else rows.get("servers", [])
+            if any(r.get("name") == MCP_SERVER_NAME and r.get("connected")
+                   for r in rows):
+                found.append(f"{project}/{username}")
+        except Exception:
+            continue
+    return found
+
+
 async def _agent_dependency_status() -> dict:
     """Can a research ask actually work right now?
 
@@ -6931,6 +6957,19 @@ async def _agent_dependency_status() -> dict:
             servers = servers if isinstance(servers, list) else servers.get("servers", [])
             mine = next((s for s in servers if s.get("name") == MCP_SERVER_NAME), None)
             if not mine:
+                # Not in OUR scope — but Prism serves MCP tools globally once a
+                # server is connected under any scope, so this is a registration
+                # mismatch rather than an outage, and research may well still
+                # work. Report it as degraded and name the scopes that do have
+                # it, because the alternative (calling it down) cries wolf while
+                # the real symptom is only that nothing shows under our project.
+                elsewhere = await _mcp_scopes_serving_us(client)
+                if elsewhere:
+                    return {**detail, "ok": True, "degraded": True,
+                            "error": f"{MCP_SERVER_NAME} is not registered for "
+                                     f"{AGENT_PROJECT}/{AGENT_USERNAME}; serving from "
+                                     f"{', '.join(elsewhere)} instead (tools resolve, "
+                                     f"but our own scope shows none)"}
                 return {**detail, "ok": False,
                         "error": f"{MCP_SERVER_NAME} is not registered for this scope"}
             tools = int(mine.get("toolCount") or 0)
