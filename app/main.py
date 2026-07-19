@@ -5692,22 +5692,35 @@ async def send_message(req: MessageRequest):
         # agent's canvas_modify_dom; the router's own {"defer": true} sends note
         # dictation, custom widgets and small talk to the agent too. A None result
         # (model hiccup) also falls through — the router is never a hard gate.
-        if req.use_lazy_agent and not wants_removal:
+        # TIER 2 — the classifier backstop. One ~1s classify pass decides whether
+        # this ask is a DETERMINISTIC single-source widget (weather, a ticker, a
+        # timer, scores, a map, music: exactly one right answer from one API) or
+        # RESEARCH. Deterministic ones build locally in ~1-2s; research defers to
+        # the prism agent below.
+        #
+        # This ran only in legacy mode after the bypass removal, so EVERY ask —
+        # including "set a 5 minute timer" — paid a 60-90s agent turn. An agent
+        # adds latency and a hallucination surface to a weather lookup and buys
+        # nothing: the TOOL is what makes it correct, not the planner. Planning
+        # only earns its cost when several tools must be sequenced and synthesised
+        # (search -> read pages -> write it up), which is what _AGENT_RESEARCH_TYPES
+        # captures. A refining follow-up is left to the agent (or to the router's
+        # own in-place reuse) so it still updates the open widget rather than
+        # spawning a duplicate.
+        if not wants_removal:
             router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
             if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
                 widgets = router_plan["widgets"]
-                # PRISM MODE: if the router picked ANY research/content widget
-                # (products/answer/image/wikipedia), defer the whole turn to the prism
-                # agent so it researches via the MCP harnesses instead of a local
-                # search-scrape. Deterministic instant widgets still build locally.
-                if req.use_lazy_agent or not any(
-                        w["type"] in _AGENT_RESEARCH_TYPES for w in widgets):
-                    logger.info(f"[ROUTER] {[w['type'] for w in widgets]} "
+                research = [w["type"] for w in widgets if w["type"] in _AGENT_RESEARCH_TYPES]
+                if req.use_lazy_agent or not research:
+                    logger.info(f"[ROUTER] tier2-local {[w['type'] for w in widgets]} "
                                 f"— {router_plan.get('reason','')}")
                     return spawn_router_stream(widgets, router_plan.get("reason"))
-                logger.info(f"[ROUTER] prism-mode: deferring research "
-                            f"{[w['type'] for w in widgets]} to the agent")
-            logger.info(f"[ROUTER] deferring to agent ({(router_plan or {}).get('reason','no plan')})")
+                logger.info(f"[ROUTER] tier3-agent: deferring research {research} "
+                            f"(of {[w['type'] for w in widgets]}) to the prism agent")
+            else:
+                logger.info(f"[ROUTER] tier3-agent: no plan "
+                            f"({(router_plan or {}).get('reason','none')})")
 
         # Start loading history
         history = database.get_session_messages(req.session_id)
