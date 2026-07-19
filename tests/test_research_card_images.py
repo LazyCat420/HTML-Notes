@@ -222,3 +222,55 @@ async def test_a_genuine_news_ask_still_uses_the_news_wire(monkeypatch):
 
 async def _noop_enrich(items, timeout=5.0):
     return None
+
+
+# ── news_topic on a non-news ask ─────────────────────────────────
+# Observed live: the model researched "best espresso machines under $500" with
+# html_notes_web_search, then labelled the config news_topic. The news branch
+# found no news: cache, no-opped, and the card arrived sourceless. Believe the
+# tool the model RAN, not the key it typed.
+
+@pytest.mark.asyncio
+async def test_news_topic_with_only_a_web_search_cache_is_treated_as_research(monkeypatch):
+    q = "best espresso machines under $500"
+    search_hits = [{"title": "Real Review", "url": "https://coffee.example/r",
+                    "snippet": "We tested twelve."}]
+
+    def fake_cache(key):
+        return search_hits if key == f"search:{q}" else None   # no news: entry
+
+    seen = {}
+
+    async def fake_answer(query, results=None, read_top=2):
+        seen["query"], seen["results"] = query, results
+        return {"title": "T", "answer": "prose", "items": [
+            {"title": "Real Review", "url": "https://coffee.example/r", "image": "https://i/x.jpg"}]}
+
+    monkeypatch.setattr(m, "get_cached_tool_result", fake_cache)
+    monkeypatch.setattr(m, "build_answer_config", fake_answer)
+
+    cfg = await m._resolve_news_topic_config({"news_topic": q, "answer": "prose"})
+
+    assert seen["query"] == q, "the research builder should have been used"
+    assert seen["results"] == search_hits, "and fed the cache the model actually filled"
+    assert cfg["items"][0]["url"] == "https://coffee.example/r"
+
+
+@pytest.mark.asyncio
+async def test_news_topic_with_a_real_news_cache_still_uses_news(monkeypatch):
+    """Don't overcorrect: a genuine news card must keep its news path."""
+    topic = "election results"
+    news_cfg = {"title": "Election", "items": [
+        {"title": "Story", "url": "https://ap.example/s", "image": "https://i/n.jpg"}]}
+
+    monkeypatch.setattr(m, "get_cached_tool_result",
+                        lambda k: news_cfg if k == f"news:{topic}" else None)
+
+    async def should_not_run(*a, **k):
+        raise AssertionError("a real news card must not be rerouted to research")
+
+    monkeypatch.setattr(m, "build_answer_config", should_not_run)
+
+    cfg = await m._resolve_news_topic_config({"news_topic": topic, "answer": "brief"})
+
+    assert cfg["items"][0]["url"] == "https://ap.example/s"

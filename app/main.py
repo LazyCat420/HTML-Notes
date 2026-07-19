@@ -3824,6 +3824,48 @@ _ANSWER_ICONS = {
 }
 
 
+async def _resolve_news_topic_config(config: dict) -> dict:
+    """Fill a data_card the model tagged with `news_topic` (or `topic`).
+
+    Normally that means it researched via html_notes_news, and the stories it
+    already fetched are cached under "news:<topic>" — the server supplies them
+    with their photos so the model never re-types them.
+
+    But the model does not always mean it. Observed live on "best espresso
+    machines under $500": it researched with html_notes_web_search and then
+    labelled the config `news_topic` anyway. (The routing prompt used to promise
+    photos ONLY on the news branch, so a model that wanted a picture-bearing
+    card was steered there — that wording is fixed now, but a prompt is a
+    suggestion and this needs to hold regardless.) There was no "news:" cache,
+    so this silently no-opped and the card arrived sourceless.
+
+    So: believe the tool the model RAN, not the key it typed. Which cache is
+    populated is a fact about what actually happened; the key name is only what
+    the model meant. When only the web_search cache exists, build the research
+    card from it.
+
+    Returns the config to use — unchanged when neither cache is available, so
+    the downstream quality floor still gets its turn.
+    """
+    topic = str(config.get("news_topic", config.get("topic", ""))).strip()
+    model_keys = {k: v for k, v in config.items()
+                  if v and k not in ("news_topic", "topic")}
+
+    cached = get_cached_tool_result(f"news:{topic}")
+    if cached:
+        logger.info(f"[WIDGET INJECTOR] Rehydrated news data_card for {topic!r}")
+        return {**cached, **model_keys}
+
+    searched = get_cached_tool_result(f"search:{topic}")
+    if searched:
+        logger.info(f"[WIDGET INJECTOR] news_topic {topic!r} has no news cache but a "
+                    f"web_search one — treating as research")
+        answer_cfg = await build_answer_config(topic, results=searched)
+        return {**answer_cfg, **model_keys}
+
+    return config
+
+
 async def build_answer_config(query: str, results: Optional[list] = None,
                               read_top: int = 2) -> dict:
     """Turn a general web query (recipe, how-to, fact, "what/who is X", comparison)
@@ -5873,7 +5915,8 @@ async def send_message(req: MessageRequest):
             "    3. canvas_add_widget(widget_type='data_card', config={'news_topic': '<the SAME topic>', 'answer': '<your brief>'}). Passing news_topic makes the server attach the sourced stories with their photos — do NOT re-type them. Your 'answer' is the value you add ON TOP of them.\n"
             "    The brief is GitHub-flavored Markdown, ~120-200 words, and MUST: lead with WHAT HAPPENED and WHEN (absolute dates, not 'today'); say what MULTIPLE outlets agree on; explicitly flag where they DISAGREE, where a claim is single-sourced, or where something is still unconfirmed; attribute contested claims ('Reuters reports…'); and close with what to watch next. Never state as settled what only one outlet claims, and never invent a detail that was not in what you actually read.\n"
             "    Do NOT use html_notes_web_search for news (it returns news-site homepages, not stories, and no photos).\n"
-            "- facts, recipes, how-tos, 'what/who/when is X', comparisons → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph) and attaches the pages as sources. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
+            "- facts, recipes, how-tos, 'what/who/when is X', comparisons, product picks ('best X under $Y') → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph, a comparison a Markdown table) and attaches each page as a source WITH ITS PHOTO. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
+            "  Use 'search_query' for these, never 'news_topic'. news_topic is ONLY for current-events asks you researched with html_notes_news; on anything else it costs you the sources and the pictures.\n"
             "- WHERE something is / a map / locations ('where are the fires in California', 'map of X') → canvas_add_widget(widget_type='map', config={'map_query': '<the query>'}). The server web-searches, geocodes the places and drops the markers — do NOT type coordinates.\n"
             "- picture of X → canvas_add_widget(widget_type='image')\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
@@ -6237,15 +6280,7 @@ async def send_message(req: MessageRequest):
                                 config = {**config, **cached}
                         elif (widget_type == "data_card" and not config.get("items")
                               and ("news_topic" in config or "topic" in config)):
-                            # A news data_card from html_notes_news: the model names
-                            # the topic, the server supplies the summarized stories
-                            # (with photos) it already fetched and cached.
-                            topic = str(config.get("news_topic", config.get("topic", ""))).strip()
-                            cached = get_cached_tool_result(f"news:{topic}")
-                            if cached:
-                                logger.info(f"[WIDGET INJECTOR] Rehydrated news data_card for {topic!r}")
-                                config = {**cached, **{k: v for k, v in config.items()
-                                                       if v and k not in ("news_topic", "topic")}}
+                            config = await _resolve_news_topic_config(config)
                         elif (widget_type == "data_card" and not config.get("items")
                               and config.get("stock_news_query")):
                             # Stock/market news: the model names the query; the
