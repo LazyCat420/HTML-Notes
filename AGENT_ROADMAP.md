@@ -95,21 +95,44 @@ than any individual feature below.
       the remainder is tool schemas + the ROUTING section, which 1.3 can emit
       per-intent instead of wholesale.
 
-## Phase 4 — Infra hygiene
+## Phase 4 — html-notes' hidden dependencies on other services
 
-- [ ] **4.1 `vault-service/projects.json` pins `PRISM_PROJECT=vllm-trading-bot`
-      GLOBALLY** — any new service silently inherits the trading bot's identity.
-      Latent mislabelling bug. **Needs a decision**: scope it per-project or drop
-      the global default.
-- [ ] **4.2 Clients mutating shared prism state** — trading-service writes
-      directly into prism's Mongo `mcp_servers`; music-player + trading-client
-      overwrite shared `/custom-agents` personas on startup. Should go through
-      the API, scoped to their own project.
-- [ ] **4.3 Deploy trading-service** (attribution commit `e08c051` is committed
-      but not deployed — its tree had a parallel session's in-flight work).
-- [ ] **4.4 Persist the prism persona.** `CUSTOM_HTML_NOTES_CANVAS` was
-      registered by hand via `POST /custom-agents`; nothing recreates it if
-      prism's Mongo is reset. Make it idempotent at boot.
+Only items that can BREAK html-notes belong here. (Ecosystem chores that merely
+touch prism are listed at the bottom, out of scope for this repo.)
+
+- [ ] **4.1 html-notes' MCP tools are registered by TRADING-SERVICE.**
+      `trading-service/app/services/boot_service.py:~596` registers and connects
+      the `lazy-tool-service` MCP server in prism under three scopes — one of
+      which is `html-notes-client`. So **the agent's entire tool set depends on
+      the trading bot booting**, and nothing in this repo owns or re-establishes
+      it. This is why the connection died when lazy-tool-service was redeployed:
+      the thing that re-runs `/connect` is trading-service startup.
+      **html-notes should ensure its own MCP connection at boot** (idempotent
+      register + connect for its own project), rather than inheriting one from an
+      unrelated service.
+- [ ] **4.2 Persist the prism persona.** `CUSTOM_HTML_NOTES_CANVAS` was
+      registered by hand via `POST /custom-agents`. Nothing recreates it if
+      prism's Mongo is reset — the agent would silently fall back to an unscoped
+      run (~79 tools) and start wandering again. Make it idempotent at boot,
+      alongside 4.1.
+- [ ] **4.3 Health check the dependency.** `/health/app` returns ok while the MCP
+      connection is dead, so every research ask fails with `Unknown tool error`
+      and the app still reports healthy. Surface tool-availability in the health
+      check.
+
+### Not this repo's problem (tracked here only so it isn't lost)
+
+Found during the ecosystem-wide prism attribution work. Belongs to the owning
+services, not html-notes:
+
+- `vault-service/projects.json` pins `PRISM_PROJECT=vllm-trading-bot` GLOBALLY,
+  so any new service silently inherits the trading bot's identity. **Needs a
+  decision** — scope per-project or drop the global default.
+- Clients mutating shared prism state: trading-service writes directly into
+  prism's Mongo `mcp_servers`; music-player + trading-client overwrite shared
+  `/custom-agents` personas on startup.
+- trading-service attribution commit `e08c051` is committed but not deployed
+  (its tree had a parallel session's in-flight work).
 
 ## Phase 5 — Interaction
 
