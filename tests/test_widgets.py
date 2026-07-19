@@ -216,3 +216,41 @@ def test_strip_citation_markers():
     from app.main import _strip_citation_markers
     assert _strip_citation_markers("Visit Kyoto [0, 2, 3] and Osaka [1].") == "Visit Kyoto and Osaka."
     assert _strip_citation_markers("See [guide](http://x.com)") == "See [guide](http://x.com)"
+
+
+# ── Markdown tables ──────────────────────────────────────────────
+# build_answer_config's prompt tells the summariser "a comparison -> a Markdown
+# table", but _render_markdown had no table branch, so the rows fell through to
+# the paragraph handler — which joins lines with " ". A comparison card rendered
+# as one wrapped blob of pipes and dashes. The prompt asked for something the
+# renderer could not draw.
+
+def test_markdown_table_renders_as_a_table():
+    from app.widgets.factory import _render_markdown
+    html = _render_markdown(
+        "| Category | Model |\n| :--- | :--- |\n| Value | Apex V2 |\n| Milk | Bambino |")
+    assert "<table" in html and "<thead" in html
+    assert html.count("<td") == 4, "2 rows x 2 cols"
+    assert "|" not in html, "no raw pipe should survive into the output"
+
+
+def test_table_cells_still_escape_and_take_inline_markdown():
+    from app.widgets.factory import _render_markdown
+    html = _render_markdown(
+        "| A | B |\n| --- | --- |\n| **bold** | <script>x</script> |")
+    assert "<strong" in html, "cells run through _md_inline"
+    assert "<script>" not in html, "a cell must never emit live markup"
+
+
+def test_ragged_rows_are_padded_to_the_header_width():
+    """A short row must not produce a table with uneven columns."""
+    from app.widgets.factory import _render_markdown
+    html = _render_markdown("| A | B | C |\n| --- | --- | --- |\n| only-one |")
+    assert html.count("<td") == 3
+
+
+def test_pipes_without_a_separator_are_not_a_table():
+    """Prose that merely contains a pipe stays prose."""
+    from app.widgets.factory import _render_markdown
+    html = _render_markdown("| this is just | text with pipes")
+    assert "<table" not in html

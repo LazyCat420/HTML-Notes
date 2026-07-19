@@ -78,6 +78,10 @@ def _md_inline(text: str) -> str:
     return text
 
 
+# A Markdown table separator row: |:---|---:|:---:| in any mix, one or more cols.
+_TABLE_SEP_RE = _re.compile(r'^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?$')
+
+
 def _render_markdown(md: str) -> str:
     """Small, safe Markdown-subset → HTML for the data_card answer block: headings,
     unordered/ordered lists, blockquotes, horizontal rules and paragraphs, with
@@ -131,6 +135,46 @@ def _render_markdown(md: str) -> str:
                 buf.append(_re.sub(r'^\s*\d+[.)]\s+', '', lines[i]))
                 i += 1
             flush_list(buf, ordered=True)
+            continue
+        # Table block: a header row, a |:---|---| separator, then body rows.
+        #
+        # build_answer_config's prompt tells the summariser "a comparison -> a
+        # Markdown table", and until this existed nothing here could render one:
+        # the rows fell through to the paragraph branch below, which joins lines
+        # with " " — so a comparison arrived as a single wrapped blob of pipes
+        # and dashes. The prompt asked for something the renderer couldn't draw.
+        #
+        # Kept to the same bounded spirit as the rest of this function: cells go
+        # through _md_inline (so they escape), a row is only a row if the
+        # separator line is actually there, and ragged rows are padded/truncated
+        # to the header width rather than emitting uneven <td>s.
+        if stripped.startswith("|") and i + 1 < n and _TABLE_SEP_RE.match(lines[i + 1].strip()):
+            def cells(row: str) -> list:
+                return [c.strip() for c in row.strip().strip("|").split("|")]
+
+            headers = cells(stripped)
+            i += 2  # header + separator
+            body = []
+            while i < n and lines[i].strip().startswith("|"):
+                row = cells(lines[i].strip())
+                row = (row + [""] * len(headers))[:len(headers)]
+                body.append(row)
+                i += 1
+            head_html = "".join(
+                f'<th class="text-left font-semibold text-white px-2 py-1 '
+                f'border-b border-white/15">{_md_inline(h)}</th>' for h in headers)
+            body_html = "".join(
+                "<tr>" + "".join(
+                    f'<td class="align-top px-2 py-1 border-b border-white/5">'
+                    f'{_md_inline(c)}</td>' for c in row) + "</tr>"
+                for row in body)
+            # The card is a fixed-width dashboard tile, so a wide comparison has
+            # to scroll inside its own box rather than stretch the widget.
+            out.append(
+                '<div class="overflow-x-auto my-2">'
+                '<table class="w-full text-sm text-slate-200 border-collapse">'
+                f'<thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody>'
+                '</table></div>')
             continue
         # Blockquote
         if stripped.startswith(">"):
