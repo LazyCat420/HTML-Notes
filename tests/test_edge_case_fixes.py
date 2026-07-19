@@ -417,19 +417,30 @@ async def test_traffic_widget_renders_leaflet_tomtom_map_with_key(monkeypatch):
 
 
 def test_map_document_injects_traffic_tiles_only_with_key():
+    """The map iframe gets a TomTom flow overlay only when a tiles URL is supplied.
+
+    The parameter used to be `traffic_key` (a bare API key the renderer pasted
+    into a URL template). It is now `traffic_tiles_url` — the caller resolves the
+    secret and builds the URL (app/main.py fetches TOMTOM_API_KEY from vault),
+    so the renderer never handles the key itself. This test was left on the old
+    signature by that refactor and had been failing ever since; the production
+    caller was always correct.
+    """
     from app.widgets.factory import map_payload, map_document_html
     payload = map_payload({"traffic": True,
                            "center": {"lat": 47.6, "lon": -122.33}, "zoom": 13})
     assert payload["traffic"] is True
-    doc = map_document_html(payload, traffic_key="abc123")
+    tiles = ("https://api.tomtom.com/traffic/map/4/tile/flow/relative0/"
+             "{z}/{x}/{y}.png?key=abc123")
+    doc = map_document_html(payload, traffic_tiles_url=tiles)
     assert "api.tomtom.com/traffic/map/4/tile/flow" in doc and "abc123" in doc
     assert "__TRAFFIC_LAYER__" not in doc
-    # no key → no overlay, and the placeholder must not leak into the page
-    doc = map_document_html(payload, traffic_key="")
+    # no tiles URL → no overlay, and the placeholder must not leak into the page
+    doc = map_document_html(payload, traffic_tiles_url="")
     assert "tomtom" not in doc.lower() and "__TRAFFIC_LAYER__" not in doc
-    # a non-traffic payload never gets the layer even when a key exists
+    # a non-traffic payload never gets the layer even when tiles are available
     plain = map_payload({"center": {"lat": 1, "lon": 2}})
-    assert map_document_html(plain, traffic_key="abc123").lower().count("tomtom") == 0
+    assert map_document_html(plain, traffic_tiles_url=tiles).lower().count("tomtom") == 0
 
 
 def test_stock_news_asks_route_to_market_branch():
