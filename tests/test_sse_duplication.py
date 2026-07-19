@@ -132,9 +132,15 @@ def test_youtube_widget_in_place_replacement(mock_stream, mock_yt_search):
     </div>
     '''
 
+    # The message deliberately avoids the words video/watch/clip/live: those hit
+    # the DETERMINISTIC video override, which is regex-based and so fires even in
+    # tests, routing to the fast local builder and bypassing the mocked agent
+    # stream below. This test is about the widget INJECTOR replacing a youtube
+    # player in place, not about routing, so it must actually reach the agent
+    # path. (The override itself is covered in tests/test_prism_routing.py.)
     res = client.post("/session/message", json={
         "session_id": session_id,
-        "message": "Add latest video",
+        "message": "Add the latest Fireship upload",
         "provider": "vllm",
         "model": "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit",
         "current_canvas": existing_canvas
