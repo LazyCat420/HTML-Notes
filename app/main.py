@@ -546,7 +546,16 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
         if not item.get("image"):
             m = _OG_IMAGE_RE.search(html)
             if m:
-                item["image"] = _html_unescape(m.group(1)).strip()
+                raw = _html_unescape(m.group(1)).strip()
+                # og:image is routinely protocol-relative ("//cdn/x.jpg") or
+                # site-relative ("/img/x.jpg"). Handed to <img src> as-is those
+                # render broken, which looks identical to having no image at
+                # all. Resolve against the page URL — urljoin leaves absolute
+                # URLs untouched, so this only ever repairs.
+                try:
+                    item["image"] = urllib.parse.urljoin(str(resp.url), raw) if raw else ""
+                except Exception:
+                    item["image"] = raw
         stats["ok"] += 1
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -3832,15 +3841,30 @@ async def build_answer_config(query: str, results: Optional[list] = None,
         logger.info(f"build_answer_config: page reads timed out for {q!r}, using snippets")
         page_texts = []
 
-    # The results NOT read in full (index >= read_top) reach the LLM as their SERP
-    # snippet, which DDG-lite often leaves thin/empty. Backfill those with
-    # og:description (cheap 5s meta-fetch) so the synthesis has real material for
-    # every source, not just the top two — the same og-first lever that fixed the
-    # stock-news summaries.
-    thin = [r for r in results[read_top:6] if not (r.get("snippet") or "").strip()]
-    if thin:
+    # Meta-fetch every source for og:description AND og:image.
+    #
+    # Two jobs, one round trip. The snippet half is why this call originally
+    # existed: results not read in full (index >= read_top) reach the LLM as
+    # their SERP snippet, which DDG-lite often leaves thin/empty.
+    #
+    # The image half is why research cards rendered as text-and-links only.
+    # web_search returns {title, url, snippet} with no image, and every other
+    # piece of the image path was already built and waiting — summarised_items
+    # sets item["image"], `hero` picks the first result that has one, and
+    # render_data_card renders both (falling back to _monogram_tile, the grey
+    # letter tile you'd otherwise see). Nothing ever populated the field, so
+    # the whole chain silently degraded to its fallback. Enriching only the
+    # snippet-less subset meant a result with a good snippet — i.e. most of
+    # them — was never fetched and so never got a picture.
+    #
+    # _enrich_news fills only what is absent, so passing everything re-fetches
+    # nothing it already has, and the fetches are concurrent: widening the set
+    # costs roughly one round trip, not one per source.
+    needs_meta = [r for r in results[:6]
+                  if not (r.get("snippet") or "").strip() or not r.get("image")]
+    if needs_meta:
         try:
-            await asyncio.wait_for(_enrich_news(thin, timeout=5.0), timeout=6.0)
+            await asyncio.wait_for(_enrich_news(needs_meta, timeout=5.0), timeout=6.0)
         except asyncio.TimeoutError:
             pass
 
