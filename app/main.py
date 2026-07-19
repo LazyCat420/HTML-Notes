@@ -5864,6 +5864,31 @@ async def send_message(req: MessageRequest):
 
             messages.append({"role": h["role"], "content": content})
 
+        # MODEL COMPLIANCE: rewrite a terse refinement into the explicit form.
+        #
+        # A system-prompt directive naming the widget id was measurably NOT
+        # enough — the [AGENT TURN] log showed focus_id set, refinement detected
+        # and directive=YES, and the model STILL answered "what about cheaper
+        # ones" in prose with zero tool calls, leaving the canvas untouched. The
+        # same request phrased explicitly ("update the existing widget to only
+        # show waterproof ones") called canvas_add_widget correctly every time.
+        # So we hand the model the phrasing it actually obeys. Only what the
+        # AGENT sees is rewritten; the stored/displayed user message (already
+        # saved above) is untouched, so the chat transcript still reads normally.
+        if turn_ctx.get("focus_id") and _is_refining_followup(req.message):
+            for _i in range(len(messages) - 1, -1, -1):
+                if messages[_i]["role"] == "user":
+                    messages[_i]["content"] = (
+                        f"Update the existing widget #{turn_ctx['focus_id']} IN PLACE. "
+                        f"Fetch whatever new data is needed, then call "
+                        f"canvas_add_widget with widget_id='{turn_ctx['focus_id']}' "
+                        f"and the full updated config. Do not create a new widget "
+                        f"and do not reply in prose. The change to make: "
+                        f"{req.message}")
+                    logger.info(f"[AGENT TURN] rewrote follow-up -> explicit update "
+                                f"of #{turn_ctx['focus_id']}")
+                    break
+
         # The lazy-tool-service gateway runs the agentic loop and executes the
         # mcp__lazy-tool-service__* widget tools; plain Prism has no such
         # catalog registered, so LazyAgent is the default.
