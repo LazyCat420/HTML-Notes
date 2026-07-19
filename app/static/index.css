@@ -1997,3 +1997,67 @@ body::after { display: none !important; }
     opacity: 0.85;
     margin-bottom: 0.25rem;
 }
+
+/* ── Live canvas transitions ──────────────────────────────────────────────────
+   Widgets used to appear/change with no visual signal at all. Worse, a follow-up
+   that rewrote a card in place was indistinguishable from nothing happening —
+   the user's report was literally "I had to refresh to see the widget change".
+   These give the reconcile pass something to say: NEW widgets rise in, UPDATED
+   widgets flash their border and settle. Driven by classes that reconcileCanvas
+   adds and then strips on animationend, so they can retrigger next turn.
+   All of it is disabled under prefers-reduced-motion. */
+
+@keyframes widgetEnter {
+    from { opacity: 0; transform: translateY(10px) scale(.985); }
+    to   { opacity: 1; transform: none; }
+}
+
+@keyframes widgetUpdate {
+    0%   { box-shadow: 0 0 0 0 rgba(139, 92, 246, .55); }
+    35%  { box-shadow: 0 0 0 4px rgba(139, 92, 246, .35); }
+    100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0); }
+}
+
+@keyframes widgetUpdateSweep {
+    from { transform: translateX(-100%); }
+    to   { transform: translateX(100%); }
+}
+
+.widget-container.is-entering {
+    animation: widgetEnter .38s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* The update pulse rides on the widget itself so it works for every widget
+   type, including the server-rendered ones we cannot wrap. */
+.widget-container.is-updating {
+    animation: widgetUpdate .9s ease-out 1;
+    border-color: rgba(139, 92, 246, .65) !important;
+}
+
+/* A single light sweep across the card — reads as "this just re-rendered"
+   without obscuring the content underneath. */
+.widget-container.is-updating::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+    background: linear-gradient(
+        100deg,
+        transparent 20%,
+        rgba(139, 92, 246, .16) 50%,
+        transparent 80%);
+    animation: widgetUpdateSweep .85s ease-out 1;
+}
+
+/* ::after is absolutely positioned against the card, so the card must be a
+   containing block. Widgets are already positioned, but be explicit. */
+.widget-container { position: relative; }
+
+@media (prefers-reduced-motion: reduce) {
+    .widget-container.is-entering,
+    .widget-container.is-updating,
+    .widget-container.is-updating::after {
+        animation: none !important;
+    }
+}

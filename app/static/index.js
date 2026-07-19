@@ -731,6 +731,34 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    /**
+     * Give a just-reconciled widget a visible tell: 'is-entering' for a brand-new
+     * card, 'is-updating' for one rewritten in place by a follow-up. Without this
+     * an in-place rewrite was visually identical to nothing happening, which is
+     * what "I had to refresh to see the widget change" actually looked like.
+     *
+     * The class is stripped on animationend so the SAME widget can flash again on
+     * the next follow-up (a class left on would never retrigger). A timeout backs
+     * that up in case animationend never fires (reduced-motion, tab in the
+     * background), so a widget can't get stuck wearing the highlight.
+     */
+    function flagCanvasChange(el, cls) {
+        if (!el || !el.classList) return;
+        el.classList.remove('is-entering', 'is-updating');
+        // Force a reflow so re-adding the class restarts the animation even when
+        // the node is replaced with an identical class list.
+        void el.offsetWidth;
+        el.classList.add(cls);
+        let done = false;
+        const clear = () => {
+            if (done) return;
+            done = true;
+            el.classList.remove(cls);
+        };
+        el.addEventListener('animationend', clear, { once: true });
+        setTimeout(clear, 1200);
+    }
+
     function reconcileCanvas(container, rawHtml) {
         const clean = DOMPurify.sanitize(rawHtml, CANVAS_DOMPURIFY_CONFIG);
         const doc = new DOMParser().parseFromString(clean, 'text/html');
@@ -795,8 +823,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     return;
                 }
                 existing.replaceWith(newWidget);
+                flagCanvasChange(newWidget, 'is-updating');
             } else {
                 grid.appendChild(newWidget);
+                flagCanvasChange(newWidget, 'is-entering');
             }
             relayoutOnMediaSettle(newWidget);
             changed = true;
