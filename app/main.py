@@ -1831,6 +1831,29 @@ _FOLLOWUP_RE = re.compile(
     re.I,
 )
 
+# Refinement openers _FOLLOWUP_RE misses. "only show waterproof ones" / "just the
+# cheap ones" name no pronoun and open no new subject — they narrow what is
+# already on screen. Measured: with a widget open, the agent answered these in
+# prose and called NO tools, so the canvas never changed; phrasing the SAME ask
+# explicitly ("update the existing widget to only show waterproof ones") made it
+# call canvas_add_widget correctly. So detect them and make the ask explicit.
+_REFINE_RE = re.compile(
+    r"^\s*(?:only|just|filter|narrow|limit|sort|order|group|rank|"
+    r"show\s+(?:only|just|me\s+only)|make\s+it|change\s+it|turn\s+it|"
+    r"swap|replace|instead|drop\s+the|remove\s+the|add\s+the|without)\b",
+    re.I,
+)
+
+
+def _is_refining_followup(message: str) -> bool:
+    """True when the ask reads as a refinement of what is already on screen —
+    either deictic ("what about the cheaper ones", "tell me more") or a narrowing
+    instruction ("only show waterproof ones"). Callers must ALSO require that a
+    focus widget actually exists before acting on this."""
+    m = message or ""
+    return bool(_FOLLOWUP_RE.search(m) or _REFINE_RE.search(m))
+
+
 # Tokens that carry no subject signal — dropped before measuring topic overlap.
 _SUBJECT_STOP = {
     "the", "a", "an", "of", "in", "on", "for", "to", "and", "or", "is", "are",
@@ -5736,6 +5759,24 @@ async def send_message(req: MessageRequest):
             "place — do not add a near-duplicate card.\n\n"
             + _user_facts_prompt()
             + f"{turn_ctx['context_block']}"
+            # A CONCRETE, last-position directive naming the actual widget id.
+            # The generic "FOLLOW-UPS UPDATE THE OPEN WIDGET" paragraph above was
+            # not enough: on a terse ask ("what about cheaper ones") the model
+            # read it as conversation, emitted prose and called NO tools, so the
+            # canvas never changed and the user had to refresh. Naming the id and
+            # mandating a mutation is what actually lands — the same ask phrased
+            # explicitly already worked.
+            + (
+                f"\n\nTHIS TURN IS A FOLLOW-UP. The widget #{turn_ctx['focus_id']} "
+                f"is already on screen and this ask REFINES it — it is a canvas "
+                f"request, not conversation. Fetch any new data you need, then "
+                f"call canvas_add_widget with widget_id='{turn_ctx['focus_id']}' "
+                f"to rewrite that widget IN PLACE. Do not open a new widget and "
+                f"do not answer in prose: you MUST end this turn with a canvas "
+                f"mutation."
+                if turn_ctx.get("focus_id") and _is_refining_followup(req.message)
+                else ""
+            )
         )
 
         # Ensure all possible tools are enabled
