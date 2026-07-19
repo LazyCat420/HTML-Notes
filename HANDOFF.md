@@ -148,13 +148,46 @@ earned its keep: it caught that html-notes' MCP row was registered under usernam
 `admin`. Tools still resolved — Prism serves them globally once connected — so
 nothing *looked* broken; its own scope just showed zero servers.
 
-## OPEN
+## Wave 4 — news cites the publisher, not news.google.com
 
-- **Google News source links are still opaque** `news.google.com/rss/articles/CBMi…`
-  redirects, not publisher URLs. Verified by hand: the blob does not base64-decode
-  to a URL and the page doesn't redirect server-side. Fixing it means preferring
-  GDELT (which carries real article URLs *and* real photos) or a headless resolve.
-  This is the remaining half of "sources with images".
+**Shipped:** lazy-tool-service `ba58b02`+`4a20798`, html-notes `672c188`.
+Suite 185 → 187.
+
+Wave 3 stopped the news card *lying* about having photos. It could not give it
+real ones: a Google News `/rss/articles/` link is a redirect stub that never
+resolves to the publisher, so there is no article page to read a photo from and
+the citation reads `news.google.com` rather than the outlet.
+
+**Measured before choosing** (this is the part I got wrong first — I recommended
+GDELT from memory, then measured it):
+
+| source | time | result |
+|---|---|---|
+| GDELT | **15.6s / 14.9s on success**, then 429 | real URLs + photos, 1 req/5s, throttled replies still cost 11–16s |
+| gnews | **0.5s** | 8/8 with images, real publisher URLs |
+| worldnewsapi | **1.1s** | 8/8 with images, best relevance |
+| newsapi | 0.2s | 8/8, but recency-sorted → weak relevance |
+| thenewsapi | 1.2s | free tier caps at 3 |
+
+So GDELT was the wrong answer; the keyed providers (whose keys were already in
+the vault) are ~15× faster and solve both halves at once.
+
+`lazy-tool-service/src/services/NewsSearchService.ts` is **the first tool this
+service implements rather than proxies** — everything else in `LocalToolRouter`
+forwards to html-notes or trading-service. It rotates providers, skipping any
+that is keyless, cooling down after a failure, or past its daily budget. The
+rotation is not theoretical: during the local probe gnews served query 1, **429'd
+on query 2**, and worldnewsapi took over with 6/6 images in 1.3s.
+
+html-notes tries it first and keeps the whole old chain as fallback, so
+lazy-tool-service being down costs nothing.
+
+**Verified in a browser:** six *distinct* article photos (2560×1440, 1280×720,
+1200×675, 1200×630, 1500×1200, 1536×1536), six *real publisher* links
+(livescience.com, timesofindia, cnbctv18, economictimes, phys.org ×2), and a
+brief that attributes inline to named outlets instead of "news.google.com".
+
+## OPEN
 - The card is clipped by fixed tile height; sources need scrolling to see.
   The image widget's grid also clips slightly with 3 images. Cosmetic.
 - Stale duplicate Prism row `lazy-agent-service` (id `6a419fe8063be887e67fabc3`,
@@ -163,10 +196,22 @@ nothing *looked* broken; its own scope just showed zero servers.
   `embeddinggemma`, an *embedding* model on text tasks. Repointed via
   `PUT /settings`, but Prism caches config at boot and **was not restarted**
   (shared service — needs the user's say-so).
-- Naming — **corrected from the earlier note in this file, which was wrong.**
-  `lazy-tool-service` is canonical everywhere that matters: the git remote
-  (`LazyCat420/lazy-tool-service`), `package.json`, `McpAdapter.ts`'s self-name,
-  and the tool prefix `mcp__lazy-tool-service__*` — which **derives from the
-  registration name** and appears 161 times across 6 repos. The only thing named
-  `lazy-agent-service` is the stale duplicate row above. **Do not rename the
-  registration.**
+- Naming — the repo really IS `lazy-agent-service` on GitHub. I claimed the
+  opposite earlier in this session based on `git remote -v`; that was **wrong**.
+  The remote still spells the old name and GitHub 301-redirects it, which is
+  invisible until you push (`remote: This repository moved`). Verified:
+  `github.com/LazyCat420/lazy-tool-service` → 301 →
+  `.../lazy-agent-service`.
+
+  So the split is real and it is the source of the confusion:
+
+  | surface | name |
+  |---|---|
+  | GitHub repo | **lazy-agent-service** |
+  | local dir, `package.json`, `McpAdapter` self-name | lazy-tool-service |
+  | MCP tool prefix `mcp__lazy-tool-service__*` | lazy-tool-service |
+
+  **Do not rename the MCP registration** — the tool prefix derives from it and
+  appears 161 times across 6 repos, including the live persona's 21 tool names.
+  Renaming the *local directory and package* to match GitHub is cheap and safe;
+  renaming the *registration* is not. Those are separable decisions.
