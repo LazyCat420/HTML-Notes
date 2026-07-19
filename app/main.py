@@ -1563,6 +1563,17 @@ import os
 # why they looked like they were never arriving.
 AGENT_PROJECT = os.getenv("AGENT_PROJECT", "html-notes-client")
 AGENT_USERNAME = os.getenv("AGENT_USERNAME", "admin")
+
+# Persona id per gateway. The :5591 fork ships HtmlNotesPersona as a built-in
+# ("HTML_NOTES"); canonical prism has no such built-in, so the equivalent is
+# registered there as a CUSTOM agent via POST /custom-agents — prism derives the
+# id from the name, hence CUSTOM_HTML_NOTES_CANVAS. Without a persona the run is
+# UNSCOPED: prism hands the model ~79 tools (execute_python, create_skill, ...)
+# and ~25k tokens of tool schemas, so it wanders off mid-turn — a follow-up was
+# observed calling execute_python + read_page for 219s and never touching the
+# canvas. The persona scopes the run to the widget tool set.
+PRISM_AGENT_ID = os.getenv("PRISM_AGENT_ID", "CUSTOM_HTML_NOTES_CANVAS")
+FORK_AGENT_ID = os.getenv("FORK_AGENT_ID", "HTML_NOTES")
 import pathlib
 import time
 import uuid
@@ -5671,7 +5682,9 @@ async def send_message(req: MessageRequest):
             "2. Never ask for clarification. Take the most reasonable reading and go — 'pull up a video' with no topic means pick one and search.\n"
             "3. Fetch the data before you render it. The config you pass IS the finished content: it renders server-side, so never write 'Loading...' and never write JavaScript that fetches.\n"
             "4. Stop when the widget is up. canvas_add_widget returning success means it is already on the user's screen — do not call it again, do not verify with canvas_read_dom, do not re-plan.\n"
-            "5. Then write ONE sentence (max 20 words) saying what you added. That sentence is the only prose you write all turn.\n\n"
+            "5. Then write ONE sentence (max 20 words) saying what you added. That sentence is the only prose you write all turn.\n"
+            "6. EVERY turn ends in a canvas mutation. You have NOT finished until canvas_add_widget (or canvas_modify_dom) has succeeded. Never end a turn having only searched, read or reasoned — if a tool fails, render what you already have rather than retrying forever or giving up silently.\n"
+            "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
             "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
             "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → mcp__lazy-tool-service__html_notes_stock_news; its 'matches' array gives you tickers to feed into html_notes_stock_history. To show the news, call canvas_add_widget(widget_type='data_card', config={'stock_news_query': '<same query>'}) — the server re-pulls the stories and WRITES a summary per story; do NOT hand-build items from the raw title+link rows. Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
@@ -5848,8 +5861,7 @@ async def send_message(req: MessageRequest):
         # target prism we run persona-less: the explicit SYSTEM_PROMPT + enabledTools
         # already scope the turn, and the connected lazy-tool-service MCP server
         # supplies the same mcp__lazy-tool-service__* research tools (verified live).
-        if req.use_lazy_agent:
-            payload["agent"] = "HTML_NOTES"
+        payload["agent"] = FORK_AGENT_ID if req.use_lazy_agent else PRISM_AGENT_ID
 
         async def proxy_prism_sse():
             """
