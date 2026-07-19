@@ -319,3 +319,16 @@ def test_news_topic_falls_back_to_a_builder_like_its_siblings():
         "news_topic cache miss must rebuild via build_news_config")
     assert "build_answer_config" in branch, (
         "a news_topic card that only web-searched must degrade to research")
+
+
+def test_generic_google_news_thumb_is_not_treated_as_a_photo():
+    """Google News redirect pages serve a CONSTANT lh3.googleusercontent.com
+    og:image for every story, so a six-story card rendered six identical 300x300
+    tiles and called them article photos. Caught in a real browser — the DOM
+    check passed (six <img>, all loading) because they were all the same valid
+    decorative image."""
+    assert m._is_generic_news_thumb(
+        "https://lh3.googleusercontent.com/J6_coFbogxhRI9iM864NL_liGXvsQp2Aups=")
+    # A real publisher photo must survive.
+    assert not m._is_generic_news_thumb("https://www.reuters.com/img/story.jpg")
+    assert not m._is_generic_news_thumb("")

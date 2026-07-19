@@ -509,10 +509,13 @@ async def _google_news_rss(topic: str, limit: int) -> list:
         items.append({
             "title": title.strip(),
             "url": link,
-            # Leave image EMPTY so _enrich_news can fill a real og:image from the
-            # article page (verified: Google News article URLs do serve og:image/
-            # og:description). The favicon rides in a separate field and is only
-            # applied as a fallback for items enrichment couldn't reach.
+            # Leave image EMPTY so _enrich_news can try for a real og:image.
+            # NOTE: a Google News /rss/articles/ link does NOT redirect to the
+            # publisher — it 200s on news.google.com with a JS-driven body — and
+            # its og:image is Google's constant News logo, the same URL for every
+            # story. _is_generic_news_thumb rejects it, so these items normally
+            # end up on the favicon fallback below. (An earlier note here said
+            # these URLs serve a real article image; they do not.)
             "image": "",
             "favicon": (f"https://www.google.com/s2/favicons?domain={host}&sz=128"
                         if host else ""),
@@ -523,6 +526,25 @@ async def _google_news_rss(topic: str, limit: int) -> list:
         if len(items) >= limit:
             break
     return items
+
+
+_GENERIC_NEWS_THUMB_HOSTS = ("lh3.googleusercontent.com", "lh4.googleusercontent.com",
+                             "lh5.googleusercontent.com", "lh6.googleusercontent.com")
+
+
+def _is_generic_news_thumb(url: str) -> bool:
+    """Is this og:image Google's stock News logo rather than an article photo?
+
+    Google News redirect pages serve a constant lh3.googleusercontent.com image
+    for every story, so a card built from them shows N identical tiles. Treat
+    those as no image at all.
+    """
+    if not url:
+        return False
+    try:
+        return urllib.parse.urlparse(url).netloc.lower() in _GENERIC_NEWS_THUMB_HOSTS
+    except Exception:
+        return False
 
 
 async def _enrich_news(items: list, timeout: float = 5.0) -> None:
@@ -553,9 +575,19 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
                 # all. Resolve against the page URL — urljoin leaves absolute
                 # URLs untouched, so this only ever repairs.
                 try:
-                    item["image"] = urllib.parse.urljoin(str(resp.url), raw) if raw else ""
+                    resolved = urllib.parse.urljoin(str(resp.url), raw) if raw else ""
                 except Exception:
-                    item["image"] = raw
+                    resolved = raw
+                # A Google News redirect page does NOT resolve to the publisher
+                # (it 200s on news.google.com and the article link is JS-driven),
+                # and the og:image it serves is Google's own generic News logo —
+                # the SAME lh3.googleusercontent.com URL for every story. Taking
+                # it at face value produced a news card whose six "photos" were
+                # six identical 300x300 tiles. An earlier comment here claimed
+                # these URLs serve a real article image; they serve a constant.
+                # Leave the image empty so the publisher favicon fallback runs
+                # instead of dressing the card in decorative duplicates.
+                item["image"] = "" if _is_generic_news_thumb(resolved) else resolved
         stats["ok"] += 1
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
