@@ -4844,6 +4844,25 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             return None if not tcfg else (twtype, "traffic", tcfg)
 
         if wtype == "video":
+            # A LIVE ask wants the canonical stream, not variety: search under
+            # YouTube's live FILTER (the filter is what finds a stream — searching
+            # the literal word "livestream" returns nothing) and take the top hit.
+            # Falls through to a normal video search when nothing is live, so
+            # "cnn live news" still returns something watchable off-air.
+            if (mods or {}).get("live"):
+                lq = clean_video_query(query or message)
+                live_hits = filter_blocked_videos(
+                    await search_youtube_videos(lq, limit=6, order="live"))
+                if live_hits:
+                    top = live_hits[0]
+                    _remember_current_video(session_id, top, lq)
+                    return ("youtube_player", "live", {
+                        "video_id": top["video_id"],
+                        "title": top.get("title") or lq,
+                        "query": lq,
+                        "candidates": [v["video_id"] for v in live_hits[1:]
+                                       if v.get("video_id")]})
+
             # Ground first so a brand/place collision ("sandals" the RESORT, "jaguar"
             # the CAR) searches the disambiguated subject, not the bare word that
             # returns promo/off-topic clips.
@@ -5699,6 +5718,34 @@ async def send_message(req: MessageRequest):
         # agent's canvas_modify_dom; the router's own {"defer": true} sends note
         # dictation, custom widgets and small talk to the agent too. A None result
         # (model hiccup) also falls through — the router is never a hard gate.
+        # DETERMINISTIC VIDEO/LIVE OVERRIDE — runs BEFORE the classifier.
+        #
+        # "watch", "video", "live stream" is an unambiguous request to WATCH
+        # something; there is nothing for a research agent to add. Moving news to
+        # tier 3 made this fragile: the LLM router saw the word "news" in "cnn
+        # live news" and classified it as news -> research -> a card of LINKS,
+        # when the user plainly asked for a live stream. Worse, it was
+        # non-deterministic — "cnn news live video" routed to video while "cnn
+        # live news" went to the agent, so the same intent behaved differently
+        # run to run. A watch request must never depend on a coin flip.
+        #
+        # Sports and traffic are excluded because they own the word "live" for
+        # their own widgets ("live scores" is a scoreboard, "live traffic" is a
+        # map), and music is excluded so "play live jazz" still reaches the
+        # player — the same guards the old fast-path branch used.
+        if (not wants_removal and not wants_music
+                and (is_video_ask
+                     or (LIVE_ASK_RE.search(text_clean)
+                         and not league
+                         and not TRAFFIC_MAP_RE.search(text_clean)))):
+            _live = bool(LIVE_ASK_RE.search(text_clean))
+            logger.info(f"[ROUTER] tier2-local ['video'] — deterministic "
+                        f"{'live-' if _live else ''}video override")
+            return spawn_router_stream(
+                [{"type": "video", "query": req.message,
+                  "modifiers": {"live": _live}}],
+                reason="live stream" if _live else "video request")
+
         # TIER 2 — the classifier backstop. One ~1s classify pass decides whether
         # this ask is a DETERMINISTIC single-source widget (weather, a ticker, a
         # timer, scores, a map, music: exactly one right answer from one API) or

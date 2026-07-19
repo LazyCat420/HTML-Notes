@@ -180,3 +180,41 @@ def test_agent_attribution_is_configured():
     lands in the unattributable 'default' project."""
     assert m.AGENT_PROJECT
     assert m.AGENT_USERNAME
+
+
+# ── video/live must never be stolen by news research ─────────────────────────
+
+def test_video_override_runs_before_the_classifier():
+    """A watch request is deterministic. Moving news to tier 3 let the LLM router
+    read 'cnn live news' as news -> research -> a card of links, and did it
+    non-deterministically (the same intent behaved differently run to run)."""
+    src = MAIN_SRC
+    override = src.find("DETERMINISTIC VIDEO/LIVE OVERRIDE")
+    classifier = src.find("TIER 2 — the classifier backstop")
+    assert override != -1, "the deterministic video override is gone"
+    assert classifier != -1, "the tier-2 classifier block is gone"
+    assert override < classifier, (
+        "the video override must run BEFORE the classifier, or the router can "
+        "still classify a watch request as news")
+
+
+def test_video_is_not_a_research_type():
+    """video must stay tier 2 — an agent adds latency and nothing else."""
+    assert "video" not in m._AGENT_RESEARCH_TYPES
+    assert "video" in m.ROUTER_WIDGETS
+
+
+@pytest.mark.parametrize("msg", ["cnn live news", "cnn news live video",
+                                 "watch a video about bees", "nba highlights"])
+def test_watch_asks_are_detected(msg):
+    assert (m.VIDEO_ASK_RE.search(msg) or m.LIVE_ASK_RE.search(msg)), \
+        f"{msg!r} must be recognised as a watch request"
+
+
+@pytest.mark.parametrize("msg", ["live nba scores", "live traffic on the 405"])
+def test_live_sports_and_traffic_keep_their_own_widgets(msg):
+    """Sports and traffic own the word 'live' for their own widgets, so the video
+    override must not swallow them."""
+    assert m.LIVE_ASK_RE.search(msg), "precondition: these do contain 'live'"
+    stolen = not (m.resolve_league(msg) or m.TRAFFIC_MAP_RE.search(msg))
+    assert not stolen, f"{msg!r} would be stolen by the video override"
