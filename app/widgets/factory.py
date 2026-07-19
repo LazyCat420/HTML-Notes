@@ -211,7 +211,17 @@ def render_data_card(widget_id: str, config: dict) -> str:
     icon = config.get("icon", "article")
     hero = config.get("image", "")
     content = config.get("content", "")
-    answer = config.get("answer", "") or ""
+    # `content` is the alias for `answer`. The two agent-facing documents
+    # disagree: the SYSTEM_PROMPT tells the model to pass 'answer', while the
+    # MCP tool schema's data_card description lists 'content' as the prose key
+    # and does not mention 'answer' at all. A model following the schema wrote
+    # its brief into `content`, and because the render chain below is a strict
+    # `if answer / elif items / elif content`, a card with BOTH content and
+    # items dropped the prose entirely — the model did the research, said "I
+    # added a summary", and the card showed only headlines. Nothing repaired it
+    # either: _data_card_quality_gap only inspects `answer` and `items`, so
+    # `content` was invisible to the quality floor too.
+    answer = (config.get("answer", "") or "") or content
     # `sources` is the semantic alias for `items` once an answer carries the content;
     # accept either so the synthesiser and the older news/search callers both work.
     items = config.get("items") or config.get("sources") or []

@@ -218,3 +218,92 @@ def test_live_sports_and_traffic_keep_their_own_widgets(msg):
     assert m.LIVE_ASK_RE.search(msg), "precondition: these do contain 'live'"
     stolen = not (m.resolve_league(msg) or m.TRAFFIC_MAP_RE.search(msg))
     assert not stolen, f"{msg!r} would be stolen by the video override"
+
+
+# ---------------------------------------------------------------------------
+# Prompt/implementation seam guards (2026-07-19 audit wave)
+#
+# Each of these pins a place where an agent-facing DOCUMENT (the SYSTEM_PROMPT
+# or the MCP tool schema) promised something the SERVER did not implement. That
+# class of bug is invisible to unit tests of either side alone: both halves work,
+# they just disagree, and the user gets a quietly degraded widget.
+# ---------------------------------------------------------------------------
+
+def _main_src() -> str:
+    return pathlib.Path(m.__file__).read_text()
+
+
+def test_canvas_modify_dom_implements_every_action_it_advertises():
+    """The committing path handled append/replace/remove while the tool schema
+    advertised six actions. prepend/insert_before/insert_after fell off the end
+    of the if-chain and returned None, and commit_canvas only aborts on an
+    explicit False — so the server committed an UNCHANGED canvas and told the
+    model {"success": true}. "Put a header above the chart" did nothing, forever,
+    with no error anywhere."""
+    src = _main_src()
+    start = src.index("def _modify(soup):")
+    # Slice to the end of the nested function rather than a byte count, so the
+    # guard cannot be defeated by the comment block growing.
+    body = src[start:src.index("event = await emit(_modify)", start)]
+    for action in ("append", "prepend", "insert_before", "insert_after",
+                   "replace", "remove"):
+        assert f'"{action}"' in body, f"canvas_modify_dom does not implement {action!r}"
+    # An unrecognised action must abort rather than report a phantom success.
+    assert "return False" in body.split("else:")[-1], (
+        "unknown modify actions must return False, not silently commit a no-op")
+
+
+def test_data_card_treats_content_as_an_alias_for_answer():
+    """The SYSTEM_PROMPT says to pass 'answer'; the MCP tool schema documented
+    'content'. The renderer's chain is `if answer / elif items / elif content`,
+    so a model that followed the schema AND supplied sources had its prose
+    dropped on the floor — research done, brief written, card showed headlines
+    only."""
+    from app.widgets.factory import render_data_card
+    html = render_data_card("w1", {
+        "title": "T",
+        "content": "THE_BRIEF_TEXT",
+        "items": [{"title": "S", "description": "d", "url": "https://e.com"}],
+    })
+    assert "THE_BRIEF_TEXT" in html, "content was dropped when items were present"
+    assert "Sources" in html, "content should render in the answer+sources layout"
+
+
+def test_quality_floor_sees_content_as_prose():
+    """_data_card_quality_gap only read `answer`, so a content-bearing card
+    looked prose-less and the floor tried to 'repair' a card that was fine."""
+    gap = m._data_card_quality_gap({
+        "content": "a real brief",
+        "items": [{"title": "S", "url": "https://e.com", "description": "d"}],
+    })
+    assert gap == "", f"content-bearing card should not be flagged, got {gap!r}"
+
+
+def test_image_widget_has_an_agent_reachable_build_path():
+    """'image' is in _AGENT_RESEARCH_TYPES so every picture ask is DEFERRED to
+    the agent — but the agent's 21-tool scope has no image-search tool and the
+    injector had no branch for it, so the model could only invent a URL. The
+    injector must build the widget server-side via build_image_config (which
+    carries the og:image extraction and the vision relevance gate)."""
+    assert "image" in m._AGENT_RESEARCH_TYPES
+    src = _main_src()
+    assert 'widget_type == "image"' in src, "no injector branch for the image widget"
+    injector = src[src.index('widget_type == "image"'):][:1800]
+    assert "build_image_config" in injector, (
+        "image branch must call build_image_config, not trust a model-supplied URL")
+    assert "image_query" in injector
+
+
+def test_news_topic_falls_back_to_a_builder_like_its_siblings():
+    """news_topic was the only injector key with no builder fallback: on a cache
+    miss it returned the config untouched, while stock_news_query and
+    search_query call their builders unconditionally. A one-character drift
+    between the topic passed to html_notes_news and the topic passed to
+    canvas_add_widget cost the user the photo stories entirely."""
+    src = _main_src()
+    start = src.index("async def _resolve_news_topic_config")
+    branch = src[start:src.index("\nasync def ", start + 10)]
+    assert "build_news_config" in branch, (
+        "news_topic cache miss must rebuild via build_news_config")
+    assert "build_answer_config" in branch, (
+        "a news_topic card that only web-searched must degrade to research")

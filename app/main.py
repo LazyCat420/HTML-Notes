@@ -1178,7 +1178,12 @@ def _data_card_quality_gap(config: dict) -> str:
     the async enrichment pass below is worth running."""
     if not isinstance(config, dict):
         return ""
-    answer = (config.get("answer") or "").strip()
+    # `content` counts as an answer here for the same reason render_data_card
+    # treats it as one: the MCP tool schema documents `content` as the prose key
+    # while the SYSTEM_PROMPT says `answer`, so the model uses either. Reading
+    # only `answer` made a content-bearing card look prose-less, so the floor
+    # would try to "repair" a card that was already fine.
+    answer = ((config.get("answer") or "") or (config.get("content") or "")).strip()
     items = config.get("items") or config.get("sources") or []
     if isinstance(items, dict):
         items = [items]
@@ -3867,6 +3872,26 @@ async def _resolve_news_topic_config(config: dict) -> dict:
         answer_cfg = await build_answer_config(topic, results=searched)
         return {**answer_cfg, **model_keys}
 
+    # Neither cache hit. This branch used to give up here — making news_topic the
+    # only injector key with no builder fallback, while its siblings
+    # (stock_news_query -> build_stock_news_config, search_query ->
+    # build_answer_config) call their builder unconditionally. A one-character
+    # drift between the topic passed to html_notes_news and the topic passed to
+    # canvas_add_widget was enough to miss the cache, and the card then fell
+    # through to the quality floor, which stapled on generic hits: the user got
+    # unread sources with no photos in place of the curated photo stories the
+    # prompt promised. Build them properly instead.
+    if topic:
+        try:
+            news_cfg = await asyncio.wait_for(build_news_config(topic), timeout=20.0)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"[WIDGET INJECTOR] news rebuild failed for {topic!r}: {e}")
+            return config
+        if news_cfg and news_cfg.get("items"):
+            logger.info(f"[WIDGET INJECTOR] news cache miss for {topic!r} — rebuilt "
+                        f"{len(news_cfg['items'])} stories")
+            return {**news_cfg, **model_keys}
+
     return config
 
 
@@ -6230,12 +6255,34 @@ async def send_message(req: MessageRequest):
                             target = soup.select_one(css_selector)
                             if not target:
                                 return False
+                            # The tool schema advertises six actions and this
+                            # committing path implemented three. prepend /
+                            # insert_before / insert_after fell off the end and
+                            # returned None — and commit_canvas only aborts on an
+                            # explicit False, so it committed the UNCHANGED canvas,
+                            # bumped the version and emitted a component frame.
+                            # The model was told {"success": true} for a mutation
+                            # that never happened ("put a header above the chart"
+                            # → nothing, no error). The note-level sibling at
+                            # html_notes_modify_dom has had all six all along.
+                            snippet = lambda: BeautifulSoup(html_snippet, 'html.parser')
                             if action == "append":
-                                target.append(BeautifulSoup(html_snippet, 'html.parser'))
+                                target.append(snippet())
+                            elif action == "prepend":
+                                target.insert(0, snippet())
+                            elif action == "insert_before":
+                                target.insert_before(snippet())
+                            elif action == "insert_after":
+                                target.insert_after(snippet())
                             elif action == "replace":
-                                target.replace_with(BeautifulSoup(html_snippet, 'html.parser'))
+                                target.replace_with(snippet())
                             elif action == "remove":
                                 target.decompose()
+                            else:
+                                # Unknown action: abort rather than silently
+                                # reporting success on a no-op.
+                                logger.warning(f"[CANVAS] unknown modify action {action!r}")
+                                return False
 
                         event = await emit(_modify)
                         if event:
@@ -6311,6 +6358,40 @@ async def send_message(req: MessageRequest):
                             logger.info(f"[WIDGET INJECTOR] Synthesised answer data_card for {aq!r}")
                             config = {**answer_cfg, **{k: v for k, v in config.items()
                                                        if v and k not in ("search_query", "answer_query")}}
+                        elif (widget_type == "image"
+                              and not config.get("images") and not config.get("url")):
+                            # A picture ask. The prompt advertised
+                            # widget_type='image' and "image" is in
+                            # _AGENT_RESEARCH_TYPES, so in prism mode every image
+                            # ask is DEFERRED to the agent — but there was no
+                            # injector branch for it and the agent's 21-tool scope
+                            # has no image-search tool. The model's only options
+                            # were to invent a URL or scrape one, so the card came
+                            # out broken or empty ("No image available").
+                            #
+                            # build_image_config has done this properly all along
+                            # (search -> og:image extraction -> the gemma vision
+                            # gate that judges whether the picture actually shows
+                            # the subject); it was simply unreachable from the
+                            # agent path, called only by the legacy local router.
+                            iq = str(config.get("image_query")
+                                     or config.get("query")
+                                     or config.get("title", "")).strip()
+                            if iq:
+                                img_cfg = await build_image_config(iq)
+                                if img_cfg and img_cfg.get("images"):
+                                    logger.info(f"[WIDGET INJECTOR] Built image widget for {iq!r} "
+                                                f"({len(img_cfg['images'])} images)")
+                                    config = {**img_cfg, **{k: v for k, v in config.items()
+                                                            if v and k not in ("image_query", "query")}}
+                                else:
+                                    # No usable picture. Say so as a data_card
+                                    # rather than shipping an empty image frame.
+                                    logger.info(f"[WIDGET INJECTOR] No usable image for {iq!r} — "
+                                                f"degrading to a data_card")
+                                    widget_type = "data_card"
+                                    config = {"title": iq[:60].title(), "icon": "image",
+                                              "answer": f"I couldn't find a usable picture of **{iq}**."}
                         elif (widget_type == "map" and not config.get("markers")
                               and config.get("map_query")):
                             # A map from a query: the server searches, geocodes the
