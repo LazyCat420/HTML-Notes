@@ -1613,6 +1613,10 @@ AGENT_USERNAME = os.getenv("AGENT_USERNAME", "admin")
 # observed calling execute_python + read_page for 219s and never touching the
 # canvas. The persona scopes the run to the widget tool set.
 PRISM_AGENT_ID = os.getenv("PRISM_AGENT_ID", "CUSTOM_HTML_NOTES_CANVAS")
+# The MCP server name lazy-tool-service registers itself under in Prism. The
+# tool prefix (mcp__lazy-tool-service__*) derives from it, so it is load-bearing
+# — see lazy-tool-service/src/services/PrismRegistrationService.ts.
+MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "lazy-tool-service")
 FORK_AGENT_ID = os.getenv("FORK_AGENT_ID", "HTML_NOTES")
 import pathlib
 import time
@@ -6898,9 +6902,84 @@ async def health_model():
     except Exception as e:
         return {"status": "offline", "detail": str(e)}
 
+async def _agent_dependency_status() -> dict:
+    """Can a research ask actually work right now?
+
+    Every tier-3 ask runs on Prism against the CUSTOM_HTML_NOTES_CANVAS persona,
+    using tools served over MCP by lazy-tool-service. None of that lives in this
+    repo, and when it breaks this app keeps answering /health/app with "ok"
+    while every research ask dies on `Unknown tool error`. So check the thing
+    that actually has to be true:
+
+      1. Prism is reachable at all,
+      2. the lazy-tool-service MCP server is CONNECTED for our scope and serving
+         a non-zero tool count (a connected server with 0 tools is the shape a
+         half-dead SSE link takes),
+      3. our persona exists — without it the run is unscoped, which is not an
+         outage but is a large silent quality regression (~79 tools, the agent
+         wanders into execute_python).
+
+    Never raises: a health probe that throws is worse than one that reports.
+    """
+    detail = {"prism": PRISM_URL, "project": AGENT_PROJECT,
+              "agent_id": PRISM_AGENT_ID}
+    headers = {"x-project": AGENT_PROJECT, "x-username": AGENT_USERNAME}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            servers = (await client.get(f"{PRISM_URL}/mcp-servers",
+                                        headers=headers)).json()
+            servers = servers if isinstance(servers, list) else servers.get("servers", [])
+            mine = next((s for s in servers if s.get("name") == MCP_SERVER_NAME), None)
+            if not mine:
+                return {**detail, "ok": False,
+                        "error": f"{MCP_SERVER_NAME} is not registered for this scope"}
+            tools = int(mine.get("toolCount") or 0)
+            detail |= {"mcp_connected": bool(mine.get("connected")), "tool_count": tools}
+            if not mine.get("connected") or tools <= 0:
+                return {**detail, "ok": False,
+                        "error": "MCP server registered but not serving tools"}
+
+            agents = (await client.get(f"{PRISM_URL}/custom-agents",
+                                       headers=headers)).json()
+            agents = agents if isinstance(agents, list) else agents.get("agents", [])
+            persona = next((a for a in agents
+                            if a.get("agentId") == PRISM_AGENT_ID), None)
+            detail["persona_tools"] = len(persona.get("availableTools") or []) if persona else 0
+            if not persona:
+                # Degraded, not down: research still runs, just unscoped.
+                return {**detail, "ok": True, "degraded": True,
+                        "error": f"persona {PRISM_AGENT_ID} is missing — runs will be unscoped"}
+            return {**detail, "ok": True}
+    except Exception as e:
+        return {**detail, "ok": False, "error": f"prism unreachable: {e}"}
+
+
 @app.get("/health/app")
 async def health_app():
-    return {"status": "ok", "service": "html-notes"}
+    """LIVENESS — is this process serving?
+
+    Deliberately still 200 when the agent dependency is down. docker-compose
+    healthchecks this with `curl -f`, and a non-2xx marks the container
+    unhealthy and restarts it — which cannot fix a Prism-side outage and would
+    just loop. The dependency is reported in the body, and /health/agent is the
+    endpoint that actually fails when research is broken.
+    """
+    agent = await _agent_dependency_status()
+    return {"status": "ok", "service": "html-notes", "agent": agent}
+
+
+@app.get("/health/agent")
+async def health_agent(response: Response):
+    """READINESS — can a research ask succeed?
+
+    503s when the tool path is dead, so a monitor sees it. Separate from
+    /health/app precisely because the right response to this failing is to go
+    look at Prism or lazy-tool-service, never to restart html-notes.
+    """
+    agent = await _agent_dependency_status()
+    if not agent.get("ok"):
+        response.status_code = 503
+    return {"status": "ok" if agent.get("ok") else "unavailable", "agent": agent}
 
 class InternalToolRequest(BaseModel):
     tool: str
