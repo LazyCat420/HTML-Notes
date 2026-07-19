@@ -1,7 +1,11 @@
 # Handoff — 2026-07-19
 
-Two waves: MCP registration ownership, then research-card quality.
+Three waves: MCP registration ownership, research-card quality, then the
+prompt/server seams behind "sources and text with no images".
 Everything below is deployed and verified live unless marked OPEN.
+
+**Current:** html-notes `main@dccb543`, lazy-tool-service `main@9d7e8fe`.
+Suite **185 passing**. Prism MCP connected, 75 tools, both scopes.
 
 ## Wave 1 — lazy-tool-service registers itself with Prism
 
@@ -75,16 +79,94 @@ canvas GET endpoint.
 All 14 new guards were verified to **fail** against the pre-fix code, not pass
 vacuously.
 
+## Wave 3 — the prompt promised what the server didn't do
+
+**Shipped:** html-notes `93b1935`, `f16f394`, `dccb543`;
+lazy-tool-service `9d7e8fe`. Suite 174 → 185.
+
+Five bugs, one shape: an **agent-facing document** (the SYSTEM_PROMPT or the MCP
+tool schema) advertised behaviour the server never implemented. Both halves work
+in isolation — they just disagree — so the user gets a quietly degraded widget
+and nothing logs an error.
+
+**Why images were missing specifically.** The routing prompt advertised photos on
+exactly one branch: news (`news_topic` "attaches the sourced stories *with their
+photos*"). The research branch said only "attaches the pages as sources". A model
+trying to build a good visual card was therefore **steered into the news pipeline
+for product questions** — which is the Wave-2 OPEN item, now root-caused rather
+than papered over. The research path now advertises photos (and delivers them),
+and `news_topic` is scoped explicitly to current events. Live: "best espresso
+machines under $500" now arrives as `{'search_query': …}`.
+
+- **`content` vs `answer`.** Prompt says `answer`; the tool schema said
+  `content`. The render chain is `if answer / elif items / elif content`, so a
+  model following the schema *and* supplying sources had its prose dropped —
+  card showed headlines only. The quality floor was blind to it too (read only
+  `answer`). `content` is now an alias on both.
+- **`canvas_modify_dom` advertised six actions, implemented three.** `prepend` /
+  `insert_before` / `insert_after` fell off the if-chain and returned `None`;
+  `commit_canvas` only aborts on an explicit `False`, so it committed the
+  **unchanged** canvas, bumped the version, and reported `{"success": true}`.
+  "Put a header above the chart" did nothing, forever, silently.
+- **The image widget had no agent-reachable path.** `image` is in
+  `_AGENT_RESEARCH_TYPES` so every picture ask is deferred to the agent, but the
+  agent's 21-tool scope has no image-search tool and the injector had no branch.
+  `build_image_config` (og:image + vision relevance gate) was simply unreachable.
+- **`news_topic` was the only injector key with no builder fallback**, while its
+  siblings call theirs unconditionally.
+
+### Two bugs only a real browser caught
+
+Both passed API-level checks. Same lesson as Wave 2, twice more.
+
+- **A model-supplied image URL was never looked up.** "Picture of a red panda"
+  rendered a broken frame: the model passed a plausible Wikimedia thumb path that
+  returns **400**. The agent has no image-search tool, so any URL it emits is
+  *recalled, not fetched*. My first fix was guarded on `not config.get("url")`,
+  which **inverted** it — standing down in exactly the case it exists for. Now
+  the builder runs whenever `images` is empty regardless of `url`, and a model
+  URL survives only if `_image_url_loads` confirms it serves image bytes.
+- **Six identical "photos" per news card.** The DOM check passed — six `<img>`,
+  all loading — because they were six copies of the same *valid* Google News
+  logo. A Google News `/rss/articles/` link doesn't redirect to the publisher (it
+  200s on news.google.com with a JS body) and serves a constant `og:image`. The
+  code comment asserted the opposite. Now rejected; items fall through to the
+  publisher favicon (verified: six distinct outlets).
+
+### Verified live, in a browser
+
+| Ask | Result |
+|---|---|
+| `best espresso machines under $500` | `search_query` path, synthesised card + real images |
+| `best noise cancelling headphones under $300` | 4 images, **4 loaded**, 0 fallbacks, 3 sources, Markdown table |
+| `show me a picture of a red panda` | broken frame → **3 real photos, all loading** |
+| `latest news on the James Webb telescope` | 6 identical Google logos → **6 distinct publisher favicons** |
+
+`/health/app` now reports the dependency rather than hiding it, and immediately
+earned its keep: it caught that html-notes' MCP row was registered under username
+`lazycat` (inherited from trading-service's old config) while html-notes sends
+`admin`. Tools still resolved — Prism serves them globally once connected — so
+nothing *looked* broken; its own scope just showed zero servers.
+
 ## OPEN
 
-- The agent sends `config={'answer':…, 'news_topic':…}` for product asks instead
-  of the documented `search_query`. The quality floor recovers, but the routing
-  prompt and the model still disagree — worth reconciling at the source.
+- **Google News source links are still opaque** `news.google.com/rss/articles/CBMi…`
+  redirects, not publisher URLs. Verified by hand: the blob does not base64-decode
+  to a URL and the page doesn't redirect server-side. Fixing it means preferring
+  GDELT (which carries real article URLs *and* real photos) or a headless resolve.
+  This is the remaining half of "sources with images".
 - The card is clipped by fixed tile height; sources need scrolling to see.
+  The image widget's grid also clips slightly with 3 images. Cosmetic.
 - Stale duplicate Prism row `lazy-agent-service` (id `6a419fe8063be887e67fabc3`,
   0 tools, `connected=false`, same URL) — not deleted.
-- html-notes `/health/app` still reports ok while the MCP connection is dead.
-- Naming: the GitHub repo really is `lazy-agent-service`; the local folder,
-  package name, and MCP registration are `lazy-tool-service`. **Do not rename
-  the registration** — the tool prefix `mcp__lazy-tool-service__*` derives from
-  it, 161 references across 6 repos.
+- **Prism's critic gate is dead**: `agents.criticModel` and friends pointed at
+  `embeddinggemma`, an *embedding* model on text tasks. Repointed via
+  `PUT /settings`, but Prism caches config at boot and **was not restarted**
+  (shared service — needs the user's say-so).
+- Naming — **corrected from the earlier note in this file, which was wrong.**
+  `lazy-tool-service` is canonical everywhere that matters: the git remote
+  (`LazyCat420/lazy-tool-service`), `package.json`, `McpAdapter.ts`'s self-name,
+  and the tool prefix `mcp__lazy-tool-service__*` — which **derives from the
+  registration name** and appears 161 times across 6 repos. The only thing named
+  `lazy-agent-service` is the stale duplicate row above. **Do not rename the
+  registration.**
