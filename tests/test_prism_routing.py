@@ -288,10 +288,22 @@ def test_image_widget_has_an_agent_reachable_build_path():
     assert "image" in m._AGENT_RESEARCH_TYPES
     src = _main_src()
     assert 'widget_type == "image"' in src, "no injector branch for the image widget"
-    injector = src[src.index('widget_type == "image"'):][:1800]
+    # Slice to the end of the branch, not a byte count — a growing comment
+    # block must not be able to silently shrink what this guard inspects.
+    _img_start = src.index('elif widget_type == "image"')
+    injector = src[_img_start:src.index('elif (widget_type == "map"', _img_start)]
     assert "build_image_config" in injector, (
         "image branch must call build_image_config, not trust a model-supplied URL")
     assert "image_query" in injector
+    # The branch must NOT stand down when the model supplied a url — that
+    # inverted the guard, skipping the builder in exactly the case it exists
+    # for. Live: "a picture of a red panda" produced a plausible Wikimedia
+    # thumb path that 400s, and the user got a broken-image frame.
+    condition = src[src.index('elif widget_type == "image"'):][:120]
+    assert 'config.get("url")' not in condition, (
+        "image branch must run even when the model supplied a url — it is invented")
+    assert "_image_url_loads" in injector, (
+        "a model-supplied image URL must be verified to load before being kept")
 
 
 def test_news_topic_falls_back_to_a_builder_like_its_siblings():

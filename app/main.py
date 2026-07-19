@@ -3833,6 +3833,30 @@ _ANSWER_ICONS = {
 }
 
 
+async def _image_url_loads(url: str) -> bool:
+    """Does this URL actually serve an image?
+
+    Only ever used on a URL the MODEL supplied. The agent has no image-search
+    tool, so such a URL is recalled, not looked up, and a plausible-looking one
+    is frequently dead (observed: a Wikimedia thumb path for "red panda" that
+    404s at the CDN and returns 400). An <img> with a dead src is indis-
+    tinguishable from a good one in the DOM, so check the bytes.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=6.0) as client:
+            r = await client.head(url)
+            # Some CDNs refuse HEAD; fall back to a ranged GET before believing it.
+            if r.status_code >= 400:
+                r = await client.get(url, headers={"Range": "bytes=0-2047"})
+            return (r.status_code < 400
+                    and r.headers.get("content-type", "").lower().startswith("image/"))
+    except Exception as e:
+        logger.info(f"[WIDGET INJECTOR] image URL check failed for {url[:80]!r}: {e}")
+        return False
+
+
 async def _resolve_news_topic_config(config: dict) -> dict:
     """Fill a data_card the model tagged with `news_topic` (or `topic`).
 
@@ -6358,8 +6382,7 @@ async def send_message(req: MessageRequest):
                             logger.info(f"[WIDGET INJECTOR] Synthesised answer data_card for {aq!r}")
                             config = {**answer_cfg, **{k: v for k, v in config.items()
                                                        if v and k not in ("search_query", "answer_query")}}
-                        elif (widget_type == "image"
-                              and not config.get("images") and not config.get("url")):
+                        elif widget_type == "image" and not config.get("images"):
                             # A picture ask. The prompt advertised
                             # widget_type='image' and "image" is in
                             # _AGENT_RESEARCH_TYPES, so in prism mode every image
@@ -6374,9 +6397,21 @@ async def send_message(req: MessageRequest):
                             # gate that judges whether the picture actually shows
                             # the subject); it was simply unreachable from the
                             # agent path, called only by the legacy local router.
+                            #
+                            # This branch deliberately runs EVEN WHEN the model
+                            # supplied a `url`. It used to skip in that case, which
+                            # inverted the guard: it stood down in exactly the
+                            # situation it exists for. The agent has no
+                            # image-search tool, so a URL in its config was never
+                            # looked up — it was recalled from memory. Live: "show
+                            # me a picture of a red panda" produced
+                            # .../thumb/5/50/Red_Panda.jpg/1200px-Red_Panda.jpg,
+                            # a plausible-looking Wikimedia path that 400s. The
+                            # user got a broken-image frame.
                             iq = str(config.get("image_query")
                                      or config.get("query")
-                                     or config.get("title", "")).strip()
+                                     or config.get("title", "")
+                                     or config.get("caption", "")).strip()
                             if iq:
                                 img_cfg = await build_image_config(iq)
                                 if img_cfg and img_cfg.get("images"):
@@ -6384,9 +6419,15 @@ async def send_message(req: MessageRequest):
                                                 f"({len(img_cfg['images'])} images)")
                                     config = {**img_cfg, **{k: v for k, v in config.items()
                                                             if v and k not in ("image_query", "query")}}
+                                elif await _image_url_loads(config.get("url", "")):
+                                    # Builder found nothing but the model's URL
+                                    # does resolve to a real image — keep it
+                                    # rather than throwing away a working picture.
+                                    logger.info(f"[WIDGET INJECTOR] Builder found nothing for "
+                                                f"{iq!r}; model URL verified, keeping it")
                                 else:
                                     # No usable picture. Say so as a data_card
-                                    # rather than shipping an empty image frame.
+                                    # rather than shipping a broken image frame.
                                     logger.info(f"[WIDGET INJECTOR] No usable image for {iq!r} — "
                                                 f"degrading to a data_card")
                                     widget_type = "data_card"
