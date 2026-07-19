@@ -5779,6 +5779,16 @@ async def send_message(req: MessageRequest):
             )
         )
 
+        # Observability: why the agent turn behaved the way it did. Without this
+        # a "the follow-up did nothing" report is unfalsifiable — you cannot tell
+        # a missing focus widget from an ignored instruction.
+        logger.info(
+            f"[AGENT TURN] focus_id={turn_ctx.get('focus_id')!r} "
+            f"refining_followup={_is_refining_followup(req.message)} "
+            f"directive={'YES' if (turn_ctx.get('focus_id') and _is_refining_followup(req.message)) else 'no'} "
+            f"ledger_widgets={len(turn_ctx.get('inventory') or '')>0} "
+            f"msg={req.message[:60]!r}")
+
         # Ensure all possible tools are enabled
         enabled_tools = [
             "mcp__lazy-tool-service__html_notes_create_note",
