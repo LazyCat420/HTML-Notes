@@ -600,19 +600,83 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
                     f"({stats['fail']} fetch failures)")
 
 
+async def _shared_news_search(topic: str, limit: int) -> list:
+    """The shared multi-provider news tool in lazy-tool-service.
+
+    PRIMARY source, ahead of the Google News RSS path below, because it returns
+    what that path structurally cannot: the PUBLISHER's own URL and THAT STORY's
+    photo. A Google News /rss/articles/ link is a redirect stub — it does not
+    resolve server-side, and the og:image it serves is Google's News logo, the
+    same picture for every story (which is how a six-story card ended up with
+    six identical tiles). GDELT has real URLs and photos but measured 15s on
+    success and 1 req/5s, so it cannot front this path either.
+
+    lazy-tool-service rotates across keyed providers (gnews, worldnewsapi,
+    currentsapi, ...) and answers in about a second. Empty result or an outage
+    just falls through to the chain below, so news still works if it is down.
+    """
+    if not topic or not topic.strip():
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.post(
+                f"{LAZY_TOOL_SERVICE_URL}/execute/news_search",
+                json={"topic": topic.strip(), "limit": limit},
+            )
+        if resp.status_code != 200:
+            logger.warning(f"[news] shared news_search HTTP {resp.status_code}")
+            return []
+        payload = resp.json()
+        # ExecuteRoutes may wrap the tool result; accept either shape.
+        body = payload.get("result", payload) if isinstance(payload, dict) else {}
+        rows = body.get("items") or []
+    except Exception as e:
+        logger.warning(f"[news] shared news_search unavailable: {e}")
+        return []
+
+    items = []
+    for r in rows:
+        if not isinstance(r, dict) or not r.get("title") or not r.get("url"):
+            continue
+        items.append({
+            "title": str(r.get("title", "")).strip(),
+            "url": str(r.get("url", "")).strip(),
+            # A real article photo. _enrich_news only fills what is MISSING, so
+            # supplying it here means we never re-fetch the page for a picture.
+            "image": str(r.get("image") or ""),
+            "meta": str(r.get("source") or _host_of(str(r.get("url", "")))),
+            "snippet": str(r.get("snippet") or ""),
+            "date": str(r.get("date") or ""),
+        })
+    if items:
+        with_img = sum(1 for i in items if i["image"])
+        logger.info(f"[news] shared news_search -> {len(items)} items "
+                    f"({with_img} with real photos) for {topic!r}")
+    return items
+
+
 async def news_search(topic: str, limit: int = 6) -> list:
     """Current headlines with real photos and summaries. Returns
     [{title, url, image, meta, snippet, date}].
 
-    Google News RSS FIRST: it answers in ~0.1s with ~100 deduped headlines and
-    is reliable, whereas GDELT (the old primary) takes ~14s even on success and
-    is rate-limited to 1 req/5s — its frequent 429s ALSO take 10-14s to return,
-    so it taxed every news query. Google News article URLs serve og:image and
-    og:description (verified), so _enrich_news gives them real photos + summaries
-    — the thing GDELT's socialimage used to be needed for. GDELT is kept only as
-    a fast-fail fallback (6s cap), then generic web search.
+    Order, and why:
+
+    1. The SHARED news_search tool in lazy-tool-service (~1s). The only source
+       here that returns the PUBLISHER's own URL and THAT STORY's photo.
+    2. Google News RSS (~0.1s, ~100 deduped headlines). Reliable and fast, but
+       its links are redirect stubs: they do not resolve server-side, and every
+       one serves Google's News logo as og:image — so a card built from these
+       shows N copies of the same picture and cites news.google.com rather than
+       the outlet. Fine as a headline source, poor as a sourcing one.
+       (An earlier note here claimed these URLs serve a real article image.
+       They do not — measured.)
+    3. GDELT. Real URLs and photos, but measured 15.6s / 14.9s on SUCCESS and
+       1 req/5s, with throttled replies still taking 11-16s. Fast-fail only.
+    4. Generic web search.
     """
-    items, source = await _google_news_rss(topic, limit), "google-news"
+    items, source = await _shared_news_search(topic, limit), "lazy-tool"
+    if not items:
+        items, source = await _google_news_rss(topic, limit), "google-news"
     if not items:
         items, source = await _gdelt_news(topic, limit), "gdelt"
     if not items:

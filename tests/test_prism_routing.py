@@ -332,3 +332,27 @@ def test_generic_google_news_thumb_is_not_treated_as_a_photo():
     # A real publisher photo must survive.
     assert not m._is_generic_news_thumb("https://www.reuters.com/img/story.jpg")
     assert not m._is_generic_news_thumb("")
+
+
+def test_news_prefers_the_shared_provider_tool():
+    """News must try lazy-tool-service's shared news_search BEFORE Google News
+    RSS. Google News links are redirect stubs: they don't resolve to the
+    publisher and every one serves Google's own logo as og:image, so a card
+    built from them cites news.google.com and shows N identical pictures. The
+    shared tool returns real publisher URLs and real per-story photos."""
+    src = _main_src()
+    body = src[src.index("async def news_search("):]
+    body = body[:body.index("\nasync def ", 10)]
+    shared = body.index("_shared_news_search")
+    google = body.index("_google_news_rss")
+    gdelt = body.index("_gdelt_news")
+    assert shared < google < gdelt, (
+        "source order must be shared -> google-news -> gdelt; "
+        f"got shared@{shared} google@{google} gdelt@{gdelt}")
+
+
+def test_shared_news_search_degrades_instead_of_raising():
+    """lazy-tool-service being down must not take news down with it — the
+    remaining chain still works, so this returns [] rather than propagating."""
+    import asyncio
+    assert asyncio.run(m._shared_news_search("", 6)) == []
