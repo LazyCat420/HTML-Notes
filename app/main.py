@@ -1935,6 +1935,32 @@ def record_turn(session_id: str, message: str, route: str, widgets: list) -> Non
         logger.warning(f"record_turn failed: {e}")
 
 
+def _summarize_canvas_for_history(canvas_html: str) -> str:
+    """A prior assistant turn's canvas HTML -> a factual one-line summary naming
+    each widget and its ID, for the agent's message history.
+
+    NOT a prose placeholder. The previous "[Visual Component Rendered]" string
+    looked like a legitimate text answer, so on the next turn the model copied it
+    verbatim and called no tools at all — the canvas never changed. Naming the
+    widgets (a) makes it obvious a TOOL produced this, not prose, and (b) hands
+    the model the exact id to reuse when a follow-up refines what's on screen."""
+    try:
+        soup = BeautifulSoup(canvas_html or "", "html.parser")
+        parts = []
+        for w in soup.select(".widget-container"):
+            wid = w.get("id") or "?"
+            wtype = (w.get("data-widget-type") or "widget")
+            head = w.select_one("h1,h2,h3,.widget-title")
+            title = head.get_text(strip=True)[:60] if head else ""
+            parts.append(f'{wtype}#{wid}' + (f' "{title}"' if title else ""))
+        if not parts:
+            return "[tool call rendered the canvas]"
+        return ("[tool call rendered the canvas — now showing: "
+                + "; ".join(parts[:6]) + "]")
+    except Exception:
+        return "[tool call rendered the canvas]"
+
+
 def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
     """The shared awareness bundle every routing tier reads: what's on the canvas
     now, what recent turns built (with a content gist), and the focus widget (the
@@ -5759,8 +5785,21 @@ async def send_message(req: MessageRequest):
 
             # Compress large HTML chunks in history
             if h["role"] == "assistant":
-                # Strip out the new wrapped HTML
-                content = re.sub(r'<!--CANVAS_HTML_START-->.*?<!--CANVAS_HTML_END-->', '[Visual Component Rendered]', content, flags=re.DOTALL)
+                # Replace the canvas HTML with a FACTUAL summary naming each
+                # widget and its id — never a bare prose placeholder.
+                #
+                # This used to substitute the literal string
+                # "[Visual Component Rendered]". That reads to the model as a
+                # perfectly good assistant reply, so on a follow-up it copied the
+                # pattern: it emitted that exact text and called NO tools, leaving
+                # the canvas untouched (the user had to refresh, and saw only the
+                # previous turn's widget). Naming the widgets instead both kills
+                # the mimicry and tells the model which id to reuse when the
+                # follow-up refines something already on screen (prompt rule 7).
+                content = re.sub(
+                    r'<!--CANVAS_HTML_START-->.*?<!--CANVAS_HTML_END-->',
+                    lambda m: _summarize_canvas_for_history(m.group(0)),
+                    content, flags=re.DOTALL)
                 # Fallback for old history: strip common classes
                 content = re.sub(r'<div class="[^"]*(glass-card|canvas-element|rendered-component)[^"]*">.*?</div>', '[Component]', content, flags=re.DOTALL)
                 
