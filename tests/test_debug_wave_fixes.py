@@ -132,6 +132,31 @@ def test_thin_reply_becomes_an_honest_card_not_an_answer(thin):
     assert "no result" in cfg["source_note"]
 
 
+def test_pure_narration_becomes_the_honest_card():
+    """Verbatim from a live research turn: 18 successful research calls, then the
+    entire reply was narration and not one word of the answer it had gathered."""
+    real = ("... ... ... Now I have comprehensive data from three major review "
+            "sources. Let me build a data_card with the best waterproof sandals.")
+    assert m._strip_agent_narration(real) == ""
+    cfg = m._text_answer_card_config("best waterproof sandals", real)
+    assert "couldn't put together an answer" in cfg["answer"]
+    assert "data_card" not in cfg["answer"]
+
+
+def test_narration_stripped_but_answer_kept():
+    mixed = ("Let me check that. Teva Hurricane XLT2 leads for strap comfort "
+             "and Chaco Z/1 wins on arch support overall.")
+    out = m._strip_agent_narration(mixed)
+    assert out.startswith("Teva")
+    assert "Let me" not in out
+
+
+def test_stripping_never_eats_a_real_answer():
+    real = ("Teva Hurricane XLT2 leads for strap comfort, while Chaco Z/1 Classic "
+            "wins on arch support. Keen Newport H2 is the most protective.")
+    assert m._strip_agent_narration(real) == real
+
+
 def test_substantial_reply_is_kept_verbatim():
     real = ("Teva Hurricane XLT2 and Chaco Z/1 Classic lead most waterproof "
             "hiking sandal tests, with Keen Newport H2 close behind.")

@@ -1477,6 +1477,50 @@ def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
 # nothing went wrong, because it looks like a real result.
 _MIN_ANSWER_CHARS = 40
 
+# The model narrating its plan instead of answering. Observed verbatim on a live
+# research turn: it ran 18 research calls, then said "Now I have comprehensive
+# data from three major review sources. Let me build a data_card with the best
+# waterproof hiking sandals" — and ended the turn WITHOUT calling
+# canvas_add_widget. Rendering that sentence as the answer produces a card whose
+# body is a promise to make a card.
+# Matched per SENTENCE, not against the whole reply: narration usually arrives as
+# its own sentence appended to (or instead of) the answer, so an anchored
+# whole-string pattern misses "…sources. Let me build a data_card." entirely.
+_NARRATION_SENTENCE_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:now|next|first|then|so|okay|ok|alright|great|perfect)[,!.]?\s+)?"
+    r"(?:i\s*(?:'ll|'ve)?\s*(?:have|will|am|can|need|should|shall|"
+    r"going\s+to|now\s+have)?|let\s+me|let's|i'll|i've)\b",
+    re.I,
+)
+# Tool/mechanism talk: the model describing the machinery instead of the answer.
+_TOOL_TALK_RE = re.compile(
+    r"\b(?:data_card|canvas_add_widget|canvas_modify_dom|widget_type|"
+    r"stock_card|scoreboard|a\s+widget|the\s+canvas)\b", re.I)
+
+
+def _strip_agent_narration(text: str) -> str:
+    """Drop the model's process commentary and stray ellipsis filler, leaving the
+    substantive answer (if any). Used only by the no-widget fallback card, where
+    the alternative is showing narration to the user as though it were the result.
+
+    Observed verbatim on a live research turn: after 18 successful research calls
+    the whole reply was `"... ... ... Now I have comprehensive data from three
+    major review sources. Let me build a data_card with the best sandals."` —
+    every word of it narration, and not one word of the answer it had gathered.
+    That must become the honest "couldn't answer" card, not a card whose body is
+    a promise to make a card."""
+    body = (text or "").strip()
+    # Runs of "..." are what a tool-only turn streams between calls.
+    body = re.sub(r"(?:^|\s)\.{2,}(?=\s|$)", " ", body)
+    kept = [
+        s for s in re.split(r"(?<=[.!?])\s+", body)
+        if s.strip()
+        and not _NARRATION_SENTENCE_RE.match(s)
+        and not _TOOL_TALK_RE.search(s)
+    ]
+    return re.sub(r"\s+", " ", " ".join(kept)).strip()
+
 
 def _text_answer_card_config(question: str, answer: str) -> dict:
     """A data_card carrying a prose answer, for the agent turn that answered but
@@ -1491,7 +1535,7 @@ def _text_answer_card_config(question: str, answer: str) -> dict:
     tools down: the agent streamed 5 characters and committed nothing."""
     q = re.sub(r"\s+", " ", (question or "").strip())
     title = (q[:57] + "...") if len(q) > 60 else (q or "Answer")
-    body = (answer or "").strip()
+    body = _strip_agent_narration(answer)
     if len(body) < _MIN_ANSWER_CHARS:
         return {
             "title": title[:60],
@@ -7161,11 +7205,23 @@ async def send_message(req: MessageRequest):
                                         # check for the rest of the turn. Log it, count
                                         # it, and reset so the next tool is clean.
                                         unhandled_tools.append(tool_name)
-                                        logger.warning(
-                                            f"[AGENT] unhandled tool {tool_name!r} — no canvas "
-                                            f"mutation. Prism forces core/system tools past "
-                                            f"enabledTools; falling back to a text card if the "
-                                            f"turn commits nothing.")
+                                        # Two very different cases, worth telling
+                                        # apart in the log: OUR research tools not
+                                        # mutating the canvas is EXPECTED (they
+                                        # gather data, then the model is supposed to
+                                        # call canvas_add_widget), whereas a prism
+                                        # core tool means the allowlist was bypassed.
+                                        is_ours = tool_name.startswith("mcp__lazy-tool-service__")
+                                        if not is_ours:
+                                            logger.warning(
+                                                f"[AGENT] prism core tool {tool_name!r} — outside our "
+                                                f"allowlist and cannot touch the canvas "
+                                                f"(coreToolsLocked is unreachable for CUSTOM agents)")
+                                        elif unhandled_tools.count(tool_name) in (1, 5, 10):
+                                            logger.info(
+                                                f"[AGENT] research tool {tool_name!r} "
+                                                f"(call #{unhandled_tools.count(tool_name)}) — "
+                                                f"no canvas mutation yet")
                                         active_tool_name = None
                                         active_tool_args = {}
 
