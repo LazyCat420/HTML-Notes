@@ -394,9 +394,32 @@ document.addEventListener("DOMContentLoaded", () => {
             const img = e.target;
             if (!img || img.tagName !== "IMG") return;
             if (img.dataset.imgFailed) return; // guard against loops
+
+            // RETRY ONCE with the source's favicon before giving up. og:image URLs
+            // hotlink-block far more often than favicons do, so a dead article
+            // photo usually still has a usable site mark — a recognisable source
+            // tile beats a blank one. Guarded by data-imgRetried so a failing
+            // favicon can't loop.
+            const link = img.closest("a[href]") || img.parentElement?.querySelector?.("a[href]");
+            const href = link?.getAttribute("href") || img.dataset.srcPage || "";
+            if (!img.dataset.imgRetried && href && !img.src.includes("s2/favicons")) {
+                try {
+                    const host = new URL(href, location.href).hostname;
+                    if (host) {
+                        img.dataset.imgRetried = "1";
+                        img.src = `https://www.google.com/s2/favicons?domain=${host}&sz=128`;
+                        return;
+                    }
+                } catch (_) { /* not a usable URL — fall through to the placeholder */ }
+            }
+
             img.dataset.imgFailed = "1";
             img.style.display = "none";
-            const tile = img.closest("figure, .product-media, .image-widget-body > *");
+            // `.data-card-figure` is the data_card's article figure (the old
+            // `.hero-image` band); without it a failed hero left an empty box
+            // rather than a placeholder.
+            const tile = img.closest(
+                "figure, .data-card-figure, .product-media, .image-widget-body > *");
             if (tile) tile.classList.add("img-failed");
         }, true);
     })();
@@ -1685,6 +1708,12 @@ document.addEventListener("DOMContentLoaded", () => {
             if (img._hasFallback) return;
             img._hasFallback = true;
             img.addEventListener('error', () => {
+                // Defer to the capture-phase gate above, which runs FIRST and may
+                // be mid-retry against the source's favicon. Replacing the node
+                // here would destroy the element that retry just re-pointed, so a
+                // recoverable image became a monogram every time. Only take over
+                // once that gate has marked the image definitively failed.
+                if (img.dataset.imgRetried === '1' && img.dataset.imgFailed !== '1') return;
                 const placeholder = document.createElement('div');
                 placeholder.className = img.className + ' img-fallback';
                 placeholder.style.minHeight = '3.5rem';
@@ -2387,12 +2416,28 @@ document.addEventListener("DOMContentLoaded", () => {
         
         let htmlText = "";
         if (cleaned.trim()) {
+            // 'target'/'rel' must be allowed here too. DOMPurify's default allowlist
+            // covers href and rel but NOT target, so without this a link in chat
+            // history kept its href and navigated the whole app away in-tab —
+            // losing the canvas — while the same link on the canvas opened a new
+            // tab. Matches CANVAS_DOMPURIFY_CONFIG.
             htmlText = DOMPurify.sanitize(marked.parse(cleaned), {
-                ADD_ATTR: ['style', 'class'],
+                ADD_ATTR: ['style', 'class', 'target', 'rel'],
                 FORCE_BODY: true
             });
+            // marked emits <a href> with no target, so chat links navigated the
+            // whole app away in-tab and the canvas was lost. Applied AFTER
+            // sanitize so we're decorating markup DOMPurify has already cleared,
+            // never smuggling attributes past it.
+            const linkFix = document.createElement('div');
+            linkFix.innerHTML = htmlText;
+            linkFix.querySelectorAll('a[href]').forEach(a => {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener noreferrer');
+            });
+            htmlText = linkFix.innerHTML;
         }
-        
+
         if (hasComponent) {
             htmlText += `<div class="chat-component-placeholder">🎨 Generated visual component on canvas</div>`;
             return htmlText;

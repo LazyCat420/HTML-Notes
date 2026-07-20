@@ -1416,6 +1416,67 @@ async def _synthesize_answer_from_items(config: dict, query_hint: str = "") -> s
     return ""
 
 
+def _favicon_for(url: str) -> str:
+    """Google's favicon service for any host. A site's own mark is a far better
+    tile than a monogram letter — it identifies the SOURCE at a glance — and it
+    resolves for essentially every real domain, which is what makes near-total
+    image coverage cheap. Was previously built only inside the Google-News RSS
+    path; it generalises to any URL."""
+    try:
+        host = urllib.parse.urlparse(url).netloc
+    except Exception:
+        return ""
+    return f"https://www.google.com/s2/favicons?domain={host}&sz=128" if host else ""
+
+
+def _items_of(config: dict) -> list:
+    """items/sources, normalised to a list of dicts."""
+    items = config.get("items") or config.get("sources") or []
+    if isinstance(items, dict):
+        items = [items]
+    return [it for it in items if isinstance(it, dict)]
+
+
+def _items_missing_images(config: dict) -> list:
+    """Linked items with no picture. These are what the backfill targets."""
+    return [it for it in _items_of(config)
+            if (it.get("url") or it.get("link"))
+            and not (it.get("image") or it.get("thumbnail"))]
+
+
+async def _backfill_item_images(items: list, timeout: float = 6.0) -> int:
+    """Give every linked item a picture: real og:image where the page has one,
+    the site's favicon otherwise.
+
+    Image population used to be a SIDE EFFECT of description repair — it ran only
+    on items that were also missing a summary, and only when a quality gap had
+    already fired. A well-written card with good descriptions and no pictures was
+    therefore 'fine' by the floor and rendered as a column of monogram letters.
+    Pictures are now their own concern, applied to any linked item that lacks one.
+    """
+    targets = [it for it in items
+               if (it.get("url") or it.get("link"))
+               and not (it.get("image") or it.get("thumbnail"))]
+    if not targets:
+        return 0
+    probe = [{"url": it.get("url") or it.get("link"), "snippet": "x", "image": ""}
+             for it in targets]
+    try:
+        # snippet is pre-filled above: _enrich_news only fills falsy fields, so a
+        # non-empty snippet keeps this pass strictly about images and stops it
+        # overwriting descriptions the card already has.
+        await asyncio.wait_for(_enrich_news(probe, timeout=timeout), timeout=timeout + 1.0)
+    except (asyncio.TimeoutError, Exception):
+        pass  # best-effort; the favicon fallback below still applies
+    filled = 0
+    for it, p in zip(targets, probe):
+        img = (p.get("image") or "").strip() or _favicon_for(it.get("url") or it.get("link"))
+        if img:
+            it["image"] = img
+            filled += 1
+    return filled
+
+
 async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
     """Quality floor for data_cards (async — enriches, so not usable inside the
     sync render path). Guarantees the user never gets a wall of bare links or a
@@ -1431,7 +1492,14 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
     gets a minimal answer stitched from its titles, so links never render alone.
     """
     gap = _data_card_quality_gap(config)
+    # Missing pictures are a gap in their OWN right. Returning early on `not gap`
+    # meant a card with solid descriptions but no images skipped enrichment
+    # entirely and rendered as a column of monogram letters.
     if not gap:
+        if _items_missing_images(config):
+            n = await _backfill_item_images(_items_of(config))
+            if n:
+                logger.info(f"[QUALITY] backfilled {n} item image(s) on an otherwise-fine card")
         return config
     try:
         if gap == "bare_links":
@@ -1535,6 +1603,16 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
                     it["description"] = t
     except Exception:
         pass
+    # Final image sweep. The gap branches above fill images only for the subset
+    # they happened to touch (bare items, or freshly-fetched sources), so anything
+    # they left alone still lands here and gets at least a favicon.
+    try:
+        if _items_missing_images(config):
+            n = await _backfill_item_images(_items_of(config))
+            if n:
+                logger.info(f"[QUALITY] backfilled {n} item image(s) after {gap} repair")
+    except Exception as e:
+        logger.warning(f"[QUALITY] image backfill failed: {e}")
     return config
 
 

@@ -55,6 +55,11 @@ def _monogram_tile(text: str) -> str:
 
 import re as _re
 
+# A bare URL in prose. Runs to whitespace or an escaped angle bracket; trailing
+# punctuation is trimmed by the autolinker rather than excluded here, since only
+# the caller can tell "…/page)." from "…/page_(disambiguation)".
+_URL_RE = _re.compile(r'https?://[^\s<>]+')
+
 # Inline markdown → HTML on ALREADY-ESCAPED text. The escaping (html.escape) runs
 # first, so `<`/`>`/`&` are inert; markdown markers (* _ ` [ ]) survive escaping
 # untouched, so we can safely wrap them here. Links are restricted to http(s) so a
@@ -67,14 +72,67 @@ def _md_inline(text: str) -> str:
     text = _re.sub(r'\*\*([^*]+)\*\*', r'<strong class="font-semibold text-white">\1</strong>', text)
     text = _re.sub(r'__([^_]+)__', r'<strong class="font-semibold text-white">\1</strong>', text)
     text = _re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<em>\1</em>', text)
+    # Anchors are PARKED as placeholders the moment they're built, so the bare-URL
+    # autolinker below can't re-linkify the href of a link this pass just produced
+    # (which would nest an <a> inside an attribute and corrupt the markup).
+    parked: list[str] = []
+
+    def _park(html: str) -> str:
+        parked.append(html)
+        return f"\x00L{len(parked) - 1}\x00"
+
+    def _anchor(url: str, label: str) -> str:
+        # `url` is already html-escaped — esc() ran over the whole string at the top
+        # of this function, so quotes are &quot; and can't break out of the
+        # attribute. Do NOT esc() again here; that would double-escape every & in a
+        # query string into &amp;amp; and break the link.
+        return (f'<a href="{url}" target="_blank" rel="noopener" '
+                f'class="text-purple-300 hover:text-purple-200 hover:underline">{label}</a>')
+
     # [label](http…) — only http/https links survive; anything else renders as plain label.
     def _link(m):
         label, url = m.group(1), m.group(2)
         if url.lower().startswith(("http://", "https://")):
-            return (f'<a href="{url}" target="_blank" rel="noopener" '
-                    f'class="text-purple-300 hover:text-purple-200 hover:underline">{label}</a>')
+            return _park(_anchor(url, label))
         return label
     text = _re.sub(r'\[([^\]]+)\]\(([^)\s]+)\)', _link, text)
+
+    # Bare URLs. Agents write these constantly ("source: https://example.com/x") and
+    # without autolinking they rendered as inert text the reader had to select and
+    # copy by hand. Markdown proper doesn't autolink either, which is exactly why
+    # the agent-written output looked broken.
+    def _autolink(m):
+        url = m.group(0)
+        # Don't swallow the sentence's punctuation into the href. A ')' is kept only
+        # when the URL opened its own paren (Wikipedia's ..._(disambiguation) style),
+        # otherwise it's assumed to close the surrounding prose.
+        # Entities are checked BEFORE punctuation on every pass: esc() turned a
+        # closing quote into "&quot;", and stripping ';' as punctuation first would
+        # leave a mangled "&quot" glued to the href. `&amp;` is never stripped — it
+        # is a legitimate query-string separator.
+        trail = ""
+        while url:
+            ent = next((e for e in ("&quot;", "&#x27;", "&gt;", "&lt;")
+                        if url.endswith(e)), None)
+            if ent:
+                url, trail = url[: -len(ent)], ent + trail
+                continue
+            ch = url[-1]
+            if ch not in ").,;:!?":
+                break
+            # Balanced parens belong to the URL: en.wikipedia.org/wiki/Capsicum_(genus)
+            # keeps its ')', while "(see https://x.com/b)" gives its ')' back to the prose.
+            if ch == ")" and url.count("(") >= url.count(")"):
+                break
+            url, trail = url[:-1], ch + trail
+        if not url.lower().startswith(("http://", "https://")):
+            return m.group(0)
+        return _park(_anchor(url, url)) + trail
+
+    text = _URL_RE.sub(_autolink, text)
+
+    for i, html in enumerate(parked):
+        text = text.replace(f"\x00L{i}\x00", html)
     return text
 
 
