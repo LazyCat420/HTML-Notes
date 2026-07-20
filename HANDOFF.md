@@ -73,6 +73,38 @@ stylesheet and asserts no crop / no text overlap / float-vs-stack per width.
 Note the overlap check must compare against `Range.getClientRects()` line boxes,
 not block boxes — a paragraph's block box legitimately extends under a float.
 
+## Traffic overlay: intent discarded, then re-inferred
+
+The TomTom key, the tile proxy, `map_document_html` and the Leaflet layer were
+ALL working — verified by pulling real tiles through the live proxy (green/red
+flow pixels, HTTP 200). Traffic still never rendered.
+
+`build_traffic_widget` re-derived intent with `re.search(r'\btraffic\b', msg)`.
+But the router classifies "map of traffic in the east bay" as `type='traffic'`
+and passes `query='east bay'` — the trigger word is stripped INTO the type. The
+grep then missed, so a routed traffic ask fell through to the plain Google
+directions embed and no tiles were ever requested.
+
+Proven in the deployed container: `'traffic in oakland'` → overlay True, but
+`'east bay'` (what the router actually passes) → `iframe_app`, overlay False.
+
+Fix: `build_traffic_widget(msg, force_traffic=False)`. Both callers that already
+established intent now assert it — the router branch (`wtype` IS the intent) and
+the fast path (gated by `TRAFFIC_MAP_RE`).
+
+**The general shape, worth watching for elsewhere in the router:** a caller
+classifies intent, encodes it in the widget TYPE, discards the words that
+carried it, and the callee tries to recover it from the leftover text. Any
+`build_*_widget` that greps its message for a keyword the router already
+consumed has this bug latently. Debug it by testing the callee with the string
+the ROUTER passes, not the string the user typed — they are not the same.
+
+**Open / not fixed:** the TomTom key is logged in plaintext on every tile fetch,
+because httpx logs full request URLs at INFO and the key is a query param. The
+proxy exists precisely so the key never reaches the browser — it lands in the
+container logs instead. Also `_extract_directions_place` geocodes "the east bay"
+to "East Bay Park"; the overlay is correct but centred on the wrong place.
+
 ## Earlier: typewriter reveal (REPLACED by the glitch above)
 
 A follow-up that rewrites a card now prints the new wording in (~450-1400ms,
