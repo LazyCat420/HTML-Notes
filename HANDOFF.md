@@ -1,3 +1,55 @@
+# Handoff — 2026-07-20 (multi-ticker compare + x-for round-trip + tie-break)
+
+**Deployed:** `b585494` → synology `:8035`. 379 pytest + 16 node green.
+Live-verified in one run: "NVDA vs SPY vs TSM" → ONE chart
+(`stock-compare-*`, "— 6mo % change", 3 datasets, legend), then two
+stock-card turns with canvas round-trips → ZERO Alpine errors.
+
+## 1. Multi-ticker comparison
+"NVDA vs SPY vs TSM" used to fan into one stock_card per ticker (router
+prose said "never open a second stock" — prose can't outvote sampling) and
+each failed. Now: `build_stock_compare_config` (app/main.py, after
+stock_snapshot) fetches N snapshots concurrently, drops failures, aligns on
+the common tail, normalizes each series to % change from range start, and
+renders through the EXISTING chart widget — Chart.js draws N datasets +
+legend natively, zero client work. Cap 8 tickers.
+
+Wired in three places:
+- Router stock builder: compare phrasing (`_COMPARE_SPLIT_RE`) → explicit
+  uppercase tickers, else per-segment `_resolve_ticker` (names like
+  "nvidia vs taiwan semi").
+- Route cleaner: N stock specs collapse into one joined "A vs B" query.
+- Agent path: `widget_type='chart'` + `config.compare_symbols=[...]` →
+  injector rebuilds server-side; SYSTEM_PROMPT teaches the route ("To add
+  a ticker, call again with the SAME widget_id and the full symbol list" —
+  follow-ups like "add AMD" work through the normal update path).
+
+GOTCHA: `coerce_widget_type` force-converts chart→stock_card when a cached
+symbol appears in the title/id — which is EXACTLY what a compare chart's
+title looks like. It now skips configs with `compare_symbols` or >1
+dataset. Don't remove that guard.
+
+## 2. The Alpine "r is not defined" storm (stock card)
+`getCleanedCanvasHtml` serialized Alpine-EXPANDED `<template x-for>` output
+(range buttons, metric rows); the server adopted that HTML as canonical;
+the next `Alpine.initTree` evaluated loop-scoped bindings outside any
+x-for scope — hundreds of console errors + duplicated nodes on
+re-expansion. Fix in index.js: strip every `template[x-for]`'s generated
+siblings before persisting — walk siblings until the first with `x-show` /
+`x-for` / `.close-widget-btn` (audited invariant: every static sibling
+after an x-for in factory.py carries one of those). Covers the stock card
+and every future x-for widget; the older youtube/checklist hand-rolled
+strips remain for their extra rules.
+
+## 3. Jimothy double-box (ambiguous-tie targeting)
+"tell me more about jimothy" scored 1.00 against TWO cards (his own AND a
+reddit-lawsuit card whose gist mentioned him); first-in-DOM-order won and
+the lawsuit card got overwritten with meme-coin content. `_followup_target_id`
+now collects contenders within 0.1 of the best score: the recency focus
+wins ties (the thread the user is in), else the most recent contender.
+
+---
+
 # Handoff — 2026-07-20 (stacking in-place updates)
 
 **Deployed:** `5497273` → synology `:8035`. 372 pytest + 16 node green.
