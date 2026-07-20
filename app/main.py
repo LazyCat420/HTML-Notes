@@ -2378,13 +2378,53 @@ def _subject_tokens(text: str) -> set:
             if w not in _SUBJECT_STOP and len(w) > 2}
 
 
+def _tok_edit_within(a: str, b: str, cap: int) -> bool:
+    """Levenshtein(a, b) <= cap, with early exits. Tiny inputs only (tokens)."""
+    if abs(len(a) - len(b)) > cap:
+        return False
+    if a == b:
+        return True
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        best = i
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (ca != cb)))
+            best = min(best, cur[-1])
+        if best > cap:
+            return False
+        prev = cur
+    return prev[-1] <= cap
+
+
+def _fuzzy_hit(tok: str, toks: set) -> bool:
+    """Does `tok` appear in `toks`, allowing a typo's worth of edit distance?
+
+    Word-boundary EXACT matching exists because loose matching caused real
+    wrong-widget edits ("john" ⊂ "Johnny"). Fuzziness here is bounded so it
+    can only absorb misspellings, never substrings or different words:
+      len < 4  → exact only ("map"/"mop" must not match)
+      len 4-7  → edit distance 1 ("mikku"→"miku", "jass"→"jazz")
+      len 8+   → edit distance 2 ("birkenstok"→"birkenstock")
+    """
+    if tok in toks:
+        return True
+    cap = 0 if len(tok) < 4 else (1 if len(tok) < 8 else 2)
+    if not cap:
+        return False
+    return any(_tok_edit_within(tok, t, cap) for t in toks)
+
+
 def _subject_overlap(a: str, b: str) -> float:
     """Overlap coefficient of the content words in two short strings (0..1).
-    Robust to length differences (a 2-word query vs a longer widget title)."""
+    Robust to length differences (a 2-word query vs a longer widget title).
+    Typo-tolerant via _fuzzy_hit — "birkenstok" still counts against a
+    Birkenstock card."""
     ta, tb = _subject_tokens(a), _subject_tokens(b)
     if not ta or not tb:
         return 0.0
-    return len(ta & tb) / min(len(ta), len(tb))
+    hits = sum(1 for t in ta if _fuzzy_hit(t, tb))
+    return hits / min(len(ta), len(tb))
 
 
 def _score_widget_for_query(query: str, title: str, detail: str = "") -> float:
@@ -2751,7 +2791,7 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
                 if not wid or wid == "unknown":
                     continue
                 body_toks = _subject_tokens(card.get_text(" ", strip=True))
-                if msg_toks <= body_toks:
+                if all(_fuzzy_hit(t, body_toks) for t in msg_toks):
                     hits.append(wid)
             if len(hits) == 1:
                 logger.info(f"[WIDGET TARGET] follow-up subject found in the BODY "
@@ -2801,8 +2841,15 @@ def _widget_showing(session_id: str, wid: Optional[str], message: str = "") -> s
     if gist:
         parts.append(gist)
     # The context window around the first referenced name in the body.
+    # Fuzzy fallback: a misspelled ask ("tell me more about Mikku") should
+    # still quote the window around the real name it meant.
+    body_lower = body_text.lower()
     for tok in sorted(_subject_tokens(message), key=len, reverse=True):
-        pos = body_text.lower().find(tok)
+        pos = body_lower.find(tok)
+        if pos < 0:
+            match = next((w for w in _subject_tokens(body_text)
+                          if _fuzzy_hit(tok, {w})), None)
+            pos = body_lower.find(match) if match else -1
         if pos >= 0:
             lo, hi = max(0, pos - 60), min(len(body_text), pos + 90)
             parts.append(f"…{body_text[lo:hi].strip()}…")

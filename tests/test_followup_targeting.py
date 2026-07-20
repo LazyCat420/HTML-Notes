@@ -433,3 +433,46 @@ def test_widget_showing_includes_context_around_the_name(canvas):
     assert "Miku" in showing, "the anchor must quote the body around the referenced name"
     assert "Waterfront" in showing or "Tom Sushi" in showing or "chef" in showing.lower(), (
         f"expected surrounding context in the anchor, got: {showing!r}")
+
+
+# ── SEAM F: typo tolerance — a misspelled name still resolves ────────────────
+
+def test_fuzzy_hit_bounds():
+    f = m._fuzzy_hit
+    assert f("mikku", {"miku"}), "one-typo name must match (len 4-7, dist 1)"
+    assert f("jazzz", {"jazz"})
+    # "jass"→"jazz" is dist 2 on a 4-char word — HALF the word. Deliberately
+    # rejected: the same allowance would match "john"→"joan".
+    assert not f("jass", {"jazz"})
+    assert f("birkenstok", {"birkenstock"}), "len 8+ allows distance 2"
+    assert f("birkenstck", {"birkenstock"})
+    # The bounds that keep it from becoming the old substring bug:
+    assert not f("map", {"mop"}), "short words are exact-only"
+    assert not f("john", {"johnny"}), "distance 2 on a 4-char token = different word"
+    assert not f("miku", {"tojo"})
+    assert not f("cost", {"costco"})
+
+
+def test_misspelled_followup_still_targets_the_sushi_card(canvas):
+    canvas["html"] = (
+        '<div id="dashboard-grid">'
+        f'<div class="glass-card data-card" id="vancouver-sushi-trip">'
+        f'<h3>Data</h3><p>{LONG_SUSHI_ANSWER}</p></div>'
+        '<div class="glass-card data-card" id="video-88f4cc14">'
+        '<h3>Clone Care Video</h3><p>keeping clones healthy</p></div>'
+        '</div>')
+    got = m._followup_target_id("s", "video-88f4cc14", "tell me more about Mikku")
+    assert got == "vancouver-sushi-trip", "one typo must not break body-scan targeting"
+
+
+def test_misspelled_anchor_still_quotes_the_window(canvas):
+    canvas["html"] = (
+        '<div id="dashboard-grid">'
+        f'<div class="glass-card data-card" id="vancouver-sushi-trip">'
+        f'<h3>Best Sushi in Vancouver</h3><p>{LONG_SUSHI_ANSWER}</p></div></div>')
+    showing = m._widget_showing("s", "vancouver-sushi-trip", "tell me more about Mikku")
+    assert "Miku" in showing, "the anchor window must find the fuzzily-matched name"
+
+
+def test_fuzzy_overlap_scores_typos(canvas):
+    assert m._subject_overlap("birkenstok arizona", "Birkenstock Arizona sandals") >= 0.5
