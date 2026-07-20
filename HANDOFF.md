@@ -1,6 +1,39 @@
-# Handoff — 2026-07-20 (research reliability + typewriter reveal)
+# Handoff — 2026-07-20 (research reliability + glitch reveal + image framing)
 
-## Typewriter reveal on in-place updates
+## Glitch reveal on in-place updates
+
+A follow-up rewriting a card now scrambles the text into random glyphs and
+resolves the new answer out of the noise. The outgoing wording is captured BEFORE
+the node swap; old and new rarely align, so the un-animated region reads as
+jumble rather than a stale answer — which is the intended effect.
+
+Text NODES are rewritten in place, nothing is wrapped. That removes an entire
+hazard class: the earlier span version had to be unwrapped afterwards because the
+server adopts the client canvas as canonical and leftover markup would have been
+baked in and changed the widget's `data-sig`. With nothing added there is nothing
+to leak. `finishGlitches()` is called from `getCleanedCanvasHtml`, so a request
+sent mid-glitch can never ship noise as the widget's real content.
+
+Character count is preserved every frame and whitespace never scrambles, so the
+text holds its shape and the card never reflows.
+
+Tuning knobs at the top of the block: `GLITCH_MIN_MS` / `GLITCH_MAX_MS` (550-1500),
+`GLITCH_MS_PER_CHAR`, and `GLITCH_CHAR_LIFE` (0.28 — smaller is a crisper
+left-to-right wipe, larger boils the whole card at once).
+
+Verified live: 821 `characterData` mutations during one follow-up, samples like
+`'[ab0} =% 2026 expertsr views,g hegbestrsandalse orthiking...'`, and no glyph
+runs left in the settled text. `scripts/glitch_check.py`.
+
+## Hero image framing
+
+A fixed `h-32` letterbox cropped most photos to an unreadable strip — a shot of
+footwear came through as a band of ankles. The hero now gets a real 16/9 box
+capped at `max-h-52` with the crop anchored at the TOP (subjects sit above centre
+more often than below). A hero eats ~208px, which left barely two lines of a
+380px card visible, so cards carrying a photo get the height back: **560px**.
+
+## Earlier: typewriter reveal (REPLACED by the glitch above)
 
 A follow-up that rewrites a card now prints the new wording in (~450-1400ms,
 scaled to length) instead of swapping it instantly. Words are wrapped and faded

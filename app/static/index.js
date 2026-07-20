@@ -920,6 +920,12 @@ document.addEventListener("DOMContentLoaded", () => {
                         const charStart = ((offset) / totalChars) * (1 - GLITCH_CHAR_LIFE);
                         const p = (t - charStart) / GLITCH_CHAR_LIFE;
                         if (p >= 1) out += ch;
+                        // Not started yet: show the OLD character from this
+                        // position. Old and new wording rarely line up, so in
+                        // practice this reads as jumbled text rather than the
+                        // previous answer — which is the intended effect (the
+                        // card visibly scrambles), and it means the not-yet-
+                        // animated region is never a stale readable answer.
                         else if (p <= 0) out += (prev[offset] && prev[offset].trim() ? prev[offset] : ch);
                         else out += GLITCH_GLYPHS[(Math.random() * GLITCH_GLYPHS.length) | 0];
                         offset++;
