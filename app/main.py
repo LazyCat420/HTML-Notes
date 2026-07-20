@@ -1472,18 +1472,37 @@ def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
     return generate_widget_html(widget_type, widget_id, config)
 
 
+# Below this, a "reply" is not an answer — it's the model trailing off ("...",
+# "Sure!", "Let me look"). Rendering that as an answer card is worse than saying
+# nothing went wrong, because it looks like a real result.
+_MIN_ANSWER_CHARS = 40
+
+
 def _text_answer_card_config(question: str, answer: str) -> dict:
     """A data_card carrying a prose answer, for the agent turn that answered but
     never touched the canvas. The alternative was a blank canvas plus a spoken
     answer — the failure that reads as "it called tools but no widget appeared".
 
     Titled from the QUESTION rather than the answer: the question is short and
-    already scoped, whereas the answer's first line is often a full sentence."""
+    already scoped, whereas the answer's first line is often a full sentence.
+
+    When the reply is too thin to BE an answer, say so plainly instead of
+    rendering a card whose body is "...". Observed live with the MCP research
+    tools down: the agent streamed 5 characters and committed nothing."""
     q = re.sub(r"\s+", " ", (question or "").strip())
     title = (q[:57] + "...") if len(q) > 60 else (q or "Answer")
+    body = (answer or "").strip()
+    if len(body) < _MIN_ANSWER_CHARS:
+        return {
+            "title": title[:60],
+            "answer": ("I couldn't put together an answer for this one — the "
+                       "research tools didn't return anything usable.\n\n"
+                       "Try rephrasing, or ask something more specific."),
+            "source_note": "no result — the agent finished without an answer",
+        }
     return {
         "title": title[:60],
-        "answer": (answer or "").strip()[:4000],
+        "answer": body[:4000],
         "source_note": "answered without a canvas tool — rendered from the reply",
     }
 

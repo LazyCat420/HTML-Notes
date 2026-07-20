@@ -121,10 +121,31 @@ def test_text_answer_card_truncates_long_question():
     assert cfg["title"].endswith("...")
 
 
+@pytest.mark.parametrize("thin", ["...", "Sure!", "", "Let me look", "ok"])
+def test_thin_reply_becomes_an_honest_card_not_an_answer(thin):
+    """Observed live with the research tools down: the agent streamed 5 chars
+    and committed nothing, so the card's body was literally "...". A card that
+    looks like a result but says nothing is worse than admitting the miss."""
+    cfg = m._text_answer_card_config("best waterproof hiking sandals", thin)
+    assert "couldn't put together an answer" in cfg["answer"]
+    assert thin.strip() not in cfg["answer"] or len(thin.strip()) < 2
+    assert "no result" in cfg["source_note"]
+
+
+def test_substantial_reply_is_kept_verbatim():
+    real = ("Teva Hurricane XLT2 and Chaco Z/1 Classic lead most waterproof "
+            "hiking sandal tests, with Keen Newport H2 close behind.")
+    cfg = m._text_answer_card_config("best sandals", real)
+    assert cfg["answer"] == real
+    assert "rendered from the reply" in cfg["source_note"]
+
+
 def test_text_answer_card_renders_a_real_widget():
     """The whole point is a widget on the canvas — assert it actually builds."""
     from app.widgets.factory import generate_widget_html
-    cfg = m._text_answer_card_config("best sandals", "Teva and Chaco.")
+    cfg = m._text_answer_card_config(
+        "best sandals",
+        "Teva Hurricane XLT2 and Chaco Z/1 Classic lead most waterproof tests.")
     html = generate_widget_html("data_card", "answer-test1", cfg)
     assert 'id="answer-test1"' in html
     assert "widget-container" in html
