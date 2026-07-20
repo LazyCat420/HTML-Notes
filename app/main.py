@@ -6,6 +6,7 @@ import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 from collections import deque
+from contextlib import asynccontextmanager
 from html import unescape as _html_unescape
 
 # Enriched YouTube layer (views/duration/age/verified/live signals + language +
@@ -1471,6 +1472,22 @@ def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
     return generate_widget_html(widget_type, widget_id, config)
 
 
+def _text_answer_card_config(question: str, answer: str) -> dict:
+    """A data_card carrying a prose answer, for the agent turn that answered but
+    never touched the canvas. The alternative was a blank canvas plus a spoken
+    answer — the failure that reads as "it called tools but no widget appeared".
+
+    Titled from the QUESTION rather than the answer: the question is short and
+    already scoped, whereas the answer's first line is often a full sentence."""
+    q = re.sub(r"\s+", " ", (question or "").strip())
+    title = (q[:57] + "...") if len(q) > 60 else (q or "Answer")
+    return {
+        "title": title[:60],
+        "answer": (answer or "").strip()[:4000],
+        "source_note": "answered without a canvas tool — rendered from the reply",
+    }
+
+
 # Media widgets (video, audio) are players, not data: the canvas can only ever
 # play one thing at a time, so a new one replaces whatever's already playing.
 # Data widgets (stock_card, scoreboard, notes, ...) coexist — a new one adds
@@ -1826,14 +1843,22 @@ def get_session_canvas(session_id: str) -> str:
     return _session_canvas.get(session_id, "")
 
 
-def set_session_canvas(session_id: str, html: str) -> int:
-    """Store the canvas and return its new (globally monotonic) version."""
+def set_session_canvas(session_id: str, html: str, bump_version: bool = True) -> int:
+    """Store the canvas and return its version.
+
+    `bump_version=False` stores without minting a new version — for ADOPTING the
+    client's own snapshot, where the client already has exactly this HTML. Minting
+    a version there desynchronized the client permanently: nothing emits a
+    `component` event for an adoption, so the client never learned the new number,
+    every later request looked stale (`client_version < server_version`), and its
+    snapshots — including the user's widget dismissals — were refused for the rest
+    of the session, until a reload reseeded the version from /history."""
     global _last_active_session
     _session_canvas[session_id] = html
-    version = next(_version_counter)
-    _session_canvas_version[session_id] = version
+    if bump_version or session_id not in _session_canvas_version:
+        _session_canvas_version[session_id] = next(_version_counter)
     _last_active_session = session_id
-    return version
+    return _session_canvas_version[session_id]
 
 
 async def commit_canvas(session_id: str, mutate) -> Optional[str]:
@@ -1885,7 +1910,10 @@ async def _run_turn(session_id: str, current_canvas: str, generator_factory,
                                 f"(client v{client_version} < server v{server_version}) "
                                 f"session={session_id[:8]}")
                 else:
-                    set_session_canvas(session_id, current_canvas)
+                    # Adoption only — the client already HAS this exact HTML, so
+                    # keep the version it knows about. Minting one here made the
+                    # client permanently stale (see set_session_canvas).
+                    set_session_canvas(session_id, current_canvas, bump_version=False)
             _session_inflight[session_id] = _session_inflight.get(session_id, 0) + 1
         try:
             async for chunk in generator_factory():
@@ -2336,10 +2364,44 @@ def get_canvas_summary(html: str) -> str:
         return html[:2000]
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    await _warn_if_research_is_down()
+    yield
+
+
 app = FastAPI(
     title="HTML-Notes Engine",
-    description="Local-first AI knowledge journal with constrained HTML rendering"
+    description="Local-first AI knowledge journal with constrained HTML rendering",
+    lifespan=_lifespan,
 )
+
+
+async def _warn_if_research_is_down() -> None:
+    """Shout at boot if tier-3 research can't work.
+
+    The MCP registration lives in another service and can silently go empty (a
+    prism restart drops it). Nothing noticed until a user asked a research
+    question minutes or days later and got a text-only answer — the failure was
+    indistinguishable from "the model chose not to make a widget". Check once at
+    boot so the container log names the problem the moment it exists.
+
+    Never raises: a boot check that can take the app down is worse than the bug
+    it reports."""
+    try:
+        status = await _agent_dependency_status()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[BOOT] agent dependency check failed to run: {e}")
+        return
+    if status.get("ok"):
+        logger.info(f"[BOOT] research path OK — {status.get('tool_count')} MCP tools "
+                    f"via {status.get('prism')}")
+        return
+    logger.error(
+        "[BOOT] RESEARCH PATH DOWN: %s. Tier-2 asks (weather/stock/sports/map) "
+        "still work; tier-3 research asks will answer in text with no widget. "
+        "Detail: %s",
+        status.get("error", "unknown"), json.dumps(status)[:400])
 
 # Request / Response Schemas
 
@@ -4461,10 +4523,43 @@ TRAFFIC_MAP_RE = re.compile(
     r'\b(traffic|directions?|routes?|navigate|navigation)\b|\bfrom\s+.+\s+to\s+', re.I)
 
 
+# Words that REFER to the user's location instead of naming a place. They must
+# never reach a geocoder: every one of them is also a real, geocodable place name
+# somewhere in the world, so the lookup "succeeds" and pins the map thousands of
+# miles away with total confidence. Measured against the live geocoders:
+#   "Current"  -> 25.408, -76.784   (a settlement on Eleuthera, Bahamas)
+#   "here"     ->  8.660,  45.854   (Somalia)
+#   "my location" -> -1.989, 30.086 (Rwanda)
+# This is how "how is the traffic" produced a confident traffic map of the
+# Bahamas: the LLM router fills `query` with a placeholder like "Current" when
+# the user named no place, and we geocoded it literally.
+_DEICTIC_PLACE_RE = re.compile(
+    # NOTE: callers usually pass text that _DIR_STRIP_RE has already run over,
+    # which removes leading "my"/"in"/"the" — so "traffic in my area" arrives as
+    # the bare word "area". Both the full phrases and the bare heads must match.
+    r"^\s*(?:the\s+)?(?:my\s+|our\s+)?"
+    r"(?:current(?:\s+(?:location|position|area|place|spot|city))?"
+    r"|here|nearby|near\s*(?:me|by|here)|around\s*(?:me|here)"
+    r"|local(?:ly)?|my\s+(?:area|place|city|town|position|spot)"
+    r"|location|position|area|vicinity|surroundings"
+    r"|this\s+(?:area|place|city|town)|where\s+i\s+am|home)\s*$",
+    re.I,
+)
+
+
+def is_deictic_place(text: str) -> bool:
+    """True when `text` points AT the user rather than naming a place."""
+    return bool(_DEICTIC_PLACE_RE.match((text or "").strip()))
+
+
 def _extract_directions_place(message: str) -> str:
     cleaned = re.sub(r'[^\w\s]', ' ', message or '')
     cleaned = _DIR_STRIP_RE.sub(' ', cleaned)
     cleaned = ' '.join(cleaned.split()).strip()
+    if is_deictic_place(cleaned):
+        # Not a place — fall through to the stored user location, or to the
+        # "which city?" prompt. Anything but a geocode of the literal word.
+        return ''
     return cleaned[:60] if len(cleaned) >= 2 else ''
 
 
@@ -4492,6 +4587,10 @@ async def build_traffic_widget(message: str) -> tuple[str, Optional[dict]]:
         return "iframe_app", {"url": url, "title": f"{saddr} → {daddr}"[:60], "icon": "🚗"}
     place = _extract_directions_place(msg) or city
     if not place:
+        # None means "I can't build a map for this". The FAST path relies on that
+        # to fall through to a travel-time answer card, which is a better answer
+        # than a map — so don't change it here. The router branch, which used to
+        # read None as "build nothing at all", handles it explicitly instead.
         return "iframe_app", None
     if is_traffic:
         key = await _fetch_secret("TOMTOM_API_KEY")
@@ -5238,7 +5337,13 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
 
         if wtype == "traffic":
             twtype, tcfg = await build_traffic_widget(query or message)
-            return None if not tcfg else (twtype, "traffic", tcfg)
+            if not tcfg:
+                # No place named and none remembered. Returning None here meant
+                # the router built NOTHING — a bare "how is the traffic" produced
+                # an empty canvas. Ask which city, the same way the map path does.
+                return ("data_card", "askloc",
+                        build_location_prompt_config(query or message))
+            return (twtype, "traffic", tcfg)
 
         if wtype == "video":
             # A LIVE ask wants the canonical stream, not variety: search under
@@ -6493,6 +6598,9 @@ async def send_message(req: MessageRequest):
             _MAX_AGENT_WIDGETS = 4
             widgets_committed = 0
             canvas_settled = False
+            # Tool names prism handed the model that we have no canvas handler for.
+            # Collected so a turn that commits nothing can say WHY in the logs.
+            unhandled_tools: List[str] = []
 
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
@@ -7017,6 +7125,30 @@ async def send_message(req: MessageRequest):
                                     elif status == "error":
                                         error_msg = event.get("result", "Unknown tool error")
                                         yield f'data: {json.dumps({"type": "status", "message": f"tool error: {tool_name}: {str(error_msg)[:200]}"})}\n\n'
+                                    elif status in ("calling", "done", "success"):
+                                        # A tool we do not handle. Prism forces its
+                                        # core/system tools (create_artifact,
+                                        # execute_python, search_web…) into the set
+                                        # regardless of the enabledTools allowlist we
+                                        # send: coreToolsLocked defaults true and a
+                                        # CUSTOM agent's persona can't override it. So
+                                        # the model can and does pick create_artifact
+                                        # over canvas_add_widget on a research ask.
+                                        #
+                                        # This used to be a TOTAL silent no-op: the
+                                        # user saw a tool spinner, no component event
+                                        # ever fired, and active_tool_name was never
+                                        # reset — which also wedged the deferred-flush
+                                        # check for the rest of the turn. Log it, count
+                                        # it, and reset so the next tool is clean.
+                                        unhandled_tools.append(tool_name)
+                                        logger.warning(
+                                            f"[AGENT] unhandled tool {tool_name!r} — no canvas "
+                                            f"mutation. Prism forces core/system tools past "
+                                            f"enabledTools; falling back to a text card if the "
+                                            f"turn commits nothing.")
+                                        active_tool_name = None
+                                        active_tool_args = {}
 
                                 elif event_type == "thinking":
                                     yield f'data: {json.dumps({"type": "status", "message": "reasoning..."})}\n\n'
@@ -7045,6 +7177,45 @@ async def send_message(req: MessageRequest):
                 if not final_text.strip():
                     final_text = "Added it to your canvas."
                     yield f'data: {json.dumps({"type": "chunk", "content": final_text})}\n\n'
+
+            # SAFETY NET: the turn answered in prose but wrote nothing to the canvas.
+            # Before this, that turn was invisible — the answer was spoken by TTS and
+            # streamed into the chat, while the canvas stayed empty and the user was
+            # left thinking the widget "failed to appear". It happens whenever the
+            # model picks one of prism's forced core tools (create_artifact,
+            # execute_python) over canvas_add_widget, which we cannot prevent from
+            # this side: coreToolsLocked defaults true and a CUSTOM agent's persona
+            # can't override it.
+            #
+            # Render the answer we DO have as a data_card. A text card is a far better
+            # outcome than a blank canvas, and it keeps the invariant the whole UI is
+            # built on: every turn that produces an answer puts it on the canvas.
+            if not canvas_settled and widgets_committed == 0 and final_text.strip():
+                try:
+                    cfg = _text_answer_card_config(req.message, final_text)
+                    rid = (_resolve_agent_widget_id(req.session_id, "data_card", "",
+                                                    req.message, req.focus_widget_id or "")
+                           or f"answer-{uuid.uuid4().hex[:8]}")
+
+                    def _fallback_mutate(soup, _rid=rid, _cfg=cfg):
+                        html = generate_widget_html("data_card", _rid, _cfg)
+                        existing = soup.find(id=_rid)
+                        if existing:
+                            existing.replace_with(BeautifulSoup(html, "html.parser"))
+                        else:
+                            grid = soup.find(id="dashboard-grid") or soup
+                            grid.append(BeautifulSoup(html, "html.parser"))
+
+                    evt = await commit_canvas(req.session_id, _fallback_mutate)
+                    if evt:
+                        logger.warning(
+                            f"[AGENT] turn committed no widget "
+                            f"(unhandled tools: {unhandled_tools or 'none'}) — "
+                            f"rendered the text answer as data_card #{rid}")
+                        widgets_committed += 1
+                        yield evt
+                except Exception as e:
+                    logger.error(f"[AGENT] text-answer fallback failed: {e}")
 
             # Save assistant response to DB. Persist the LIVE canvas, not this
             # turn's mirror — a sibling turn may have committed after our last

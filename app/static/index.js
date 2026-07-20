@@ -960,6 +960,12 @@ document.addEventListener("DOMContentLoaded", () => {
                         elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, CANVAS_DOMPURIFY_CONFIG);
                         window.WidgetLayout.apply(elements.liveCanvas.querySelector('#dashboard-grid'));
                         seedWidgetSnapshots(elements.liveCanvas);
+                        // Masonry measures row spans NOW, before restored <img>/<iframe>
+                        // content has height. Without re-running on each media load the
+                        // grid keeps first-paint spans and taller widgets overlap the
+                        // ones below — the "widgets stack on refresh" bug. The live
+                        // render path already does this; the restore path never did.
+                        relayoutOnMediaSettle(elements.liveCanvas);
                         renderDynamicComponents(elements.liveCanvas);
                     } else {
                         // Fallback for older saved history without #dashboard-grid
@@ -975,6 +981,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, CANVAS_DOMPURIFY_CONFIG)}</div>`;
                             window.WidgetLayout.apply(elements.liveCanvas.querySelector('#dashboard-grid'));
                             seedWidgetSnapshots(elements.liveCanvas);
+                            relayoutOnMediaSettle(elements.liveCanvas);
                             renderDynamicComponents(elements.liveCanvas);
                         }
                     }
@@ -1171,7 +1178,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     async function runChatTurn(text, controller) {
-        clearSpeechQueue();
+        // Only wipe the shared speech queue when this is the ONLY turn running.
+        // Unconditionally clearing here meant that firing three questions in
+        // quick succession cut question 1's spoken answer off mid-sentence the
+        // instant question 2 launched — the answer had arrived, it just never
+        // finished being read. Same rule the exec-log already uses below.
+        if (activeTurns.size <= 1) clearSpeechQueue();
 
         let provider = "vllm-2";
         let model = "";
