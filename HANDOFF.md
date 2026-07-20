@@ -44,8 +44,17 @@ SEAM E in tests/test_followup_targeting.py (gist keeps names; body scan;
 unique-hit rule; anchor window; record_turn budget). Anchor/prompt pins in
 tests/test_agent_guardrails.py.
 
+## Typo tolerance (follow-up commit `c6ff64f`)
+All three matching ranges are now fuzzy via bounded Levenshtein
+(`_fuzzy_hit`), scaled by token length: <4 exact-only, 4-7 distance 1
+("mikku"→"miku"), 8+ distance 2 ("birkenstok"→"birkenstock"). Bounds exist
+because loose matching IS the historical bug class — substrings and
+half-word rewrites stay dead ("john"≠"johnny", "cost"≠"costco",
+"jass"≠"jazz"), each pinned by a negative test in SEAM F. Live-verified:
+"tell me more about Mikku" scored 1.00 against the sushi card and updated
+it in place.
+
 ## Watchlist
-- Body scan is exact-token; a misspelled name misses ("miku" vs "mikku").
 - `_widget_showing` body parse runs twice per follow-up turn (directive +
   rewrite) — cheap, but could be memoized if canvases get huge.
 
