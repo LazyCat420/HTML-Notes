@@ -808,12 +808,21 @@ document.addEventListener("DOMContentLoaded", () => {
      * Character COUNT is preserved on every frame, so the text keeps its shape
      * and the card never reflows around a growing string.
      */
-    const GLITCH_MIN_MS = 550;
-    const GLITCH_MAX_MS = 1500;
-    const GLITCH_MS_PER_CHAR = 0.45;
+    // Timing is tuned so the reveal READS as a live print — you should watch the
+    // wavefront travel and see individual words resolve. The previous values
+    // (0.45ms/char capped at 1500ms) put even a full research card under a second
+    // and a half: the effect fired correctly but crossed the whole card faster
+    // than the eye tracks it, so it registered as a flicker rather than as text
+    // being rewritten. The cap is what bound it — a 2800-char card wanted 1260ms
+    // and got clamped anyway, so raising ms/char alone would have changed nothing.
+    const GLITCH_MIN_MS = 900;
+    const GLITCH_MAX_MS = 4000;
+    const GLITCH_MS_PER_CHAR = 1.6;
     // Fraction of the run a single character spends scrambling before it settles.
     // Small = a crisp left-to-right wipe; large = the whole card boils at once.
-    const GLITCH_CHAR_LIFE = 0.28;
+    // Kept low so the wavefront stays a legible edge sweeping across the card
+    // rather than every word churning simultaneously.
+    const GLITCH_CHAR_LIFE = 0.22;
     const GLITCH_MAX_CHARS = 9000;   // runaway guard, not a normal-size cutoff
     const GLITCH_GLYPHS = '!<>-_\\/[]{}=+*^?#%&@$~;:aAbB0123456789';
     // Live animations, so a request going out mid-glitch can force them to their
