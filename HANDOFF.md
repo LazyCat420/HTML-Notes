@@ -1,3 +1,59 @@
+# Handoff — 2026-07-20 (JSON extraction moved to lazycat-sdk)
+
+**Deployed:** HTML-Notes `11dbb40` → synology
+**Tests:** 338 passing
+**Companion commits:** lazycat-sdk v0.3.0, trading-service `fa70560`, lazy-agent-service `b60d842`
+
+## What changed
+
+`app/agents/llm_client.py::extract_json_block` was a local reimplementation of
+JSON-extraction logic that already existed in three other services. It now
+delegates to `lazycat.llm_json.parse_json_strict`.
+
+The four call sites — `writer.py:73`, `intake.py:50`, `linker.py:65`,
+`librarian.py:48` — are **untouched**, and raising behaviour is preserved:
+unparseable output still raises `json.JSONDecodeError`, which `writer.py`
+propagates and the other three catch.
+
+The SDK reaches the container the same way it already did: the
+`../lazycat-sdk:/app/lazycat-sdk:ro` mount plus
+`PYTHONPATH=/app:/app/lazycat-sdk` in `docker-compose.yml`.
+
+## What got better
+
+Compared old vs new across 20 representative model responses: **0 regressions,
+2 improvements.** The old first-brace-to-last-brace slice produced invalid JSON
+for both of these, and they now parse:
+
+- top-level arrays (`[{"a":1},{"b":2}]`)
+- more than one JSON object in a response (`prefix {"a":1} ... {"b":2}`)
+
+Also newly handled: `<think>` reasoning blocks, braces inside string literals,
+and output truncated mid-structure.
+
+## A regression this caught before it shipped
+
+The first version of `parse_json_strict` **failed** on `{"a": 1} trailing
+prose` — a case the old HTML-Notes code handled. `extract_json_str` returns
+input that already starts with `{` verbatim, so the trailing sentence broke the
+parse. Models here routinely sign off after the JSON, so this would have shown
+up as intake/linker/librarian silently taking their fallback paths and
+`writer.py` raising.
+
+Fixed in the SDK (`_scan_balanced` fallback) before the migration landed —
+see lazycat-sdk commit "Fix parse_json_strict choking on prose appended after
+the JSON". **Lesson: diff old vs new over real inputs before swapping a parser,
+not just run the test suite** — the 338 tests were green either way.
+
+## Note
+
+`app/agents/llm_client.py::call_llm` is still a local vLLM caller that
+duplicates `lazycat.llm.prism_client` (which `orchestrator.py:211` already
+uses). That consolidation was scoped out of this pass and is the obvious next
+step here.
+
+---
+
 # Handoff — 2026-07-20 (research reliability + glitch reveal + image framing)
 
 ## Glitch reveal on in-place updates
