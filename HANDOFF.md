@@ -1,3 +1,56 @@
+# Handoff — 2026-07-20 (anaphora: "tell me more about Miku" = the restaurant)
+
+**Deployed:** `3d9ce6e` → synology `:8035`. 361 pytest + 16 node green. The
+exact live scenario (sushi card → clones video → "tell me more about Miku")
+re-driven twice; final run resolves Miku to the Vancouver restaurant, updates
+the sushi card in place, video untouched.
+
+## The failure
+"Tell me more about Miku" right after a sushi card listing "Miku, Tojo,
+Shizen" produced a Hatsune Miku YouTube video in the video widget. The model's
+world-knowledge prior won because the session context never reached it.
+
+## The fix — three layers (each exposed by re-driving live)
+1. **Ledger gist keeps distinctive names** (`_widget_detail`): it kept the
+   first 160 chars of the answer — which truncated exactly before "…include
+   Miku, Tojo, and Shizen". Now: 150-char prefix + up to 8 proper-noun-ish
+   tokens from the REST of the text, budget 200 (and `record_turn`'s clip
+   raised to match — 160 there silently re-amputated the names).
+2. **Body-scan targeting tier** (`_followup_target_id`): the live sushi answer
+   was ~2000 chars dense with names, so the 8-name cap filled before "Miku" —
+   gists can't hold every entity. New tier between gist scoring and the
+   deictic fallback: scan every widget's full rendered text on the canvas,
+   require FULL subject-token coverage, accept a UNIQUE hit only (two body
+   matches = ambiguous = don't guess).
+3. **Anchored directive + prompt rule**: the follow-up directive/rewrite now
+   include "currently showing: <title — gist — …±window around the referenced
+   name…>" via `_widget_showing(session, wid, message)` — the model sees
+   "…options include Miku, Tojo…" next to the ask. SYSTEM_PROMPT gained
+   "NAMES RESOLVE AGAINST THE CONVERSATION FIRST" (canvas meaning beats the
+   famous meaning).
+
+Verified decision trail in container logs:
+`[WIDGET TARGET] follow-up subject found in the BODY of #vancouver-sushi-trip
+— beats recency #video-...` → agent searched "Miku Vancouver restaurant".
+
+## Answer to "do we have a context-around-the-word system?"
+We do now, at three ranges: ledger gists (cheap, per-turn), full-body scan
+(exact, targeting only), and the quoted ±window in the directive (what the
+model actually reads). All session-scoped — nothing persists past the
+conversation, per the current scope.
+
+## Tests
+SEAM E in tests/test_followup_targeting.py (gist keeps names; body scan;
+unique-hit rule; anchor window; record_turn budget). Anchor/prompt pins in
+tests/test_agent_guardrails.py.
+
+## Watchlist
+- Body scan is exact-token; a misspelled name misses ("miku" vs "mikku").
+- `_widget_showing` body parse runs twice per follow-up turn (directive +
+  rewrite) — cheap, but could be memoized if canvases get huge.
+
+---
+
 # Handoff — 2026-07-20 (agent guardrails: image trust + follow-up targeting)
 
 **Deployed:** `6aa0414` → synology `:8035`. Tests: 352 pytest + 16 node, green.
