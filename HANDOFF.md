@@ -1,3 +1,74 @@
+# Handoff — 2026-07-20 (agent guardrails: image trust + follow-up targeting)
+
+**Deployed:** `6aa0414` → synology `:8035`. Tests: 352 pytest + 16 node, green.
+Both reported failures re-driven live end-to-end and confirmed fixed.
+
+## The three live failures and their fixes
+
+**1. "Compare birkenstock shoes to other shoes" → pasta captioned as a
+Birkenstock sandal.** The image injector's guard was
+`not config.get("images")` — a model-supplied images ARRAY bypassed
+build_image_config, the vision gate, and URL verification entirely. Both URLs
+loaded fine, so liveness checks can't catch a wrong-content pair: the model
+paired its own captions with unrelated remembered URLs. Fix (main.py, image
+injector branch): fires on TYPE alone now. Re-sources via `build_image_config`
+(captions become the search query when nothing else names the subject); model
+URLs survive only as a last resort, individually `_image_url_loads`-verified
+AND `filter_images_by_relevance`-vision-gated (note its signature:
+`(subject, negatives, items)` with items keyed `'image'`, not `'url'`).
+Prompt-side: the image routing line now tells the agent it has NO image tool
+and must NEVER write url/images entries; new COMPARE rule routes comparisons
+to a data_card table first, images only as an explicit add-on.
+Live re-test: agent emitted `config={'image_query': ...}` only — no URLs —
+and the widget rendered one real, loading, on-subject image.
+
+**2. "Tell me more about the deals at costco" (right after a Birkenstock card)
+edited the SANDALS widget.** The follow-up directive/rewrite hard-targeted
+`focus_id` — pure recency — whenever the (loose) refinement regex fired,
+pre-empting the topical scorer. Fixed in THREE layers, each caught by
+re-driving the scenario live after the previous fix:
+- `_followup_target_id` (new, main.py ~2680): scores the message against
+  every canvas widget (title + ledger gist, across types); a ≥0.5 winner
+  beats recency; subject-free deictic asks keep recency. Resolved ONCE per
+  turn so the directive and the message rewrite can never disagree.
+- Fresh-subject guard, both in `_followup_target_id` AND in
+  `find_reuse_target`'s deictic fallback: ≥2 subject tokens matching nothing
+  on canvas = new topic = no forced reuse. Without the second one,
+  "find me MORE info on birkenstock arizona" (trips `more\b`) got retargeted
+  by the RESOLVER even after the directive stood down — the model honestly
+  asked for a new id and `_resolve_agent_widget_id` overrode it.
+- `_SUBJECT_STOP` additions: "happened/next/info/…" (deictic narrative) and
+  "anything/related/…" (vague scope). "anything hardware related" diluted the
+  overlap to 0.4 and missed the 0.5 threshold purely on filler.
+Live re-test (scratch `target_check.py`): costco card → birkenstock gets its
+OWN card → the costco follow-up updates the COSTCO card in place, sandals
+untouched.
+
+**3. Music widget console error** (`null.currentTime`): destroy() nulls
+`this.audio` but queued events still fire; `src=''` in destroy itself fires a
+spurious error event. Handlers now guard.
+
+## Testing pattern worth keeping
+The unit suite was green after fix #1 of bug 2 — only re-driving the real
+3-turn scenario in a browser exposed layers 2 and 3. For targeting changes,
+run the live scenario (`scripts/`-style playwright, 3 real agent turns),
+then check `[AGENT TURN]` / `[WIDGET TARGET]` container logs for the
+decision trail. New tests: SEAM D in tests/test_followup_targeting.py,
+tests/test_agent_guardrails.py (source pins on the injector predicates,
+prompt rules, directive wiring), fresh-subject case in test_followup_reuse.py.
+
+## Watchlist
+- The compare ask renders ONE image (vision gate is strict) — fine, but "a
+  couple pictures" asks could source more candidates before gating.
+- Cross-type association (image follow-up attaching to a data_card thread) is
+  still unbuilt; new-widget is the designed behavior there.
+- The `canvas_add_widget` tool DOC in lazy-agent-service
+  (tool_schemas/html-notes/html-notes.json) still documents url/images
+  configs; the server now ignores them, but tightening that doc would save
+  the model wasted tokens. Needs a lazy-agent-service deploy.
+
+---
+
 # Handoff — 2026-07-20 (frontend: restrained sci-fi HUD theme)
 
 **Deployed:** HTML-Notes `5ba6cf8` → synology `:8035`. Health 200; live `/`
