@@ -4816,7 +4816,7 @@ def _extract_directions_place(message: str) -> str:
     return cleaned[:60] if len(cleaned) >= 2 else ''
 
 
-async def build_traffic_widget(message: str) -> tuple[str, Optional[dict]]:
+async def build_traffic_widget(message: str, force_traffic: bool = False) -> tuple[str, Optional[dict]]:
     """A traffic/directions ask → (widget_type, config) for the best widget we can
     actually deliver.
 
@@ -4831,7 +4831,14 @@ async def build_traffic_widget(message: str) -> tuple[str, Optional[dict]]:
     pulled out, so the caller falls back to the travel-time answer card."""
     msg = (message or "").strip()
     city = (database.get_user_facts().get("location") or "").strip()
-    is_traffic = bool(re.search(r'\btraffic\b', msg, re.I))
+    # `force_traffic` is for callers that ALREADY established traffic intent. The
+    # router classifies "map of traffic in the east bay" as type='traffic' and
+    # hands us query='east bay' — the place, with the word "traffic" stripped into
+    # the type. Re-deriving intent by grepping this string then failed, so a
+    # routed traffic ask silently built the plain directions embed instead of the
+    # TomTom overlay: the caller knew, threw the knowledge away, and we looked for
+    # it again in text it was no longer in. Only infer when nobody told us.
+    is_traffic = force_traffic or bool(re.search(r'\btraffic\b', msg, re.I))
     m = _DIR_FROM_TO_RE.search(msg)
     if m:
         saddr, daddr = m.group(1).strip()[:60], m.group(2).strip()[:60]
@@ -5589,7 +5596,8 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             return ("map", "map", cfg)
 
         if wtype == "traffic":
-            twtype, tcfg = await build_traffic_widget(query or message)
+            # wtype IS the intent — the classifier already decided this is traffic.
+            twtype, tcfg = await build_traffic_widget(query or message, force_traffic=True)
             if not tcfg:
                 # No place named and none remembered. Returning None here meant
                 # the router built NOTHING — a bare "how is the traffic" produced
@@ -6302,7 +6310,9 @@ async def send_message(req: MessageRequest):
                 # A pure travel-TIME ask ("how long to the airport") keeps the answer
                 # card, which gives the actual minutes.
                 if TRAFFIC_MAP_RE.search(text_clean):
-                    traffic_widget, traffic_cfg = await build_traffic_widget(req.message)
+                    # Gated by TRAFFIC_MAP_RE above, so intent is already settled.
+                    traffic_widget, traffic_cfg = await build_traffic_widget(
+                        req.message, force_traffic=True)
                     if traffic_cfg:
                         return spawn_widget_stream(
                             traffic_widget, "traffic", config=traffic_cfg,

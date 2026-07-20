@@ -662,12 +662,19 @@ async def test_build_router_widget_clock_and_traffic(monkeypatch):
         {"type": "clock", "query": "set a timer for 5 minutes"}, "s", "msg")
     assert cfg["mode"] == "countdown" and cfg["duration_seconds"] == 300
     # traffic delegates to build_traffic_widget's (type, cfg) contract
-    async def fake_traffic(msg):
+    seen = {}
+    async def fake_traffic(msg, force_traffic=False):
+        seen["force_traffic"] = force_traffic
         return "iframe_app", {"url": "https://maps.google.com/maps?q=x&output=embed"}
     monkeypatch.setattr(m, "build_traffic_widget", fake_traffic)
     wt, pfx, cfg = await m.build_router_widget(
         {"type": "traffic", "query": "traffic in LA", "modifiers": {"traffic": True}}, "s", "msg")
     assert wt == "iframe_app" and "output=embed" in cfg["url"]
+    # The router must ASSERT traffic intent rather than let it be re-inferred from
+    # the query text. It classifies type='traffic' and passes the place alone
+    # ("east bay"), so a re-grep for the word "traffic" finds nothing and silently
+    # builds the plain directions embed with no TomTom overlay.
+    assert seen["force_traffic"] is True
 
 
 @pytest.mark.asyncio
