@@ -2180,8 +2180,20 @@ _CANVAS_XDATA_TYPE = {
 
 
 def _classify_canvas_widget(card) -> str:
-    """The widget_type of a canvas node, from its container class then its x-data.
-    Returns 'custom' only for genuinely hand-built widgets."""
+    """The widget_type of a canvas node, from its stamped type, then its container
+    class, then its x-data. Returns 'custom' only for genuinely hand-built widgets.
+
+    `data-widget-type` is checked FIRST and is authoritative: it is stamped by
+    generate_widget_html for every widget, whereas the class/x-data maps below only
+    cover the types that happen to carry a distinctive marker. `iframe_app` carries
+    NEITHER — no type class, no x-data — so a directions map ("San Jose → SF",
+    which renders as iframe_app, not map) was classified 'custom'. It then showed
+    up in the agent's canvas inventory as `custom`, so when the user said "close
+    the map" the one widget that WAS a map by every human measure was the one line
+    that didn't say map."""
+    stamped = (card.get("data-widget-type") or "").strip()
+    if stamped:
+        return stamped
     for cls in card.get("class", []):
         if cls in _CANVAS_CLASS_TYPE:
             return _CANVAS_CLASS_TYPE[cls]
@@ -2202,6 +2214,30 @@ def _iter_canvas_widgets(html: str):
         title_el = card.select_one(".glass-card-title, h3, h2, h4")
         title = title_el.get_text(strip=True) if title_el else ""
         yield card.get("id", "unknown"), _classify_canvas_widget(card), title
+
+
+def find_existing_widget_by_id_prefix(session_id: str, prefix: str) -> Optional[str]:
+    """The id of the most-recent widget whose id starts with `prefix`.
+
+    Identity by PREFIX because a traffic ask does not have a stable widget TYPE:
+    build_traffic_widget returns `map` when geocoding succeeds and `iframe_app`
+    when it misses or the ask is "from A to B". Both are "the traffic map" to the
+    user, but type-keyed reuse (SINGLETON_WIDGET_TYPES) can't see across that
+    fork, so consecutive traffic asks landing on different sides of it stacked a
+    new widget every time — which is exactly what "traffic to san jose" then
+    "traffic to sf" then "san ramon to san jose" did. The id prefix is passed by
+    the caller as the widget's semantic role, so it survives the type change.
+    """
+    found = None
+    try:
+        soup = BeautifulSoup(get_session_canvas(session_id) or "", "html.parser")
+        for card in soup.select(".glass-card, .widget-container"):
+            wid = card.get("id") or ""
+            if wid.startswith(f"{prefix}-"):
+                found = wid  # last match wins — the most recently added
+    except Exception as e:
+        logger.warning(f"find_existing_widget_by_id_prefix failed: {e}")
+    return found
 
 
 def find_existing_widget(session_id: str, widget_type: str) -> Optional[str]:
@@ -6392,8 +6428,17 @@ async def send_message(req: MessageRequest):
                     traffic_widget, traffic_cfg = await build_traffic_widget(
                         req.message, force_traffic=True)
                     if traffic_cfg:
+                        # Reuse the open traffic widget by ID PREFIX. Type-keyed
+                        # reuse can't span the map/iframe_app fork above, so every
+                        # traffic ask that geocoded differently from the last one
+                        # stacked a duplicate instead of updating in place.
+                        existing = find_existing_widget_by_id_prefix(
+                            req.session_id, "traffic")
+                        if existing:
+                            logger.info(f"[TRAFFIC] reusing open traffic widget {existing}")
                         return spawn_widget_stream(
                             traffic_widget, "traffic", config=traffic_cfg,
+                            widget_id=existing,
                             status="pulling up the map and live traffic...")
                 return spawn_widget_stream(
                     "data_card", "directions",
@@ -8089,22 +8134,32 @@ async def internal_tool_execute(req: InternalToolRequest):
                     ]
                 }
             
-            # Full canvas summary
+            # Full canvas summary.
+            #
+            # This selected ".glass-card" and read ".glass-card-title" — a convention
+            # NO factory-rendered widget uses. Every widget root is
+            # `.widget-container` with a bare <h3> title, so this matched nothing and
+            # reported component_count: 0 on a canvas full of widgets. Worse, it
+            # never returned the widget ID, so even when it did match, the agent had
+            # no way to turn "the map" into a `#id` selector for canvas_modify_dom —
+            # it had to guess, and guessed wrong. Reuses _iter_canvas_widgets so this
+            # can't drift from the reuse/summary paths again.
             components = []
-            for card in soup.select(".glass-card"):
-                title_el = card.select_one(".glass-card-title")
-                classes = card.get("class", [])
-                comp_type = "unknown"
-                for cls in classes:
-                    if cls != "glass-card":
-                        comp_type = cls
-                        break
+            for card in soup.select(".glass-card, .widget-container"):
+                title_el = card.select_one(".glass-card-title, h3, h2, h4")
+                wid = card.get("id") or ""
                 components.append({
-                    "type": comp_type,
-                    "title": title_el.get_text(strip=True) if title_el else "",
-                    "text_preview": card.get_text(strip=True)[:200]
+                    # `id` is what makes this actionable: it is exactly what
+                    # canvas_modify_dom(css_selector="#<id>") needs.
+                    "id": wid,
+                    "selector": f"#{wid}" if wid else "",
+                    "type": _classify_canvas_widget(card),
+                    "title": (card.get("data-widget-title")
+                              or (title_el.get_text(strip=True) if title_el else "")),
+                    "subtitle": card.get("data-widget-subtitle") or "",
+                    "text_preview": card.get_text(strip=True)[:200],
                 })
-            
+
             all_text = soup.get_text(strip=True)[:500]
             all_tags = [el.name for el in soup.find_all(True)]
             tag_counts = {}
@@ -8134,12 +8189,47 @@ async def internal_tool_execute(req: InternalToolRequest):
                 return {"error": "action is required", "is_error": True}
             
             soup = BeautifulSoup(canvas_html, "html.parser")
-            target = soup.select_one(css_selector)
-            
+            try:
+                matches = soup.select(css_selector)
+            except Exception as e:
+                return {"error": f"Invalid selector '{css_selector}': {e}", "is_error": True}
+            target = matches[0] if matches else None
+
             if not target:
                 return {"error": f"No element matched selector '{css_selector}'", "is_error": True}
-            
+
             if action == "remove":
+                # DESTRUCTIVE, so verify before acting. This was select_one() +
+                # decompose() on whatever string the model produced, with no check
+                # and no report of what died — the add path validates ids through
+                # _resolve_agent_widget_id, but remove had no equivalent. A class or
+                # positional selector ('.map-widget', '.widget-container:first-child')
+                # silently took the first of several and reported success, which is
+                # how "close the san jose to sf map" closed a different widget.
+                widgets = [m for m in matches
+                           if "widget-container" in (m.get("class") or [])
+                           or "glass-card" in (m.get("class") or [])]
+                if len(widgets) > 1:
+                    listing = ", ".join(
+                        f'#{w.get("id","?")} ({_classify_canvas_widget(w)}'
+                        f'{": " + w.get("data-widget-title") if w.get("data-widget-title") else ""})'
+                        for w in widgets[:6])
+                    return {
+                        "error": (f"Selector '{css_selector}' matches {len(widgets)} widgets "
+                                  f"[{listing}] — refusing to guess which to remove. "
+                                  f"Re-issue with the exact '#<widget-id>' of the one you mean "
+                                  f"(call canvas_read_dom to list ids)."),
+                        "is_error": True,
+                        "candidates": [{"id": w.get("id", ""),
+                                        "type": _classify_canvas_widget(w),
+                                        "title": w.get("data-widget-title", "")}
+                                       for w in widgets[:10]],
+                    }
+                removed = {"id": target.get("id", ""),
+                           "type": _classify_canvas_widget(target),
+                           "title": target.get("data-widget-title", "")}
+                logger.info(f"[MODIFY DOM] remove {css_selector!r} -> "
+                            f"#{removed['id']} ({removed['type']}) {removed['title']!r}")
                 target.decompose()
             elif action in ("append", "prepend", "replace", "insert_before", "insert_after"):
                 if not html_snippet:
@@ -8162,7 +8252,15 @@ async def internal_tool_execute(req: InternalToolRequest):
                 "success": True,
                 "rendered_html": str(soup),
                 "action_performed": action,
-                "selector": css_selector
+                "selector": css_selector,
+                # Report WHAT was affected, not just that something was. A bare
+                # {"success": true} gave the model no way to notice it had removed
+                # the wrong widget, so it reported success to the user either way.
+                "affected": {"id": target.get("id", "") if action != "remove" else removed["id"],
+                             "type": (_classify_canvas_widget(target) if action != "remove"
+                                      else removed["type"]),
+                             "title": (target.get("data-widget-title", "") if action != "remove"
+                                       else removed["title"])},
             }
 
         elif t == "html_notes_add_youtube_widget":

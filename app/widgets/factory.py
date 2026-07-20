@@ -1359,6 +1359,19 @@ def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
         html_out = render_data_card(widget_id, fallback)
     # Stamp the content signature onto the widget root so the client can tell an
     # unchanged widget from a genuinely changed one without diffing live DOM.
+    #
+    # Also stamp the widget's IDENTITY. Widget ids are opaque ('traffic-c20bc01b'),
+    # so an agent asked to "close the san jose to sf map" saw two indistinguishable
+    # traffic widgets and picked one at random — and picked wrong. The title was
+    # only present as header text buried in markup. These attributes put type and
+    # subject where they can be read without parsing the whole widget, and they are
+    # what canvas_read_dom reports as its inventory.
     marker = f'id="{widget_id}"'
-    sig_attr = f'{marker} data-sig="{_content_sig(widget_type, config)}"'
-    return html_out.replace(marker, sig_attr, 1)
+    label = esc(str(config.get("title") or "")[:120])
+    subtitle = esc(str(config.get("subtitle") or "")[:120])
+    attrs = (f'{marker} data-sig="{_content_sig(widget_type, config)}"'
+             f' data-widget-type="{esc(widget_type)}"'
+             f' data-widget-title="{label}"')
+    if subtitle:
+        attrs += f' data-widget-subtitle="{subtitle}"'
+    return html_out.replace(marker, attrs, 1)
