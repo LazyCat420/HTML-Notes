@@ -73,6 +73,62 @@ stylesheet and asserts no crop / no text overlap / float-vs-stack per width.
 Note the overlap check must compare against `Range.getClientRects()` line boxes,
 not block boxes — a paragraph's block box legitimately extends under a float.
 
+## Widget identity, reuse and safe removal
+
+Symptom: "traffic to san jose" → "traffic to sf" → "san ramon to san jose" made
+THREE traffic widgets, and "close the san jose to sf map" closed a different one.
+Three independent defects, all of which look like "the agent is dumb".
+
+**1. Widgets were unidentifiable.** A widget root carried an opaque id
+(`traffic-c20bc01b`), Tailwind classes and `data-sig` — nothing else. The title
+existed only as `<h3>` prose. `generate_widget_html` now stamps
+`data-widget-type` / `-title` / `-subtitle` on every widget, and
+`_classify_canvas_widget` reads the stamp FIRST. This matters most for
+`iframe_app`, which has no type class and no `x-data`: a directions map
+("San Jose → SF") classified as `custom`, so the one widget the user called "the
+map" was the one inventory line that didn't say map. `_summarize_canvas_for_history`
+was already reading `data-widget-type` — it had just always fallen back to
+`"widget"` because nothing emitted it.
+
+**2. `canvas_read_dom` was blind.** It selected `.glass-card` and read
+`.glass-card-title` — a convention NO factory widget uses (they are
+`.widget-container` + bare `<h3>`), so it matched nothing and returned
+`component_count: 0` on a full canvas. It also never returned widget ids, so the
+agent could not construct a `#id` selector even on a hit. Its own tool schema
+advertised "each with its widget_id, type, and what it shows" — the doc promised
+what the server never implemented, the same seam class as
+[[html-notes-prompt-server-seams]]. Now reuses `_iter_canvas_widgets` and returns
+`id`/`selector`/`type`/`title`.
+
+**3. `canvas_modify_dom` never verified what it destroyed.** `select_one(sel)` +
+`decompose()` on whatever string the model produced, then `{"success": true}`
+regardless of what died — while the ADD path validates ids through
+`_resolve_agent_widget_id`. A remove matching several widgets is now refused and
+returns the candidate ids; a successful one reports and logs `affected`
+{id,type,title}. The live tool schema's `css_selector` examples actively taught
+the bad habit (`.glass-card:first-child`, `h3`) and are now id-first.
+
+**4. Reuse could not span the type fork.** `build_traffic_widget` returns `map`
+when geocoding succeeds and `iframe_app` when it misses or the ask is "from A to
+B". EVERY reuse signal (`SINGLETON_WIDGET_TYPES`, `_widget_on_canvas`,
+`find_reuse_target`) is keyed on widget_type, so two traffic asks landing on
+different sides of that fork could not see each other. Added
+`find_existing_widget_by_id_prefix` + `SINGLETON_ROLE_PREFIXES` — identity by
+semantic ROLE, which survives the type change — wired in as P3 of
+`_resolve_widget_target` AND into `spawn_widget_stream`'s chain.
+
+**Kept narrow deliberately:** a shared id prefix means "same slot on the canvas",
+which is true for traffic/map/weather and NOT for e.g. `answer-` — widening it
+would merge two unrelated cards.
+
+**Testing note that mattered.** The first fix patched only the fast path and
+looked right; live testing showed the canvas still growing 1757 → 3138 bytes
+because these asks route through **tier2-local (the router)**, which has its own
+id-resolution chain. Unit tests would not have caught it. Verify by driving
+`/session/message` and counting distinct `traffic-<hex>` ids in the SSE stream —
+four consecutive asks must all report the SAME id. `scratch/widget_targeting_check.py`
+reproduces the canvas from the session logs.
+
 ## Clickable links in agent prose
 
 `_md_inline` linkified `[label](url)` but never autolinked bare URLs — and bare
