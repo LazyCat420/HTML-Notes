@@ -802,11 +802,21 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
     """
 
 def render_mini_music_player(widget_id: str, config: dict) -> str:
+    # NOTE: this template has a hand-maintained twin in app/static/index.js
+    # (the self-heal rehydration for music widgets that lost their Alpine
+    # attrs). Structural changes here must be mirrored there.
+    from app.config import MUSIC_PLAYER_URL
     genre = config.get("genre", "")
+    # 'genre' | 'artist' | '' — routing's guess at what the query names.
+    # The widget tries the genre pipeline first when unset; a miss fails over
+    # to the artist mix client-side, so a wrong guess self-corrects.
+    kind = config.get("kind", "")
     autoplay = str(config.get("autoplay", False)).lower()
-    
+    cfg_js = (f'{{ genre: {json_escape(genre)}, kind: {json_escape(kind)}, '
+              f'autoplay: {autoplay}, base: {json_escape(MUSIC_PLAYER_URL)} }}')
+
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] justify-between group" x-data="musicPlayerWidget({json_escape(genre)}, {autoplay})">
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col justify-between group transition-all duration-300" :class="showQueue ? 'h-[420px]' : 'h-[280px]'" x-data="musicPlayerWidget({cfg_js})">
         <!-- Background Blur/Glow effect -->
         <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
         <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/40 to-transparent pointer-events-none"></div>
@@ -830,8 +840,25 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
             </div>
             <div class="flex-grow min-w-0 flex flex-col justify-center">
                 <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
-                <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
+                <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
             </div>
+        </div>
+
+        <!-- Queue Panel (toggled by the queue_music button below) -->
+        <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-2 divide-y divide-white/5" style="display: none;">
+            <template x-for="item in upcoming" :key="item.t.id">
+                <div class="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/5 cursor-pointer group/row" @click="playAt(item.i)">
+                    <span class="material-symbols-outlined text-[0.9rem] text-purple-300/60 shrink-0">music_note</span>
+                    <div class="min-w-0 flex-grow">
+                        <div class="truncate text-white/90" x-text="item.t.title"></div>
+                        <div class="truncate text-purple-300/70 text-[10px]" x-text="item.t.artist"></div>
+                    </div>
+                    <button @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
+                        <span class="material-symbols-outlined text-[0.9rem]">close</span>
+                    </button>
+                </div>
+            </template>
+            <div x-show="!upcoming.length" class="px-3 py-2 text-xs text-white/40">Queue empty — more on the way…</div>
         </div>
 
         <!-- Progress Bar & Time -->
@@ -846,7 +873,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                 <span x-text="formatTime(duration)">0:00</span>
             </div>
         </div>
-        
+
         <!-- Controls -->
         <div class="relative z-10 flex items-center justify-between px-1 mt-1">
             <button @click="toggleShuffle()" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isShuffle, 'text-white/50 hover:text-white': !isShuffle}}" title="Shuffle">
@@ -877,6 +904,10 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
             
             <button @click="toggleRepeat()" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isRepeat, 'text-white/50 hover:text-white': !isRepeat}}" title="Repeat">
                 <span class="material-symbols-outlined text-lg">repeat</span>
+            </button>
+
+            <button @click="showQueue = !showQueue" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': showQueue, 'text-white/50 hover:text-white': !showQueue}}" title="Queue">
+                <span class="material-symbols-outlined text-lg">queue_music</span>
             </button>
         </div>
         

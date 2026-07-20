@@ -1,16 +1,16 @@
-// Regression guard for "I asked for smooth jazz and got Burzum" AND
-// "I asked for john lennon and got a reggae Johnny track".
+// Regression guard for the music widget's contract with the music-player
+// service, rewritten for the SSE/queue rework (2026-07-20).
 //
-// Bugs in the mini_music_player widget's init() (app/static/js/widgets.js):
-//   1. matchesGenre() matched the WHOLE filter phrase, so "smooth jazz" matched
-//      none of the library's jazz tracks — the filter returned empty.
-//   2. On an empty filter result the widget dumped the ENTIRE library at track 0
-//      — Burzum (black metal), the opposite of the request.
-//   3. The genre-mix fetch timed out at 15s while a cold mix takes ~18s.
-//   4. matchesGenre() used an UNBOUNDED includes(), so a "john lennon" ask
-//      matched the reggae track "05 - Johnny Big Mouth.mp3" (john ⊂ Johnny) and
-//      never reached the YouTube fallback. Fix: word-boundary matching, a named
-//      ARTIST must match ALL words, and artists resolve from YouTube not local.
+// History this file protects against repeating:
+//   - "smooth jazz got Burzum": client-side fallbacks dumped the local library
+//     for a named genre. The library is now last-resort for BARE queries only.
+//   - "jungle music played from my library": a hardcoded KNOWN_MUSIC_GENRES set
+//     decided genre-vs-artist client-side; unknown genres degraded to artist
+//     search + library matching. The set is GONE — the music-player service's
+//     mix pipeline decides, and routing passes a `kind` hint.
+//   - The old suite pinned those very heuristics and stayed green while the
+//     feature was broken. These asserts pin the service contract and the queue
+//     behavior instead.
 //
 // Run: `node --test tests/test_music_genre_routing.mjs`.
 
@@ -21,89 +21,161 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const widgetsJs = readFileSync(join(here, "..", "app", "static", "js", "widgets.js"), "utf8");
+const read = (...p) => readFileSync(join(here, "..", ...p), "utf8");
+const widgetsJs = read("app", "static", "js", "widgets.js");
+const indexJs = read("app", "static", "index.js");
+const factoryPy = read("app", "widgets", "factory.py");
+const mainPy = read("app", "main.py");
 
-const LIBRARY = [
-  { genre: "Unknown", title: "01 - Feeble Screams From Forests Unknown.mp3", artist: "01.Burzum - Aske" },
-  { genre: "Unknown", title: "02 - Ea, Lord Of The Depths.mp3", artist: "01.Burzum - Aske" },
-  { genre: "Rap", title: "Jazz (We've Got)", artist: "A Tribe Called Quest" },
-  { genre: "Jazz", title: "So What", artist: "Miles Davis" },
-];
+// Slice out just the music player component so asserts about absence don't
+// trip over other widgets (e.g. the youtube player legitimately differs).
+const musicSrc = widgetsJs.slice(
+  widgetsJs.indexOf("Alpine.data('musicPlayerWidget'"),
+  widgetsJs.indexOf("Alpine.data('youtubePlayerWidget'"));
+assert.ok(musicSrc.length > 1000, "could not slice musicPlayerWidget source");
 
-// ── Static guards: the source must keep the fixed contract ──────────────────
-test("widgets.js splits the genre filter into words (not whole-phrase match)", () => {
-  assert.match(widgetsJs, /const filterWords = [^;]*split\(\/\\s\+\/\)/, "filter must be word-split");
+// ── The client-side genre list is dead ──────────────────────────────────────
+test("no client-side genre gating remains", () => {
+  assert.doesNotMatch(widgetsJs, /KNOWN_MUSIC_GENRES/, "the hardcoded genre set must stay deleted");
+  assert.doesNotMatch(widgetsJs, /isKnownMusicGenre/, "no client-side genre/artist guessing");
+  assert.doesNotMatch(musicSrc, /matchesGenre/, "no local-library genre matching");
 });
 
-test("widgets.js matches on WORD BOUNDARIES, not unbounded includes()", () => {
-  assert.match(widgetsJs, /wordHit = \(hay, w\) =>/, "must use a word-boundary matcher");
-  assert.match(widgetsJs, /filterWords\.some\(w => wordHit\(hay, w\)\)/, "genre matches ANY word");
-  assert.match(widgetsJs, /filterWords\.every\(w => wordHit\(hay, w\)\)/, "artist matches ALL words");
+// ── SSE contract with the music-player mix endpoint ─────────────────────────
+test("mix is consumed over SSE (progressive, no cold-cache timeout race)", () => {
+  assert.match(musicSrc, /new EventSource\(/, "must use EventSource");
+  assert.match(musicSrc, /\/api\/youtube\/mix\/\$\{encodeURIComponent\(term\)\}\/stream/,
+    "must target the mix /stream endpoint");
 });
 
-test("widgets.js routes a named artist to YouTube, not the local library", () => {
-  assert.match(widgetsJs, /if \(isArtistQuery\)[\s\S]*?ytSearch\(\)/, "artists must resolve from YouTube search");
+test("the stream is closed on done, error, AND destroy (reconnect-storm guard)", () => {
+  // EventSource auto-reconnects after a server close; an unclosed stream
+  // re-runs the whole discovery pipeline against the service's 10/min limit.
+  const doneHandler = musicSrc.slice(musicSrc.indexOf("this.es.addEventListener('done'"));
+  assert.match(doneHandler.slice(0, 500), /this\.closeStream\(\)/, "done must close the stream");
+  const errHandler = musicSrc.slice(musicSrc.indexOf("this.es.addEventListener('error'"));
+  assert.match(errHandler.slice(0, 500), /this\.closeStream\(\)/, "error must close the stream");
+  const destroyBody = musicSrc.slice(musicSrc.indexOf("destroy()"));
+  assert.match(destroyBody.slice(0, 700), /this\.closeStream\(\)/, "destroy must close the stream");
 });
 
-test("widgets.js only dumps the full library when NO genre was specified", () => {
-  assert.match(widgetsJs, /!filterWords\.length[\s\S]*?loadedTracks = allLocalTracks;/,
-    "full-library fallback must be gated behind an empty filter");
+test("the 7MB /api/tracks fetch is gone from the mix path", () => {
+  const startStreamBody = musicSrc.slice(
+    musicSrc.indexOf("startStream(term, type"),
+    musicSrc.indexOf("closeStream() {"));
+  assert.ok(startStreamBody.length > 500, "could not slice startStream");
+  assert.doesNotMatch(startStreamBody, /api\/tracks/, "streaming path must not touch the library");
+  // The library survives ONLY inside failover, gated behind a bare query.
+  const failoverBody = musicSrc.slice(
+    musicSrc.indexOf("async failover("),
+    musicSrc.indexOf("maybeRefill() {"));
+  const idx = failoverBody.indexOf("api/tracks");
+  assert.ok(idx > 0, "bare-query library fallback must still exist in failover");
+  assert.match(failoverBody.slice(0, idx), /if \(this\.genreFilter\)[\s\S]*?return;/,
+    "a NAMED query must error out before the library branch is reachable");
 });
 
-test("widgets.js gives a cold genre mix enough time and retries once", () => {
-  assert.match(widgetsJs, /fetchJson\(mixUrl, 2\d000\)/, "first mix fetch must allow >=20s for a cold cache");
-  assert.match(widgetsJs, /ytData = await fetchJson\(mixUrl, \d+\);\s*\n\s*if \(!\(ytData/, "must retry the mix once on empty/timeout");
+test("failover ladder: genre → artist mix → search → honest error", () => {
+  const failoverBody = musicSrc.slice(
+    musicSrc.indexOf("async failover("),
+    musicSrc.indexOf("maybeRefill() {"));
+  const artistRetry = failoverBody.indexOf("startStream(term, 'artist')");
+  const search = failoverBody.indexOf("/api/youtube/search");
+  const namedError = failoverBody.indexOf("Couldn't find");
+  assert.ok(artistRetry > 0, "genre miss must retry as artist");
+  assert.ok(search > artistRetry, "search fallback comes after the artist retry");
+  assert.ok(namedError > search, "the honest error comes after search, never the library");
+  assert.match(failoverBody, /triedArtistFallback/, "artist retry must be one-shot");
 });
 
-// ── Behavioral mirror of the fixed matchesGenre ─────────────────────────────
-function wordHit(hay, w) {
-  return new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b").test(hay);
+// ── Behavioral mirrors (same logic as the component methods) ────────────────
+function makeQueueState() {
+  return {
+    queue: [], currentIndex: -1, seenIds: new Set(),
+    enqueue(raw) {
+      const fresh = (raw || []).filter(v => v && v.id && !this.seenIds.has(v.id));
+      fresh.forEach(t => this.seenIds.add(t.id));
+      this.queue.push(...fresh);
+      return fresh.length;
+    },
+    removeAt(i) {
+      if (i === this.currentIndex || i < 0 || i >= this.queue.length) return;
+      this.queue.splice(i, 1);
+      if (i < this.currentIndex) this.currentIndex--;
+    },
+  };
 }
-function matchesGenre(track, genreFilter, isArtist) {
-  const filterWords = (genreFilter || "").toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-  if (!filterWords.length) return true;
-  const hay = `${track.genre || ""} ${track.title || ""} ${track.artist || ""}`.toLowerCase();
-  return isArtist ? filterWords.every((w) => wordHit(hay, w)) : filterWords.some((w) => wordHit(hay, w));
-}
 
-function resolveGenreTracks(genreFilter, allLocalTracks) {
-  const filterWords = (genreFilter || "").toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-  let loaded = allLocalTracks.filter((t) => matchesGenre(t, genreFilter, false));
-  if (loaded.length === 0 && allLocalTracks.length > 0 && !filterWords.length) {
-    loaded = allLocalTracks; // bare "play music" only
-  }
-  return loaded;
-}
-
-test('"smooth jazz" matches the library\'s jazz tracks by the word "jazz"', () => {
-  const matched = LIBRARY.filter((t) => matchesGenre(t, "smooth jazz", false));
-  assert.ok(matched.length >= 2, "should reach both the Tribe track and Miles Davis via 'jazz'");
-  assert.ok(matched.every((t) => !t.artist.includes("Burzum")), "must never match a Burzum track");
+test("enqueue dedupes across SSE batches and refills", () => {
+  const s = makeQueueState();
+  assert.equal(s.enqueue([{ id: "a" }, { id: "b" }]), 2);
+  assert.equal(s.enqueue([{ id: "b" }, { id: "c" }, { id: null }]), 1, "b is a dupe, null is dropped");
+  assert.deepEqual(s.queue.map(t => t.id), ["a", "b", "c"]);
 });
 
-test('"smooth jazz" never falls back to the whole library (never plays Burzum)', () => {
-  const played = resolveGenreTracks("smooth jazz", LIBRARY);
-  assert.ok(played.length > 0, "the jazz tracks are found, so playback still works");
-  assert.ok(played.every((t) => !t.artist.includes("Burzum")), "Burzum must not be in the queue for a jazz request");
+test("removeAt keeps the playing track and fixes indices", () => {
+  const s = makeQueueState();
+  s.enqueue([{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }]);
+  s.currentIndex = 2; // playing "c"
+  s.removeAt(2);
+  assert.equal(s.queue.length, 4, "the playing track is not removable");
+  s.removeAt(0); // remove "a", before current
+  assert.equal(s.currentIndex, 1, "index shifts down when removing before current");
+  assert.equal(s.queue[s.currentIndex].id, "c", "still playing the same track");
+  s.removeAt(2); // remove "d", after current
+  assert.equal(s.currentIndex, 1, "index unchanged when removing after current");
+  assert.deepEqual(s.queue.map(t => t.id), ["b", "c"]);
 });
 
-test("a genre with genuinely no local match plays nothing rather than the whole library", () => {
-  const onlyBurzum = LIBRARY.filter((t) => t.artist.includes("Burzum"));
-  const played = resolveGenreTracks("smooth jazz", onlyBurzum);
-  assert.equal(played.length, 0, "no jazz in this sub-library → play nothing, do NOT dump Burzum");
+test("maybeRefill gating: threshold, in-flight, and 90s floor", () => {
+  // Mirrors the guards; the source asserts below pin the real values.
+  const gate = (remaining, inFlight, msSinceLast, hasTerm = true) =>
+    !(remaining > 5 || inFlight || !hasTerm) && msSinceLast >= 90000;
+  assert.equal(gate(10, false, 999999), false, "plenty queued — no refill");
+  assert.equal(gate(3, true, 999999), false, "already refilling");
+  assert.equal(gate(3, false, 30000), false, "rate-limit floor");
+  assert.equal(gate(3, false, 999999, false), false, "no term to refill from");
+  assert.equal(gate(3, false, 91000), true, "low queue, idle, past floor — refill");
+  assert.match(musicSrc, /remaining > 5 \|\| this\.refillInFlight \|\| !this\.genreFilter/,
+    "source gate must match the mirror");
+  assert.match(musicSrc, /< 90000/, "90s floor (mix endpoint is rate-limited 10/min)");
+  assert.match(musicSrc, /refresh=true/, "refill must ask the pipeline for fresh tracks");
 });
 
-test("a bare music request (no genre) still uses the whole library", () => {
-  const played = resolveGenreTracks("", LIBRARY);
-  assert.equal(played.length, LIBRARY.length, "empty filter → full library is the intended behavior");
+// ── Routing passes `kind`; the widget and template carry it ─────────────────
+test("fast-path spawns music with kind=genre", () => {
+  const fastPath = mainPy.slice(mainPy.indexOf("(music|player|radio)"));
+  assert.match(fastPath.slice(0, 900), /"kind": "genre"/,
+    '"X music" phrasing must default the genre pipeline');
 });
 
-test("a named artist matches on WORD BOUNDARIES (john != Johnny)", () => {
-  const reggae = { genre: "Reggae", title: "05 - Johnny Big Mouth.mp3", artist: "" };
-  const lennon = { genre: "Rock", title: "Imagine", artist: "John Lennon" };
-  // The exact reported bug: a reggae "Johnny" track must NOT satisfy "john lennon".
-  assert.equal(matchesGenre(reggae, "john lennon", true), false, "'Johnny' must NOT match 'john lennon'");
-  assert.equal(matchesGenre(lennon, "john lennon", true), true, "actual John Lennon must match");
-  // A partial single-word artist collision is likewise rejected (needs ALL words).
-  assert.equal(matchesGenre({ genre: "", title: "John Henry", artist: "Trad" }, "john lennon", true), false);
+test("LLM router catalog teaches kind and the builder sanitizes it", () => {
+  assert.match(mainPy, /"music":\s+\("music",\s+'[^']*kind[^']*'\)/,
+    "router catalog must describe the kind modifier");
+  assert.match(mainPy, /mods\.get\("kind"\) if mods\.get\("kind"\) in \("genre", "artist"\) else ""/,
+    "builder must sanitize kind to genre|artist|empty");
+});
+
+test("factory renders the object x-data with kind + base, and the queue UI", () => {
+  assert.match(factoryPy, /musicPlayerWidget\(\{cfg_js\}\)/, "object-form x-data");
+  assert.match(factoryPy, /kind: \{json_escape\(kind\)\}/, "kind flows into the widget");
+  assert.match(factoryPy, /base: \{json_escape\(MUSIC_PLAYER_URL\)\}/, "base comes from config");
+  assert.match(factoryPy, /queue_music/, "queue toggle button");
+  assert.match(factoryPy, /x-for="item in upcoming"/, "queue panel rows");
+});
+
+test("self-heal template stays in sync (queue UI + object x-data)", () => {
+  assert.match(indexJs, /musicPlayerWidget\(\{ genre: \$\{JSON\.stringify\(genre\)\}/,
+    "healed nodes must use the object form");
+  assert.match(indexJs, /queue_music/, "healed template must include the queue button");
+  assert.match(indexJs, /x-for="item in upcoming"/, "healed template must include the queue panel");
+  // Old positional nodes must be detected as stale and rebuilt.
+  assert.match(indexJs, /!widget\.getAttribute\('x-data'\)\.includes\('musicPlayerWidget\(\{'\)/,
+    "positional x-data must count as old-format");
+});
+
+// The component itself must still accept a legacy positional call — notes
+// rendered before this change rehydrate through the same registration.
+test("legacy positional calls are shimmed", () => {
+  assert.match(musicSrc, /typeof cfgOrGenre === 'object'/, "options-vs-positional shim");
 });

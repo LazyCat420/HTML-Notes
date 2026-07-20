@@ -5374,7 +5374,7 @@ ROUTER_WIDGETS = {
     "traffic":    ("traffic",   'live traffic or directions. query = the place, or "from A to B"'),
     "video":      ("video",     'something to WATCH. query = the subject ("cookie recipe")'),
     "image":      ("image",     'a PICTURE of something. query = the subject ("golden retriever puppy")'),
-    "music":      ("music",     'background music / radio. query = a genre ("lofi", "jazz") or empty'),
+    "music":      ("music",     'background music / radio. query = the genre OR artist/band name. Add modifiers {"kind": "genre"} for a style/mood ("jungle", "smooth jazz", "study") or {"kind": "artist"} for a named act ("Oasis", "the band Jungle"); omit kind if unsure'),
     "answer":     ("answer",    'a fact / recipe / how-to / definition / comparison / explanation. query = the question'),
     "products":   ("products",  'shopping / product recommendations to BUY or compare ("good outdoor shoes", "best budget laptop", "gift for a hiker"). query = the product ask. Renders a grid of picture cards linking to sources'),
     "trip":       ("trip",      'plan a TRIP / vacation / multi-day itinerary to a place ("plan a trip to Japan", "3 days in Rome"). query = the destination + any duration. Renders an itinerary card + a map of the spots'),
@@ -5869,7 +5869,13 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
 
         if wtype == "music":
             genre = extract_music_genre(query or message) or (query.strip() or "lofi")
-            return ("mini_music_player", "music", {"genre": genre, "autoplay": True})
+            # kind steers the music-player service's pipeline choice: genre →
+            # LLM/MusicBrainz artist discovery, artist → direct search. The
+            # widget fails over genre→artist on a miss, so a wrong (or absent)
+            # guess self-corrects — sanitize rather than reject.
+            kind = mods.get("kind") if mods.get("kind") in ("genre", "artist") else ""
+            return ("mini_music_player", "music",
+                    {"genre": genre, "kind": kind, "autoplay": True})
 
         if wtype == "answer":
             return ("data_card", "answer", await build_answer_config(query or message))
@@ -6689,8 +6695,13 @@ async def send_message(req: MessageRequest):
                 has_custom_url = "http" in text_clean or "www" in text_clean
                 if re.search(r'\b(music|player|radio)\b', text_clean) and not has_custom_url:
                     genre = extract_music_genre(req.message) or "lofi"
+                    # "X music/radio" phrasing is genre-shaped ("jungle music"
+                    # means the genre, not the band Jungle) — default the mix
+                    # pipeline to genre. Named acts come through the LLM router,
+                    # which can set kind=artist; a wrong guess here self-corrects
+                    # via the widget's genre→artist failover.
                     return spawn_widget_stream("mini_music_player", "music",
-                                               {"genre": genre, "autoplay": True})
+                                               {"genre": genre, "kind": "genre", "autoplay": True})
 
                 # 4. LISTS — checked BEFORE notes, so "notes for a grocery list" is a
                 #    list, not a blank notepad. A list always gets real items written
@@ -8731,8 +8742,8 @@ async def forget_user():
 # Mount UI static files at root
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-_CACHE_BUSTED_ASSETS = ("index.js", "index.css", "js/widgets.js")
-_ASSET_QUERY_RE = re.compile(r'(index\.js|index\.css|js/widgets\.js)\?v=[^"\']*')
+_CACHE_BUSTED_ASSETS = ("index.js", "index.css", "js/widgets.js", "hud-theme.css")
+_ASSET_QUERY_RE = re.compile(r'(index\.js|index\.css|js/widgets\.js|hud-theme\.css)\?v=[^"\']*')
 
 
 def _asset_version() -> str:

@@ -254,3 +254,29 @@ def test_pipes_without_a_separator_are_not_a_table():
     from app.widgets.factory import _render_markdown
     html = _render_markdown("| this is just | text with pipes")
     assert "<table" not in html
+
+
+def test_music_player_carries_kind_base_and_queue_ui():
+    # The widget is a thin client over the music-player service: routing's
+    # genre/artist guess (kind) and the service base URL must reach the Alpine
+    # component, and the queue UI must be in the server template.
+    out = generate_widget_html(
+        "mini_music_player", "w-music",
+        {"genre": "jungle", "kind": "genre", "autoplay": True})
+    assert "musicPlayerWidget({ genre: &quot;jungle&quot;, kind: &quot;genre&quot;," in out
+    assert "base: &quot;http" in out, "service base URL must be baked in"
+    assert "queue_music" in out, "queue toggle button missing"
+    assert 'x-for="item in upcoming"' in out, "queue panel rows missing"
+    assert "streamStatus" in out, "SSE progress line missing"
+    assert "{{" not in out, "unsubstituted f-string braces leaked into HTML"
+
+
+def test_music_player_kind_changes_the_signature():
+    from app.widgets.factory import _content_sig
+    # A genre→artist correction must re-render (new sig); a same-config re-ask
+    # must NOT tear down a playing widget (same sig).
+    genre_sig = _content_sig("mini_music_player", {"genre": "jungle", "kind": "genre", "autoplay": True})
+    artist_sig = _content_sig("mini_music_player", {"genre": "jungle", "kind": "artist", "autoplay": True})
+    same_sig = _content_sig("mini_music_player", {"kind": "genre", "genre": "jungle", "autoplay": True})
+    assert genre_sig != artist_sig
+    assert genre_sig == same_sig

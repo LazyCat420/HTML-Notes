@@ -1904,22 +1904,33 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             // 2. Self-heal music player widgets that lost Alpine attributes or are empty
+            // NOTE: this innerHTML is a hand-maintained twin of the server
+            // template in app/widgets/factory.py (render_mini_music_player).
+            // Structural changes there must be mirrored here.
             if ((id.includes('music') || id.includes('player')) && !id.includes('youtube') && !id.includes('video')) {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('musicPlayerWidget');
-                const isOldFormat = hasXData && widget.getAttribute('x-data').includes("musicPlayerWidget('");
+                // Current format passes an options object: musicPlayerWidget({...}).
+                // Anything positional — musicPlayerWidget('jazz', ...) or ("jazz", ...)
+                // — is a stale node from before the queue/SSE rework: rebuild it.
+                const isOldFormat = hasXData && !widget.getAttribute('x-data').includes('musicPlayerWidget({');
                 const hasPlayButton = widget.querySelector('.material-symbols-outlined');
-                
+
                 if (!hasXData || isOldFormat || !hasPlayButton || widget.children.length === 0) {
                     let genre = 'jazz';
                     const genreSpan = widget.querySelector('.text-purple-200');
                     if (genreSpan && genreSpan.textContent && genreSpan.textContent.trim() !== 'Radio') {
                         genre = genreSpan.textContent.trim().toLowerCase();
                     }
-                    
+
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
-                    newWidget.className = widget.className;
-                    newWidget.setAttribute('x-data', `musicPlayerWidget(${JSON.stringify(genre)}, true)`);
+                    // Height moved from a static class to a :class binding so the
+                    // queue panel can expand the card — strip any stale static one.
+                    newWidget.className = widget.className.replace(/\bh-\[280px\]\b/g, '').replace(/\s+/g, ' ').trim();
+                    newWidget.setAttribute(':class', "showQueue ? 'h-[420px]' : 'h-[280px]'");
+                    // kind unknown for a rehydrated node — '' means genre-first
+                    // with artist failover. base omitted → hostname:8002 default.
+                    newWidget.setAttribute('x-data', `musicPlayerWidget({ genre: ${JSON.stringify(genre)}, kind: "", autoplay: true })`);
                     newWidget.innerHTML = `
                         <!-- Background Blur/Glow effect -->
                         <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
@@ -1944,8 +1955,25 @@ document.addEventListener("DOMContentLoaded", () => {
                             </div>
                             <div class="flex-grow min-w-0 flex flex-col justify-center">
                                 <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
-                                <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : 'Please wait'"></p>
+                                <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
                             </div>
+                        </div>
+
+                        <!-- Queue Panel (toggled by the queue_music button below) -->
+                        <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-2 divide-y divide-white/5" style="display: none;">
+                            <template x-for="item in upcoming" :key="item.t.id">
+                                <div class="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/5 cursor-pointer group/row" @click="playAt(item.i)">
+                                    <span class="material-symbols-outlined text-[0.9rem] text-purple-300/60 shrink-0">music_note</span>
+                                    <div class="min-w-0 flex-grow">
+                                        <div class="truncate text-white/90" x-text="item.t.title"></div>
+                                        <div class="truncate text-purple-300/70 text-[10px]" x-text="item.t.artist"></div>
+                                    </div>
+                                    <button @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
+                                        <span class="material-symbols-outlined text-[0.9rem]">close</span>
+                                    </button>
+                                </div>
+                            </template>
+                            <div x-show="!upcoming.length" class="px-3 py-2 text-xs text-white/40">Queue empty — more on the way…</div>
                         </div>
 
                         <!-- Progress Bar & Time -->
@@ -1992,8 +2020,12 @@ document.addEventListener("DOMContentLoaded", () => {
                             <button @click="toggleRepeat()" class="transition-colors p-1.5 rounded-lg" :class="{'text-purple-300 font-bold bg-white/5': isRepeat, 'text-white/50 hover:text-white': !isRepeat}" title="Repeat">
                                 <span class="material-symbols-outlined text-lg">repeat</span>
                             </button>
+
+                            <button @click="showQueue = !showQueue" class="transition-colors p-1.5 rounded-lg" :class="{'text-purple-300 font-bold bg-white/5': showQueue, 'text-white/50 hover:text-white': !showQueue}" title="Queue">
+                                <span class="material-symbols-outlined text-lg">queue_music</span>
+                            </button>
                         </div>
-                        
+
                         <div x-show="error" x-transition class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-md whitespace-nowrap shadow-lg z-20" x-text="error" style="display: none;"></div>
                     `;
                     

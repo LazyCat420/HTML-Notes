@@ -1,24 +1,5 @@
 // Global Alpine.js widget registry for the Smart Dashboard Lego System
 
-// The mix endpoint has two pipelines: type=genre asks an LLM to discover
-// artists for a genre (slow, and wrong for a proper noun like "Oasis" — the
-// LLM has nothing to discover, it just burns 10-20s before falling through).
-// type=artist tries a direct YouTube search first and only calls the LLM if
-// that comes up short, so anything that isn't a recognized genre word should
-// go through it instead.
-const KNOWN_MUSIC_GENRES = new Set([
-    'lofi', 'lo-fi', 'jazz', 'reggae', 'rock', 'pop', 'hiphop', 'hip-hop', 'rap',
-    'classical', 'edm', 'techno', 'ambient', 'blues', 'country', 'metal', 'indie',
-    'electronic', 'funk', 'soul', 'disco', 'folk', 'punk', 'house', 'trance',
-    'dubstep', 'kpop', 'k-pop', 'rnb', 'r&b', 'instrumental', 'chill', 'acoustic',
-    'gospel', 'latin', 'salsa', 'reggaeton', 'afrobeat', 'synthwave', 'vaporwave',
-    'workout', 'study', 'sleep', 'party', 'romantic', 'oldies', 'grunge', 'ska',
-]);
-
-function isKnownMusicGenre(term) {
-    return (term || '').toLowerCase().split(/\s+/).some(w => KNOWN_MUSIC_GENRES.has(w));
-}
-
 // Loads the YouTube IFrame API once. It is the only way to detect
 // "Video unavailable" / embed-blocked errors (codes 100/101/150) so the
 // player widget can auto-advance to an embeddable alternative.
@@ -356,14 +337,42 @@ document.addEventListener('alpine:init', () => {
         content: initialContent
     }));
 
-    // 4. Mini Music Player
-    Alpine.data('musicPlayerWidget', (genreFilter = '', autoplay = false) => ({
-        tracks: [],
+    // 4. Mini Music Player — a thin client over the music-player service.
+    //
+    // The genre/artist intelligence lives SERVER-SIDE in the music-player
+    // service (:8002): its mix engine discovers artists for arbitrary genres
+    // (LLM + MusicBrainz/Wikidata/AudioDB) and strictly verifies each YouTube
+    // hit. This widget used to second-guess it with a hardcoded genre list and
+    // a local-library matcher — which is how "jungle" (not on the list) turned
+    // into an artist search and personal library tracks. Now the service
+    // decides, over its SSE mix endpoint, and this side just owns the queue.
+    //
+    // Accepts an options object {genre, kind, autoplay, base}. Legacy
+    // positional calls musicPlayerWidget('jazz', true) still resolve — nodes
+    // rendered before this change rehydrate through the same component.
+    Alpine.data('musicPlayerWidget', (cfgOrGenre = {}, legacyAutoplay = false) => {
+        const cfg = (typeof cfgOrGenre === 'object' && cfgOrGenre !== null)
+            ? cfgOrGenre
+            : { genre: cfgOrGenre, autoplay: legacyAutoplay };
+        return {
+        queue: [],
         currentIndex: -1,
         isPlaying: false,
         audio: null,
         error: '',
-        genreFilter: genreFilter,
+        genreFilter: cfg.genre || '',
+        // '' | 'genre' | 'artist' — routing's guess; '' means try genre first.
+        kind: cfg.kind || '',
+        autoplayWanted: !!cfg.autoplay,
+        base: cfg.base || `http://${window.location.hostname}:8002`,
+        es: null,
+        streamStatus: '',
+        showQueue: false,
+        seenIds: null,          // Set — created in init (Alpine clones data objects)
+        resolvedType: 'genre',  // whichever mix type actually filled the queue
+        triedArtistFallback: false,
+        refillInFlight: false,
+        lastRefillAt: 0,
         currentTime: 0,
         duration: 0,
         isShuffle: false,
@@ -373,10 +382,16 @@ document.addEventListener('alpine:init', () => {
         prevVolume: 1.0,
 
         get currentTrack() {
-            if (this.currentIndex >= 0 && this.currentIndex < this.tracks.length) {
-                return this.tracks[this.currentIndex];
+            if (this.currentIndex >= 0 && this.currentIndex < this.queue.length) {
+                return this.queue[this.currentIndex];
             }
             return null;
+        },
+
+        // Rows for the queue panel: everything after the current track, with
+        // absolute indices preserved so playAt/removeAt address the real array.
+        get upcoming() {
+            return this.queue.map((t, i) => ({ t, i })).slice(this.currentIndex + 1);
         },
 
         get progress() {
@@ -384,20 +399,20 @@ document.addEventListener('alpine:init', () => {
         },
 
         async init() {
-            console.log(`[MusicPlayer] Initializing widget. Genre Filter: "${this.genreFilter}", Autoplay: ${autoplay}`);
+            console.log(`[MusicPlayer] Init. term="${this.genreFilter}" kind="${this.kind}" base=${this.base}`);
+            this.seenIds = new Set();
             this.audio = new Audio();
             this.audio.volume = this.volume;
-            
+
             // Audio Event Listeners
             this.audio.addEventListener('ended', () => {
-                console.log('[MusicPlayer] Track ended.');
                 if (this.isRepeat) {
-                    console.log('[MusicPlayer] Repeating single track.');
                     this.audio.currentTime = 0;
                     this.audio.play();
                 } else {
                     this.nextTrack();
                 }
+                this.maybeRefill();
             });
             this.audio.addEventListener('play', () => {
                 this.isPlaying = true;
@@ -417,161 +432,190 @@ document.addEventListener('alpine:init', () => {
                 this.isPlaying = false;
             });
 
-            // Every fetch gets a hard timeout so a hung endpoint can never
-            // leave the widget stuck on "Searching signals...".
-            const fetchJson = async (url, timeoutMs = 12000) => {
-                const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-                try {
-                    const res = await fetch(url, { signal: ctrl.signal });
-                    if (!res.ok) return null;
-                    return await res.json();
-                } catch (e) {
-                    console.warn(`[MusicPlayer] Fetch failed/timed out: ${url}`, e);
-                    return null;
-                } finally {
-                    clearTimeout(timer);
-                }
-            };
+            const term = this.genreFilter || 'lo-fi';
+            // Routing tags "X music" phrasing kind=genre and named acts
+            // kind=artist. Unknown → genre first: the genre pipeline is strict
+            // (returns nothing rather than garbage), so a band name that isn't
+            // a genre falls through to the artist mix in failover().
+            this.startStream(term, this.kind === 'artist' ? 'artist' : 'genre');
+        },
 
+        // Every fetch gets a hard timeout so a hung endpoint can never
+        // leave the widget stuck on "Searching signals...".
+        async fetchJson(url, timeoutMs = 12000) {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), timeoutMs);
             try {
-                const host = window.location.hostname;
-                const ytGenre = this.genreFilter || "lo-fi";
-
-                const asTrack = (v) => ({
-                    id: v.id,
-                    title: v.title,
-                    artist: v.artist || v.uploader || "YouTube Music",
-                    path: v.id,
-                    isYoutube: true
-                });
-
-                // Both requests go out at once. /api/tracks returns the WHOLE
-                // library unpaginated — ~7MB of JSON, seconds to download and
-                // parse — and it used to be awaited first, holding up the genre
-                // mix, which answers in about 40ms. That wait was the entire
-                // "jazz music takes forever" delay: the widget shell renders
-                // immediately and then sits on "Searching signals..." until this
-                // resolves. The mix alone is enough to start playing.
-                const mixType = isKnownMusicGenre(ytGenre) ? 'genre' : 'artist';
-                const mixUrl = `http://${host}:8002/api/youtube/mix/${encodeURIComponent(ytGenre)}?type=${mixType}`;
-                const localPromise = fetchJson(`http://${host}:8002/api/tracks`, 8000);
-                // A genre mix on a COLD cache runs an LLM artist-discovery pass
-                // and per-artist YouTube searches — it takes ~18s the first time a
-                // genre is ever requested, then ~0.3s once cached. The old 15s
-                // timeout abandoned the (working!) mix right before it landed, and
-                // the widget then fell through to the local-library fallback below,
-                // which for "smooth jazz" played the first track in the whole
-                // library — Burzum (black metal). Give the cold mix room, and if it
-                // still times out, retry ONCE: the pipeline populated its cache on
-                // the first attempt, so the retry returns almost instantly.
-                let ytData = await fetchJson(mixUrl, 22000);
-                if (!(ytData && ytData.videos && ytData.videos.length)) {
-                    ytData = await fetchJson(mixUrl, 12000);
-                }
-
-                // Match a local track against the requested genre/artist. Word
-                // boundaries matter: an unbounded includes() let "john" (from
-                // "john lennon") match "Johnny Big Mouth", pulling a reggae track
-                // into a John Lennon request. A named ARTIST must match ALL words
-                // ("john" AND "lennon"); a GENRE matches ANY word so "smooth jazz"
-                // still hits the library's "jazz" tracks.
-                const isArtistQuery = mixType === 'artist';
-                const filterWords = (this.genreFilter || '')
-                    .toLowerCase().split(/\s+/).filter(w => w.length > 2);
-                const wordHit = (hay, w) =>
-                    new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(hay);
-                const matchesGenre = (t) => {
-                    if (!filterWords.length) return true;
-                    const hay = `${t.genre || ''} ${t.title || ''} ${t.artist || ''}`.toLowerCase();
-                    return isArtistQuery ? filterWords.every(w => wordHit(hay, w))
-                                         : filterWords.some(w => wordHit(hay, w));
-                };
-
-                const ytVideos = (ytData && ytData.videos) || [];
-
-                if (ytVideos.length > 0) {
-                    // Play now; fold the local library in once it finally lands.
-                    this.tracks = ytVideos.map(asTrack);
-                    this.currentIndex = 0;
-                    this.loadTrack();
-                    if (autoplay) {
-                        this.audio.play().catch(e => {
-                            console.warn('[MusicPlayer] Autoplay prevented by browser policy.', e);
-                            this.isPlaying = false;
-                        });
-                    }
-                    localPromise.then(localData => {
-                        const local = ((localData && localData.tracks) || []).filter(matchesGenre);
-                        if (local.length) this.tracks = [...this.tracks, ...local];
-                    });
-                    return;
-                }
-
-                // No mix. A named ARTIST must come from YouTube, never the local
-                // library — a personal collection rarely has the artist, and a
-                // loose match plays the wrong thing (a "john lennon" ask matched a
-                // reggae "Johnny" track). So for an artist, go straight to YouTube
-                // search and, on a miss, surface an honest error. A GENRE may still
-                // draw from the local library first, then YouTube.
-                const ytSearch = async () => {
-                    const searchData = await fetchJson(
-                        `http://${host}:8002/api/youtube/search?query=${encodeURIComponent(ytGenre + " music")}`, 15000);
-                    const hits = Array.isArray(searchData) ? searchData : (searchData ? [searchData] : []);
-                    return hits.filter(v => v && v.id).map(asTrack);
-                };
-
-                let loadedTracks = [];
-                let allLocalTracks = [];
-                if (isArtistQuery) {
-                    loadedTracks = await ytSearch();
-                } else {
-                    const localData = await localPromise;
-                    allLocalTracks = (localData && localData.tracks) || [];
-                    loadedTracks = allLocalTracks.filter(matchesGenre);
-                    if (loadedTracks.length === 0) {
-                        loadedTracks = await ytSearch();
-                    }
-                    if (loadedTracks.length === 0 && allLocalTracks.length > 0 && !filterWords.length) {
-                        // Only dump the whole library for a bare "play music" — never
-                        // for a specific genre (that plays whatever's first, e.g. Burzum).
-                        console.warn('[MusicPlayer] No genre specified — playing full library.');
-                        this.genreFilter = '';
-                        loadedTracks = allLocalTracks;
-                    } else if (loadedTracks.length === 0) {
-                        console.warn(`[MusicPlayer] Nothing found for "${ytGenre}" (mix + local both empty).`);
-                    }
-                }
-
-                if (loadedTracks.length === 0) {
-                    this.error = filterWords.length
-                        ? `Couldn't find any "${ytGenre}" tracks right now — try again in a moment.`
-                        : `No tracks found. Music service may be offline.`;
-                    return;
-                }
-
-                this.tracks = loadedTracks;
-                // A fallback notice shouldn't linger once playback works.
-                if (this.error) setTimeout(() => { this.error = ''; }, 6000);
-
-                // Shuffle array initially if isShuffle is on, else keep order
-                if (this.isShuffle) {
-                    this.tracks = [...loadedTracks].sort(() => Math.random() - 0.5);
-                }
-                
-                this.currentIndex = 0;
-                this.loadTrack();
-
-                if (autoplay) {
-                    this.audio.play().catch(e => {
-                        console.warn('[MusicPlayer] Autoplay prevented by browser policy.', e);
-                        this.isPlaying = false;
-                    });
-                }
-            } catch (err) {
-                this.error = 'Could not connect to music server.';
-                console.error('[MusicPlayer] Fatal initialization error:', err);
+                const res = await fetch(url, { signal: ctrl.signal });
+                if (!res.ok) return null;
+                return await res.json();
+            } catch (e) {
+                console.warn(`[MusicPlayer] Fetch failed/timed out: ${url}`, e);
+                return null;
+            } finally {
+                clearTimeout(timer);
             }
+        },
+
+        asTrack(v) {
+            return {
+                id: v.id,
+                title: v.title,
+                artist: v.artist || v.uploader || 'YouTube Music',
+                path: v.id,
+                isYoutube: true
+            };
+        },
+
+        /** Append fresh (unseen) tracks to the queue. Returns how many landed. */
+        enqueue(raw) {
+            const fresh = (raw || [])
+                .filter(v => v && v.id && !this.seenIds.has(v.id))
+                .map(v => this.asTrack(v));
+            fresh.forEach(t => this.seenIds.add(t.id));
+            this.queue.push(...fresh);
+            return fresh.length;
+        },
+
+        /**
+         * Consume the music-player mix over SSE: tracks arrive artist-by-artist
+         * as the pipeline resolves them, so playback starts on the FIRST batch
+         * instead of racing a timeout against the whole ~18s cold pipeline
+         * (the race that used to end in Burzum for "smooth jazz").
+         * type=artist is served by the same endpoint as a single tracks+done
+         * pair, so one code path covers both kinds.
+         */
+        startStream(term, type, { refresh = false } = {}) {
+            this.closeStream();
+            this.resolvedType = type;
+            this.streamStatus = 'Tuning in…';
+            const url = `${this.base}/api/youtube/mix/${encodeURIComponent(term)}/stream`
+                      + `?type=${type}${refresh ? '&refresh=true' : ''}`;
+            let gotTracks = false;
+            let transportRetried = false;
+            // The cold genre pipeline emits its first tracks batch well inside
+            // 60s; silence past that means it's wedged, not slow.
+            const watchdog = setTimeout(() => {
+                if (!gotTracks) { this.closeStream(); this.failover(term, type); }
+            }, 60000);
+
+            this.es = new EventSource(url);
+            this.es.addEventListener('status', e => {
+                try { this.streamStatus = JSON.parse(e.data).message || ''; } catch {}
+            });
+            this.es.addEventListener('tracks', e => {
+                let d = {};
+                try { d = JSON.parse(e.data); } catch { return; }
+                const landed = this.enqueue(d.tracks);
+                if (d.progress) this.streamStatus = `Loading artists ${d.progress}`;
+                if (!gotTracks && landed > 0) {
+                    gotTracks = true;
+                    this.error = '';
+                    this.playAt(this.currentIndex >= 0 ? this.currentIndex : 0, { auto: true });
+                }
+            });
+            this.es.addEventListener('done', () => {
+                clearTimeout(watchdog);
+                this.streamStatus = '';
+                // CRITICAL: close on done. EventSource auto-reconnects after a
+                // server-side close, which would re-run the entire discovery
+                // pipeline in a loop and burn the service's 10/min mix limit.
+                this.closeStream();
+                if (!gotTracks) this.failover(term, type);
+            });
+            this.es.addEventListener('error', () => {
+                // Server-sent terminal error event (named "error" in the SSE
+                // protocol of the mix endpoint) — distinct from transport onerror.
+                clearTimeout(watchdog);
+                this.closeStream();
+                if (!gotTracks) this.failover(term, type);
+            });
+            this.es.onerror = () => {
+                // Transport-level failure. Allow ONE built-in reconnect (flaky
+                // proxy blip); a second means the service is down or the stream
+                // closed uncleanly — stop and fail over if nothing played yet.
+                if (!this.es) return;
+                if (gotTracks) { clearTimeout(watchdog); this.closeStream(); return; }
+                if (!transportRetried) { transportRetried = true; return; }
+                clearTimeout(watchdog);
+                this.closeStream();
+                this.failover(term, type, { transportDead: true });
+            };
+        },
+
+        closeStream() {
+            if (this.es) {
+                this.es.close();
+                this.es = null;
+            }
+        },
+
+        /**
+         * Fallback ladder, in order of honesty:
+         *   genre miss → artist mix (covers "Jungle" the band routed as genre)
+         *   artist miss → plain YouTube search
+         *   still nothing + user named something → say so and STOP. Never dump
+         *     the personal library for a named genre — that's the Burzum bug.
+         *   bare query only → full local library.
+         *   service unreachable → offline message (the library lives on the
+         *     same host, so it can't help either).
+         */
+        async failover(term, type, { transportDead = false } = {}) {
+            this.streamStatus = '';
+            if (transportDead) {
+                this.error = 'Music service is offline.';
+                return;
+            }
+            if (type === 'genre' && !this.triedArtistFallback) {
+                this.triedArtistFallback = true;
+                console.warn(`[MusicPlayer] Genre mix empty for "${term}" — retrying as artist.`);
+                this.startStream(term, 'artist');
+                return;
+            }
+            // Plain search: cheap, returns the single top hit.
+            const searchData = await this.fetchJson(
+                `${this.base}/api/youtube/search?query=${encodeURIComponent(term + ' music')}`, 15000);
+            const hits = Array.isArray(searchData) ? searchData : (searchData ? [searchData] : []);
+            if (this.enqueue(hits) > 0) {
+                this.playAt(0, { auto: true });
+                return;
+            }
+            if (this.genreFilter) {
+                this.error = `Couldn't find "${term}" — try a different genre or artist.`;
+                return;
+            }
+            // Bare rehydrated widget with no query at all: the library is fine.
+            const localData = await this.fetchJson(`${this.base}/api/tracks`, 15000);
+            const local = ((localData && localData.tracks) || [])
+                .map(t => ({ id: t.path || t.id, title: t.title, artist: t.artist, path: t.path, isYoutube: false }));
+            if (local.length) {
+                this.queue.push(...local);
+                this.playAt(0, { auto: true });
+            } else {
+                this.error = 'No tracks found. Music service may be offline.';
+            }
+        },
+
+        /**
+         * Background refill when the queue runs low. refresh=true re-runs the
+         * discovery pipeline (slow, but we're already playing); enqueue()'s
+         * seenIds dedupe keeps repeats out. Floored at 90s between attempts —
+         * the mix endpoint is rate-limited to 10/min service-side.
+         */
+        maybeRefill() {
+            const remaining = this.queue.length - this.currentIndex - 1;
+            if (remaining > 5 || this.refillInFlight || !this.genreFilter) return;
+            if (Date.now() - this.lastRefillAt < 90000) return;
+            this.refillInFlight = true;
+            this.lastRefillAt = Date.now();
+            const term = this.genreFilter;
+            this.fetchJson(
+                `${this.base}/api/youtube/mix/${encodeURIComponent(term)}?type=${this.resolvedType}&refresh=true`, 60000)
+                .then(d => {
+                    const landed = this.enqueue((d && d.videos) || []);
+                    if (landed) console.log(`[MusicPlayer] Refilled queue with ${landed} tracks.`);
+                })
+                .finally(() => { this.refillInFlight = false; });
         },
 
         loadTrack() {
@@ -580,13 +624,34 @@ document.addEventListener('alpine:init', () => {
                 this.audio = new Audio();
             }
             this.audio.volume = this.isMuted ? 0 : this.volume;
-            const host = window.location.hostname;
             if (this.currentTrack.isYoutube) {
-                this.audio.src = `http://${host}:8002/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
+                this.audio.src = `${this.base}/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
             } else {
                 const encodedPath = encodeURIComponent(this.currentTrack.path);
-                this.audio.src = `http://${host}:8002/api/music/stream?path=${encodedPath}`;
+                this.audio.src = `${this.base}/api/music/stream?path=${encodedPath}`;
             }
+            this.maybeRefill();
+        },
+
+        /** Jump to an absolute queue index. The one entry point for playback. */
+        playAt(i, { auto = false } = {}) {
+            if (i < 0 || i >= this.queue.length) return;
+            this.currentIndex = i;
+            this.loadTrack();
+            const shouldPlay = auto ? this.autoplayWanted : true;
+            if (shouldPlay) {
+                this.audio.play().catch(e => {
+                    console.warn('[MusicPlayer] Autoplay prevented by browser policy.', e);
+                    this.isPlaying = false;
+                });
+            }
+        },
+
+        /** Remove an upcoming track. The playing track isn't removable. */
+        removeAt(i) {
+            if (i === this.currentIndex || i < 0 || i >= this.queue.length) return;
+            this.queue.splice(i, 1);
+            if (i < this.currentIndex) this.currentIndex--;
         },
 
         playPause() {
@@ -599,25 +664,24 @@ document.addEventListener('alpine:init', () => {
         },
 
         nextTrack() {
-            if (this.tracks.length === 0) return;
-            if (this.isShuffle) {
-                this.currentIndex = Math.floor(Math.random() * this.tracks.length);
-            } else {
-                this.currentIndex = (this.currentIndex + 1) % this.tracks.length;
-            }
+            if (this.queue.length === 0) return;
+            const wasPlaying = this.isPlaying;
+            this.currentIndex = (this.currentIndex + 1) % this.queue.length;
             this.loadTrack();
-            if (this.isPlaying) this.audio.play();
+            if (wasPlaying) this.audio.play();
         },
 
         prevTrack() {
-            if (this.tracks.length === 0) return;
-            if (this.isShuffle) {
-                this.currentIndex = Math.floor(Math.random() * this.tracks.length);
-            } else {
-                this.currentIndex = (this.currentIndex - 1 + this.tracks.length) % this.tracks.length;
+            if (this.queue.length === 0) return;
+            // Standard player behavior: >3s in, "previous" means restart.
+            if (this.audio && this.audio.currentTime > 3) {
+                this.audio.currentTime = 0;
+                return;
             }
+            const wasPlaying = this.isPlaying;
+            this.currentIndex = (this.currentIndex - 1 + this.queue.length) % this.queue.length;
             this.loadTrack();
-            if (this.isPlaying) this.audio.play();
+            if (wasPlaying) this.audio.play();
         },
 
         seek(percent) {
@@ -655,7 +719,17 @@ document.addEventListener('alpine:init', () => {
         },
 
         toggleShuffle() {
+            // Shuffle only what hasn't played: history order stays intact and
+            // the current track doesn't jump out from under the listener.
             this.isShuffle = !this.isShuffle;
+            if (!this.isShuffle) return;
+            const head = this.queue.slice(0, this.currentIndex + 1);
+            const tail = this.queue.slice(this.currentIndex + 1);
+            for (let i = tail.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [tail[i], tail[j]] = [tail[j], tail[i]];
+            }
+            this.queue = [...head, ...tail];
         },
 
         toggleRepeat() {
@@ -670,13 +744,19 @@ document.addEventListener('alpine:init', () => {
         },
 
         destroy() {
+            // Fires on close-button dismissal AND when the media singleton
+            // swaps this widget for a new one. Closing the SSE stream here is
+            // load-bearing: an orphaned EventSource keeps auto-reconnecting
+            // and re-running the discovery pipeline against the rate limit.
+            this.closeStream();
             if (this.audio) {
                 this.audio.pause();
                 this.audio.src = '';
                 this.audio = null;
             }
         }
-    }));
+        };
+    });
 
     // 5. YouTube Player Widget
     // candidates: alternate video ids to try when a video refuses to embed
