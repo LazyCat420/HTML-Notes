@@ -196,22 +196,21 @@ brief that attributes inline to named outlets instead of "news.google.com".
   `embeddinggemma`, an *embedding* model on text tasks. Repointed via
   `PUT /settings`, but Prism caches config at boot and **was not restarted**
   (shared service — needs the user's say-so).
-- Naming — the repo really IS `lazy-agent-service` on GitHub. I claimed the
-  opposite earlier in this session based on `git remote -v`; that was **wrong**.
-  The remote still spells the old name and GitHub 301-redirects it, which is
-  invisible until you push (`remote: This repository moved`). Verified:
-  `github.com/LazyCat420/lazy-tool-service` → 301 →
-  `.../lazy-agent-service`.
+- Naming — **RESOLVED.** The repo really is `lazy-agent-service` on GitHub; I
+  claimed otherwise earlier from `git remote -v`, which still spelled the old
+  name because GitHub 301-redirects it. Only a push reveals it:
+  `remote: This repository moved`.
 
-  So the split is real and it is the source of the confusion:
+  The local side now matches: directory `sun/lazy-agent-service`, `package.json`
+  name, and the git remote URL. Deliberately NOT renamed — the **MCP
+  registration** (`mcp__lazy-tool-service__*` derives from it, 161 refs across 6
+  repos including the live persona's 21 tool names; it is a protocol identifier,
+  not a label), the container/image name and the `http://lazy-tool-service:7778`
+  docker DNS defaults, and the telemetry `service_source` label.
 
-  | surface | name |
-  |---|---|
-  | GitHub repo | **lazy-agent-service** |
-  | local dir, `package.json`, `McpAdapter` self-name | lazy-tool-service |
-  | MCP tool prefix `mcp__lazy-tool-service__*` | lazy-tool-service |
-
-  **Do not rename the MCP registration** — the tool prefix derives from it and
-  appears 161 times across 6 repos, including the live persona's 21 tool names.
-  Renaming the *local directory and package* to match GitHub is cheap and safe;
-  renaming the *registration* is not. Those are separable decisions.
+  Four hardcoded paths would have broken and are now name-tolerant (new name
+  first, old accepted): `build_tool_schemas.py` (would exit FATAL, taking both
+  deploys with it), `trading-client/deploy.sh` (would ship a stale schema),
+  `test_multi_repo_audit.py` (would silently SKIP, quietly disabling the parity
+  check), and `lazy-agent-service/deploy.sh` (was copying tool_schemas.json onto
+  itself through a `../lazy-tool-service` round-trip).
