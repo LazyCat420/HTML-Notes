@@ -2458,6 +2458,97 @@ _session_turn_ledger: Dict[str, List[dict]] = {}
 _LEDGER_MAX_TURNS = 10
 
 
+def _spoken_summary(widget_type: str, config: dict, question: str = "") -> str:
+    """A single sentence describing what a widget SHOWS, for reading aloud.
+
+    The agent is supposed to write this itself (rule 5 of SYSTEM_PROMPT), but the
+    FAST LOOP closes its stream the moment the canvas commits — deliberately, to
+    save a slow closing turn — so that sentence usually never arrives and the
+    fallback was the canned "Added it to your canvas.", spoken aloud. That told a
+    user who wasn't looking at the screen precisely nothing, twice in a row.
+
+    So derive it from the config we just rendered. It is the ANSWER, not the
+    filing: never mention widgets, cards or the canvas — the user can see those.
+    Returns "" when there is nothing worth saying, so the caller can fall back.
+    """
+    if not isinstance(config, dict):
+        return ""
+
+    def _clip(text: str, limit: int = 220) -> str:
+        """First sentence, or a clean truncation — TTS reads this out."""
+        text = str(text or "")
+        # Spell out symbols that carry meaning aloud. The TTS endpoint strips
+        # anything outside [\w\s.,!?\-'":;À-ÿ], so an arrow in a directions title
+        # ("San Ramon → San Jose") would otherwise vanish and be read as
+        # "San Ramon  San Jose" — two places and no relationship between them.
+        text = text.replace("→", " to ").replace("->", " to ").replace("&", " and ")
+        # Markdown links: keep the LABEL, drop the URL. Stripping only the
+        # brackets left "label(http://x.com)", and a URL read aloud is noise —
+        # the listener can't act on it and it buries the actual sentence.
+        text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+        text = re.sub(r"https?://\S+", "", text)
+        text = re.sub(r"[*_`#>\[\]()]", "", text)
+        text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return ""
+        first = re.split(r"(?<=[.!?])\s+", text)[0]
+        if len(first) > limit:
+            first = first[:limit].rsplit(" ", 1)[0] + "…"
+        return first
+
+    title = (config.get("title") or "").strip()
+
+    if widget_type == "weather":
+        loc = (config.get("location") or title or "").strip()
+        return f"Here's the forecast for {loc}." if loc else ""
+
+    if widget_type in ("map", "iframe_app"):
+        # Traffic and directions maps title themselves "Traffic: San Jose" /
+        # "San Ramon → San Jose", which reads well aloud once the label is dropped.
+        if title.lower().startswith("traffic:"):
+            return f"Live traffic for {_clip(title.split(':', 1)[1])}."
+        return f"Showing {_clip(title)}." if title else ""
+
+    if widget_type == "stock_card":
+        sym = (config.get("symbol") or title or "").strip()
+        return f"Here's {sym}, with its chart and fundamentals." if sym else ""
+
+    if widget_type == "youtube_player":
+        return _clip(title) or ""
+
+    if widget_type == "mini_music_player":
+        genre = (config.get("genre") or "").strip()
+        return f"Playing {genre}." if genre else "Starting the music."
+
+    if widget_type == "scoreboard":
+        league = (config.get("league") or title or "").strip()
+        return f"Here are the latest {league.upper()} scores." if league else ""
+
+    # Content widgets: the prose IS the answer, so speak the substance of it.
+    answer = (config.get("answer") or config.get("content") or "").strip()
+    if answer:
+        return _clip(answer)
+
+    items = config.get("items") or config.get("sources") or []
+    if isinstance(items, dict):
+        items = [items]
+    named = [(it.get("title") or "").strip() for it in items if isinstance(it, dict)]
+    named = [n for n in named if n]
+    if named:
+        lead = _clip(named[0], 120)
+        if len(named) > 1:
+            return f"Found {len(named)}, starting with {lead}."
+        return f"Found {lead}."
+
+    spoken = _clip(title)
+    # A bare title is a label, not a sentence; punctuate it so TTS doesn't run it
+    # into whatever is spoken next.
+    if spoken and spoken[-1] not in ".!?":
+        spoken += "."
+    return spoken
+
+
 def _widget_detail(config: dict) -> str:
     """A <=160-char gist of what a widget shows, for the ledger: the first line of
     its answer, or its top item/story titles. This is what lets a later follow-up
@@ -6707,7 +6798,9 @@ async def send_message(req: MessageRequest):
             "2. Never ask for clarification. Take the most reasonable reading and go — 'pull up a video' with no topic means pick one and search.\n"
             "3. Fetch the data before you render it. The config you pass IS the finished content: it renders server-side, so never write 'Loading...' and never write JavaScript that fetches.\n"
             "4. Stop when the widget is up. canvas_add_widget returning success means it is already on the user's screen — do not call it again, do not verify with canvas_read_dom, do not re-plan.\n"
-            "5. Then write ONE sentence (max 20 words) saying what you added. That sentence is the only prose you write all turn.\n"
+            "5. Then write ONE sentence (max 25 words) that ANSWERS the question — the single most useful thing you found, with the specific number, name or verdict in it. That sentence is the only prose you write all turn, and it is READ ALOUD, so it must stand on its own to someone not looking at the screen.\n"
+            "   Say the finding, never the filing. 'Traffic to San Jose is clear, about 35 minutes via 880.' NOT 'Added a traffic map.' 'The Seattle Rain Hat wins on waterproofing; the Sunday Afternoons is cheaper.' NOT 'Here is a card comparing hats.'\n"
+            "   Never mention widgets, cards, canvas, or that you added anything — the user can see the screen. If you genuinely found nothing, say what you couldn't find and why, in one sentence.\n"
             "6. EVERY turn ends in a canvas mutation. You have NOT finished until canvas_add_widget (or canvas_modify_dom) has succeeded. Never end a turn having only searched, read or reasoned — if a tool fails, render what you already have rather than retrying forever or giving up silently.\n"
             "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
@@ -7001,6 +7094,7 @@ async def send_message(req: MessageRequest):
                 or bool(COMPOSE_ASK_RE.search(text_clean))
             _MAX_AGENT_WIDGETS = 4
             widgets_committed = 0
+            last_committed = None  # (widget_type, config) of the most recent commit
             canvas_settled = False
             # Tool names prism handed the model that we have no canvas handler for.
             # Collected so a turn that commits nothing can say WHY in the logs.
@@ -7492,6 +7586,12 @@ async def send_message(req: MessageRequest):
                                         async for evt in execute_mutation(active_tool_name, active_tool_args):
                                             yield evt
                                         executed_active_tool = True
+                                        # Remember WHAT was committed: the fast loop
+                                        # cuts the model off before it describes it,
+                                        # so this config is all we have to speak from.
+                                        last_committed = (
+                                            active_tool_args.get("widget_type", ""),
+                                            active_tool_args.get("config") or {})
                                         active_tool_name = None
                                         active_tool_args = {}
                                         widgets_committed += 1
@@ -7526,6 +7626,12 @@ async def send_message(req: MessageRequest):
                                             async for evt in execute_mutation(active_tool_name, active_tool_args):
                                                 yield evt
                                             executed_active_tool = True
+                                            # Same capture as the other commit site:
+                                            # this is the only record of what we
+                                            # rendered once the args are cleared.
+                                            last_committed = (
+                                                active_tool_args.get("widget_type", ""),
+                                                active_tool_args.get("config") or {})
                                             active_tool_name = None
                                             active_tool_args = {}
                                             widgets_committed += 1
@@ -7626,7 +7732,17 @@ async def send_message(req: MessageRequest):
                 # We cut the model off before it wrote its closing line, so the chat
                 # bubble would otherwise be empty. The widget IS the answer here.
                 if not final_text.strip():
-                    final_text = "Added it to your canvas."
+                    # Speak what the widget SHOWS, not that a widget exists. The
+                    # canned "Added it to your canvas." was read aloud and told a
+                    # user who wasn't looking at the screen nothing at all.
+                    spoken = ""
+                    if last_committed:
+                        try:
+                            spoken = _spoken_summary(last_committed[0], last_committed[1],
+                                                     req.message)
+                        except Exception as e:
+                            logger.warning(f"[TTS] spoken summary failed: {e}")
+                    final_text = spoken or "Added it to your canvas."
                     yield f'data: {json.dumps({"type": "chunk", "content": final_text})}\n\n'
 
             # SAFETY NET: the turn answered in prose but wrote nothing to the canvas.
