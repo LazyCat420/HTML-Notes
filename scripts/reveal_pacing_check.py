@@ -76,6 +76,8 @@ window.setMuted = (m) => {{ muted = m; }};
 window.setTtsDown = (d) => {{ ttsDown = d; }};
 window.pendingCount = () => pendingReveals.length;
 window.speakSentence = () => revealNextWidget();
+// Mirrors playSentenceTTS: prefer the server-supplied pairing, else queue order.
+window.speakSentenceFor = (id) => {{ if (id) revealWidget(id); else revealNextWidget(); }};
 window.flushAll = () => revealAllPending();
 window.reset = () => {{
   document.getElementById('dashboard-grid').innerHTML = '';
@@ -112,6 +114,33 @@ with sync_playwright() as p:
     pg.evaluate("() => speakSentence()")
     check("third reveals the last", pg.evaluate("() => visible('w2')"))
     check("queue drains to empty", pg.evaluate("() => pendingCount()") == 0)
+
+    print("\ncorrelation — the sentence reveals the widget it is ABOUT")
+    pg.evaluate("() => { reset(); setSpeech(true, 3); }")
+    for wid in ("weather-1", "map-1", "news-1"):
+        pg.evaluate(f"() => addWidget('{wid}')")
+    # The server paired sentence 1 with the MAP (second widget added). Positional
+    # FIFO would wrongly reveal weather-1 here.
+    pg.evaluate("() => speakSentenceFor('map-1')")
+    check("a sentence reveals its own widget, not the first queued",
+          pg.evaluate("() => visible('map-1') && !visible('weather-1') && !visible('news-1')"),
+          "revealed by position instead of by pairing")
+    pg.evaluate("() => speakSentenceFor('news-1')")
+    check("out-of-order pairing still resolves correctly",
+          pg.evaluate("() => visible('news-1') && !visible('weather-1')"))
+    pg.evaluate("() => speakSentenceFor(null)")
+    check("an unpaired sentence falls back to queue order",
+          pg.evaluate("() => visible('weather-1')"))
+    check("no widget left pending", pg.evaluate("() => pendingCount()") == 0)
+
+    pg.evaluate("() => { reset(); setSpeech(true, 2); }")
+    pg.evaluate("() => addWidget('only-1')")
+    pg.evaluate("() => speakSentenceFor('ghost-widget')")
+    check("a pairing naming an unknown widget reveals nothing and does not throw",
+          not pg.evaluate("() => visible('only-1')"))
+    pg.evaluate("() => flushAll()")
+    check("...and the real widget is still flushed afterwards",
+          pg.evaluate("() => visible('only-1')"))
 
     print("\nsafety rails — a widget must never stay hidden")
     pg.evaluate("() => { reset(); setSpeech(false, 0); }")

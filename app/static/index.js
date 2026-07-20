@@ -991,6 +991,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // recently, which would have hidden every widget on the canvas).
     const REVEAL_HOLD_MAX_MS = 3500;   // never hold a widget longer than this
     const pendingReveals = [];         // widget ids awaiting their cue, in order
+    // Set from a chunk's `widget_id` and consumed by the next sentence
+    // enqueued, so a sentence reveals the widget it is ABOUT. Falls back to
+    // queue order when the server sends no id (the agent streams free prose
+    // token-by-token, where no such pairing exists).
+    let pendingSentenceWidgetId = null;
 
     function revealGateActive() {
         // Only gate when speech is actually going to happen for THIS turn.
@@ -1625,6 +1630,11 @@ document.addEventListener("DOMContentLoaded", () => {
             const dispatch = (data) => {
                 if (data.type === "chunk") {
                     const token = data.content || "";
+                    // The server tags a generated summary with the widget that
+                    // sentence DESCRIBES. Hold it so the sentence assembled from
+                    // this chunk reveals THAT widget rather than whichever happens
+                    // to be next in the queue.
+                    if (data.widget_id) pendingSentenceWidgetId = data.widget_id;
                     fullText += token;
                     // Deliberately does NOT repaint the canvas: this
                     // turn's snapshot may already be older than what a
@@ -2545,6 +2555,10 @@ document.addEventListener("DOMContentLoaded", () => {
     function enqueueTTS(sentence) {
         const cleanText = cleanTextForTTS(sentence);
         if (!cleanText) return;
+        // Claim the pending association: this sentence owns it, and later
+        // sentences in the same turn must not inherit it.
+        const widgetId = pendingSentenceWidgetId;
+        pendingSentenceWidgetId = null;
         // Speak the answer, never the process. Dropped here rather than upstream
         // because sentences are only assembled at this point — the server streams
         // tokens, so it cannot tell where a narration sentence starts or ends.
@@ -2559,6 +2573,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const item = {
                 text: sentence,
                 cleanText: cleanText,
+                widgetId: widgetId,
                 audioUrl: cached.audioUrl,
                 audio: new Audio(cached.audioUrl),
                 status: 'ready',
@@ -2572,6 +2587,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const item = {
             text: sentence,
             cleanText: cleanText,
+            widgetId: widgetId,
             audioUrl: null,
             audio: null,
             status: 'pending',
@@ -2710,7 +2726,9 @@ document.addEventListener("DOMContentLoaded", () => {
             overlay.classList.remove("sentence-fade-out");
             // This sentence is starting — bring in the widget it describes, so the
             // canvas fills at the pace of the voice rather than all at once.
-            revealNextWidget();
+            // Prefer the widget the SERVER paired with this sentence; fall back to
+            // queue order only when there is no pairing (free agent prose).
+            if (item.widgetId) revealWidget(item.widgetId); else revealNextWidget();
             
             words.forEach((word, index) => {
                 const span = document.createElement("span");

@@ -6077,7 +6077,13 @@ async def send_message(req: MessageRequest):
                     try:
                         spoken = _spoken_summary(widget_type, widget_config, req.message)
                         if spoken:
-                            yield f'data: {json.dumps({"type": "chunk", "content": spoken})}\n\n'
+                            # Carry the widget this sentence DESCRIBES. The client
+                            # reveals that specific widget when this sentence
+                            # plays, so the pairing is semantic rather than
+                            # positional — otherwise sentence 1 reveals widget 1
+                            # even when it is talking about widget 2.
+                            yield (f'data: {json.dumps({"type": "chunk", "content": spoken, "widget_id": resolved_id})}'
+                                   f'\n\n')
                     except Exception as e:
                         logger.warning(f"[TTS] fast-path spoken summary failed: {e}")
                 yield 'data: {"type": "done"}\n\n'
@@ -6210,11 +6216,23 @@ async def send_message(req: MessageRequest):
                     # and reading a sentence per widget aloud would be worse than
                     # silence — so join at most two and stop.
                     try:
-                        lines = [ln for ln in
-                                 (_spoken_summary(wt, wc, req.message) for (_r, wt, wc) in placed)
-                                 if ln][:2]
-                        if lines:
-                            yield f'data: {json.dumps({"type": "chunk", "content": " ".join(lines)})}\n\n'
+                        # One chunk PER WIDGET, each tagged with its own id, rather
+                        # than one joined blob. The client reveals each widget as
+                        # its own sentence is spoken, so "weather + map" shows the
+                        # weather card on the weather sentence and the map on the
+                        # map sentence. Joining them threw that pairing away.
+                        # Still capped at two: more than that read aloud is worse
+                        # than silence.
+                        spoken_any = 0
+                        for (rid_, wt_, wc_) in placed:
+                            if spoken_any >= 2:
+                                break
+                            ln = _spoken_summary(wt_, wc_, req.message)
+                            if not ln:
+                                continue
+                            yield (f'data: {json.dumps({"type": "chunk", "content": ln, "widget_id": rid_})}'
+                                   f'\n\n')
+                            spoken_any += 1
                     except Exception as e:
                         logger.warning(f"[TTS] router spoken summary failed: {e}")
                 yield 'data: {"type": "done"}\n\n'
@@ -7116,7 +7134,11 @@ async def send_message(req: MessageRequest):
                 or bool(COMPOSE_ASK_RE.search(text_clean))
             _MAX_AGENT_WIDGETS = 4
             widgets_committed = 0
-            last_committed = None  # (widget_type, config) of the most recent commit
+            # What the most recent commit actually rendered, recorded by
+            # execute_mutation: (widget_type, config, resolved_widget_id).
+            # The id is resolved INSIDE that helper, so the model's raw
+            # tool args are not a reliable source for it.
+            last_committed = None
             canvas_settled = False
             # Tool names prism handed the model that we have no canvas handler for.
             # Collected so a turn that commits nothing can say WHY in the logs.
@@ -7130,6 +7152,8 @@ async def send_message(req: MessageRequest):
             # toward normal; a research turn legitimately repeats a search once.
             tool_repeats: Dict[str, int] = {}
             research_calls = 0
+
+            nonlocal_last_committed = {"v": None}
 
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
@@ -7216,6 +7240,8 @@ async def send_message(req: MessageRequest):
                             req.session_id, widget_type,
                             tool_args.get("widget_id", ""), req.message,
                             req.focus_widget_id or "")
+                        nonlocal_last_committed["v"] = (widget_type, tool_args.get("config", {}),
+                                                        widget_id)
                         config = tool_args.get("config", {})
                         # Some models pass config as a JSON string — normalize.
                         if isinstance(config, str):
@@ -7611,9 +7637,7 @@ async def send_message(req: MessageRequest):
                                         # Remember WHAT was committed: the fast loop
                                         # cuts the model off before it describes it,
                                         # so this config is all we have to speak from.
-                                        last_committed = (
-                                            active_tool_args.get("widget_type", ""),
-                                            active_tool_args.get("config") or {})
+                                        last_committed = nonlocal_last_committed["v"]
                                         active_tool_name = None
                                         active_tool_args = {}
                                         widgets_committed += 1
@@ -7651,9 +7675,7 @@ async def send_message(req: MessageRequest):
                                             # Same capture as the other commit site:
                                             # this is the only record of what we
                                             # rendered once the args are cleared.
-                                            last_committed = (
-                                                active_tool_args.get("widget_type", ""),
-                                                active_tool_args.get("config") or {})
+                                            last_committed = nonlocal_last_committed["v"]
                                             active_tool_name = None
                                             active_tool_args = {}
                                             widgets_committed += 1
@@ -7757,15 +7779,24 @@ async def send_message(req: MessageRequest):
                     # Speak what the widget SHOWS, not that a widget exists. The
                     # canned "Added it to your canvas." was read aloud and told a
                     # user who wasn't looking at the screen nothing at all.
-                    spoken = ""
+                    spoken, spoken_id = "", ""
                     if last_committed:
                         try:
                             spoken = _spoken_summary(last_committed[0], last_committed[1],
                                                      req.message)
+                            spoken_id = last_committed[2] if len(last_committed) > 2 else ""
                         except Exception as e:
                             logger.warning(f"[TTS] spoken summary failed: {e}")
                     final_text = spoken or "Added it to your canvas."
-                    yield f'data: {json.dumps({"type": "chunk", "content": final_text})}\n\n'
+                    # NB: not named `payload` — that name is already read earlier
+                    # in this function, and assigning it here would make Python
+                    # treat it as local for the WHOLE function, so the earlier read
+                    # raised "cannot access local variable 'payload'". Caught by
+                    # tests/test_sse_duplication.py.
+                    spoken_payload = {"type": "chunk", "content": final_text}
+                    if spoken_id:
+                        spoken_payload["widget_id"] = spoken_id
+                    yield f'data: {json.dumps(spoken_payload)}\n\n'
 
             # SAFETY NET: the turn answered in prose but wrote nothing to the canvas.
             # Before this, that turn was invisible — the answer was spoken by TTS and
