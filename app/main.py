@@ -1559,6 +1559,23 @@ def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
 # nothing went wrong, because it looks like a real result.
 _MIN_ANSWER_CHARS = 40
 
+# Runaway-tool thresholds. A healthy research turn measures 3 tool calls with 1
+# repeat (5/5 runs, 2026-07-20), so these sit far above normal and should only
+# ever fire when something is genuinely broken. Do NOT tune them down toward
+# normal — a research turn legitimately repeats a search once.
+_MAX_IDENTICAL_TOOL_CALLS = 4
+_MAX_RESEARCH_CALLS = 12
+
+
+def _tool_repeat_key(tool_name: str, args) -> str:
+    """Stable key for 'the same call again'. Args are canonicalized so key order
+    can't disguise a repeat as a new call."""
+    try:
+        blob = json.dumps(args, sort_keys=True, default=str)[:400]
+    except Exception:
+        blob = str(args)[:400]
+    return f"{tool_name}|{blob}"
+
 # The model narrating its plan instead of answering. Observed verbatim on a live
 # research turn: it ran 18 research calls, then said "Now I have comprehensive
 # data from three major review sources. Let me build a data_card with the best
@@ -6837,6 +6854,15 @@ async def send_message(req: MessageRequest):
             # Tool names prism handed the model that we have no canvas handler for.
             # Collected so a turn that commits nothing can say WHY in the logs.
             unhandled_tools: List[str] = []
+            # Repeat ledger, keyed on (tool, args). Pure insurance: a healthy
+            # research turn measures 3 tool calls with 1 repeat, so these
+            # thresholds sit far above normal. They exist because a single broken
+            # tool once produced 18 identical calls over 280s — the tool was
+            # returning "retry with a shorter query" while its backend was
+            # unreachable, and nothing capped the damage. Never tune these DOWN
+            # toward normal; a research turn legitimately repeats a search once.
+            tool_repeats: Dict[str, int] = {}
+            research_calls = 0
 
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
@@ -7397,6 +7423,32 @@ async def send_message(req: MessageRequest):
                                                 f"no canvas mutation yet")
                                         active_tool_name = None
                                         active_tool_args = {}
+
+                                        # Runaway guard. We cannot stop prism from
+                                        # running a tool — we only observe — so the
+                                        # only lever is to stop consuming the stream,
+                                        # which drops through to the fallback card
+                                        # with whatever the turn produced. Better a
+                                        # card in 60s than a spinner for 5 minutes.
+                                        research_calls += 1
+                                        key = _tool_repeat_key(tool_name, args)
+                                        tool_repeats[key] = tool_repeats.get(key, 0) + 1
+                                        if tool_repeats[key] >= _MAX_IDENTICAL_TOOL_CALLS:
+                                            logger.error(
+                                                f"[AGENT] RUNAWAY: {tool_name!r} called "
+                                                f"{tool_repeats[key]}× with identical args — "
+                                                f"cutting the turn short. A tool is almost "
+                                                f"certainly failing while telling the model "
+                                                f"to retry; check /health/app search status.")
+                                            yield f'data: {json.dumps({"type": "status", "message": "search is repeating itself — building from what I have"})}\n\n'
+                                            break
+                                        if research_calls >= _MAX_RESEARCH_CALLS:
+                                            logger.warning(
+                                                f"[AGENT] research budget spent "
+                                                f"({research_calls} calls) — cutting the turn "
+                                                f"short and rendering what we have")
+                                            yield f'data: {json.dumps({"type": "status", "message": "enough research — building the card"})}\n\n'
+                                            break
 
                                 elif event_type == "thinking":
                                     yield f'data: {json.dumps({"type": "status", "message": "reasoning..."})}\n\n'

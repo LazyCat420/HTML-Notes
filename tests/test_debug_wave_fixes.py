@@ -192,3 +192,29 @@ def test_unhandled_tool_names_are_not_canvas_tools():
     # prism forces these on us; they must NOT be treated as canvas tools
     for forced in ("create_artifact", "execute_python"):
         assert forced not in handled
+
+
+# ── P2: runaway-tool guard thresholds ───────────────────────────────────────
+
+def test_repeat_key_is_stable_across_arg_order():
+    """Key order must not disguise a repeat as a fresh call."""
+    a = m._tool_repeat_key("search", {"query": "x", "limit": 5})
+    b = m._tool_repeat_key("search", {"limit": 5, "query": "x"})
+    assert a == b
+
+
+def test_repeat_key_separates_different_queries():
+    a = m._tool_repeat_key("search", {"query": "sandals"})
+    b = m._tool_repeat_key("search", {"query": "boots"})
+    assert a != b
+
+
+def test_repeat_key_survives_unserializable_args():
+    assert m._tool_repeat_key("search", object())
+
+
+def test_runaway_thresholds_sit_above_healthy_traffic():
+    """Measured healthy turn: 3 calls, 1 repeat (5/5 runs 2026-07-20). Guards
+    that creep down toward that would fire on normal research."""
+    assert m._MAX_IDENTICAL_TOOL_CALLS > 2, "would fire on a legitimate re-search"
+    assert m._MAX_RESEARCH_CALLS > 3, "would fire on a healthy 3-call turn"
