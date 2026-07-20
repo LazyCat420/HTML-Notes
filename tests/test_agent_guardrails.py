@@ -98,3 +98,66 @@ def test_directive_and_rewrite_carry_the_widget_anchor():
 def test_system_prompt_resolves_names_against_conversation():
     assert "NAMES RESOLVE AGAINST THE CONVERSATION FIRST" in SRC
     assert "BEATS the famous meaning" in SRC
+
+
+# ── Stacking in-place updates (bounded accumulation, not hard replace) ───────
+
+def _stack(session, wid, cfg, prev=None, on_canvas=True):
+    m._session_widget_configs.pop(session, None)
+    if prev is not None:
+        m._remember_widget_config(session, wid, prev)
+    return m._stack_data_card_update(session, wid, "data_card", cfg, on_canvas)
+
+
+def test_update_stacks_previous_answer_under_new():
+    out = _stack("s", "w1", {"answer": "New hardware deals: drills and saws."},
+                 prev={"answer": "Costco July deals: tacos, roses, batteries."})
+    assert out["answer"].startswith("New hardware deals")
+    assert "**Earlier**" in out["answer"]
+    assert "tacos" in out["answer"], "the previous content must survive the update"
+
+
+def test_stacking_respects_the_word_budget():
+    prev = {"answer": "old " * 900}
+    out = _stack("s", "w1", {"answer": "fresh " * 100}, prev=prev)
+    assert m._word_count(out["answer"]) <= m._STACK_WORD_BUDGET + 20  # + rule/ellipsis
+    assert out["answer"].rstrip().endswith("…"), "trimmed history is marked"
+
+
+def test_no_stacking_when_new_answer_fills_the_budget():
+    out = _stack("s", "w1", {"answer": "big " * 850}, prev={"answer": "old news"})
+    assert "**Earlier**" not in out["answer"], "no room → clean replace"
+
+
+def test_no_stacking_when_model_already_included_history():
+    prev = {"answer": "Costco July deals: tacos, roses, batteries and more items."}
+    new = {"answer": "Costco July deals: tacos, roses, batteries and more items. "
+                     "Plus new hardware: drills."}
+    out = _stack("s", "w1", new, prev=prev)
+    assert out["answer"].count("tacos") == 1, "history the model kept must not duplicate"
+
+
+def test_new_widgets_and_other_types_replace():
+    out = _stack("s", "w1", {"answer": "fresh"}, prev={"answer": "old"}, on_canvas=False)
+    assert out["answer"] == "fresh", "first render of an id never stacks"
+    m._remember_widget_config("s2", "w2", {"answer": "old"})
+    out2 = m._stack_data_card_update("s2", "w2", "stock_card", {"answer": "fresh"}, True)
+    assert out2["answer"] == "fresh", "stateful widget types always replace"
+
+
+def test_items_accumulate_and_dedupe():
+    prev = {"answer": "old", "items": [{"title": "A", "url": "http://a"},
+                                       {"title": "B", "url": "http://b"}]}
+    new = {"answer": "brand new content here",
+           "items": [{"title": "C", "url": "http://c"},
+                     {"title": "A2", "url": "http://a"}]}
+    out = _stack("s", "w1", new, prev=prev)
+    urls = [i["url"] for i in out["items"]]
+    assert urls[0] == "http://c", "newest sources first"
+    assert "http://b" in urls, "older sources kept"
+    assert urls.count("http://a") == 1, "deduped by url"
+
+
+def test_stacking_is_wired_into_the_agent_path():
+    assert "_stack_data_card_update(" in SRC
+    assert "_remember_widget_config(req.session_id, widget_id, config)" in SRC

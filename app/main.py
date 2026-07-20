@@ -2503,6 +2503,90 @@ def find_reuse_target(session_id: str, widget_type: str,
     return None
 
 
+# ── Stacking in-place updates ────────────────────────────────────────────────
+# A follow-up that updates a widget used to hard-REPLACE its content, so two
+# quick follow-ups on the same thread wiped data the user was still reading
+# (live: a market-news card replaced itself twice in a row and the middle
+# update was never seen). Same-widget data_card updates now STACK: newest
+# content on top, previous content kept under an "Earlier" rule, until the
+# card reaches a word budget — then the oldest text rolls off the bottom.
+# In-memory per session, same lifetime as the turn ledger.
+_session_widget_configs: Dict[str, Dict[str, dict]] = {}
+_STACK_WORD_BUDGET = 800     # user-tuned: "500-1000 words" — split the range
+_STACK_MIN_KEEP = 60         # don't bother stacking a stub smaller than this
+
+_EARLIER_RULE = "\n\n---\n\n**Earlier**\n\n"
+
+
+def _remember_widget_config(session_id: str, widget_id: str, config: dict) -> None:
+    if not (session_id and widget_id and isinstance(config, dict)):
+        return
+    _session_widget_configs.setdefault(session_id, {})[widget_id] = config
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"\S+", text or ""))
+
+
+def _stack_data_card_update(session_id: str, widget_id: str, widget_type: str,
+                            config: dict, on_canvas: bool) -> dict:
+    """Merge a data_card's previous content under its new content, bounded by
+    _STACK_WORD_BUDGET. Returns the (possibly merged) config.
+
+    Stacks only when ALL hold: it's a data_card, the widget is being updated
+    in place (already on canvas), we remember what it showed, and the new
+    answer doesn't already contain the old one (a model that rewrote WITH
+    history must not get it duplicated back). Other widget types are stateful
+    displays (stock cards, maps, clocks) — they always replace."""
+    prev = _session_widget_configs.get(session_id, {}).get(widget_id)
+    if (widget_type != "data_card" or not on_canvas or not isinstance(prev, dict)
+            or not isinstance(config, dict)):
+        return config
+    new_ans = str(config.get("answer") or "").strip()
+    old_ans = str(prev.get("answer") or "").strip()
+    merged = dict(config)
+
+    if new_ans and old_ans:
+        # Substring guard: compare a distinctive slice of the old text.
+        old_head = re.sub(r"\s+", " ", old_ans)[:120]
+        if old_head and old_head not in re.sub(r"\s+", " ", new_ans):
+            room = _STACK_WORD_BUDGET - _word_count(new_ans)
+            if room >= _STACK_MIN_KEEP:
+                old_words = old_ans.split()
+                kept = " ".join(old_words[:room])
+                if len(old_words) > room:
+                    kept += " …"
+                merged["answer"] = new_ans + _EARLIER_RULE + kept
+                logger.info(f"[WIDGET STACK] #{widget_id}: kept "
+                            f"{min(len(old_words), room)} earlier words under the "
+                            f"new answer ({_word_count(merged['answer'])} total)")
+            else:
+                logger.info(f"[WIDGET STACK] #{widget_id}: new answer fills the "
+                            f"budget — replacing outright")
+
+    # Sources/items accumulate too (dedupe by url-or-title, newest first).
+    for key in ("items", "sources"):
+        new_items = merged.get(key) or []
+        old_items = prev.get(key) or []
+        if isinstance(new_items, dict):
+            new_items = [new_items]
+        if isinstance(old_items, dict):
+            old_items = [old_items]
+        if not (isinstance(new_items, list) and isinstance(old_items, list) and old_items):
+            continue
+        seen, combined = set(), []
+        for it in list(new_items) + list(old_items):
+            if not isinstance(it, dict):
+                continue
+            k = (it.get("url") or it.get("title") or "").strip().lower()
+            if k and k in seen:
+                continue
+            seen.add(k)
+            combined.append(it)
+        merged[key] = combined[:8]
+    return merged
+
+
 # ── Conversation self-awareness: the turn ledger ─────────────────────────────
 # A compact per-session record of what each turn did — the message, the route,
 # and the widgets it produced with a short gist of their content. This is the
@@ -7694,6 +7778,15 @@ async def send_message(req: MessageRequest):
                         # don't rely on the model remembering to set autoplay.
                         if widget_type == "mini_music_player":
                             config["autoplay"] = True
+
+                        # Same-widget follow-ups STACK (bounded) instead of
+                        # hard-replacing — see _stack_data_card_update.
+                        _updating_in_place = bool(
+                            _widget_on_canvas(req.session_id, widget_id, widget_type))
+                        config = _stack_data_card_update(
+                            req.session_id, widget_id, widget_type, config,
+                            _updating_in_place)
+                        _remember_widget_config(req.session_id, widget_id, config)
 
                         def _add(soup):
                             replaced = False
