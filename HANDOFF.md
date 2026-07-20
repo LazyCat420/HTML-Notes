@@ -1,3 +1,53 @@
+# Handoff — 2026-07-20 (frontend: restrained sci-fi HUD theme)
+
+**Deployed:** HTML-Notes `5ba6cf8` → synology `:8035`. Health 200; live `/`
+serves `hud-theme.css?v=906b6d82f9` + the Share Tech Mono font; `/static/hud-theme.css`
+= 200 (18.4 KB). Live empty-state + local widget renders screenshot-verified.
+**Scope:** CSS-only overlay. No JS/HTML structure or Python logic changed except
+one additive line in `app/main.py` (asset-fingerprint list — landed via `05d9454`).
+
+## What shipped
+
+A futuristic-HUD skin, added as a **final override layer** rather than a rewrite:
+`app/static/hud-theme.css`, linked in `index.html` **after** `index.css` so it wins
+over the tail "CANVAS REDESIGN" calm-neutral block — the same layering trick that
+block used on the neon rules above it. The two prior themes in `index.css` are
+untouched and still present underneath.
+
+- **Backdrop:** faint masked grid + very soft STATIC scanlines (no animation).
+- **Panels:** clip-path "cut" corners (top-right/bottom-left notch), thin cyan
+  hairline + soft glow, drawn L-brackets on the other two corners via a single
+  `::before` (leaves `.is-updating::after` sweep from index.css intact).
+- **Headers/labels:** Share Tech Mono, uppercase, wide-tracked; a quiet status
+  pip that slow-breathes (`hud-breathe`, 3.4s) — never a hard blink.
+- **Readouts:** clock / `.metric-value` / `.font-mono` → mono + tabular + soft cyan.
+- **Command strip, turn-status bars, activity log:** re-cut to match; status-bar
+  shimmer slowed (2.6s) so long turns don't strobe.
+- **Music player:** purple→cyan retint by targeting its Tailwind classes
+  (`from-fuchsia-500`, `from-purple-400`, `bg-purple-300`, …) — its Alpine twin
+  in `index.js` is NOT touched, so no template-drift risk with the music commit.
+
+Per the brief: glow/colors kept soft, exactly one gentle looping pulse, and every
+loop is killed under `prefers-reduced-motion`. Cuts/brackets shrink < 520px.
+
+## Gotchas / notes for next session
+
+- **The app did NOT look like the neon HUD on GitHub.** `index.css` stacks THREE
+  themes now: neon (top) → calm-neutral "CANVAS REDESIGN" (tail, was live) → this
+  HUD overlay (separate file, now on top). Edit the layer that actually wins.
+- **`main.py` fingerprint edit was swept into `05d9454`** (a parallel session's
+  `git add`), not my commit — it's in HEAD either way. `_CACHE_BUSTED_ASSETS` now
+  lists `hud-theme.css`; bumping the file's mtime re-versions it automatically, so
+  the hardcoded `?v=1.0` in index.html is only a fallback.
+- **The Phase-1 "layout column bug" in the original plan does not exist** — the
+  activity log is `position:fixed; display:none`, never a grid sibling. No fix made.
+- Deeper plan items needing JS (widget size-tiers, per-widget action buttons, a
+  60px single-row music strip) were left out to keep this a safe CSS-only pass and
+  avoid colliding with the concurrent music-widget work. Resize/move handles for
+  widgets already exist (`.widget-resize-handle` / `.widget-move-handle`).
+
+---
+
 # Handoff — 2026-07-20 (music widget → music-player service, real queue)
 
 **Deployed:** HTML-Notes `05d9454` → synology `:8035` (a parallel session then
