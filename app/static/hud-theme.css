@@ -1,0 +1,448 @@
+/* ════════════════════════════════════════════════════════════════
+   HTML-NOTES // HUD OVERLAY THEME
+   ----------------------------------------------------------------
+   A restrained futuristic-HUD skin. Loaded LAST (after index.css) so
+   it wins over the "CANVAS REDESIGN" calm-neutral block at the tail of
+   index.css without unpicking any of it — same pattern that block used
+   to win over the older neon rules above it.
+
+   Design intent (per the reference vehicle-diagnostics HUD):
+     · dark cockpit background with a faint grid + very soft static scanlines
+     · panels with clipped ("cut") corners and thin corner brackets
+     · monospace, wide-tracked, uppercase HUD labels
+     · cyan telemetry accent with SOFT glow — never a bloom
+     · pulses breathe slowly; nothing hard-blinks (kept deliberately calm)
+
+   Everything here is CSS-only and class-safe: no JS/HTML structure is
+   assumed beyond what the widgets already render. Heavy `!important` use
+   is intentional — it mirrors index.css and is required to beat both the
+   calm-neutral overrides and the runtime Tailwind utilities baked into
+   the widget templates.
+   ════════════════════════════════════════════════════════════════ */
+
+:root {
+    /* Cockpit surfaces */
+    --hud-bg:        #050a12;
+    --hud-bg-deep:   #03060c;
+    --hud-panel:     rgba(10, 22, 38, 0.62);
+    --hud-panel-2:   rgba(6, 14, 26, 0.55);
+
+    /* Telemetry cyan — the single accent */
+    --hud-cyan:      #55d6ff;
+    --hud-cyan-soft: rgba(85, 214, 255, 0.14);
+    --hud-line:      rgba(120, 210, 255, 0.22);   /* resting hairline */
+    --hud-line-hot:  rgba(120, 210, 255, 0.45);   /* hover hairline   */
+    --hud-glow:      rgba(85, 214, 255, 0.16);     /* SOFT — not a bloom */
+
+    /* Text */
+    --hud-ink:       #d7ecfb;
+    --hud-ink-dim:   #8fb2cc;
+
+    /* Warm secondary (status / warnings only) */
+    --hud-amber:     #ffb454;
+
+    /* Type: a tech mono for labels/readouts, Inter stays for prose. */
+    --hud-mono: "Share Tech Mono", ui-monospace, "SFMono-Regular",
+                "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+
+    /* Corner geometry, shared so panels + brackets stay in sync. */
+    --hud-cut: 13px;
+}
+
+/* ─── Cockpit backdrop ──────────────────────────────────────────
+   The calm block flattened body to #0b0b0f and disabled body::before/
+   ::after. Bring back a faint grid + a whisper of scanlines, but keep
+   both far quieter than the original neon theme so content stays legible. */
+body {
+    background:
+        radial-gradient(ellipse 80% 55% at 50% -8%, rgba(58, 140, 210, 0.10), transparent 60%),
+        radial-gradient(ellipse 60% 50% at 92% 108%, rgba(40, 170, 230, 0.06), transparent 62%),
+        linear-gradient(180deg, #070e18 0%, var(--hud-bg) 55%, var(--hud-bg-deep) 100%) !important;
+    color: var(--hud-ink);
+}
+
+/* Faint square grid, masked so it fades toward the edges. */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    pointer-events: none;
+    display: block !important;
+    background-image:
+        linear-gradient(rgba(120, 210, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 210, 255, 0.035) 1px, transparent 1px);
+    background-size: 52px 52px;
+    -webkit-mask-image: radial-gradient(ellipse 92% 82% at 50% 22%, black 20%, transparent 82%);
+    mask-image: radial-gradient(ellipse 92% 82% at 50% 22%, black 20%, transparent 82%);
+}
+
+/* Static scanlines — no animation, very low opacity. Just enough CRT
+   texture to read as "a display", not enough to shimmer or distract. */
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    display: block !important;
+    background: repeating-linear-gradient(
+        0deg,
+        rgba(3, 8, 16, 0.16) 0px,
+        rgba(3, 8, 16, 0.16) 1px,
+        transparent 1px,
+        transparent 3px
+    );
+    opacity: 0.22;
+}
+
+/* ─── Panels: cut corners, hairline, soft glow ──────────────────
+   clip-path notches two opposite corners for the classic HUD-panel
+   silhouette; the other two carry drawn L-brackets (::before below). */
+.widget-container,
+.canvas-widget,
+.dashboard-grid .glass-card {
+    background:
+        linear-gradient(168deg, var(--hud-panel), var(--hud-panel-2)) !important;
+    border: 1px solid var(--hud-line) !important;
+    border-radius: 0 !important;
+    clip-path: polygon(
+        0 0,
+        calc(100% - var(--hud-cut)) 0,
+        100% var(--hud-cut),
+        100% 100%,
+        var(--hud-cut) 100%,
+        0 calc(100% - var(--hud-cut))
+    );
+    box-shadow:
+        0 1px 0 rgba(120, 210, 255, 0.05) inset,
+        0 10px 34px rgba(0, 0, 0, 0.5),
+        0 0 22px var(--hud-glow) !important;
+    color: var(--hud-ink);
+    transition:
+        border-color 0.22s var(--ease, ease),
+        box-shadow 0.22s var(--ease, ease),
+        transform 0.22s var(--ease, ease) !important;
+}
+
+.widget-container:hover,
+.canvas-widget:hover,
+.dashboard-grid .glass-card:hover {
+    border-color: var(--hud-line-hot) !important;
+    box-shadow:
+        0 1px 0 rgba(120, 210, 255, 0.08) inset,
+        0 14px 42px rgba(0, 0, 0, 0.55),
+        0 0 30px rgba(85, 214, 255, 0.24) !important;
+    transform: translateY(-2px);
+}
+
+/* L-shaped corner brackets on the two un-notched corners (top-left &
+   bottom-right). Drawn as four thin gradient strips on a single ::before
+   so ::after stays free for the "widget updated" light-sweep in index.css.
+   Inset a touch so the clip-path never shaves them. */
+.widget-container::before,
+.dashboard-grid .glass-card::before {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    z-index: 6;
+    pointer-events: none;
+    background:
+        /* top-left: horizontal + vertical */
+        linear-gradient(90deg, var(--hud-cyan), transparent) left top / 16px 1.5px no-repeat,
+        linear-gradient(180deg, var(--hud-cyan), transparent) left top / 1.5px 16px no-repeat,
+        /* bottom-right: horizontal + vertical */
+        linear-gradient(270deg, var(--hud-cyan), transparent) right bottom / 16px 1.5px no-repeat,
+        linear-gradient(0deg, var(--hud-cyan), transparent) right bottom / 1.5px 16px no-repeat;
+    opacity: 0.35;
+    transition: opacity 0.22s ease;
+}
+.widget-container:hover::before,
+.dashboard-grid .glass-card:hover::before {
+    opacity: 0.75;
+}
+
+/* clip-path clips overflow to the octagon, so the old overflow:hidden is
+   redundant but harmless. Keep position context for pseudo-elements. */
+.widget-container { position: relative; }
+
+/* ─── Widget header → HUD label bar ─────────────────────────────
+   The server renders `.widget-header` (icon + h3 + optional subtitle +
+   close). Re-skin it as a telemetry strip: dark inset band, cyan hairline
+   underline, monospace wide-tracked title, plus a small breathing status
+   dot at the far end. */
+.widget-container .widget-header {
+    background:
+        linear-gradient(90deg, rgba(6, 16, 30, 0.7), rgba(12, 28, 48, 0.4)) !important;
+    border-bottom: 1px solid var(--hud-line) !important;
+    box-shadow: 0 1px 0 rgba(120, 210, 255, 0.06);
+    position: relative;
+}
+/* A quiet status pip riding the right edge of the header bar. Slow breathe,
+   never a hard blink — sits left of the close button. */
+.widget-container .widget-header::after {
+    content: "";
+    position: absolute;
+    right: 2.4rem;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    margin-top: -2.5px;
+    border-radius: 50%;
+    background: var(--hud-cyan);
+    box-shadow: 0 0 6px rgba(85, 214, 255, 0.7);
+    animation: hud-breathe 3.4s ease-in-out infinite;
+    pointer-events: none;
+}
+
+.widget-container .widget-header h3,
+.widget-container h3,
+.canvas-widget h3,
+.dashboard-grid .glass-card h3 {
+    font-family: var(--hud-mono) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.16em !important;
+    font-weight: 400 !important;
+    font-size: 0.82rem !important;
+    color: #bfe6ff !important;
+    text-shadow: 0 0 10px rgba(85, 214, 255, 0.28) !important;
+}
+
+/* The icon that opens each header reads as a telemetry glyph. */
+.widget-container .widget-header .material-symbols-outlined {
+    color: var(--hud-cyan) !important;
+    filter: drop-shadow(0 0 5px rgba(85, 214, 255, 0.5));
+}
+
+/* ─── Numeric readouts → mono, tabular, softly lit ──────────────
+   Clocks, metrics and inline time counters get the instrument-panel
+   treatment. Kept to number-bearing elements so prose stays Inter. */
+.widget-container .text-4xl,
+.metric-value,
+.widget-container .font-mono,
+.canvas-widget .font-mono {
+    font-family: var(--hud-mono) !important;
+    font-variant-numeric: tabular-nums;
+    color: #a9e4ff !important;
+    text-shadow: 0 0 14px rgba(85, 214, 255, 0.35) !important;
+}
+
+.metric-label {
+    font-family: var(--hud-mono);
+    letter-spacing: 0.16em;
+    color: var(--hud-ink-dim);
+}
+
+/* ─── Welcome / system message ──────────────────────────────────
+   Give the empty-state a "system online" title without shouting. */
+.system-message h1 {
+    font-family: var(--hud-mono) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.28em !important;
+    font-weight: 400 !important;
+    color: #bfe6ff !important;
+    text-shadow: 0 0 22px rgba(85, 214, 255, 0.35) !important;
+}
+.system-message p {
+    font-family: var(--hud-mono);
+    letter-spacing: 0.05em;
+    color: var(--hud-ink-dim);
+}
+
+/* ─── Command palette → HUD command strip ───────────────────────
+   The calm block made this a rounded pill on a #1c1c20 slab. Re-cut it:
+   clipped corners, dark cockpit fill, cyan hairline that lights on focus. */
+.input-row {
+    background: linear-gradient(168deg, rgba(9, 20, 36, 0.86), rgba(5, 12, 24, 0.82)) !important;
+    border: 1px solid var(--hud-line) !important;
+    border-radius: 0 !important;
+    clip-path: polygon(
+        0 0,
+        calc(100% - 14px) 0,
+        100% 14px,
+        100% 100%,
+        14px 100%,
+        0 calc(100% - 14px)
+    );
+    box-shadow:
+        0 12px 40px rgba(0, 0, 0, 0.5),
+        0 0 22px var(--hud-glow) !important;
+    padding: 0.5rem 0.75rem !important;
+    gap: 0.35rem !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.input-row:focus-within {
+    border-color: var(--hud-line-hot) !important;
+    box-shadow:
+        0 12px 40px rgba(0, 0, 0, 0.5),
+        0 0 0 1px rgba(85, 214, 255, 0.22),
+        0 0 26px rgba(85, 214, 255, 0.26) !important;
+}
+
+#chat-input {
+    font-family: var(--hud-mono);
+    letter-spacing: 0.02em;
+    color: var(--hud-ink);
+    caret-color: var(--hud-cyan);
+}
+#chat-input::placeholder {
+    color: rgba(143, 178, 204, 0.6);
+    letter-spacing: 0.04em;
+}
+
+/* Icon buttons: square-ish HUD keys, glow only on hover. */
+.btn-icon {
+    color: var(--hud-ink-dim);
+    border-radius: 6px !important;
+    transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.btn-icon:hover {
+    background: var(--hud-cyan-soft) !important;
+    color: var(--hud-cyan);
+    box-shadow: 0 0 12px rgba(85, 214, 255, 0.2);
+}
+.btn-icon.recording { color: var(--hud-amber); }
+
+/* Send / stop: filled cyan key with a cut corner to echo the panels. */
+.btn-send, .btn-stop {
+    background: rgba(85, 214, 255, 0.16) !important;
+    border: 1px solid var(--hud-line-hot) !important;
+    color: #d8f4ff !important;
+    border-radius: 6px !important;
+    clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
+    box-shadow: 0 0 14px rgba(85, 214, 255, 0.2) !important;
+    transition: filter 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+.btn-send:hover, .btn-stop:hover {
+    filter: brightness(1.15);
+    box-shadow: 0 0 20px rgba(85, 214, 255, 0.4) !important;
+    transform: none;
+}
+.btn-stop {
+    background: rgba(255, 180, 84, 0.16) !important;
+    border-color: rgba(255, 180, 84, 0.55) !important;
+    color: #ffe0b0 !important;
+    box-shadow: 0 0 14px rgba(255, 180, 84, 0.2) !important;
+}
+
+.model-select {
+    font-family: var(--hud-mono);
+    letter-spacing: 0.04em;
+    color: var(--hud-ink-dim) !important;
+    text-transform: uppercase;
+    font-size: 0.72rem !important;
+}
+.model-select option { background: #071322; color: var(--hud-ink); }
+
+/* Health dot in the command bar: online = slow cyan breathe (calm), not a blink. */
+.health-dot.online {
+    background-color: var(--hud-cyan) !important;
+    box-shadow: 0 0 8px rgba(85, 214, 255, 0.7) !important;
+    animation: hud-breathe 3.4s ease-in-out infinite;
+}
+.health-dot.offline {
+    background-color: var(--hud-amber) !important;
+    box-shadow: 0 0 8px rgba(255, 180, 84, 0.6) !important;
+}
+
+/* ─── Per-query status bars ─────────────────────────────────────
+   Slim telemetry rows above the command strip. Retint to cyan and calm
+   the shimmer (the index.css version sweeps a bright gradient endlessly —
+   soften it so a long turn isn't a strobe in the corner of the eye). */
+.turn-status {
+    background: linear-gradient(168deg, rgba(9, 20, 36, 0.85), rgba(5, 12, 24, 0.78)) !important;
+    border: 1px solid var(--hud-line) !important;
+    border-radius: 0 !important;
+    clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px));
+}
+.turn-status-label { font-family: var(--hud-mono); letter-spacing: 0.04em; }
+.turn-status-stage,
+.turn-status-elapsed { font-family: var(--hud-mono); }
+.turn-status-track { background: rgba(120, 210, 255, 0.12) !important; }
+.turn-status-fill { background: linear-gradient(90deg, var(--hud-cyan), #9fe6ff) !important; }
+/* Gentler shimmer: longer period, lower contrast than index.css. */
+.turn-status:not(.is-done):not(.is-error):not(.is-stopped) .turn-status-fill {
+    animation-duration: 2.6s !important;
+}
+
+/* ─── Activity log ──────────────────────────────────────────────
+   Floating overlay panel (already position:fixed, display:none by default).
+   Re-cut to match the panels; it never claims canvas width. */
+.execution-log-container {
+    background: linear-gradient(168deg, rgba(9, 20, 36, 0.92), rgba(5, 12, 24, 0.88)) !important;
+    border: 1px solid var(--hud-line) !important;
+    border-radius: 0 !important;
+    clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55), 0 0 22px var(--hud-glow) !important;
+}
+.execution-log-header {
+    font-family: var(--hud-mono);
+    letter-spacing: 0.16em !important;
+    color: #bfe6ff !important;
+    border-bottom: 1px solid var(--hud-line);
+}
+.execution-log-content { font-family: var(--hud-mono); }
+
+/* ─── Music player re-tint (CSS-only) ───────────────────────────
+   The mini player template is Alpine/Tailwind purple-on-indigo with a
+   hand-maintained twin in index.js — so it's re-skinned here, not rewritten.
+   index.css already neutralises its Unsplash backdrop; carry it to cyan and
+   trim the loud purple album tile. (The panel background itself is already
+   handled by the shared .widget-container rule above.) */
+/* Album gradient tile → cyan telemetry block. */
+.widget-container .from-fuchsia-500.to-orange-500,
+.canvas-widget .from-fuchsia-500.to-orange-500 {
+    background-image: linear-gradient(to top right, #0c3a5a, var(--hud-cyan)) !important;
+    box-shadow: 0 0 16px rgba(85, 214, 255, 0.3);
+}
+/* Progress fill + play button → cyan. */
+.widget-container .from-purple-400.to-fuchsia-400,
+.canvas-widget .from-purple-400.to-fuchsia-400 {
+    background-image: linear-gradient(90deg, #34b8ee, #9fe6ff) !important;
+}
+.widget-container .bg-purple-300,
+.canvas-widget .bg-purple-300 {
+    background-color: rgba(85, 214, 255, 0.9) !important;
+    color: #04121e !important;
+    box-shadow: 0 0 16px rgba(85, 214, 255, 0.5);
+}
+.widget-container .text-purple-200,
+.widget-container .text-purple-300,
+.canvas-widget .text-purple-200,
+.canvas-widget .text-purple-300 { color: #a9e4ff !important; }
+.widget-container .accent-purple-400,
+.canvas-widget .accent-purple-400 { accent-color: var(--hud-cyan) !important; }
+
+/* ─── Links inside prose/cards ──────────────────────────────────*/
+.live-canvas a { color: var(--hud-cyan); }
+.live-canvas a:hover { color: #9fe6ff; text-shadow: 0 0 10px rgba(85, 214, 255, 0.5); }
+
+/* ─── Scrollbars + selection to match ───────────────────────────*/
+* { scrollbar-color: rgba(85, 214, 255, 0.35) transparent; }
+::-webkit-scrollbar-thumb { background: rgba(85, 214, 255, 0.3); }
+::-webkit-scrollbar-thumb:hover { background: rgba(85, 214, 255, 0.55); }
+::selection { background: rgba(85, 214, 255, 0.32); color: #eaf9ff; }
+
+/* ─── The one shared, deliberately-calm pulse ───────────────────
+   Slow opacity breathe. This is the ONLY looping animation the theme
+   introduces, and it's gentle by design (per the "not annoying" brief). */
+@keyframes hud-breathe {
+    0%, 100% { opacity: 0.45; }
+    50%      { opacity: 1; }
+}
+
+/* ─── Accessibility: kill every loop under reduced-motion ────────*/
+@media (prefers-reduced-motion: reduce) {
+    .widget-container .widget-header::after,
+    .health-dot.online {
+        animation: none !important;
+    }
+    body::after { display: none !important; }
+}
+
+/* ─── Narrow screens: brackets/cuts get fiddly on tiny cards ─────*/
+@media (max-width: 520px) {
+    :root { --hud-cut: 9px; }
+    .widget-container::before,
+    .dashboard-grid .glass-card::before { opacity: 0.25; }
+}

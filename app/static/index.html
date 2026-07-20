@@ -16,6 +16,13 @@
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+    <!-- Tech monospace for HUD labels / telemetry readouts (falls back to a system
+         mono stack if the CDN is unreachable). -->
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <!-- HUD overlay theme. MUST load after index.css: it is a final override layer
+         that re-skins the calm-neutral block at the tail of index.css into the
+         restrained sci-fi HUD look. Class-safe / CSS-only. -->
+    <link rel="stylesheet" href="hud-theme.css?v=1.0">
 </head>
 <body>
     <!-- Live Canvas Area -->
