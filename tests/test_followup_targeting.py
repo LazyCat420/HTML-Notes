@@ -250,3 +250,65 @@ def test_focus_id_of_wrong_type_is_ignored(canvas):
     got = m._resolve_widget_target(
         "s", "data_card", "", "cheaper ones", focus_widget_id="wx-1")
     assert got == "dc-1"
+
+
+# ── SEAM D: the follow-up DIRECTIVE must target topically, not by recency ────
+# Live failure 2026-07-20: costco-deals card built, then a Birkenstock card
+# (newest). "tell me more about the deals at costco anything hardware related?"
+# tripped the "tell me more" trigger, and the directive/rewrite hard-targeted
+# focus_id — pure recency — ordering an in-place rewrite of the SANDALS card.
+# find_reuse_target would have scored costco correctly but never ran: the
+# directive pre-empted it. _followup_target_id closes that seam.
+
+def test_followup_directive_targets_topical_card_not_newest(canvas):
+    canvas["html"] = _canvas(
+        ("answer-costco11", "data-card", "Costco Concord Deals"),
+        ("answer-sandal22", "data-card", "Birkenstock Arizona"),  # newest
+    )
+    _ledger("s",
+            ("what deals are at the costco in concord?",
+             "answer-costco11", "data_card", "costco concord deals kirkland"),
+            ("find me more info on birkenstock arizona",
+             "answer-sandal22", "data_card", "birkenstock arizona sandal cork"))
+    got = m._followup_target_id(
+        "s", "answer-sandal22",
+        "tell me more about the deals at costco anything hardware related?")
+    assert got == "answer-costco11", (
+        "a follow-up that NAMES a subject must edit the widget about that "
+        "subject, not whatever was built last")
+
+
+def test_subjectless_deictic_followup_keeps_recency_focus(canvas):
+    """'tell me more' with no subject carries no topical signal — recency is
+    the right call there, and must be preserved."""
+    canvas["html"] = _canvas(
+        ("answer-costco11", "data-card", "Costco Concord Deals"),
+        ("answer-sandal22", "data-card", "Birkenstock Arizona"),
+    )
+    _ledger("s",
+            ("costco deals", "answer-costco11", "data_card", "costco deals"),
+            ("birkenstock arizona", "answer-sandal22", "data_card", "birkenstock"))
+    got = m._followup_target_id("s", "answer-sandal22", "tell me more")
+    assert got == "answer-sandal22"
+
+
+def test_followup_target_scores_ledger_detail_not_just_title(canvas):
+    """The subject often lives in the card BODY, recorded as the ledger gist —
+    a generic title must not blind the topical override."""
+    canvas["html"] = _canvas(
+        ("answer-aaaa1111", "data-card", "Search Results"),   # generic title
+        ("answer-bbbb2222", "data-card", "Birkenstock Arizona"),
+    )
+    _ledger("s",
+            ("costco deals", "answer-aaaa1111", "data_card",
+             "costco concord deals hardware tools"),
+            ("birkenstock", "answer-bbbb2222", "data_card", "birkenstock sandal"))
+    got = m._followup_target_id(
+        "s", "answer-bbbb2222", "what about the costco hardware deals?")
+    assert got == "answer-aaaa1111"
+
+
+def test_followup_target_with_empty_canvas_returns_focus(canvas):
+    canvas["html"] = ""
+    assert m._followup_target_id("s", None, "tell me more") is None
+    assert m._followup_target_id("s", "w-1", "tell me more") == "w-1"

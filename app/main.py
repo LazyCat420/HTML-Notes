@@ -2660,6 +2660,42 @@ def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
     return {"inventory": inventory, "context_block": block, "focus_id": focus_id}
 
 
+def _followup_target_id(session_id: str, focus_id: Optional[str],
+                        message: str) -> Optional[str]:
+    """The widget a refining follow-up should edit.
+
+    focus_id is pure RECENCY (the last widget built), and the follow-up
+    directive/rewrite used to hard-target it. That's right for deictic asks
+    ("tell me more", "make it a table") but wrong the moment the follow-up
+    NAMES a subject: live, "tell me more about the deals at costco" arrived
+    right after a Birkenstock card was built, tripped the "tell me more"
+    trigger, and the directive ordered an in-place rewrite of the SANDALS
+    widget. The topical scorer that would have picked the Costco card
+    (find_reuse_target) never ran — the directive pre-empted it.
+
+    So: score the message against EVERY canvas widget (title + ledger gist,
+    the same two signals find_reuse_target uses — but across ALL types, since
+    the directive can't know which widget_type the model will pick). A
+    confident topical winner beats recency; a subject-free deictic ask scores
+    0 everywhere and keeps the recency focus."""
+    best_id, best_score = None, 0.0
+    try:
+        details = _ledger_details(session_id)
+        for wid, _wtype, title in _iter_canvas_widgets(get_session_canvas(session_id)):
+            if not wid or wid == "unknown":
+                continue
+            score = _score_widget_for_query(message, title or "", details.get(wid, ""))
+            if score > best_score:
+                best_id, best_score = wid, score
+    except Exception as e:
+        logger.warning(f"_followup_target_id scoring failed: {e}")
+    if best_id and best_score >= _REUSE_SCORE_THRESHOLD and best_id != focus_id:
+        logger.info(f"[WIDGET TARGET] follow-up names a subject — topical "
+                    f"#{best_id} (score {best_score:.2f}) beats recency #{focus_id}")
+        return best_id
+    return focus_id
+
+
 def _widget_on_canvas(session_id: str, wid: str, widget_type: str) -> Optional[str]:
     """`wid` if it names a REAL canvas widget of `widget_type`, else None. The
     type check is what stops a stale/ghost id from clobbering an unrelated
@@ -6761,6 +6797,14 @@ async def send_message(req: MessageRequest):
         # feeds BOTH the router and the agent, so every tier reasons about the
         # conversation thread the same way.
         turn_ctx = build_turn_context(req.session_id, req.current_canvas or "")
+        # Where a refining follow-up should land: topical match beats the
+        # recency focus when the message names a subject ("tell me more about
+        # the costco deals" must not rewrite the sandals card built last turn).
+        # Resolved ONCE here so the directive and the message rewrite below
+        # can never disagree about the target.
+        followup_target = (
+            _followup_target_id(req.session_id, turn_ctx.get("focus_id"), req.message)
+            if _is_refining_followup(req.message) else None)
 
         # ── AGENTIC ROUTER (steps 2 & 3) ─────────────────────────────────────
         # Nothing in the fast lane matched. Before dropping into the ~30-60s agent
@@ -6874,7 +6918,8 @@ async def send_message(req: MessageRequest):
             "- facts, recipes, how-tos, 'what/who/when is X', comparisons, product picks ('best X under $Y') → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph, a comparison a Markdown table) and attaches each page as a source WITH ITS PHOTO. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
             "  Use 'search_query' for these, never 'news_topic'. news_topic is ONLY for current-events asks you researched with html_notes_news; on anything else it costs you the sources and the pictures.\n"
             "- WHERE something is / a map / locations ('where are the fires in California', 'map of X') → canvas_add_widget(widget_type='map', config={'map_query': '<the query>'}). The server web-searches, geocodes the places and drops the markers — do NOT type coordinates.\n"
-            "- picture of X → canvas_add_widget(widget_type='image')\n"
+            "- picture of X → canvas_add_widget(widget_type='image', config={'image_query': '<what to show>'}). You have NO image tool and CANNOT know real image URLs — NEVER write 'url' or 'images' entries; a URL you produce is fabricated and renders as the wrong picture or a broken frame. The server searches, vision-checks and captions real pictures from image_query. 'Show me X vs Y' is still ONE image widget: image_query='X vs Y'.\n"
+            "- COMPARE / contrast / 'which is better' asks → data_card with config={'search_query': '<X vs Y>'} — the server writes a Markdown comparison table with sources. If the user explicitly asked to SEE them, ALSO add ONE image widget with image_query naming both subjects. Never answer a comparison with images alone.\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- EDIT an existing widget (change a timer's duration, a clock's timezone, a chart's data, swap the stock) → call canvas_add_widget AGAIN with the SAME widget_id from CURRENT CANVAS and the full updated config. It re-renders that widget in place — no duplicate. This is the ONLY way to change a clock/timer/stock/scoreboard/chart: canvas_modify_dom CANNOT rebuild these (they are server-rendered) and will break them. Example: to set the timer #clock-1 to 30s → canvas_add_widget(widget_type='clock', widget_id='clock-1', config={'mode':'countdown','duration_seconds':30}).\n"
@@ -6898,14 +6943,14 @@ async def send_message(req: MessageRequest):
             # mandating a mutation is what actually lands — the same ask phrased
             # explicitly already worked.
             + (
-                f"\n\nTHIS TURN IS A FOLLOW-UP. The widget #{turn_ctx['focus_id']} "
+                f"\n\nTHIS TURN IS A FOLLOW-UP. The widget #{followup_target} "
                 f"is already on screen and this ask REFINES it — it is a canvas "
                 f"request, not conversation. Fetch any new data you need, then "
-                f"call canvas_add_widget with widget_id='{turn_ctx['focus_id']}' "
+                f"call canvas_add_widget with widget_id='{followup_target}' "
                 f"to rewrite that widget IN PLACE. Do not open a new widget and "
                 f"do not answer in prose: you MUST end this turn with a canvas "
                 f"mutation."
-                if turn_ctx.get("focus_id") and _is_refining_followup(req.message)
+                if followup_target
                 else ""
             )
         )
@@ -6915,8 +6960,9 @@ async def send_message(req: MessageRequest):
         # a missing focus widget from an ignored instruction.
         logger.info(
             f"[AGENT TURN] focus_id={turn_ctx.get('focus_id')!r} "
+            f"followup_target={followup_target!r} "
             f"refining_followup={_is_refining_followup(req.message)} "
-            f"directive={'YES' if (turn_ctx.get('focus_id') and _is_refining_followup(req.message)) else 'no'} "
+            f"directive={'YES' if followup_target else 'no'} "
             f"ledger_widgets={len(turn_ctx.get('inventory') or '')>0} "
             f"msg={req.message[:60]!r}")
 
@@ -7006,18 +7052,18 @@ async def send_message(req: MessageRequest):
         # So we hand the model the phrasing it actually obeys. Only what the
         # AGENT sees is rewritten; the stored/displayed user message (already
         # saved above) is untouched, so the chat transcript still reads normally.
-        if turn_ctx.get("focus_id") and _is_refining_followup(req.message):
+        if followup_target:
             for _i in range(len(messages) - 1, -1, -1):
                 if messages[_i]["role"] == "user":
                     messages[_i]["content"] = (
-                        f"Update the existing widget #{turn_ctx['focus_id']} IN PLACE. "
+                        f"Update the existing widget #{followup_target} IN PLACE. "
                         f"Fetch whatever new data is needed, then call "
-                        f"canvas_add_widget with widget_id='{turn_ctx['focus_id']}' "
+                        f"canvas_add_widget with widget_id='{followup_target}' "
                         f"and the full updated config. Do not create a new widget "
                         f"and do not reply in prose. The change to make: "
                         f"{req.message}")
                     logger.info(f"[AGENT TURN] rewrote follow-up -> explicit update "
-                                f"of #{turn_ctx['focus_id']}")
+                                f"of #{followup_target}")
                     break
 
         # The lazy-tool-service gateway runs the agentic loop and executes the
@@ -7312,57 +7358,84 @@ async def send_message(req: MessageRequest):
                             logger.info(f"[WIDGET INJECTOR] Synthesised answer data_card for {aq!r}")
                             config = {**answer_cfg, **{k: v for k, v in config.items()
                                                        if v and k not in ("search_query", "answer_query")}}
-                        elif widget_type == "image" and not config.get("images"):
+                        elif widget_type == "image":
                             # A picture ask. The prompt advertised
                             # widget_type='image' and "image" is in
                             # _AGENT_RESEARCH_TYPES, so in prism mode every image
-                            # ask is DEFERRED to the agent — but there was no
-                            # injector branch for it and the agent's 21-tool scope
-                            # has no image-search tool. The model's only options
-                            # were to invent a URL or scrape one, so the card came
-                            # out broken or empty ("No image available").
+                            # ask is DEFERRED to the agent — but the agent's
+                            # 21-tool scope has no image-search tool. The model's
+                            # only options were to invent a URL or scrape one, so
+                            # its cards came out broken, empty, or WRONG.
                             #
-                            # build_image_config has done this properly all along
-                            # (search -> og:image extraction -> the gemma vision
-                            # gate that judges whether the picture actually shows
-                            # the subject); it was simply unreachable from the
-                            # agent path, called only by the legacy local router.
+                            # build_image_config does this properly (search ->
+                            # og:image extraction -> the gemma vision gate that
+                            # judges whether the picture actually shows the
+                            # subject), binding each caption to the page its
+                            # image came from.
                             #
                             # This branch deliberately runs EVEN WHEN the model
-                            # supplied a `url`. It used to skip in that case, which
-                            # inverted the guard: it stood down in exactly the
-                            # situation it exists for. The agent has no
-                            # image-search tool, so a URL in its config was never
-                            # looked up — it was recalled from memory. Live: "show
-                            # me a picture of a red panda" produced
-                            # .../thumb/5/50/Red_Panda.jpg/1200px-Red_Panda.jpg,
-                            # a plausible-looking Wikimedia path that 400s. The
-                            # user got a broken-image frame.
+                            # supplied a `url` OR a populated `images` array. It
+                            # used to skip on `images`, which inverted the guard:
+                            # it stood down in exactly the situation it exists
+                            # for. Live: "compare birkenstock shoes to other
+                            # shoes" shipped a pasta photo captioned "Classic
+                            # Birkenstock Arizona two-strap sandal" — both URLs
+                            # loaded fine, so liveness checks can't catch this;
+                            # the model paired its own captions with unrelated
+                            # remembered URLs. Model-supplied pairs are never
+                            # trusted: the server re-sources, and a model URL
+                            # survives only as a last resort after verification.
+                            model_imgs = [i for i in (config.get("images") or [])
+                                          if isinstance(i, dict) and i.get("url")]
                             iq = str(config.get("image_query")
                                      or config.get("query")
                                      or config.get("title", "")
                                      or config.get("caption", "")).strip()
-                            if iq:
-                                img_cfg = await build_image_config(iq)
-                                if img_cfg and img_cfg.get("images"):
-                                    logger.info(f"[WIDGET INJECTOR] Built image widget for {iq!r} "
-                                                f"({len(img_cfg['images'])} images)")
-                                    config = {**img_cfg, **{k: v for k, v in config.items()
-                                                            if v and k not in ("image_query", "query")}}
-                                elif await _image_url_loads(config.get("url", "")):
-                                    # Builder found nothing but the model's URL
-                                    # does resolve to a real image — keep it
-                                    # rather than throwing away a working picture.
+                            if not iq and model_imgs:
+                                # No query anywhere, but the captions carry the
+                                # intent ("Birkenstock Arizona" / "hiking
+                                # sandal") — search for those instead.
+                                iq = " and ".join(
+                                    str(i.get("caption") or "").strip()
+                                    for i in model_imgs if i.get("caption"))[:140].strip()
+                            img_cfg = (await build_image_config(iq)) if iq else None
+                            if img_cfg and img_cfg.get("images"):
+                                logger.info(f"[WIDGET INJECTOR] Built image widget for {iq!r} "
+                                            f"({len(img_cfg['images'])} images"
+                                            f"{'; dropped model-supplied images' if model_imgs else ''})")
+                                config = {**img_cfg, **{k: v for k, v in config.items()
+                                                        if v and k not in ("image_query", "query", "images")}}
+                            else:
+                                # Builder found nothing. Keep only model images
+                                # that actually resolve, vision-gated when we
+                                # have a query to judge them against.
+                                candidates = model_imgs or (
+                                    [{"url": config["url"], "caption": config.get("caption", "")}]
+                                    if config.get("url") else [])
+                                kept = [c for c in candidates
+                                        if await _image_url_loads(c.get("url", ""))]
+                                if kept and iq:
+                                    # The gate speaks 'image', the widget speaks
+                                    # 'url' — translate both ways. Fails open.
+                                    gated = await filter_images_by_relevance(
+                                        iq, [],
+                                        [{"image": c["url"], "caption": c.get("caption", "")}
+                                         for c in kept])
+                                    kept = [{"url": g["image"], "caption": g.get("caption", "")}
+                                            for g in gated if g.get("image")]
+                                if kept:
                                     logger.info(f"[WIDGET INJECTOR] Builder found nothing for "
-                                                f"{iq!r}; model URL verified, keeping it")
+                                                f"{iq!r}; kept {len(kept)}/{len(candidates)} "
+                                                f"verified model images")
+                                    config = {**config, "images": kept}
                                 else:
                                     # No usable picture. Say so as a data_card
                                     # rather than shipping a broken image frame.
                                     logger.info(f"[WIDGET INJECTOR] No usable image for {iq!r} — "
                                                 f"degrading to a data_card")
                                     widget_type = "data_card"
-                                    config = {"title": iq[:60].title(), "icon": "image",
-                                              "answer": f"I couldn't find a usable picture of **{iq}**."}
+                                    config = {"title": (iq or "Image")[:60].title(), "icon": "image",
+                                              "answer": f"I couldn't find a usable picture of **{iq or 'that'}**."}
                         elif (widget_type == "map" and not config.get("markers")
                               and config.get("map_query")):
                             # A map from a query: the server searches, geocodes the

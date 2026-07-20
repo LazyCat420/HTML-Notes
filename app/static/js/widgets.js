@@ -404,8 +404,11 @@ document.addEventListener('alpine:init', () => {
             this.audio = new Audio();
             this.audio.volume = this.volume;
 
-            // Audio Event Listeners
+            // Audio Event Listeners. Each handler guards on this.audio:
+            // destroy() nulls it, but events already queued on the old element
+            // (a final timeupdate especially) still fire afterwards.
             this.audio.addEventListener('ended', () => {
+                if (!this.audio) return;
                 if (this.isRepeat) {
                     this.audio.currentTime = 0;
                     this.audio.play();
@@ -421,12 +424,15 @@ document.addEventListener('alpine:init', () => {
                 this.isPlaying = false;
             });
             this.audio.addEventListener('timeupdate', () => {
-                this.currentTime = this.audio.currentTime;
+                if (this.audio) this.currentTime = this.audio.currentTime;
             });
             this.audio.addEventListener('durationchange', () => {
-                this.duration = this.audio.duration || 0;
+                if (this.audio) this.duration = this.audio.duration || 0;
             });
             this.audio.addEventListener('error', (e) => {
+                // destroy() sets src='' which itself fires an error event —
+                // not a real playback failure, don't surface it.
+                if (!this.audio || !this.audio.src) return;
                 console.error('[MusicPlayer] Native audio playback error:', e);
                 this.error = 'Audio playback error.';
                 this.isPlaying = false;

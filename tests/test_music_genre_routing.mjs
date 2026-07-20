@@ -55,7 +55,7 @@ test("the stream is closed on done, error, AND destroy (reconnect-storm guard)",
   assert.match(doneHandler.slice(0, 500), /this\.closeStream\(\)/, "done must close the stream");
   const errHandler = musicSrc.slice(musicSrc.indexOf("this.es.addEventListener('error'"));
   assert.match(errHandler.slice(0, 500), /this\.closeStream\(\)/, "error must close the stream");
-  const destroyBody = musicSrc.slice(musicSrc.indexOf("destroy()"));
+  const destroyBody = musicSrc.slice(musicSrc.indexOf("destroy() {"));
   assert.match(destroyBody.slice(0, 700), /this\.closeStream\(\)/, "destroy must close the stream");
 });
 
