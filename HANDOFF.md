@@ -129,6 +129,50 @@ id-resolution chain. Unit tests would not have caught it. Verify by driving
 four consecutive asks must all report the SAME id. `scratch/widget_targeting_check.py`
 reproduces the canvas from the session logs.
 
+## Spoken output (TTS): say the finding, not the filing
+
+It spoke a canned "Added it to your canvas.", twice in a row — useless to anyone
+not looking at the screen.
+
+**Not model laziness.** SYSTEM_PROMPT rule 5 does ask for a closing sentence, but
+the FAST LOOP closes the agent stream the moment the canvas commits (deliberately,
+to skip a slow closing turn), so that sentence never arrives. **A prompt change
+alone could not have fixed this** — the words were never going to be written.
+
+So the line is derived server-side from the config just rendered
+(`_spoken_summary`), captured at both agent commit sites before the tool args are
+cleared, and emitted on the fast and router paths too — those never involve the
+model at all, so traffic and weather (the most common asks) were previously
+SILENT rather than unhelpful.
+
+Rule 5 is still rewritten, for the turns that do reach it: answer the question,
+include the number or verdict, never mention widgets/canvas, and it is read aloud
+so it must stand alone.
+
+**Speech is not text — three things that only matter aloud:**
+- The `/tts/synthesize` endpoint strips anything outside
+  `[\w\s.,!?\-'":;À-ÿ]`. A directions title "San Ramon → San Jose" therefore
+  reads as two place names with no relationship. The arrow becomes " to ",
+  `&` becomes "and".
+- URLs are removed. A URL read aloud is unusable and buries the sentence.
+- A bare title gets a full stop, or TTS runs it into the next line.
+
+**Narration must never be spoken.** A live "whats the news" turn said: *"…I'll
+search for the actual article URLs from the source outlets instead."*
+`_NARRATION_SENTENCE_RE` / `_TOOL_TALK_RE` in main.py already existed for this but
+were wired only to the no-widget fallback CARD. Now filtered client-side at
+`enqueueTTS`, which is where sentences are first assembled — the server streams
+tokens and cannot see sentence boundaries. The text still shows in the chat
+bubble; it is only not read aloud.
+
+`scripts/narration_check.py` lifts the regexes out of `index.js` and tests BOTH
+directions on real sentences. The "must still speak" half matters more: over-reach
+(silencing a real answer) is worse than leaking one narration line.
+
+Known gap: a declarative sentence of technical commentary that doesn't start with
+"I'll…" can still be spoken. Tightening the regex risks swallowing real answers,
+so it was left alone.
+
 ## Clickable links in agent prose
 
 `_md_inline` linkified `[label](url)` but never autolinked bare URLs — and bare
