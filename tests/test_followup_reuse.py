@@ -106,3 +106,15 @@ def test_most_recent_same_type_wins(canvas):
 def test_empty_canvas_returns_none(canvas):
     canvas["html"] = ""
     assert m.find_reuse_target("s", "data_card", "what about it?") is None
+
+
+def test_fresh_subject_with_followup_phrasing_is_not_reused(canvas):
+    """Live regression 2026-07-20: 'find me MORE info on birkenstock arizona'
+    trips `more\\b`, scores 0 against the costco card, and the deictic recency
+    fallback REUSED the costco card — overwriting it with birkenstock content
+    even though the model asked for a new widget id. >=2 content words that
+    match nothing on canvas = fresh subject = new card."""
+    canvas["html"] = _canvas(("costco-concord-deals", "data-card", "Costco Concord Deals"))
+    rid = m.find_reuse_target(
+        "s", "data_card", "find me more info on birkenstock arizona")
+    assert rid is None

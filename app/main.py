@@ -2360,6 +2360,10 @@ _SUBJECT_STOP = {
     "things", "like", "know", "see", "look", "much", "many", "really", "very",
     "still", "even", "also", "just", "only", "more", "less", "other", "another",
     "same", "different", "kind", "sort", "type", "stuff", "there", "here",
+    # Deictic narrative filler: "what happened next?" is a pure follow-up, but
+    # "happened"/"next" counted as subject tokens and made the fresh-subject
+    # guard read it as a new topic.
+    "happened", "next", "then", "else", "again", "info", "information",
 }
 
 
@@ -2441,7 +2445,14 @@ def find_reuse_target(session_id: str, widget_type: str,
     # the most recent widget of this type. Recency is the TIEBREAKER, never the
     # rule: a genuinely new subject scores 0, reads as no follow-up, and returns
     # None so it gets its own card.
-    if _is_refining_followup(message):
+    #
+    # The phrasing check alone is NOT enough for that: _is_refining_followup
+    # matches `more\b` anywhere, so "find me MORE info on birkenstock arizona"
+    # reads as a refinement — and this fallback then rewrote the (unrelated)
+    # most recent card with birkenstock content, even after the model honestly
+    # asked for a NEW widget id. A message carrying two or more content words
+    # that matched nothing on canvas is a fresh subject, not deixis.
+    if _is_refining_followup(message) and len(_subject_tokens(message)) < 2:
         return candidates[-1][2]
     return None
 
