@@ -230,20 +230,42 @@ def render_data_card(widget_id: str, config: dict) -> str:
 
     body_parts = []
 
+    # The image is an ARTICLE FIGURE, not a hero band. A full-width band across the
+    # top has to pick a height for a photo whose aspect ratio we don't know, and
+    # every such guess either crops the subject (object-cover) or strands it in
+    # letterbox slack (object-contain) — the hat shot lost its crown to the former.
+    #
+    # A floated infobox sidesteps the choice entirely: fix the WIDTH, let the height
+    # fall out of the image's own aspect ratio (`h-auto`), and the picture is never
+    # cut off because nothing is ever cropping it. Text flows alongside and then
+    # under it, the way a figure sits in a Wikipedia or news article. `max-h-64`
+    # is a safety stop so a tall panorama can't run the card off; `object-contain`
+    # only ever engages in that rare case.
+    figure_html = ""
     if hero:
-        # `aspect-video max-h-52` collapsed to a ~3.4:1 letterbox on a wide card,
-        # and object-cover then threw away everything outside that strip — a
-        # product shot came through as the bottom sliver of a hat. There is no
-        # crop anchor that is right for arbitrary hero photos, so stop cropping:
-        # a fixed-height box + object-contain fits the WHOLE subject and letter-
-        # boxes the slack against the card background instead of eating the image.
-        # No bottom scrim either — with contain the subject reaches the box edge,
-        # so a gradient there dims the thing the image exists to show.
-        body_parts.append(f"""
-            <div class="hero-image w-full shrink-0 overflow-hidden relative h-48 bg-slate-950/60">
-                <img src="{esc(hero)}" alt="{esc(title)}" class="w-full h-full object-contain" loading="lazy">
-            </div>
-        """)
+        # Float/width live in index.css under a CONTAINER query, not in Tailwind
+        # classes here. A float only reads as an article figure when there is room
+        # for a real text column beside it; on a narrow card it squeezed the prose
+        # into a two-word ribbon and overlapped list rows. Tailwind's `sm:` keys off
+        # the VIEWPORT and cannot express this — the card's width comes from its
+        # grid span, so the breakpoint has to be on the card itself.
+        #
+        # Caption only when the caller supplies a real one — defaulting it to the
+        # title just printed the card header twice, once in the chrome and again
+        # under the picture.
+        caption = config.get("image_caption") or config.get("caption") or ""
+        caption_html = (
+            f'<figcaption class="px-2 py-1.5 text-[0.62rem] leading-snug text-slate-400 '
+            f'border-t border-white/10 line-clamp-2">{esc(caption)}</figcaption>'
+            if caption else ""
+        )
+        figure_html = f"""
+            <figure class="data-card-figure rounded-xl overflow-hidden border border-white/10 bg-slate-950/60 shadow-lg">
+                <img src="{esc(hero)}" alt="{esc(title)}" loading="lazy"
+                     class="block w-full h-auto object-contain bg-slate-950/40">
+                {caption_html}
+            </figure>
+        """
 
     rendered_items = []
     for item in items:
@@ -319,7 +341,7 @@ def render_data_card(widget_id: str, config: dict) -> str:
         sources_block = ""
         if rendered_items:
             sources_block = f"""
-                <div class="data-card-sources mt-3 pt-3 border-t border-white/10">
+                <div class="data-card-sources clear-both mt-3 pt-3 border-t border-white/10">
                     <div class="flex items-center gap-1.5 mb-1.5 text-slate-400">
                         <span class="material-symbols-outlined text-[0.85rem]">link</span>
                         <span class="text-[0.65rem] font-semibold uppercase tracking-wider">Sources</span>
@@ -327,23 +349,34 @@ def render_data_card(widget_id: str, config: dict) -> str:
                     <ul class="flex flex-col gap-1">{''.join(rendered_items)}</ul>
                 </div>
             """
+        # The figure goes INSIDE .answer-prose, not beside it: a float only wraps
+        # the line boxes of content in its own formatting context, so a figure
+        # dropped in as a sibling of the prose div would be overlapped by it
+        # rather than flowed around. The sources block below clears the float so
+        # a short answer can't leave "Sources" jammed against the picture.
         body_parts.append(f"""
             <div class="data-card-answer p-4 overflow-y-auto flex-grow custom-scrollbar">
-                <div class="answer-prose">{_render_markdown(answer)}</div>
+                <div class="answer-prose">{figure_html}{_render_markdown(answer)}</div>
                 {sources_block}
             </div>
         """)
     elif rendered_items:
+        # `space-y-1` rather than `flex flex-col`: a flex CONTAINER avoids floats as
+        # one rigid block, so the whole list would be squeezed into a narrow column
+        # for its entire height. As a plain block list, each <li> avoids the float
+        # on its own — rows beside the figure are short, rows past it run full
+        # width. That per-row reflow is what makes it read like an article.
         body_parts.append(f"""
-            <ul class="data-card-list flex flex-col gap-1 p-3 overflow-y-auto flex-grow custom-scrollbar">
-                {''.join(rendered_items)}
-            </ul>
+            <div class="data-card-list-wrap p-3 overflow-y-auto flex-grow custom-scrollbar">
+                {figure_html}
+                <ul class="data-card-list space-y-1">{''.join(rendered_items)}</ul>
+            </div>
         """)
     elif content:
         # Legacy plain-text content: render through Markdown too so a caller that
         # passes lightly-formatted text still gets lists/headings, not flat lines.
         body_parts.append(f"""
-            <div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{_render_markdown(content)}</div>
+            <div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{figure_html}{_render_markdown(content)}</div>
         """)
     else:
         # Last-resort fallback: show whatever config we got as key/value rows
@@ -352,12 +385,13 @@ def render_data_card(widget_id: str, config: dict) -> str:
             f'<div class="flex justify-between gap-3 py-1.5 border-b border-white/5"><span class="text-xs uppercase tracking-wider text-slate-400">{esc(k)}</span><span class="text-sm text-slate-200 text-right">{esc(v)}</span></div>'
             for k, v in config.items() if k not in ("title", "subtitle", "icon") and not isinstance(v, (dict, list))
         ) or '<p class="text-slate-400 text-xs italic text-center py-6">No data provided</p>'
-        body_parts.append(f'<div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{rows}</div>')
+        body_parts.append(f'<div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{figure_html}{rows}</div>')
 
-    # A hero eats ~208px of a 380px card, leaving barely two lines of the answer
-    # visible before the reader has to scroll — which reads as "the picture broke
-    # the card". Cards carrying a photo get the height back.
-    card_h = "h-[560px]" if hero else "h-[380px]"
+    # A full-width hero used to eat ~208px of vertical space, so a card carrying one
+    # was given 560px to stay readable. A floated figure shares its rows with the
+    # text instead of displacing them, so that compensation is mostly unnecessary
+    # now — but an image still adds some height, so keep a modest bump over 380.
+    card_h = "h-[460px]" if hero else "h-[380px]"
     return f"""
     <div id="{widget_id}" x-data="{{}}" class="widget-container data-card col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col {card_h} group">
         {widget_header(title, icon, subtitle)}

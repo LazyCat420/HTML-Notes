@@ -34,16 +34,44 @@ constraints collide into a ~3.4:1 strip, and cover then discards everything
 outside it — a waterproof-hat product shot rendered as white space plus the
 bottom sliver of a brim.
 
-**There is no crop anchor that is correct for arbitrary hero photos**, so the
-hero no longer crops at all: a fixed `h-48` box with `object-contain`. The whole
-subject always fits; the slack letterboxes against the card background. The
-bottom scrim is gone too — with contain the subject reaches the box edge, so a
-gradient there dims the thing the image exists to show. Same reasoning applied
-to the `image` widget tiles and `products` media (the latter keeps `p-2` so the
-price/badge chips don't sit on the product). Item thumbs stay `object-cover`:
-at `w-14 h-14` they're avatars, where filling the box is right.
+**There is no crop anchor that is correct for arbitrary hero photos.** Both
+failures came from the same root cause: a full-width band has to pick a HEIGHT
+for a photo whose aspect ratio is unknown, and every such guess either crops the
+subject (`object-cover`) or strands it in letterbox slack (`object-contain`).
 
-Cards carrying a photo still get the height back: **560px**.
+So the band is gone. The image is now an **article figure** — a bordered box
+floated beside the prose, the way a figure sits in a Wikipedia or news article.
+Fixing the WIDTH and letting height follow from `h-auto` means no height is ever
+guessed and nothing is ever cropped. `max-height: 16rem` is only a safety stop
+for a tall panorama; `object-contain` engages just in that rare case.
+
+The float lives in `index.css` under a **container query**, not in a Tailwind
+class. Tailwind's `sm:` keys off the VIEWPORT, but a card's width comes from its
+grid span — with a fixed 192px figure a narrow card squeezed the prose into a
+two-word ribbon and ran list rows under the picture. Below `30rem` of *card*
+width the figure goes full-width on top instead, as news sites do on mobile.
+
+Two subtleties worth keeping:
+- The figure must be rendered INSIDE `.answer-prose`, not as a sibling. A float
+  only wraps line boxes in its own formatting context; as a sibling the prose
+  div would overlap it instead of flowing around it.
+- The items list is `space-y-1`, deliberately NOT `flex flex-col`. A flex
+  container avoids floats as one rigid block, which squeezed the entire list
+  into a narrow column for its full height. As plain blocks each `<li>` avoids
+  the float on its own — short rows beside the figure, full-width past it.
+- Captions render only when the caller passes `image_caption`/`caption`.
+  Defaulting to the title printed the card header twice.
+
+Same no-crop reasoning applied to `image` widget tiles and `products` media (the
+latter keeps `p-2` so price/badge chips don't sit on the product). Item thumbs
+stay `object-cover`: at `w-14 h-14` they're avatars, where filling the box is
+right. Cards with a photo are **460px** (down from 560 — a floated figure shares
+rows with the text instead of displacing them).
+
+Layout harness: `scratch/shot_card.py` renders the variants against the real
+stylesheet and asserts no crop / no text overlap / float-vs-stack per width.
+Note the overlap check must compare against `Range.getClientRects()` line boxes,
+not block boxes — a paragraph's block box legitimately extends under a float.
 
 ## Earlier: typewriter reveal (REPLACED by the glitch above)
 
