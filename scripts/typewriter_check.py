@@ -38,7 +38,9 @@ HARNESS = "\n".join([
     extract("unwrapTypedWords"),
     extract("isAlpineDriven"),
     # constants the above close over
-    "const TYPE_TOTAL_MS = %s;" % re.search(r"TYPE_TOTAL_MS = (\d+)", SRC).group(1),
+    "const TYPE_MIN_MS = %s;" % re.search(r"TYPE_MIN_MS = (\d+)", SRC).group(1),
+    "const TYPE_MAX_MS = %s;" % re.search(r"TYPE_MAX_MS = (\d+)", SRC).group(1),
+    "const TYPE_MS_PER_WORD = %s;" % re.search(r"TYPE_MS_PER_WORD = ([\d.]+)", SRC).group(1),
     "const TYPE_MAX_WORDS = %s;" % re.search(r"TYPE_MAX_WORDS = (\d+)", SRC).group(1),
     "const TYPE_SKIP_SELECTOR = '.map-widget,.youtube-widget,.music-widget';",
 ])

@@ -784,8 +784,16 @@ document.addEventListener("DOMContentLoaded", () => {
      * Total duration is BUDGETED, not per-word, so a two-line answer and a
      * twenty-line one both finish in about the same time.
      */
-    const TYPE_TOTAL_MS = 700;    // whole reveal, regardless of length
-    const TYPE_MAX_WORDS = 260;   // past this, a reveal is noise — just show it
+    // Duration scales with length but is clamped at both ends, so a one-line
+    // answer still reads as printing and a long one doesn't outstay its welcome.
+    // MEASURED: a real research data_card carries ~480 animatable words. An
+    // earlier fixed 260-word cap silently skipped the reveal on exactly the cards
+    // this feature exists for — always count a REAL widget before picking a bound.
+    const TYPE_MIN_MS = 450;
+    const TYPE_MAX_MS = 1400;
+    const TYPE_MS_PER_WORD = 1.6;
+    // Only a runaway guard now (a pathological card), not a normal-size cutoff.
+    const TYPE_MAX_WORDS = 2000;
     // Widgets whose content is live, interactive, or continuously re-rendered.
     // Wrapping their text fights Alpine or flickers a running player.
     const TYPE_SKIP_SELECTOR = ['.map-widget', '.youtube-widget', '.music-widget'].join(',');
@@ -803,6 +811,21 @@ document.addEventListener("DOMContentLoaded", () => {
     function isAlpineDriven(el) {
         const xd = (el.getAttribute && el.getAttribute('x-data') || '').trim();
         return !!xd && xd !== '{}' && xd !== '{ }';
+    }
+
+    /**
+     * Run the reveal after the paint pipeline has settled.
+     *
+     * Two frames, then re-find the widget BY ID rather than holding the node
+     * reference: whatever runs after reconcileCanvas's loop can replace the node
+     * we were handed, and animating a detached node is invisible work.
+     */
+    function scheduleTypeIn(grid, widgetId) {
+        if (!widgetId) return;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            const live = grid.querySelector(`#${CSS.escape(widgetId)}`);
+            if (live && live.isConnected) typeInRevisedText(live);
+        }));
     }
 
     function typeInRevisedText(widget) {
@@ -869,7 +892,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
-            const step = TYPE_TOTAL_MS / spans.length;
+            const totalMs = Math.max(TYPE_MIN_MS,
+                Math.min(TYPE_MAX_MS, spans.length * TYPE_MS_PER_WORD));
+            const step = totalMs / spans.length;
             const started = performance.now();
             let i = 0;
             const tick = (now) => {
@@ -886,7 +911,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Safety net: never leave a card half-transparent if rAF is starved
             // (backgrounded tab) or an exception lands mid-reveal.
-            setTimeout(() => unwrapTypedWords(widget), TYPE_TOTAL_MS + 1200);
+            setTimeout(() => unwrapTypedWords(widget), totalMs + 1200);
         } catch (e) {
             console.warn('typeInRevisedText failed', e);
             unwrapTypedWords(widget);
@@ -998,7 +1023,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 // A follow-up rewrote this card in place. Print the new wording
                 // in rather than swapping it instantly, so it reads as "this
                 // answer is being revised" instead of a silent substitution.
-                typeInRevisedText(newWidget);
+                //
+                // Deferred by two frames, and re-queried by id, because running it
+                // synchronously here does not work: the node we just wrapped is
+                // discarded before the first animation frame by the work that runs
+                // after this loop (WidgetLayout.apply, renderDynamicComponents,
+                // Alpine init). Measured — 488 words wrapped, zero ever revealed,
+                // spans gone within 150ms. Animate whatever node is actually live
+                // once the paint pipeline has settled.
+                scheduleTypeIn(grid, newWidget.id);
             } else {
                 grid.appendChild(newWidget);
                 flagCanvasChange(newWidget, 'is-entering');
