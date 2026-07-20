@@ -2062,6 +2062,25 @@ body::after { display: none !important; }
     }
 }
 
+/* Typewriter reveal for a widget a follow-up rewrote in place.
+   Words hold their final position from the first frame and fade up — the text
+   box never changes size, so the masonry grid below it cannot jump. The tiny
+   translate gives the left-to-right "printing" read without moving the line. */
+.tw-word {
+    display: inline-block;
+    opacity: 0;
+    transform: translateY(.14em);
+}
+.tw-word.tw-in {
+    opacity: 1;
+    transform: none;
+    transition: opacity .18s ease-out, transform .18s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+    /* JS already bails, but if a span ever lands here it must never stay hidden. */
+    .tw-word { opacity: 1; transform: none; transition: none; }
+}
+
 /* The widget a follow-up will land on — the last one the user touched. Sent to
    the server as focus_widget_id, so this ring is the user-visible truth about
    where "make it cheaper" is going to apply. Deliberately quiet: a hairline,

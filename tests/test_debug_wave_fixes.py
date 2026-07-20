@@ -218,3 +218,29 @@ def test_runaway_thresholds_sit_above_healthy_traffic():
     that creep down toward that would fire on normal research."""
     assert m._MAX_IDENTICAL_TOOL_CALLS > 2, "would fire on a legitimate re-search"
     assert m._MAX_RESEARCH_CALLS > 3, "would fire on a healthy 3-call turn"
+
+
+# ── typewriter reveal: the contract the server depends on ──────────────────
+
+def test_typewriter_spans_are_stripped_from_the_canvas_we_send():
+    """The server adopts the client canvas as canonical, so a tw-word span left
+    in the HTML would be permanent AND would change the widget's data-sig,
+    making an unchanged widget look changed on every future diff. Both the
+    animation's own cleanup and getCleanedCanvasHtml must remove them."""
+    js = open(os.path.join(os.path.dirname(__file__), "..", "app", "static",
+                           "index.js")).read()
+    clean_start = js.index("function getCleanedCanvasHtml")
+    clean_body = js[clean_start:clean_start + 4000]
+    assert "span.tw-word" in clean_body, \
+        "getCleanedCanvasHtml no longer strips typewriter spans"
+    assert "unwrapTypedWords" in js
+
+
+def test_typewriter_skips_alpine_driven_widgets():
+    """Enumerating component names was tried and was wrong within minutes (the
+    music player is musicPlayerWidget, not miniMusicPlayer). The rule must stay
+    structural: a static card has x-data="{}", a live one has a component call."""
+    js = open(os.path.join(os.path.dirname(__file__), "..", "app", "static",
+                           "index.js")).read()
+    assert "function isAlpineDriven" in js
+    assert "isAlpineDriven(widget)" in js
