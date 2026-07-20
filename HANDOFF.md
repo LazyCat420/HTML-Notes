@@ -1,125 +1,99 @@
-# Handoff — 2026-07-20 (debug wave)
+# Handoff — 2026-07-20 (research reliability)
 
-**Current:** html-notes `main@14f34e8`, deployed to synology 2026-07-20T01:33:16Z.
-Suite **249 passing** (was 211).
-**OPEN:** Prism MCP registry is empty — research asks can't do real research.
+**Current:** html-notes `main@79667f6`, deployed to synology 2026-07-20T03:32:36Z.
+Suite **272 passing**. Research path healthy: 79 MCP tools, web search reachable.
 
-Audited a 5-bug debug plan against the code and the live system: **2 hypotheses
-confirmed, 3 refuted, 3 bugs found that weren't in the plan.** Full audit in
-`DEBUG_WAVE_PLAN.md`.
+## Headline
 
-## Refuted — don't re-investigate these
+**Web search had been returning zero results for every query.** Everything people
+were reporting about research asks — 18-call loops, multi-minute turns, narration
+instead of a widget, an empty canvas — was downstream of that one fact.
 
-- **The `canvasVersion` guard is not dropping widgets.** The guard is real, but
-  every dropped frame is a strict *subset* of what's already painted (commit order
-  == version order, and `commit_canvas` re-reads the base inside the lock). No
-  widget is lost to it.
-- **The vault key is fine.** `TOMTOM_API_KEY` returns HTTP 200 from inside the
-  container. Traffic was failing for a completely different reason.
-- **`getCleanedCanvasHtml` stripping and `seedWidgetSnapshots` ordering are both
-  already correct.** Test D/F in the plan describe non-bugs.
-- **`mcplazy-tool-servicehtml_notes_web_search` is not a name mismatch** — it's
-  markdown eating the `__` in `mcp__lazy-tool-service__`.
+| metric | before | after |
+|---|---|---|
+| real widget rendered | **1/3** | **5/5** |
+| tool calls per turn | 18 | 3 |
+| identical repeats | 17 | 1 |
+| turn time | 280s+ | median **44s** |
 
-## The big one: agent turns that answer but show nothing
+Measured with `scripts/render_rate.py` (5 runs, same question, both times).
 
-Three layers:
+## Root cause
 
-1. **Prism forces its core/system tools past `enabledTools`.**
-   `AgenticToolResolver.ts:293-322` — `coreToolsLocked` defaults `true`, and
-   prism's `AgentPersonaRegistry.registerCustom` (`:94-154`) never *reads*
-   `coreToolsLocked`/`blockedTools` from a custom-agent doc. **For a CUSTOM agent
-   the persona guardrail is structurally unreachable.** `execute_python` /
-   `create_skill` arrive via `CORE_AGENTIC_TOOLS`, `create_artifact` via
-   `systemTools`.
-2. **The persona's `availableTools` is dead code for our requests** — only
-   consulted when `enabledTools` is absent, and we always send it.
-3. **Our SSE loop had a four-name whitelist and no `else`.** An unhandled tool
-   emitted a spinner, committed nothing, never reset `active_tool_name` (wedging
-   the deferred-flush check for the rest of the turn), and never set
-   `canvas_settled` — so the turn ran to the iteration cap streaming text. **No
-   text-to-widget fallback existed in the prism path at all.**
+DuckDuckGo is unreachable from the NAS. From inside the container:
 
-Layers 1-2 are prism-side and read-only for us. Layer 3 is ours and is fixed:
-unhandled tools are logged/counted/reset, and **a turn that answers but commits
-nothing now renders its answer as a `data_card`**.
-
-## Everything that shipped
-
-| Fix | Where |
+| host | result |
 |---|---|
-| Unhandled-tool `else` — log, count, reset | `main.py` SSE loop |
-| Safety net: no-widget turn renders its answer as a card | `_text_answer_card_config` |
-| Thin replies (<40 chars) get an honest "couldn't answer" card | same |
-| Deictic-place denylist — never geocode `here`/`current`/`my area` | `is_deictic_place` |
-| Router asks "which city?" instead of building nothing | `build_router_widget` |
-| Adoption no longer mints a version | `set_session_canvas(bump_version=False)` |
-| TTS cleared only when this is the sole running turn | `index.js runChatTurn` |
-| `relayoutOnMediaSettle` on both history-restore paths | `index.js loadHistory` |
-| Boot check that shouts when the research path is down | `main.py` lifespan |
-| `scripts/sse_probe.py` | new |
+| google.com | HTTP 200 |
+| en.wikipedia.org | HTTP 200 |
+| **duckduckgo.com** | **ConnectTimeout** |
+| **lite.duckduckgo.com** | **ConnectTimeout** |
 
-## Bugs the plan didn't have
+Outbound is fine — DDG specifically is blocked. `web_search` tried `ddg-lite` then
+`ddg-collector`, **both DuckDuckGo**, so it failed closed. The tool then told the
+model *"Retry with a shorter, simpler query"* — so it retried, 10-18 times a turn.
 
-1. **Deictic location words were geocoded literally.** The LLM router fills
-   `query` with a placeholder like `"Current"` when the user names no place — and
-   every such word is *also* a real place: `Current` → Eleuthera, Bahamas;
-   `here` → Somalia; `my location` → Rwanda. "How is the traffic" rendered a
-   confident traffic map of the Bahamas. **This is what "the traffic widget is
-   failing" actually was.**
-2. **A bare traffic ask built nothing on the router path.**
-3. **Canvas adoption desynchronized the client permanently** — it minted a version
-   nothing ever told the client about, so every later snapshot (including widget
-   dismissals) was refused as stale until a reload.
+**The repeat loop was the model doing exactly what the tool asked.** A loop guard
+built first would have capped the retries and left research quietly broken.
+
+## What shipped
+
+| | Fix |
+|---|---|
+| **P0** | Brave Search API as the PRIMARY engine (`BRAVE_SEARCH_API_KEY` was already in the vault). Both DDG engines stay behind it, so this self-heals if DDG returns. Response normalized to the existing `{title,url,snippet}` shape — no call site changed. `<strong>` highlight markup stripped, ~1 req/s spacing for the free tier. |
+| **P1** | `web_search_ex` returns `(results, all_engines_failed)`. An engine that answers at all — even with zero hits — proves the backend is alive. On a real outage the tool returns `is_error` and says **DO NOT RETRY**; a genuine miss allows exactly one reword. Boot check and `/health/app` both probe search. |
+| **P2** | Runaway guard: 4 identical calls or 12 research calls ends the turn and drops to the fallback card. Keyed on `(tool, canonical_args)`. |
+| **P5** | MCP self-heal: boot reconnects when the dependency check fails; a watchdog re-checks every 5 min (`MCP_WATCHDOG_SECONDS`). |
+| — | `scripts/render_rate.py`, `scripts/sse_probe.py` |
+
+## Deliberately NOT built, with evidence
+
+- **P3 (prompt recency / nudge)** — its own gate was "only if still failing". Render
+  rate is 5/5, so the narration behaviour was a *symptom of having no data*, not a
+  prompting problem. Building it would have been cargo-cult.
+- **P4b/c (buffer research results into the fallback card)** — **P4a is verified
+  true**: `tool_execution` events DO carry `tool.result` (prism's own
+  `BenchmarkService.ts:445-453` reads it that way from the standard agentic path).
+  So it is feasible. But the fallback now fires ~never, so this optimizes a path
+  that doesn't run. Revisit if the fallback starts appearing in logs.
 
 ## Gotchas
 
-- **`build_traffic_widget` returning `None` is load-bearing.** The FAST path uses
-  it to fall through to a travel-time answer card. My first fix changed the shared
-  helper and `test_edge_case_fixes::test_traffic_widget_fallbacks_without_tomtom_key`
-  caught it. Fix the router branch, not the helper.
-- **`_DIR_STRIP_RE` runs before `is_deictic_place`**, so "traffic in my area"
-  arrives as the bare word `area`. The denylist needs the bare heads too.
-- **A safety-net card can be worse than no card.** First live run rendered a card
-  whose body was `"..."` because the agent streamed 5 characters. A card that
-  looks like a result but says nothing reads as a real answer — hence the 40-char
-  floor.
+- **`GET /mcp-servers` is SCOPED BY HEADERS.** Without `x-project`/`x-username` it
+  returns `[]` for ANY state. That is what made a single un-dialled connection look
+  like an empty registry and sent an hour of debugging the wrong way. The real
+  failure shape was `connected: false, toolCount: 0, lastError: null` — fixed by
+  one `POST /mcp-servers/<id>/connect`. `/reconnect`, `/refresh`, `/reload` are 404.
+- **Brave: API ≠ scraping.** Memory said "Brave is CAPTCHA-walled" — that was about
+  scraping `search.brave.com`. `api.search.brave.com` is a keyed API, unrelated,
+  and works fine.
+- **`asyncio`/`time` are imported around line 1850**, well below the search code at
+  ~280. A module-level `asyncio.Lock()` up there NameErrors on import; create it
+  lazily.
+- **Don't patch `m.asyncio.sleep` with a lambda that calls `asyncio.sleep`** — same
+  module object, so it calls itself. Capture the real one first.
+- **Use `asyncio.run` in tests, not `get_event_loop().run_until_complete`** — the
+  latter inherits a closed loop from earlier async tests, so tests pass alone and
+  fail in the suite.
+- **`render_rate.py`'s "repeats" counts by tool NAME**, so legitimate deep research
+  (5 different `read_page` URLs) shows as repeats. The runaway guard keys on
+  **args**, which is why it correctly does not fire there.
 
-## Declined: Tailwind CDN → local build
+## Known characteristics (not bugs)
 
-**It would break the app.** `create_widget` takes `htmlContent` — raw
-model-authored HTML. The agent invents Tailwind utility classes at *runtime*,
-which cannot be in a build-time content scan, so a static build would purge them
-and model-authored widgets would render unstyled. The CDN's runtime JIT is
-load-bearing here, not an oversight.
+A harder question ("best budget espresso machine") runs 9-19 tool calls and
+90-180s — one search plus several `read_page` calls on different URLs. It renders
+**3/3 REAL**. Slower, but that is real research, and the guard correctly leaves it
+alone.
 
-The legitimate concern (third-party dependency, offline resilience, CSP) is best
-addressed by **self-hosting the JIT runtime** — vendor the script to `/static`.
-That keeps runtime compilation. It does not remove the console warning, which the
-script emits about itself. Worth doing as its own change with a visual pass over
-all 14 widget types.
+## Still open
 
-## Verified live
-
-- Boot log now emits `[BOOT] RESEARCH PATH DOWN: ...` naming the outage.
-- "how is the traffic" → asks which city (was: a map of the Bahamas).
-- "how is the traffic in seattle" → `traffic-be2ad4c9`, 1.1s.
-- "best waterproof hiking sandals" → agent committed nothing;
-  fallback rendered `data_card #widget-62f43b99` reading *"I couldn't put together
-  an answer for this one — the research tools didn't return anything usable."*
-  Before this wave that turn produced an empty canvas.
-
-## STILL OPEN
-
-**Prism's MCP registry is empty** (`GET :7777/mcp-servers` → `[]`), so
-`mcp_connected: false, tool_count: 0`. lazy-tool-service is healthy on `:5591`; it
-self-registers on boot, so a prism restart dropped it. Pre-existing.
-
-Research asks now degrade honestly instead of silently, but they still can't do
-real research until this is restored. Likely just a lazy-tool-service restart —
-not done unilaterally because other sessions deploy these services concurrently.
-
-Deeper fix is prism-side parity: teach `registerCustom` to read
-`coreToolsLocked`/`blockedTools` as the lazy-agent fork already does
-(`lazy-agent-service/src/services/AgentPersonaRegistry.ts:139-144`). Rod's
-codebase — out of scope for us to edit.
+- **Prism forces its core tools** (`search_web`, `read_url`, `create_artifact`) past
+  our `enabledTools`, because `coreToolsLocked` defaults true and prism's
+  `registerCustom` never reads it for a CUSTOM agent. Only fixable prism-side —
+  parity with the lazy-agent fork (`AgentPersonaRegistry.ts:139-144`). **Rod's
+  codebase, his call.**
+- **Tailwind CDN self-hosting** — vendor the JIT runtime to `/static`. A static
+  build stays off the table: `create_widget` renders model-authored `htmlContent`,
+  so the agent invents utility classes at runtime and a content scan would purge
+  them. Wants its own visual pass over all 14 widget types.
