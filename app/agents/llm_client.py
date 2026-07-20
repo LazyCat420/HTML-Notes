@@ -1,7 +1,8 @@
-import json
-import re
 import httpx
 from typing import Dict, Any, List, Optional
+
+from lazycat.llm_json import parse_json_strict
+
 from app.config import VLLM_URL, VLLM_FAST_URL
 
 async def call_llm(
@@ -41,19 +42,11 @@ async def call_llm(
 def extract_json_block(text: str) -> Dict[str, Any]:
     """
     Extracts a JSON block from a string that might contain markdown fences.
+
+    Delegates to the SDK's shared extractor, which additionally handles
+    <think> reasoning blocks, braces inside string literals, top-level arrays,
+    and output truncated mid-structure. Raising behaviour is unchanged: a
+    response with no usable JSON still raises json.JSONDecodeError, which
+    writer.py propagates and intake/linker/librarian catch.
     """
-    # Try to find ```json ... ```
-    match = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
-    if match:
-        json_str = match.group(1).strip()
-    else:
-        # Fallback to the whole string
-        json_str = text.strip()
-        
-    # Strip any leading/trailing non-json characters if it's slightly malformed
-    start = json_str.find('{')
-    end = json_str.rfind('}')
-    if start != -1 and end != -1:
-        json_str = json_str[start:end+1]
-        
-    return json.loads(json_str)
+    return parse_json_strict(text)
