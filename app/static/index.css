@@ -2061,3 +2061,12 @@ body::after { display: none !important; }
         animation: none !important;
     }
 }
+
+/* The widget a follow-up will land on — the last one the user touched. Sent to
+   the server as focus_widget_id, so this ring is the user-visible truth about
+   where "make it cheaper" is going to apply. Deliberately quiet: a hairline,
+   not a highlight, since it's persistent rather than a one-shot flash. */
+.widget-container.is-focused {
+    box-shadow: inset 0 0 0 1px rgba(129, 140, 248, .45);
+    transition: box-shadow .18s ease-out;
+}

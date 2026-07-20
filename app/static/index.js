@@ -347,12 +347,38 @@ document.addEventListener("DOMContentLoaded", () => {
         isRecording: false,
         isMuted: localStorage.getItem("html_notes_is_muted") === "true",
         wakeWordActive: false,
-        abortController: null
+        abortController: null,
+        // The widget the next question is most likely ABOUT: the last one the
+        // user touched. The server otherwise has to infer the follow-up target
+        // from message text alone, which mis-targets whenever the newest widget
+        // isn't the one being asked about. Sent as focus_widget_id.
+        focusWidgetId: null
     };
 
     localStorage.setItem("html_notes_session_id", state.sessionId);
 
     window.WidgetResizer.observe(document.getElementById("live-canvas"));
+
+    // ─── FOLLOW-UP FOCUS TRACKING ───────────────────────────────────────────
+    // Which widget did the question come from? Delegated on the canvas rather
+    // than bound per widget, so it survives reconcileCanvas replacing nodes.
+    // Capture phase: a click on a widget's own control (close, a link) still
+    // registers the focus before that control's handler runs.
+    (function trackWidgetFocus() {
+        const canvas = document.getElementById("live-canvas");
+        if (!canvas) return;
+        const remember = (e) => {
+            const w = e.target.closest?.(".widget-container, .glass-card");
+            if (!w || !w.id) return;
+            state.focusWidgetId = w.id;
+            canvas.querySelectorAll(".is-focused").forEach(n => {
+                if (n !== w) n.classList.remove("is-focused");
+            });
+            w.classList.add("is-focused");
+        };
+        canvas.addEventListener("pointerdown", remember, true);
+        canvas.addEventListener("focusin", remember, true);
+    })();
 
     // Broken-image gate. Widget images come from third-party og:image / thumbnail
     // URLs that frequently hotlink-block or 404, and an <img> that fails shows a
@@ -985,9 +1011,15 @@ document.addEventListener("DOMContentLoaded", () => {
         // ever removes a class from server-persisted markup — which then
         // reads as "this widget changed" on every future diff and forces an
         // unnecessary (and visibly stutter-y) one-time re-render of it.
-        temp.querySelectorAll('.crt-on, .crt-off').forEach(el => {
-            el.classList.remove('crt-on', 'crt-off');
-        });
+        // is-focused (follow-up focus ring) and is-entering/is-updating (the
+        // change-flash animations) are transient for the same reason and would
+        // bake in identically — nothing ever removes a class from
+        // server-persisted markup.
+        temp.querySelectorAll('.crt-on, .crt-off, .is-focused, .is-entering, .is-updating')
+            .forEach(el => {
+                el.classList.remove('crt-on', 'crt-off', 'is-focused',
+                                    'is-entering', 'is-updating');
+            });
 
         // Strip client-computed LAYOUT styles before persisting. The masonry script
         // writes an inline `grid-row-end: span <px>` onto every widget; if that span
@@ -1226,6 +1258,12 @@ document.addEventListener("DOMContentLoaded", () => {
                     provider: provider,
                     model: model,
                     current_canvas: getCleanedCanvasHtml(),
+                    // The widget this question came from, when we know it. A
+                    // fact beats the server's text-based inference — but only
+                    // if it's still on the canvas (it may have been dismissed).
+                    focus_widget_id: (state.focusWidgetId &&
+                        elements.liveCanvas.querySelector(`#${CSS.escape(state.focusWidgetId)}`))
+                        ? state.focusWidgetId : null,
                     // The version this snapshot is based on — lets the server
                     // refuse it if another turn committed since (stale-snapshot
                     // guard in _run_turn; without it a fast sibling turn's

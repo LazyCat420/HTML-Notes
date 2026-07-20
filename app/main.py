@@ -1963,6 +1963,23 @@ SINGLETON_WIDGET_TYPES = {"map", "weather"}
 # fresh widget for every follow-up" fix; the model-driven target decision is P2.
 TOPIC_SINGLETON_TYPES = {"data_card", "scoreboard", "stock_card"}
 
+# Every type a follow-up may UPDATE IN PLACE. The factory renders 14 types but
+# only 5 were ever reuse-eligible, so "only the waterproof ones" against a
+# products grid or "make it a bar chart" against a chart could NEVER edit the
+# open widget — it stacked a duplicate, by construction rather than by bug.
+# Deliberately excluded: mini_music_player / youtube_player (media swap already
+# goes through _place_media_widget), clock / notes / iframe_app (user-owned
+# state — a mistargeted follow-up would destroy content the user typed).
+REUSABLE_WIDGET_TYPES = (
+    SINGLETON_WIDGET_TYPES | TOPIC_SINGLETON_TYPES
+    | {"products", "chart", "checklist", "image"}
+)
+
+# Overlap at or above this counts as "this ask is about that widget". 0.5 was
+# measured against real follow-ups: it clears "what about cheaper sandals?" vs
+# "Best Waterproof Sandals" (0.50) while leaving a genuinely new subject at 0.
+_REUSE_SCORE_THRESHOLD = 0.5
+
 # Deictic follow-up phrasing: the ask points back at the current thread rather than
 # opening a new subject. "tell me about X" is deliberately NOT here (it's a fresh
 # topic); "what about X", "wait...", "tell me more", a leading pronoun, etc. are.
@@ -1990,13 +2007,30 @@ _REFINE_RE = re.compile(
 )
 
 
+# Refinement markers that are NOT sentence openers, so the ^-anchored _REFINE_RE
+# misses them: "waterproof only please", "cheaper ones", "under $50". These carry
+# no subject of their own — an anaphor ("ones"), a comparative, or a bare
+# constraint — so they can only mean "narrow what is already on screen".
+_REFINE_MARKERS_RE = re.compile(
+    r"\b(?:ones?|instead|version|variant|option)\b"
+    r"|\b(?:cheap|expensive|big|small|fast|slow|new|old|close|short|long|"
+    r"high|low|good|bad|light|heavy|wide|narrow)(?:er|est)\b"
+    r"|\b(?:under|over|below|above)\s*\$?\d"
+    r"|\b(?:less|more|fewer|cheaper)\s+than\b"
+    r"|\bonly\b|\bjust\b",
+    re.I,
+)
+
+
 def _is_refining_followup(message: str) -> bool:
     """True when the ask reads as a refinement of what is already on screen —
-    either deictic ("what about the cheaper ones", "tell me more") or a narrowing
-    instruction ("only show waterproof ones"). Callers must ALSO require that a
-    focus widget actually exists before acting on this."""
+    deictic ("what about the cheaper ones", "tell me more"), a narrowing opener
+    ("only show waterproof ones"), or a non-opener narrowing marker ("cheaper
+    ones", "under $50"). Callers must ALSO require that a focus widget actually
+    exists before acting on this."""
     m = message or ""
-    return bool(_FOLLOWUP_RE.search(m) or _REFINE_RE.search(m))
+    return bool(_FOLLOWUP_RE.search(m) or _REFINE_RE.search(m)
+                or _REFINE_MARKERS_RE.search(m))
 
 
 # Tokens that carry no subject signal — dropped before measuring topic overlap.
@@ -2005,6 +2039,14 @@ _SUBJECT_STOP = {
     "was", "were", "what", "whats", "how", "about", "me", "my", "i", "need",
     "you", "please", "tell", "show", "give", "with", "get", "want", "some",
     "latest", "news", "update", "updates", "now", "today", "current", "recent",
+    # Filler that dilutes the overlap coefficient. "is teva any good?" against a
+    # card listing "Teva, Chaco, Keen" scored 0.33 (1 of 3 query tokens) and
+    # missed the 0.5 threshold purely because "any"/"good" carry no subject —
+    # the distinctive proper-noun hit is the whole signal.
+    "any", "all", "good", "bad", "best", "worst", "one", "ones", "thing",
+    "things", "like", "know", "see", "look", "much", "many", "really", "very",
+    "still", "even", "also", "just", "only", "more", "less", "other", "another",
+    "same", "different", "kind", "sort", "type", "stuff", "there", "here",
 }
 
 
@@ -2022,6 +2064,34 @@ def _subject_overlap(a: str, b: str) -> float:
     return len(ta & tb) / min(len(ta), len(tb))
 
 
+def _score_widget_for_query(query: str, title: str, detail: str = "") -> float:
+    """How strongly `query` is about a widget, 0..1.
+
+    Scores against the title AND the ledger's content gist, taking the better of
+    the two. Measured on real follow-ups, title alone returns 0.00 on 5 of 7 —
+    the subject usually lives in the card BODY ("show me teva instead" vs a card
+    titled "Best Sandals"). The two signals are complementary, not redundant:
+    "what about cheaper sandals?" scores 0.50/0.00 (title carries it) while
+    "under $50" scores 0.00/1.00 (only the detail carries it)."""
+    return max(_subject_overlap(query, title),
+               _subject_overlap(query, detail))
+
+
+def _ledger_details(session_id: str) -> Dict[str, str]:
+    """widget_id -> its most recent content gist from the turn ledger. This is
+    what _widget_detail was always recorded FOR ("what about the taco bell
+    one?"); until now nothing consumed it for targeting."""
+    out: Dict[str, str] = {}
+    try:
+        for entry in _session_turn_ledger.get(session_id, []):
+            for w in entry.get("widgets", []):
+                if w.get("id") and w.get("detail"):
+                    out[w["id"]] = w["detail"]
+    except Exception as e:
+        logger.warning(f"_ledger_details failed: {e}")
+    return out
+
+
 def find_reuse_target(session_id: str, widget_type: str,
                       message: str = "", subject: str = "") -> Optional[str]:
     """The id of an open widget this ask should UPDATE in place, or None to spawn a
@@ -2033,20 +2103,34 @@ def find_reuse_target(session_id: str, widget_type: str,
     Any other type returns None (multiple instances are fine)."""
     if widget_type in SINGLETON_WIDGET_TYPES:
         return find_existing_widget(session_id, widget_type)
-    if widget_type not in TOPIC_SINGLETON_TYPES:
+    if widget_type not in REUSABLE_WIDGET_TYPES:
         return None
-    is_followup = bool(_FOLLOWUP_RE.search(message or ""))
     probe = subject or message or ""
-    found = None
+    details = _ledger_details(session_id)
     try:
-        for wid, wtype, title in _iter_canvas_widgets(get_session_canvas(session_id)):
-            if wtype != widget_type or not wid or wid == "unknown":
-                continue
-            if is_followup or _subject_overlap(probe, title) >= 0.5:
-                found = wid  # last match wins — the most recently added
+        candidates = [
+            (_score_widget_for_query(probe, title, details.get(wid, "")), order, wid)
+            for order, (wid, wtype, title)
+            in enumerate(_iter_canvas_widgets(get_session_canvas(session_id)))
+            if wtype == widget_type and wid and wid != "unknown"
+        ]
     except Exception as e:
         logger.warning(f"find_reuse_target failed: {e}")
-    return found
+        return None
+    if not candidates:
+        return None
+    # Topical match wins. Ties break toward the more recent widget (higher order).
+    score, _order, wid = max(candidates, key=lambda c: (c[0], c[1]))
+    if score >= _REUSE_SCORE_THRESHOLD:
+        return wid
+    # No topical signal anywhere. Deictic/narrowing phrasing still means "the
+    # thing on screen" ("only under $50" names no subject at all) — fall back to
+    # the most recent widget of this type. Recency is the TIEBREAKER, never the
+    # rule: a genuinely new subject scores 0, reads as no follow-up, and returns
+    # None so it gets its own card.
+    if _is_refining_followup(message):
+        return candidates[-1][2]
+    return None
 
 
 # ── Conversation self-awareness: the turn ledger ─────────────────────────────
@@ -2148,28 +2232,89 @@ def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
         if e["widgets"]:
             focus_id = e["widgets"][-1]["id"]
             break
-    block = ""
+    if not focus_id:
+        # The ledger is in-memory, so a container restart loses it while the
+        # canvas survives (the client resends current_canvas). focus_id going
+        # None silently disabled BOTH the follow-up directive and the user-message
+        # rewrite, so follow-ups behaved differently before/after a restart with
+        # identical on-screen state. Recover from the canvas: last widget in DOM
+        # order is the most recently added.
+        try:
+            widgets = [wid for wid, _t, _ti in _iter_canvas_widgets(canvas_html)
+                       if wid and wid != "unknown"]
+            focus_id = widgets[-1] if widgets else None
+        except Exception as e:
+            logger.warning(f"focus_id canvas fallback failed: {e}")
+    # CURRENT CANVAS goes FIRST: route_with_llm truncates this block to 1200
+    # chars, and the widget ids are the part the model cannot invent — losing
+    # them to truncation while still being told "never invent a widget id"
+    # guaranteed a duplicate. History is the expendable half.
+    block = "CURRENT CANVAS:\n" + inventory
     if ledger_text:
-        block += "RECENT TURNS (oldest first — reuse these widget ids for follow-ups):\n"
-        block += ledger_text + "\n\n"
-    block += "CURRENT CANVAS:\n" + inventory
+        block += ("\n\nRECENT TURNS (oldest first — reuse these widget ids for "
+                  "follow-ups):\n" + ledger_text)
     return {"inventory": inventory, "context_block": block, "focus_id": focus_id}
 
 
+def _widget_on_canvas(session_id: str, wid: str, widget_type: str) -> Optional[str]:
+    """`wid` if it names a REAL canvas widget of `widget_type`, else None. The
+    type check is what stops a stale/ghost id from clobbering an unrelated
+    widget."""
+    if not wid:
+        return None
+    want = str(wid).lstrip("#").strip()
+    try:
+        for cid, ctype, _title in _iter_canvas_widgets(get_session_canvas(session_id)):
+            if cid == want and ctype == widget_type:
+                return cid
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_widget_target(session_id: str, widget_type: str, model_target: str,
-                           message: str = "", subject: str = "") -> Optional[str]:
-    """The id to render into: the model's explicit `target` when it names a REAL
-    canvas widget of the same type (P2, model-driven), else the deterministic
-    follow-up reuse (P0). Returns None to mint a fresh id."""
-    if model_target:
-        mt = str(model_target).lstrip("#").strip()
-        try:
-            for wid, wtype, _title in _iter_canvas_widgets(get_session_canvas(session_id)):
-                if wid == mt and wtype == widget_type:
-                    return wid
-        except Exception:
-            pass
-    return find_reuse_target(session_id, widget_type, message, subject)
+                           message: str = "", subject: str = "",
+                           focus_widget_id: str = "") -> Optional[str]:
+    """The id to render into, most trustworthy signal first:
+      P0  focus_widget_id — the CLIENT told us which widget the question came
+          from. That is a fact, not an inference, so it outranks everything.
+      P1  the model's explicit `target`, when it names a real widget of this type.
+      P2  deterministic topical reuse (find_reuse_target).
+    Returns None to mint a fresh id."""
+    return (_widget_on_canvas(session_id, focus_widget_id, widget_type)
+            or _widget_on_canvas(session_id, model_target, widget_type)
+            or find_reuse_target(session_id, widget_type, message, subject))
+
+
+def _resolve_agent_widget_id(session_id: str, widget_type: str,
+                             model_widget_id: str, message: str = "",
+                             focus_widget_id: str = "") -> str:
+    """The agent tier's id resolution — the tier-3 counterpart of
+    _resolve_widget_target, and the fix for the biggest seam in follow-up
+    targeting.
+
+    The agent branch used to take `tool_args["widget_id"]` VERBATIM, so in-place
+    update depended entirely on the model echoing an 8-hex id exactly right. A
+    hallucinated or near-miss id ("#news-card" for "#answer-3f2a91b0") missed
+    `soup.find(id=...)` and silently appended a BRAND NEW widget — the single
+    most common way a follow-up failed to edit the widget it came from.
+
+    Always returns an id: a resolved existing one, the model's own id when this
+    is genuinely a NEW widget, or a freshly minted one."""
+    resolved = _resolve_widget_target(session_id, widget_type, model_widget_id,
+                                      message, "", focus_widget_id)
+    if resolved:
+        if model_widget_id and resolved != str(model_widget_id).lstrip("#").strip():
+            logger.info(f"[WIDGET TARGET] agent id {model_widget_id!r} matched no "
+                        f"{widget_type} on canvas — retargeted to #{resolved}")
+        return resolved
+    # Nothing to reuse: this is a new widget, so the model's chosen id is fine
+    # (and keeps naming stable if it reuses it next turn). Only mint when the
+    # model gave us nothing — discarding its id here would have renamed every
+    # first-of-its-kind widget.
+    if model_widget_id:
+        return str(model_widget_id).lstrip("#").strip()
+    return f"widget-{uuid.uuid4().hex[:8]}"
 
 
 def get_canvas_summary(html: str) -> str:
@@ -2205,6 +2350,12 @@ class MessageRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     current_canvas: Optional[str] = None
+    # The widget the question came FROM, when the client knows it (the last one
+    # the user interacted with, or an explicit "ask about this"). Everything else
+    # in follow-up targeting is inference from the message text; this is a fact,
+    # so it outranks the model's guess AND the topical score. Optional — the
+    # server still infers when it's absent.
+    focus_widget_id: Optional[str] = None
     # Version of the canvas the client's current_canvas snapshot is based on
     # (the last `component` version it painted, or the seed from history load).
     # Lets _run_turn refuse a snapshot taken before another turn's commit.
@@ -5279,7 +5430,9 @@ async def send_message(req: MessageRequest):
                 # follow-up on the same thread), else mint a fresh one. This is what
                 # stops a new data_card/scoreboard/stock_card stacking on every
                 # conversational follow-up.
-                resolved_id = (widget_id
+                resolved_id = (_widget_on_canvas(req.session_id, req.focus_widget_id or "",
+                                                 widget_type)
+                               or widget_id
                                or find_reuse_target(req.session_id, widget_type, req.message,
                                                     subject=widget_config.get("title", ""))
                                or f"{id_prefix}-{uuid.uuid4().hex[:8]}")
@@ -5419,7 +5572,8 @@ async def send_message(req: MessageRequest):
                         # the deterministic follow-up reuse (P0). Stops "two maps" and
                         # "a fresh news card per follow-up".
                         reuse = _resolve_widget_target(req.session_id, wtype, model_target,
-                                                       req.message, (wcfg or {}).get("title", ""))
+                                                       req.message, (wcfg or {}).get("title", ""),
+                                                       req.focus_widget_id or "")
                         rid = reuse or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
                         placed.append((rid, wtype, wcfg or {}))
                         # Media widgets (video, music) swap the current player in
@@ -6418,7 +6572,13 @@ async def send_message(req: MessageRequest):
                                 tool_args = {}
 
                         widget_type = tool_args.get("widget_type", "")
-                        widget_id = tool_args.get("widget_id", f"widget-{uuid.uuid4().hex[:8]}")
+                        # Never trust the model's id blind: a near-miss id used to
+                        # silently append a NEW widget instead of updating the one
+                        # the follow-up came from. Resolve against the real canvas.
+                        widget_id = _resolve_agent_widget_id(
+                            req.session_id, widget_type,
+                            tool_args.get("widget_id", ""), req.message,
+                            req.focus_widget_id or "")
                         config = tool_args.get("config", {})
                         # Some models pass config as a JSON string — normalize.
                         if isinstance(config, str):
