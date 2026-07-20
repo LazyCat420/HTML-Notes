@@ -1,3 +1,30 @@
+# Handoff — 2026-07-20 (stacking in-place updates)
+
+**Deployed:** `5497273` → synology `:8035`. 372 pytest + 16 node green.
+
+In-place data_card updates no longer hard-replace: the new answer renders on
+top, previous content survives under an "**Earlier**" rule, and once the card
+passes `_STACK_WORD_BUDGET` (800 words — middle of the user's requested
+500-1000 range) the oldest words roll off the bottom. Sources/items
+accumulate too (dedupe by url, newest first, cap 8). Implementation:
+`_stack_data_card_update` + `_session_widget_configs` (per-session in-memory
+config store, same lifetime as the turn ledger), wired into the agent
+`canvas_add_widget` path just before render.
+
+Guards: data_cards only (stock/map/clock are stateful displays → always
+replace); only genuine in-place updates (id already on canvas); substring
+check so a model that rewrote WITH history doesn't get it duplicated back;
+no stub-stacking when the new answer alone fills the budget.
+
+Live-verified: three costco follow-ups grew one card 35 → 223 → 545 words
+with the Earlier section visible; `[WIDGET STACK]` log line shows the merge.
+
+Note: the router/fast-lane path does NOT stack (agent path only) — if a
+fast-lane build updates the same card id, the remembered config refreshes
+but no merge happens. Extend there if it ever matters.
+
+---
+
 # Handoff — 2026-07-20 (anaphora: "tell me more about Miku" = the restaurant)
 
 **Deployed:** `3d9ce6e` → synology `:8035`. 361 pytest + 16 node green. The
