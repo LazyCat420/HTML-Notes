@@ -2567,14 +2567,31 @@ def _spoken_summary(widget_type: str, config: dict, question: str = "") -> str:
 
 
 def _widget_detail(config: dict) -> str:
-    """A <=160-char gist of what a widget shows, for the ledger: the first line of
+    """A <=200-char gist of what a widget shows, for the ledger: the first line of
     its answer, or its top item/story titles. This is what lets a later follow-up
-    ('what about the taco bell one?') be tied back to the right widget."""
+    ('what about the taco bell one?') be tied back to the right widget.
+
+    The gist is the session's anaphora database, so it must carry the
+    DISTINCTIVE NAMES from the whole text, not just a prefix. Live: a sushi
+    card's answer truncated at 160 chars exactly before "...include Miku,
+    Tojo, and Shizen", so "tell me more about Miku" matched nothing, fell back
+    to the recency focus (a video widget), and the directive ordered a YouTube
+    search — Hatsune Miku instead of the restaurant."""
     if not isinstance(config, dict):
         return ""
     ans = (config.get("answer") or "").strip()
     if ans:
-        return re.sub(r"\s+", " ", ans)[:160]
+        flat = re.sub(r"\s+", " ", ans)
+        gist = flat[:150]
+        # Proper-noun-ish tokens from BEYOND the prefix — the names a
+        # follow-up will use. Sentence-initial words are mostly ordinary
+        # capitalization, but false positives only cost gist space.
+        tail_names = re.findall(r"\b[A-Z][A-Za-z0-9'&-]{2,}\b", flat[150:])
+        fresh = [n for n in dict.fromkeys(tail_names)
+                 if n.lower() not in gist.lower()][:8]
+        if fresh:
+            gist += " · " + " ".join(fresh)
+        return gist[:200]
     items = config.get("items") or config.get("sources") or []
     if isinstance(items, dict):
         items = [items]
@@ -2597,7 +2614,9 @@ def record_turn(session_id: str, message: str, route: str, widgets: list) -> Non
             "message": (message or "").strip()[:200],
             "route": route or "",
             "widgets": [{"id": wid, "type": wt, "subject": (subj or "")[:80],
-                         "detail": (det or "")[:160]}
+                         # 200 matches _widget_detail's budget — clipping back
+                         # to 160 here silently re-amputated the appended names.
+                         "detail": (det or "")[:200]}
                         for (wid, wt, subj, det) in widgets if wid],
         }
         led = _session_turn_ledger.setdefault(session_id, [])
@@ -2724,6 +2743,27 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
                     f"(no canvas match) — not forcing an in-place update")
         return None
     return focus_id
+
+
+def _widget_showing(session_id: str, wid: Optional[str]) -> str:
+    """'title — gist' for a widget, to ANCHOR follow-up directives. Naming only
+    the id told the model where to render but not what the thread is about, so
+    an ambiguous name in the ask fell back to world knowledge ("tell me more
+    about Miku" over a sushi card → Hatsune Miku). Empty string when unknown."""
+    if not wid:
+        return ""
+    parts = []
+    try:
+        for cid, _t, title in _iter_canvas_widgets(get_session_canvas(session_id)):
+            if cid == wid and title and title.lower() not in ("data", "widget"):
+                parts.append(title.strip())
+                break
+    except Exception:
+        pass
+    gist = _ledger_details(session_id).get(wid, "")
+    if gist:
+        parts.append(gist)
+    return " — ".join(parts)[:260]
 
 
 def _widget_on_canvas(session_id: str, wid: str, widget_type: str) -> Optional[str]:
@@ -6963,6 +7003,14 @@ async def send_message(req: MessageRequest):
             "about the taco bell story?\", \"tell me more\", \"and the away team?\"), "
             "call canvas_add_widget with that widget's SAME id to rewrite it in "
             "place — do not add a near-duplicate card.\n\n"
+            "NAMES RESOLVE AGAINST THE CONVERSATION FIRST. Before interpreting any "
+            "name in the ask, scan CURRENT CANVAS and RECENT TURNS for it. If it "
+            "appears there — a restaurant on a card, a product in a list, a team on "
+            "a scoreboard — the user means THAT one, and the conversation's meaning "
+            "BEATS the famous meaning: after a sushi card listing Miku, \"tell me "
+            "more about Miku\" is the Vancouver restaurant, never the vocaloid. "
+            "Only when the name appears nowhere in the context does its common "
+            "meaning apply.\n\n"
             + _user_facts_prompt()
             + f"{turn_ctx['context_block']}"
             # A CONCRETE, last-position directive naming the actual widget id.
@@ -6973,9 +7021,13 @@ async def send_message(req: MessageRequest):
             # mandating a mutation is what actually lands — the same ask phrased
             # explicitly already worked.
             + (
-                f"\n\nTHIS TURN IS A FOLLOW-UP. The widget #{followup_target} "
-                f"is already on screen and this ask REFINES it — it is a canvas "
-                f"request, not conversation. Fetch any new data you need, then "
+                f"\n\nTHIS TURN IS A FOLLOW-UP. The widget #{followup_target}"
+                + (f" (currently showing: {_widget_showing(req.session_id, followup_target)})"
+                   if _widget_showing(req.session_id, followup_target) else "")
+                + f" is already on screen and this ask REFINES it — it is a canvas "
+                f"request, not conversation. Any name in the ask refers to that "
+                f"widget's content, NOT to whatever the name means elsewhere. "
+                f"Fetch any new data you need, then "
                 f"call canvas_add_widget with widget_id='{followup_target}' "
                 f"to rewrite that widget IN PLACE. Do not open a new widget and "
                 f"do not answer in prose: you MUST end this turn with a canvas "
@@ -7083,14 +7135,20 @@ async def send_message(req: MessageRequest):
         # AGENT sees is rewritten; the stored/displayed user message (already
         # saved above) is untouched, so the chat transcript still reads normally.
         if followup_target:
+            # The anchor ("currently showing: ...") is what resolves an
+            # ambiguous name in the ask against the THREAD instead of world
+            # knowledge — id alone told the model where, not what about.
+            _showing = _widget_showing(req.session_id, followup_target)
             for _i in range(len(messages) - 1, -1, -1):
                 if messages[_i]["role"] == "user":
                     messages[_i]["content"] = (
-                        f"Update the existing widget #{followup_target} IN PLACE. "
-                        f"Fetch whatever new data is needed, then call "
+                        f"Update the existing widget #{followup_target} IN PLACE."
+                        + (f" It currently shows: {_showing}." if _showing else "")
+                        + f" Fetch whatever new data is needed, then call "
                         f"canvas_add_widget with widget_id='{followup_target}' "
                         f"and the full updated config. Do not create a new widget "
-                        f"and do not reply in prose. The change to make: "
+                        f"and do not reply in prose. Names in the request refer "
+                        f"to this widget's content. The change to make: "
                         f"{req.message}")
                     logger.info(f"[AGENT TURN] rewrote follow-up -> explicit update "
                                 f"of #{followup_target}")

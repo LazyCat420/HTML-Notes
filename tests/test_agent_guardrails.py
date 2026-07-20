@@ -84,3 +84,17 @@ def test_followup_directive_uses_topical_target_not_raw_focus():
     # …and neither may fall back to the raw recency focus id.
     assert "widget #{turn_ctx['focus_id']}" not in SRC
     assert "widget_id='{turn_ctx['focus_id']}'" not in SRC
+
+
+def test_directive_and_rewrite_carry_the_widget_anchor():
+    """Naming only the id tells the model WHERE, not WHAT ABOUT — the anchor
+    text is what resolves 'Miku' against the sushi thread instead of the
+    vocaloid. Both the directive and the rewrite must carry it."""
+    assert "currently showing:" in SRC       # directive
+    assert "It currently shows:" in SRC      # message rewrite
+    assert SRC.count("_widget_showing(") >= 3  # helper + both call sites
+
+
+def test_system_prompt_resolves_names_against_conversation():
+    assert "NAMES RESOLVE AGAINST THE CONVERSATION FIRST" in SRC
+    assert "BEATS the famous meaning" in SRC

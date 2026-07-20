@@ -326,3 +326,55 @@ def test_fresh_subject_with_followup_phrasing_gets_no_directive(canvas):
     got = m._followup_target_id(
         "s", "costco-concord-deals", "find me more info on birkenstock arizona")
     assert got is None, "a fresh subject must never be forced into the focus widget"
+
+
+# ── SEAM E: the ledger gist must carry DISTINCTIVE NAMES, not just a prefix ──
+# Live failure 2026-07-20: a sushi card's answer truncated at 160 chars exactly
+# before "...include Miku, Tojo, and Shizen". "tell me more about Miku" then
+# matched nothing, fell to the recency focus (a VIDEO widget), and the
+# directive itself ordered a YouTube search — Hatsune Miku, not the restaurant.
+
+SUSHI_ANSWER = (
+    "The drive from Seattle to Vancouver typically takes between 2.5 and 4 "
+    "hours, depending heavily on border crossing wait times. For sushi, "
+    "highly-rated options include Miku, Tojo, and Shizen.")
+
+
+def test_widget_detail_keeps_names_beyond_the_truncation():
+    gist = m._widget_detail({"answer": SUSHI_ANSWER})
+    for name in ("Miku", "Tojo", "Shizen"):
+        assert name in gist, f"the gist lost {name!r} — anaphora resolution is blind"
+    assert len(gist) <= 200
+
+
+def test_miku_followup_targets_the_sushi_card_not_the_video(canvas):
+    canvas["html"] = _canvas(
+        ("travel-sushi-vancouver", "data-card", "Data"),   # generic title!
+        ("video-10e70477", "data-card", "Clone Care Video"),  # newest
+    )
+    m.record_turn("s", "can you find me good sushi in vancouver?", "agent",
+                  [("travel-sushi-vancouver", "data_card", "",
+                    m._widget_detail({"answer": SUSHI_ANSWER}))])
+    m.record_turn("s", "video on clones", "fast",
+                  [("video-10e70477", "youtube_player", "", "clone care video")])
+    got = m._followup_target_id("s", "video-10e70477", "tell me more about Miku")
+    assert got == "travel-sushi-vancouver", (
+        "'Miku' lives in the sushi card's gist — it must beat the recency focus")
+
+
+def test_record_turn_does_not_reamputate_the_gist():
+    m.record_turn("s2", "msg", "agent",
+                  [("w1", "data_card", "", m._widget_detail({"answer": SUSHI_ANSWER}))])
+    detail = m._session_turn_ledger["s2"][-1]["widgets"][0]["detail"]
+    assert "Miku" in detail, "record_turn's clip must match _widget_detail's budget"
+
+
+def test_widget_showing_anchors_id_with_content(canvas):
+    canvas["html"] = _canvas(("travel-sushi-vancouver", "data-card", "Data"))
+    m.record_turn("s", "sushi", "agent",
+                  [("travel-sushi-vancouver", "data_card", "",
+                    m._widget_detail({"answer": SUSHI_ANSWER}))])
+    showing = m._widget_showing("s", "travel-sushi-vancouver")
+    assert "Miku" in showing
+    assert "Data" not in showing.split(" — ")[0:1], "generic titles add nothing"
+    assert m._widget_showing("s", None) == ""
