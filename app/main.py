@@ -277,6 +277,67 @@ _BROWSER_UA = (
 )
 
 
+# Brave's free tier is ~1 request/second; a burst gets 429s that look exactly like
+# "no results" to every caller. Space our calls instead of discovering that later.
+_BRAVE_MIN_INTERVAL = 1.1
+_brave_last_call = 0.0
+# Created on first use, not at module scope: asyncio/time are imported further
+# down this file, and a module-level asyncio.Lock() here NameErrors on import.
+_brave_lock = None
+
+
+async def _search_brave_api(query: str, limit: int) -> list:
+    """Brave's Search API — the PRIMARY web-search engine.
+
+    Added 2026-07-20 after DuckDuckGo became unreachable from this host:
+    `duckduckgo.com` and `lite.duckduckgo.com` both ConnectTimeout from inside the
+    container while google.com and wikipedia.org return 200. Both previous engines
+    were DuckDuckGo, so search failed closed and returned zero for EVERY query —
+    and the caller then told the model to retry, which is what produced turns with
+    10-18 identical searches.
+
+    NOTE: this is the keyed API (api.search.brave.com), NOT scraping
+    search.brave.com — that is bot-walled and was removed for good reason. They
+    are unrelated services."""
+    global _brave_last_call, _brave_lock
+    key = await _fetch_secret("BRAVE_SEARCH_API_KEY")
+    if not key:
+        return []
+    if _brave_lock is None:
+        _brave_lock = asyncio.Lock()
+    async with _brave_lock:
+        wait = _BRAVE_MIN_INTERVAL - (time.time() - _brave_last_call)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _brave_last_call = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={"q": query, "count": max(1, min(int(limit), 20))},
+                headers={"X-Subscription-Token": key,
+                         "Accept": "application/json"},
+            )
+        if resp.status_code == 429:
+            logger.warning(f"[SEARCH] brave rate-limited on {query!r}")
+            return []
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as e:
+        logger.warning(f"brave api search failed for {query!r}: {e}")
+        return []
+    out = []
+    for it in (payload.get("web", {}).get("results") or [])[:limit]:
+        url = (it.get("url") or "").strip()
+        title = (it.get("title") or "").strip()
+        if title and url.startswith("http"):
+            # Brave puts the summary in `description`, occasionally with <strong>
+            # highlight markup around the matched terms.
+            snippet = re.sub(r"<[^>]+>", "", it.get("description") or "")
+            out.append({"title": title, "url": url, "snippet": snippet[:500]})
+    return out
+
+
 async def _search_duckduckgo(query: str, limit: int) -> list:
     """DuckDuckGo's lite endpoint: a plain HTML table, no JS, no bot wall.
 
@@ -355,30 +416,51 @@ async def _search_scraper_ddg(query: str, limit: int) -> list:
     return out
 
 
-async def web_search(query: str, limit: int = 6) -> list:
-    """Keyless web search. Returns [{title, url, snippet}].
+_SEARCH_ENGINES = (
+    # Brave's keyed API first: it is the only engine currently reachable from this
+    # host. The two DDG engines stay behind it — keyless and free, so if DDG
+    # becomes reachable again this self-heals with no code change.
+    ("brave-api", lambda q, n: _search_brave_api(q, n)),
+    ("ddg-lite", lambda q, n: _search_duckduckgo(q, n)),
+    ("ddg-collector", lambda q, n: _search_scraper_ddg(q, n)),
+)
 
-    DuckDuckGo lite (direct) first, scraper-service's DDG collector second. The
-    lite endpoint is static HTML, not bot-walled, answers in ~1s, and ships a real
-    description per result. The collector is an independent engine (DDG /html/ +
-    Playwright fallback) that can still return results if lite starts failing. The
-    old Brave fallback was removed: it has been fully bot-walled since 2026-07-14
-    and only ever cost a doomed scrape round-trip.
-    """
-    for engine, search in (("ddg-lite", _search_duckduckgo), ("ddg-collector", _search_scraper_ddg)):
+
+async def web_search_ex(query: str, limit: int = 6) -> tuple:
+    """Web search returning (results, all_engines_failed).
+
+    The flag is the point. Before this, an engine OUTAGE and a genuinely obscure
+    query were indistinguishable — both returned `[]` — so the caller told the
+    model to "retry with a shorter, simpler query" while the real problem was that
+    every backend was unreachable. The model obliged, 10-18 times per turn. Retry
+    advice must never be given for a transport failure."""
+    reached_any = False
+    for engine, search in _SEARCH_ENGINES:
         try:
             results = await search(query, limit)
         except Exception as e:
             logger.warning(f"{engine} search error for {query!r}: {e}")
             continue
+        # An engine that answers at all — even with zero hits — proves the backend
+        # is alive, so this is a real "no results" rather than an outage.
+        reached_any = True
         if results:
-            if engine != "ddg-lite":
-                logger.info(f"[SEARCH] ddg-lite returned nothing; served {query!r} from {engine}")
+            logger.info(f"[SEARCH] {engine} served {query!r} ({len(results)} hits)")
             await _backfill_snippets(results)
-            return results
+            return results, False
+    if reached_any:
+        logger.info(f"[SEARCH] no engine had hits for {query!r} (backends alive)")
+        return [], False
+    logger.error(f"[SEARCH] EVERY ENGINE UNREACHABLE for {query!r} — "
+                 f"research is down, not the query")
+    return [], True
 
-    logger.error(f"[SEARCH] every engine failed for {query!r}")
-    return []
+
+async def web_search(query: str, limit: int = 6) -> list:
+    """Web search. Returns [{title, url, snippet}]. See web_search_ex for the
+    outage-vs-no-results distinction."""
+    results, _failed = await web_search_ex(query, limit)
+    return results
 
 
 # ─────────────────────────── NEWS ───────────────────────────
@@ -2456,9 +2538,25 @@ async def _warn_if_research_is_down() -> None:
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"[BOOT] agent dependency check failed to run: {e}")
         return
-    if status.get("ok"):
+    # MCP being up is not enough: with every search backend unreachable the agent
+    # has tools that all return nothing, which is what "research path OK" claimed
+    # for an unknown length of time while DuckDuckGo was unreachable.
+    try:
+        _hits, engines_down = await web_search_ex("test", 3)
+    except Exception as e:
+        _hits, engines_down = [], True
+        logger.warning(f"[BOOT] search probe raised: {e}")
+    if engines_down:
+        logger.error(
+            "[BOOT] WEB SEARCH IS DOWN — every search backend is unreachable. "
+            "Research asks will have no data to work from. Check "
+            "BRAVE_SEARCH_API_KEY in the vault and outbound access to "
+            "api.search.brave.com.")
+    if status.get("ok") and not engines_down:
         logger.info(f"[BOOT] research path OK — {status.get('tool_count')} MCP tools "
-                    f"via {status.get('prism')}")
+                    f"via {status.get('prism')}, web search reachable")
+        return
+    if status.get("ok"):
         return
     logger.error(
         "[BOOT] RESEARCH PATH DOWN: %s. Tier-2 asks (weather/stock/sports/map) "
@@ -7628,7 +7726,18 @@ async def health_app():
     endpoint that actually fails when research is broken.
     """
     agent = await _agent_dependency_status()
-    return {"status": "ok", "service": "html-notes", "agent": agent}
+    # Search is reported separately from MCP: they fail independently, and an
+    # agent with live tools that all return nothing looks "ok" without this.
+    try:
+        hits, engines_down = await web_search_ex("test", 3)
+        search = {"ok": not engines_down, "hits": len(hits),
+                  "engines": [n for n, _ in _SEARCH_ENGINES]}
+        if engines_down:
+            search["error"] = "every search backend unreachable"
+    except Exception as e:
+        search = {"ok": False, "error": f"probe raised: {e}"}
+    return {"status": "ok", "service": "html-notes",
+            "agent": agent, "search": search}
 
 
 @app.get("/health/agent")
@@ -7860,10 +7969,23 @@ async def internal_tool_execute(req: InternalToolRequest):
 
         elif t == "html_notes_web_search":
             query = a.get("query", "")
-            results = await web_search(query, limit=int(a.get("limit", 6)))
+            results, engines_down = await web_search_ex(
+                query, limit=int(a.get("limit", 6)))
+            if engines_down:
+                # NEVER advise a retry here. This is a transport failure, not a bad
+                # query — rephrasing cannot fix it, and telling the model otherwise
+                # is exactly what produced turns with 10-18 identical searches when
+                # DuckDuckGo became unreachable.
+                return {"results": [], "count": 0, "is_error": True,
+                        "message": ("Web search is unavailable right now (all "
+                                    "search backends unreachable). Do NOT retry "
+                                    "this tool. Answer from what you already know "
+                                    "and say the information could not be "
+                                    "verified.")}
             if not results:
                 return {"results": [], "count": 0,
-                        "message": "Search returned nothing. Retry with a shorter, simpler query."}
+                        "message": ("No results for that query. Try ONE more time "
+                                    "with different words, then move on.")}
             # Cache the raw hits so a following canvas_add_widget(data_card,
             # {search_query: query}) can synthesise the answer WITHOUT re-searching.
             cache_tool_result(f"search:{query.strip()}", results)
