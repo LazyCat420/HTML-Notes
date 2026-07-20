@@ -1,3 +1,40 @@
+# Handoff — 2026-07-20 (research reliability + typewriter reveal)
+
+## Typewriter reveal on in-place updates
+
+A follow-up that rewrites a card now prints the new wording in (~450-1400ms,
+scaled to length) instead of swapping it instantly. Words are wrapped and faded
+left-to-right; the text holds its final box from frame one so the masonry grid
+below never jumps.
+
+**Three things this cost, all worth knowing:**
+
+1. **A fixed 260-word cap silently skipped the feature.** A real research
+   data_card carries ~480 animatable words, so the reveal never ran on exactly
+   the cards it exists for. Count a REAL widget before picking a bound.
+2. **Running it synchronously inside `reconcileCanvas` does not work.** 488 words
+   were wrapped and zero ever revealed; rAF was healthy (1025→1219 ticks), but
+   the work after that loop (`WidgetLayout.apply`, `renderDynamicComponents`,
+   Alpine init) replaces the node, so the reveal animated a detached element.
+   Fix: defer two frames and re-find the widget BY ID.
+3. **Skip live widgets by STRUCTURE, not by name.** Enumerating component names
+   was wrong within minutes — the music player is `musicPlayerWidget`, not the
+   `miniMusicPlayer` its widget_type suggests. A static card carries
+   `x-data="{}"`, a live one carries a component call.
+
+**The spans MUST NOT leak.** The server adopts the client canvas as canonical, so
+a stray `span.tw-word` would be baked in permanently and would change the
+widget's `data-sig`, making an unchanged widget look changed on every future
+diff. Unwrapped on completion, on a safety timeout, AND stripped in
+`getCleanedCanvasHtml`. `scripts/typewriter_check.py` asserts the DOM is
+byte-identical to the server HTML afterwards — that is the property that matters,
+not "does it animate".
+
+Verified live: 500 words wrapped, 500 revealed, 0 left over, same widget id,
+`data-sig` changed. `scripts/live_followup_check.py` drives the real app.
+
+---
+
 # Handoff — 2026-07-20 (research reliability)
 
 **Current:** html-notes `main@79667f6`, deployed to synology 2026-07-20T03:32:36Z.
