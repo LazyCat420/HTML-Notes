@@ -6070,6 +6070,16 @@ async def send_message(req: MessageRequest):
                         content=f"\n\n<!--CANVAS_HTML_START-->\n{get_session_canvas(req.session_id)}\n<!--CANVAS_HTML_END-->"
                     )
                     yield event
+                    # Say something useful. The fast path never involves the model,
+                    # so it emitted no prose at all and these turns — traffic,
+                    # weather, the most common asks — were completely SILENT to a
+                    # user relying on audio.
+                    try:
+                        spoken = _spoken_summary(widget_type, widget_config, req.message)
+                        if spoken:
+                            yield f'data: {json.dumps({"type": "chunk", "content": spoken})}\n\n'
+                    except Exception as e:
+                        logger.warning(f"[TTS] fast-path spoken summary failed: {e}")
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
@@ -6195,6 +6205,18 @@ async def send_message(req: MessageRequest):
                         content=f"\n\n<!--CANVAS_HTML_START-->\n{get_session_canvas(req.session_id)}\n<!--CANVAS_HTML_END-->"
                     )
                     yield event
+                    # One spoken line covering everything this turn placed. The
+                    # router can commit several widgets at once ("weather + map"),
+                    # and reading a sentence per widget aloud would be worse than
+                    # silence — so join at most two and stop.
+                    try:
+                        lines = [ln for ln in
+                                 (_spoken_summary(wt, wc, req.message) for (_r, wt, wc) in placed)
+                                 if ln][:2]
+                        if lines:
+                            yield f'data: {json.dumps({"type": "chunk", "content": " ".join(lines)})}\n\n'
+                    except Exception as e:
+                        logger.warning(f"[TTS] router spoken summary failed: {e}")
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
