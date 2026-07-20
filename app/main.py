@@ -2512,7 +2512,11 @@ def get_canvas_summary(html: str) -> str:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     await _warn_if_research_is_down()
-    yield
+    watchdog = asyncio.create_task(_mcp_watchdog())
+    try:
+        yield
+    finally:
+        watchdog.cancel()
 
 
 app = FastAPI(
@@ -2520,6 +2524,75 @@ app = FastAPI(
     description="Local-first AI knowledge journal with constrained HTML rendering",
     lifespan=_lifespan,
 )
+
+
+async def _try_reconnect_mcp() -> bool:
+    """Ask prism to dial our MCP server, returning True if it came up.
+
+    The outage behind the 2026-07-20 debug wave was exactly one un-dialled
+    connection: registration present, `enabled: true`, the :5591/mcp/sse endpoint
+    live and serving — prism had simply never connected, with `lastError: null`.
+    It was invisible for hours and fixed by a single POST. So do that POST
+    ourselves rather than waiting for someone to notice.
+
+    GOTCHA worth keeping: `GET /mcp-servers` is SCOPED BY HEADERS. Without
+    x-project/x-username it returns `[]` for ANY state, which reads as "nothing is
+    registered" and sends you looking in the wrong place entirely."""
+    headers = {"x-project": AGENT_PROJECT, "x-username": AGENT_USERNAME}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            servers = (await client.get(f"{PRISM_URL}/mcp-servers",
+                                        headers=headers)).json()
+            servers = servers if isinstance(servers, list) else servers.get("servers", [])
+            mine = next((s for s in servers if s.get("name") == MCP_SERVER_NAME), None)
+            if not mine:
+                logger.error(f"[MCP] {MCP_SERVER_NAME} is not registered for "
+                             f"{AGENT_PROJECT}/{AGENT_USERNAME} — cannot reconnect; "
+                             f"lazy-tool-service registers itself on ITS boot.")
+                return False
+            if mine.get("connected") and int(mine.get("toolCount") or 0) > 0:
+                return True
+            sid = mine.get("id") or mine.get("_id")
+            logger.warning(f"[MCP] {MCP_SERVER_NAME} registered but not connected "
+                           f"(toolCount={mine.get('toolCount')}) — asking prism to dial it")
+            await client.post(f"{PRISM_URL}/mcp-servers/{sid}/connect", headers=headers)
+            await asyncio.sleep(3)
+            servers = (await client.get(f"{PRISM_URL}/mcp-servers",
+                                        headers=headers)).json()
+            servers = servers if isinstance(servers, list) else servers.get("servers", [])
+            mine = next((s for s in servers if s.get("name") == MCP_SERVER_NAME), None) or {}
+            tools = int(mine.get("toolCount") or 0)
+            if mine.get("connected") and tools > 0:
+                logger.info(f"[MCP] reconnected — {tools} tools")
+                return True
+            logger.error(f"[MCP] reconnect did not take (connected="
+                         f"{mine.get('connected')}, toolCount={tools})")
+            return False
+    except Exception as e:
+        logger.warning(f"[MCP] reconnect attempt failed: {e}")
+        return False
+
+
+async def _mcp_watchdog() -> None:
+    """Re-check the MCP link periodically and reconnect on a drop.
+
+    Never retries hot: one attempt per interval, and every attempt is logged so a
+    flapping link is visible rather than silently papered over."""
+    while True:
+        try:
+            await asyncio.sleep(_MCP_WATCHDOG_INTERVAL)
+            status = await _agent_dependency_status()
+            if not status.get("ok"):
+                logger.warning(f"[MCP] watchdog saw a degraded research path: "
+                               f"{status.get('error')}")
+                await _try_reconnect_mcp()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"[MCP] watchdog iteration failed: {e}")
+
+
+_MCP_WATCHDOG_INTERVAL = int(os.getenv("MCP_WATCHDOG_SECONDS", "300"))
 
 
 async def _warn_if_research_is_down() -> None:
@@ -2535,6 +2608,8 @@ async def _warn_if_research_is_down() -> None:
     it reports."""
     try:
         status = await _agent_dependency_status()
+        if not status.get("ok") and await _try_reconnect_mcp():
+            status = await _agent_dependency_status()
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"[BOOT] agent dependency check failed to run: {e}")
         return
