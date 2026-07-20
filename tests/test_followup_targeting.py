@@ -378,3 +378,58 @@ def test_widget_showing_anchors_id_with_content(canvas):
     assert "Miku" in showing
     assert "Data" not in showing.split(" — ")[0:1], "generic titles add nothing"
     assert m._widget_showing("s", None) == ""
+
+
+LONG_SUSHI_ANSWER = (
+    "Best Sushi in Vancouver. Vancouver is the sushi capital of North America "
+    "with over 600 sushi restaurants. Fine dining: Tojo's, run by Chef Hidekazu "
+    "Tojo, credited with creating the California roll. Okeya Kyujiro in Yaletown "
+    "is Michelin-starred with a kabuki-style experience. Sushi Bar Maumi flies "
+    "fish directly from Japan. Top casual: Tom Sushi on Davie St, run by a "
+    "former Miku chef. Miku on the Waterfront brought Aburi flame-seared sushi "
+    "to Canada; the Salmon Oshi Sushi is iconic. Hello Nori is a hand-roll bar. "
+    "Kishimoto on Commercial Drive has spicy karaage.")
+
+
+def test_body_scan_finds_names_the_gist_cannot_hold(canvas):
+    """Second live failure mode: a LONG card is so dense with proper nouns
+    that the 200-char gist fills up before the referenced name. The full
+    rendered body is on the canvas — scan it. Requires full token coverage
+    and a UNIQUE hit."""
+    canvas["html"] = (
+        '<div id="dashboard-grid">'
+        f'<div class="glass-card data-card" id="vancouver-sushi-trip">'
+        f'<h3>Data</h3><p>{LONG_SUSHI_ANSWER}</p></div>'
+        '<div class="glass-card data-card" id="video-88f4cc14">'
+        '<h3>Clone Care Video</h3><p>keeping clones healthy</p></div>'
+        '</div>')
+    _ledger("s",
+            ("find sushi", "vancouver-sushi-trip", "data_card",
+             m._widget_detail({"answer": LONG_SUSHI_ANSWER})),
+            ("clone video", "video-88f4cc14", "youtube_player", "clone care"))
+    got = m._followup_target_id("s", "video-88f4cc14", "tell me more about Miku")
+    assert got == "vancouver-sushi-trip", (
+        "'Miku' is in the card BODY — the body scan must find it even when "
+        "the gist is full of other names")
+
+
+def test_body_scan_requires_unique_hit(canvas):
+    """Two widgets both containing the name = ambiguous; never guess."""
+    canvas["html"] = (
+        '<div id="dashboard-grid">'
+        '<div class="glass-card data-card" id="card-a"><h3>A</h3><p>Miku sushi</p></div>'
+        '<div class="glass-card data-card" id="card-b"><h3>B</h3><p>Miku vocaloid</p></div>'
+        '</div>')
+    got = m._followup_target_id("s", "card-b", "tell me more about Miku")
+    assert got == "card-b", "ambiguous body hits fall back to the recency focus"
+
+
+def test_widget_showing_includes_context_around_the_name(canvas):
+    canvas["html"] = (
+        '<div id="dashboard-grid">'
+        f'<div class="glass-card data-card" id="vancouver-sushi-trip">'
+        f'<h3>Best Sushi in Vancouver</h3><p>{LONG_SUSHI_ANSWER}</p></div></div>')
+    showing = m._widget_showing("s", "vancouver-sushi-trip", "tell me more about Miku")
+    assert "Miku" in showing, "the anchor must quote the body around the referenced name"
+    assert "Waterfront" in showing or "Tom Sushi" in showing or "chef" in showing.lower(), (
+        f"expected surrounding context in the anchor, got: {showing!r}")

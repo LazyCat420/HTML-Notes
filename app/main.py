@@ -2715,9 +2715,11 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
     confident topical winner beats recency; a subject-free deictic ask scores
     0 everywhere and keeps the recency focus."""
     best_id, best_score = None, 0.0
+    canvas_html = ""
     try:
+        canvas_html = get_session_canvas(session_id)
         details = _ledger_details(session_id)
-        for wid, _wtype, title in _iter_canvas_widgets(get_session_canvas(session_id)):
+        for wid, _wtype, title in _iter_canvas_widgets(canvas_html):
             if not wid or wid == "unknown":
                 continue
             score = _score_widget_for_query(message, title or "", details.get(wid, ""))
@@ -2730,6 +2732,33 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
             logger.info(f"[WIDGET TARGET] follow-up names a subject — topical "
                         f"#{best_id} (score {best_score:.2f}) beats recency #{focus_id}")
         return best_id
+    # Title+gist missed. Before falling back, look INSIDE the widgets: the
+    # canvas holds every card's full rendered text, and the name a follow-up
+    # references is usually in a card BODY the ≤200-char gist can't cover.
+    # Live: a 2000-char sushi card listed "Miku" ~700 chars in — gist blind,
+    # so "tell me more about Miku" targeted the newest widget (a video) and
+    # became Hatsune Miku. Require EVERY subject token to appear in the body
+    # (full coverage — the tightest signal available), and take a UNIQUE hit
+    # only; two body matches mean the name is ambiguous on canvas, and
+    # guessing between them is how wrong-widget edits happen.
+    msg_toks = _subject_tokens(message)
+    if msg_toks and canvas_html:
+        try:
+            soup = BeautifulSoup(canvas_html, "html.parser")
+            hits = []
+            for card in soup.select(".glass-card, .widget-container"):
+                wid = card.get("id", "")
+                if not wid or wid == "unknown":
+                    continue
+                body_toks = _subject_tokens(card.get_text(" ", strip=True))
+                if msg_toks <= body_toks:
+                    hits.append(wid)
+            if len(hits) == 1:
+                logger.info(f"[WIDGET TARGET] follow-up subject found in the BODY "
+                            f"of #{hits[0]} — beats recency #{focus_id}")
+                return hits[0]
+        except Exception as e:
+            logger.warning(f"_followup_target_id body scan failed: {e}")
     # No widget matches. If the message CARRIES a subject anyway, it's a new
     # topic that happened to trip the (loose) refinement regex — live, "find
     # me MORE info on birkenstock arizona" matched `more\b` right after the
@@ -2745,25 +2774,40 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
     return focus_id
 
 
-def _widget_showing(session_id: str, wid: Optional[str]) -> str:
-    """'title — gist' for a widget, to ANCHOR follow-up directives. Naming only
-    the id told the model where to render but not what the thread is about, so
-    an ambiguous name in the ask fell back to world knowledge ("tell me more
-    about Miku" over a sushi card → Hatsune Miku). Empty string when unknown."""
+def _widget_showing(session_id: str, wid: Optional[str], message: str = "") -> str:
+    """'title — gist — …context around the referenced name…' for a widget, to
+    ANCHOR follow-up directives. Naming only the id told the model where to
+    render but not what the thread is about, so an ambiguous name in the ask
+    fell back to world knowledge ("tell me more about Miku" over a sushi card
+    → Hatsune Miku). When the message names something found in the widget's
+    BODY, the snippet AROUND that name is included — "…options include Miku,
+    Tojo, and Shizen…" is what actually pins Miku to sushi. Empty when unknown."""
     if not wid:
         return ""
     parts = []
+    body_text = ""
     try:
-        for cid, _t, title in _iter_canvas_widgets(get_session_canvas(session_id)):
-            if cid == wid and title and title.lower() not in ("data", "widget"):
-                parts.append(title.strip())
-                break
+        soup = BeautifulSoup(get_session_canvas(session_id) or "", "html.parser")
+        card = soup.find(id=wid)
+        if card:
+            title_el = card.select_one(".glass-card-title, h3, h2, h4")
+            title = title_el.get_text(strip=True) if title_el else ""
+            if title and title.lower() not in ("data", "widget"):
+                parts.append(title)
+            body_text = card.get_text(" ", strip=True)
     except Exception:
         pass
     gist = _ledger_details(session_id).get(wid, "")
     if gist:
         parts.append(gist)
-    return " — ".join(parts)[:260]
+    # The context window around the first referenced name in the body.
+    for tok in sorted(_subject_tokens(message), key=len, reverse=True):
+        pos = body_text.lower().find(tok)
+        if pos >= 0:
+            lo, hi = max(0, pos - 60), min(len(body_text), pos + 90)
+            parts.append(f"…{body_text[lo:hi].strip()}…")
+            break
+    return " — ".join(parts)[:400]
 
 
 def _widget_on_canvas(session_id: str, wid: str, widget_type: str) -> Optional[str]:
@@ -7022,8 +7066,8 @@ async def send_message(req: MessageRequest):
             # explicitly already worked.
             + (
                 f"\n\nTHIS TURN IS A FOLLOW-UP. The widget #{followup_target}"
-                + (f" (currently showing: {_widget_showing(req.session_id, followup_target)})"
-                   if _widget_showing(req.session_id, followup_target) else "")
+                + (f" (currently showing: {_widget_showing(req.session_id, followup_target, req.message)})"
+                   if _widget_showing(req.session_id, followup_target, req.message) else "")
                 + f" is already on screen and this ask REFINES it — it is a canvas "
                 f"request, not conversation. Any name in the ask refers to that "
                 f"widget's content, NOT to whatever the name means elsewhere. "
@@ -7138,7 +7182,7 @@ async def send_message(req: MessageRequest):
             # The anchor ("currently showing: ...") is what resolves an
             # ambiguous name in the ask against the THREAD instead of world
             # knowledge — id alone told the model where, not what about.
-            _showing = _widget_showing(req.session_id, followup_target)
+            _showing = _widget_showing(req.session_id, followup_target, req.message)
             for _i in range(len(messages) - 1, -1, -1):
                 if messages[_i]["role"] == "user":
                     messages[_i]["content"] = (
