@@ -2481,6 +2481,14 @@ document.addEventListener("DOMContentLoaded", () => {
     function enqueueTTS(sentence) {
         const cleanText = cleanTextForTTS(sentence);
         if (!cleanText) return;
+        // Speak the answer, never the process. Dropped here rather than upstream
+        // because sentences are only assembled at this point — the server streams
+        // tokens, so it cannot tell where a narration sentence starts or ends.
+        // The text still appears in the chat bubble; it is only not READ ALOUD.
+        if (isNarrationSentence(cleanText)) {
+            console.debug("[TTS] skipped narration:", cleanText.slice(0, 80));
+            return;
+        }
 
         if (ttsAudioCache.has(cleanText)) {
             const cached = ttsAudioCache.get(cleanText);
@@ -2570,10 +2578,33 @@ document.addEventListener("DOMContentLoaded", () => {
         sentenceBuffer = "";
     }
 
+    // The model's PROCESS commentary, which must never be read aloud. Observed
+    // spoken verbatim on a live "whats the news" turn: "The Google RSS URLs can't
+    // be fetched directly — they're RSS feeds, not regular pages. I'll search for
+    // the actual article URLs from the source outlets instead." That is the model
+    // narrating its own plumbing to someone who asked for the headlines.
+    //
+    // Mirrors _NARRATION_SENTENCE_RE / _TOOL_TALK_RE in app/main.py, which already
+    // strip this — but only for the no-widget fallback CARD, never for speech.
+    // Matched per sentence, because narration usually arrives as its own sentence
+    // alongside a real answer.
+    const TTS_NARRATION_RE =
+        /^\s*(?:(?:now|next|first|then|so|okay|ok|alright|great|perfect)[,!.]?\s+)?(?:i\s*(?:'ll|'ve|'m)?\s*(?:have|will|am|can|need|should|shall|going\s+to|now\s+have)?|let\s+me|let's)\b/i;
+    const TTS_TOOL_TALK_RE =
+        /\b(?:data_card|canvas_add_widget|canvas_modify_dom|canvas_read_dom|widget_type|stock_card|scoreboard|a\s+widget|the\s+canvas|to\s+your\s+canvas)\b/i;
+
+    function isNarrationSentence(text) {
+        const t = (text || "").trim();
+        if (!t) return true;
+        return TTS_NARRATION_RE.test(t) || TTS_TOOL_TALK_RE.test(t);
+    }
+
     function cleanTextForTTS(text) {
         let cleaned = text.replace(/<[^>]*>/g, "");
         cleaned = cleaned.replace(/[\*_#`~]/g, "");
         cleaned = cleaned.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
+        // A URL read aloud is unusable noise and buries the sentence around it.
+        cleaned = cleaned.replace(/https?:\/\/\S+/g, "");
         cleaned = cleaned.replace(/\s+/g, " ").trim();
         return cleaned;
     }
