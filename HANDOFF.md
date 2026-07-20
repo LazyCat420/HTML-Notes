@@ -73,6 +73,64 @@ stylesheet and asserts no crop / no text overlap / float-vs-stack per width.
 Note the overlap check must compare against `Range.getClientRects()` line boxes,
 not block boxes — a paragraph's block box legitimately extends under a float.
 
+## Clickable links in agent prose
+
+`_md_inline` linkified `[label](url)` but never autolinked bare URLs — and bare
+URLs are what agents actually write ("source: https://x.com/y"). Markdown proper
+doesn't autolink either, so this read as correct until you tried to click one.
+
+Anchors are **parked as placeholders** the moment they're built, before the
+bare-URL pass runs. Without that, the autolinker matches the URL inside the
+`href` the link pass just wrote and nests an `<a>` inside an attribute.
+
+Trailing-punctuation rules, each earned from a wrong render:
+- `.`/`,`/`;` go back to the prose, not into the href.
+- A `)` is kept only when the URL opened its own paren, so
+  `en.wikipedia.org/wiki/Capsicum_(genus)` survives but `(see https://y.com/b)`
+  gives its paren back.
+- Entities are stripped BEFORE punctuation: `esc()` turns a closing quote into
+  `&quot;`, and taking `;` off as punctuation first leaves a mangled `&quot`.
+- `&amp;` is never stripped — it's a legitimate query-string separator. Do not
+  `esc()` the url again when building the anchor either; the whole string was
+  escaped at the top of the function, so a second pass yields `&amp;amp;`.
+
+Chat history was a separate seam: `marked` emits no `target`, and that sanitize
+config didn't allow one, so those links navigated the whole app away in-tab and
+lost the canvas. Now allowed AND set post-sanitize (decorating markup DOMPurify
+has already cleared, never smuggling attributes past it).
+
+Verified through the REAL DOMPurify build and the shipped canvas config —
+`scratch/check_links.py` reads `CANVAS_DOMPURIFY_CONFIG` out of `index.js` so it
+tests what ships, not a copy. `target` is in `ADD_ATTR`; DOMPurify's defaults
+cover `href`/`rel` but NOT `target`, so removing it silently downgrades every
+canvas link to in-tab.
+
+## Item images: a first-class gap, not a side effect
+
+Image population used to happen only inside description repair — it ran on the
+subset of items that were ALSO missing a summary, and only when a quality gap had
+already fired. `_data_card_quality_gap` had no concept of images at all, so a card
+with good prose and zero pictures returned `""` (fine) and rendered as a column of
+monogram letters.
+
+Now any linked item without a picture gets one: real `og:image` via `_enrich_news`,
+and the site's **favicon** as a guaranteed floor (`_favicon_for` — this existed but
+was buried in the Google-News RSS path; it generalises to any URL). A favicon
+identifies the source at a glance and beats a monogram letter. Coverage on a test
+card went 0/3 → 3/3.
+
+The probe passes `snippet: "x"` deliberately: `_enrich_news` only fills falsy
+fields, so a pre-filled snippet keeps the pass strictly about images and stops it
+overwriting descriptions the card already has. Pinned by a test.
+
+Client-side, a dead `og:image` now retries once against the source's favicon
+before falling back to a placeholder. Two competing broken-image handlers had to
+be reconciled: the capture-phase gate on `#live-canvas` and `applyImageFallbacks`'
+per-image bubble listener. The bubble one `replaceWith`s the node, which destroyed
+the element the capture gate had just re-pointed at the favicon — so it now defers
+while a retry is in flight. The gate's selector also still named `.hero-image`,
+removed in the figure rework; it's `.data-card-figure` now.
+
 ## Traffic overlay: intent discarded, then re-inferred
 
 The TomTom key, the tile proxy, `map_document_html` and the Leaflet layer were
