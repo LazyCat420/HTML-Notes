@@ -17,6 +17,7 @@ pins: they fail loudly if the guard predicates regress, without needing to
 drive the full agent loop.
 """
 import inspect
+import pytest
 import re
 
 from app import main as m
@@ -161,3 +162,63 @@ def test_items_accumulate_and_dedupe():
 def test_stacking_is_wired_into_the_agent_path():
     assert "_stack_data_card_update(" in SRC
     assert "_remember_widget_config(req.session_id, widget_id, config)" in SRC
+
+
+# ── Multi-ticker comparison ("NVDA vs SPY vs TSM" = ONE chart) ───────────────
+
+def test_compare_ticker_extraction():
+    ex = m._extract_compare_tickers
+    assert ex("NVDA vs SPY vs TSM") == ["NVDA", "SPY", "TSM"]
+    assert ex("compare XLP vs SPY") == ["XLP", "SPY"]
+    assert ex("$NVDA versus $AMD chart") == ["NVDA", "AMD"]
+    assert ex("NVDA, SPY, and TSM ytd") == ["NVDA", "SPY", "TSM"]
+    # Not compare phrasing / no explicit tickers → empty, single path handles.
+    assert ex("spy stock chart") == []
+    assert "VS" not in ex("AAPL VS MSFT"), "the separator itself is never a ticker"
+
+
+@pytest.mark.asyncio
+async def test_compare_config_normalizes_and_aligns(monkeypatch):
+    async def fake_snapshot(sym, range_="1mo"):
+        data = {"NVDA": [100, 110, 121], "SPY": [50, 51, 52, 53],
+                "BAD": {"is_error": True}}
+        v = data[sym]
+        if isinstance(v, dict):
+            return v
+        return {"symbol": sym, "values": v,
+                "labels": [f"d{i}" for i in range(len(v))]}
+    monkeypatch.setattr(m, "stock_snapshot", fake_snapshot)
+    cfg = await m.build_stock_compare_config(["NVDA", "SPY", "BAD"], "6mo")
+    ds = cfg["chart"]["data"]["datasets"]
+    assert [d["label"].split()[0] for d in ds] == ["NVDA", "SPY"], "failed ticker dropped"
+    assert len(cfg["chart"]["data"]["labels"]) == 3, "aligned on the common tail"
+    assert all(len(d["data"]) == 3 for d in ds)
+    assert ds[0]["data"][0] == 0.0 and ds[0]["data"][-1] == 21.0, "% from first close"
+    assert cfg["compare_symbols"] == ["NVDA", "SPY"]
+    # Fewer than two survivors → None (caller falls back to single-stock).
+    assert await m.build_stock_compare_config(["NVDA", "BAD"], "6mo") is None
+    assert await m.build_stock_compare_config(["NVDA"], "6mo") is None
+
+
+def test_compare_chart_is_never_coerced_to_stock_card():
+    wt, cfg = m.coerce_widget_type(
+        "chart", "nvda-spy-compare",
+        {"compare_symbols": ["NVDA", "SPY"], "title": "NVDA vs SPY"})
+    assert wt == "chart", "the compare chart is the one chart a ticker SHOULD get"
+    wt2, _ = m.coerce_widget_type(
+        "chart", "w",
+        {"chart": {"data": {"datasets": [{"data": [1]}, {"data": [2]}]}}})
+    assert wt2 == "chart", "any multi-dataset chart must survive coercion"
+
+
+def test_router_collapses_multiple_stock_specs():
+    # The prompt's "never open a second stock" is prose; the collapse is code.
+    assert "collapsed" in SRC and "stock_specs" in SRC
+    idx = SRC.index("stock_specs = [w for w in clean")
+    assert '" vs ".join' in SRC[idx:idx + 400]
+
+
+def test_agent_prompt_and_injector_route_comparisons():
+    assert "compare_symbols" in SRC
+    assert "COMPARE tickers" in SRC, "SYSTEM_PROMPT must teach the compare route"
+    assert "Built stock compare" in SRC, "injector must build server-side"

@@ -476,3 +476,32 @@ def test_misspelled_anchor_still_quotes_the_window(canvas):
 
 def test_fuzzy_overlap_scores_typos(canvas):
     assert m._subject_overlap("birkenstok arizona", "Birkenstock Arizona sandals") >= 0.5
+
+
+def test_ambiguous_gist_match_prefers_the_focus_thread(canvas):
+    """Live (jimothy): 'tell me more about jimothy' scored 1.00 against BOTH
+    the jimothy card and a reddit-lawsuit card whose gist mentioned him;
+    first-in-DOM-order won and the lawsuit card got overwritten. On a tie,
+    the recency focus (the thread the user is in) must win."""
+    canvas["html"] = _canvas(
+        ("reddit-lawsuit-info", "data-card", "Reddit Lawsuit"),
+        ("jimothy-insider-info", "data-card", "Jimothy Insider Trading"),
+    )
+    _ledger("s",
+            ("reddit lawsuit", "reddit-lawsuit-info", "data_card",
+             "reddit lawsuit jimothy raccoon mention"),
+            ("is jimothy insider trading?", "jimothy-insider-info", "data_card",
+             "jimothy raccoon meme coin insider trading"))
+    got = m._followup_target_id(
+        "s", "jimothy-insider-info", "tell me more about jimothy")
+    assert got == "jimothy-insider-info", (
+        "ambiguous name + focus among the matches → stay in the focus thread")
+
+
+def test_ambiguous_match_without_focus_takes_most_recent(canvas):
+    canvas["html"] = _canvas(
+        ("card-old", "data-card", "Jimothy History"),
+        ("card-new", "data-card", "Jimothy Today"),
+    )
+    got = m._followup_target_id("s", None, "what about jimothy?")
+    assert got == "card-new"

@@ -1307,6 +1307,35 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
 
+        // Strip EVERY x-for expansion generically. Alpine expands
+        // <template x-for> into real sibling nodes after the template; if we
+        // serialize those, the server adopts them as canonical HTML and the
+        // next Alpine.initTree evaluates their loop-scoped bindings
+        // (`:class="r === ..."`, `x-text="row.label"`) OUTSIDE any x-for
+        // scope — hundreds of "r is not defined" errors per re-init, plus
+        // duplicated nodes when the template re-expands. This caught the
+        // stock card's range buttons + metric rows; the youtube/checklist
+        // blocks above predate it and keep their extra rules.
+        //
+        // Generated nodes are inserted contiguously after the template
+        // (nested x-if expansion included), so: remove siblings until the
+        // first STATIC one. Audited invariant of every factory template:
+        // static siblings after an x-for all carry x-show (empty-state
+        // fallbacks, loading spinners) or are the checklist close button —
+        // anything else after an x-for template is Alpine output.
+        temp.querySelectorAll('template[x-for]').forEach(tpl => {
+            let n = tpl.nextElementSibling;
+            while (n) {
+                if (n.hasAttribute('x-show') || n.hasAttribute('x-for')
+                    || n.classList.contains('close-widget-btn')) {
+                    break;
+                }
+                const gone = n;
+                n = n.nextElementSibling;
+                gone.remove();
+            }
+        });
+
         // Strip legacy dataset listener tags that were serialized to HTML
         const allElements = temp.querySelectorAll('[data-has-listener]');
         allElements.forEach(el => el.removeAttribute('data-has-listener'));

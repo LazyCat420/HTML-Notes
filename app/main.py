@@ -1013,6 +1013,117 @@ async def stock_snapshot(symbol: str, range_: str = "1mo") -> dict:
 stock_history = stock_snapshot
 
 
+# ── Multi-ticker comparison ──────────────────────────────────────────────────
+# "NVDA vs SPY vs TSM" used to fan out into one stock_card PER ticker (the
+# router classified each as its own stock spec, and nothing merged them). A
+# comparison is ONE question, so it renders as ONE chart: every series
+# normalized to % change from the range start — the only scale on which a
+# $900 stock and a $60 ETF are comparable.
+
+_COMPARE_MAX_TICKERS = 8   # practical cap; the ask says "unlimited", Chart.js
+                           # and the legend say otherwise past this
+_COMPARE_COLORS = ["#4fc3f7", "#f472b6", "#a3e635", "#fbbf24",
+                   "#c084fc", "#fb923c", "#34d399", "#f87171"]
+
+_COMPARE_SPLIT_RE = re.compile(r"\bvs\.?\b|\bversus\b|\bagainst\b|\band\b|,|/", re.I)
+# Uppercase words that LOOK like tickers but never are, in compare phrasing.
+_TICKER_STOP = {"VS", "AND", "THE", "ETF", "YTD", "SHOW", "PLOT", "CHART",
+                "STOCK", "PRICE", "GRAPH", "INDEX", "COMPARE", "OVER", "TO",
+                "OF", "ME", "ON", "IN", "FOR", "WITH", "A", "I", "VERSUS"}
+
+
+def _extract_compare_tickers(text: str) -> list:
+    """Ticker symbols from a compare-shaped ask, in mention order.
+
+    Explicit uppercase tokens win ("NVDA vs SPY vs TSM" — users type tickers
+    uppercase). If the phrasing is compare-shaped but yields fewer than two,
+    the caller falls back to name resolution per segment."""
+    out = []
+    for tok in re.findall(r"\$?\b[A-Z]{1,5}(?:\.[A-Z])?\b", text or ""):
+        sym = tok.lstrip("$")
+        if sym not in _TICKER_STOP and sym not in out:
+            out.append(sym)
+    return out
+
+
+async def build_stock_compare_config(symbols: list, range_: str = "6mo") -> Optional[dict]:
+    """N tickers → ONE multi-series Chart.js config for the chart widget.
+
+    Fetches every snapshot concurrently, drops failures, aligns series on
+    their common tail (same range on the same calendar — lengths only differ
+    by listing gaps), and normalizes each to % change from its first close.
+    Returns None when fewer than two series survive — the caller then falls
+    back to the single-stock path rather than rendering a one-line 'compare'."""
+    if range_ not in STOCK_RANGES:
+        range_ = "6mo"
+    syms = []
+    for s in symbols or []:
+        s = str(s).strip().upper().lstrip("$")
+        if s and re.fullmatch(r"[A-Z0-9.\-]{1,6}", s) and s not in syms:
+            syms.append(s)
+    if len(syms) < 2:
+        return None
+    if len(syms) > _COMPARE_MAX_TICKERS:
+        logger.info(f"[STOCK COMPARE] capping {len(syms)} tickers to {_COMPARE_MAX_TICKERS}")
+        syms = syms[:_COMPARE_MAX_TICKERS]
+
+    snaps = await asyncio.gather(*[stock_snapshot(s, range_) for s in syms],
+                                 return_exceptions=True)
+    good = [s for s in snaps
+            if isinstance(s, dict) and not s.get("is_error")
+            and s.get("values") and len([v for v in s["values"] if v]) >= 2]
+    if len(good) < 2:
+        logger.info(f"[STOCK COMPARE] only {len(good)}/{len(syms)} tickers "
+                    f"resolved — falling back to single-stock handling")
+        return None
+
+    n = min(len(s["values"]) for s in good)
+    labels = good[0]["labels"][-n:]
+    datasets = []
+    for i, s in enumerate(good):
+        vals = s["values"][-n:]
+        base = next((v for v in vals if v), None)
+        if not base:
+            continue
+        norm = [round((v / base - 1) * 100, 2) if v else None for v in vals]
+        last = next((v for v in reversed(norm) if v is not None), 0.0)
+        datasets.append({
+            "label": f"{s['symbol']}  {last:+.1f}%",
+            "data": norm,
+            "borderColor": _COMPARE_COLORS[i % len(_COMPARE_COLORS)],
+            "backgroundColor": "transparent",
+            "fill": False,
+            "tension": 0.3,
+            "pointRadius": 0,
+            "borderWidth": 2,
+        })
+    if len(datasets) < 2:
+        return None
+    logger.info(f"[STOCK COMPARE] built {len(datasets)}-series chart: "
+                f"{', '.join(s['symbol'] for s in good)} ({range_})")
+    return {
+        "title": " vs ".join(s["symbol"] for s in good) + f" — {range_} % change",
+        "chart": {
+            "type": "line",
+            "data": {"labels": labels, "datasets": datasets},
+            "options": {
+                "responsive": True,
+                "maintainAspectRatio": False,
+                "interaction": {"mode": "index", "intersect": False},
+                "plugins": {"legend": {"display": True,
+                                       "labels": {"color": "#cbd5e1", "boxWidth": 18}}},
+                "scales": {
+                    "x": {"ticks": {"color": "#64748b", "maxTicksLimit": 8}},
+                    "y": {"ticks": {"color": "#64748b"}},
+                },
+            },
+        },
+        # Identity for follow-ups ("add TSM", "make it 1y") and the injector.
+        "compare_symbols": [s["symbol"] for s in good],
+        "range": range_,
+    }
+
+
 async def stock_news(query: str, limit: int = 8) -> dict:
     """Stock/company news headlines + ticker matches for a free-text query.
 
@@ -1290,6 +1401,14 @@ def coerce_widget_type(widget_type: str, widget_id: str, config: dict) -> tuple:
     positive ID for the ticker it is trying to draw.
     """
     if widget_type != "chart" or not isinstance(config, dict):
+        return widget_type, config
+
+    # A deliberate multi-ticker comparison chart is the one chart a ticker
+    # SHOULD get — its title/id name several cached symbols, which is exactly
+    # what the positive-ID heuristic below would latch onto. Never coerce it.
+    if config.get("compare_symbols") or (
+            isinstance(config.get("chart"), dict)
+            and len((config["chart"].get("data") or {}).get("datasets") or []) > 1):
         return widget_type, config
 
     symbol = config.get("symbol") or config.get("ticker") or ""
@@ -2838,23 +2957,35 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
     the directive can't know which widget_type the model will pick). A
     confident topical winner beats recency; a subject-free deictic ask scores
     0 everywhere and keeps the recency focus."""
-    best_id, best_score = None, 0.0
+    scored = []
     canvas_html = ""
     try:
         canvas_html = get_session_canvas(session_id)
         details = _ledger_details(session_id)
-        for wid, _wtype, title in _iter_canvas_widgets(canvas_html):
+        for order, (wid, _wtype, title) in enumerate(_iter_canvas_widgets(canvas_html)):
             if not wid or wid == "unknown":
                 continue
-            score = _score_widget_for_query(message, title or "", details.get(wid, ""))
-            if score > best_score:
-                best_id, best_score = wid, score
+            scored.append((_score_widget_for_query(message, title or "",
+                                                   details.get(wid, "")), order, wid))
     except Exception as e:
         logger.warning(f"_followup_target_id scoring failed: {e}")
-    if best_id and best_score >= _REUSE_SCORE_THRESHOLD:
+    top = [c for c in scored if c[0] >= _REUSE_SCORE_THRESHOLD]
+    if top:
+        best = max(s for s, _, _ in top)
+        # Contenders within epsilon of the best. A name can legitimately live
+        # in several gists — live, "tell me more about jimothy" scored 1.00
+        # against BOTH the jimothy card and a reddit-lawsuit card whose gist
+        # mentioned him, and first-in-DOM-order won: the lawsuit card got
+        # overwritten with meme-coin content. On a tie the recency focus wins
+        # (it's the thread the user is in); otherwise the most recent match.
+        contenders = [c for c in top if best - c[0] <= 0.1]
+        if focus_id and any(wid == focus_id for _, _, wid in contenders):
+            return focus_id
+        _score, _order, best_id = max(contenders, key=lambda c: (c[0], c[1]))
         if best_id != focus_id:
             logger.info(f"[WIDGET TARGET] follow-up names a subject — topical "
-                        f"#{best_id} (score {best_score:.2f}) beats recency #{focus_id}")
+                        f"#{best_id} (score {_score:.2f}, {len(contenders)} "
+                        f"contender(s)) beats recency #{focus_id}")
         return best_id
     # Title+gist missed. Before falling back, look INSIDE the widgets: the
     # canvas holds every card's full rendered text, and the name a follow-up
@@ -5746,6 +5877,18 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
                       "target": str(tgt).lstrip("#").strip() if tgt else None})
     if not clean:
         return None
+    # The prompt says "never open a second stock of the same kind", but prose
+    # can't outvote sampling: "XLP vs SPY" reliably came back as TWO stock
+    # specs and rendered two separate cards. A comparison is one question —
+    # collapse same-type stock specs into a single spec whose query joins the
+    # tickers; the stock builder renders it as one multi-series chart.
+    stock_specs = [w for w in clean if w["type"] == "stock"]
+    if len(stock_specs) > 1:
+        joined = " vs ".join(w["query"] for w in stock_specs if w["query"])
+        stock_specs[0]["query"] = joined
+        clean = [w for w in clean if w["type"] != "stock" or w is stock_specs[0]]
+        logger.info(f"[ROUTER] collapsed {len(stock_specs)} stock specs into "
+                    f"one compare: {joined!r}")
     return {"widgets": clean, "reason": str(data.get("reason", ""))[:80]}
 
 
@@ -6078,7 +6221,24 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             return ("data_card", "stock-report", await build_stock_report_config(query or message))
 
         if wtype == "stock":
-            sym = await _resolve_ticker(query or message)
+            q = query or message
+            # A compare-shaped ask ("NVDA vs SPY vs TSM") is ONE question →
+            # ONE normalized multi-series chart, never a card per ticker.
+            if _COMPARE_SPLIT_RE.search(q):
+                tickers = _extract_compare_tickers(q)
+                if len(tickers) < 2:
+                    # Compare phrasing but names not tickers ("nvidia vs
+                    # taiwan semi") — resolve each segment, bounded.
+                    parts = [p.strip() for p in _COMPARE_SPLIT_RE.split(q) if p.strip()][:4]
+                    if len(parts) >= 2:
+                        resolved = await asyncio.gather(
+                            *[_resolve_ticker(p) for p in parts])
+                        tickers = [t for t in resolved if t]
+                if len(tickers) >= 2:
+                    cmp_cfg = await build_stock_compare_config(tickers)
+                    if cmp_cfg:
+                        return ("chart", "stock-compare", cmp_cfg)
+            sym = await _resolve_ticker(q)
             if not sym:
                 return None
             snap = await stock_snapshot(sym)
@@ -7145,6 +7305,7 @@ async def send_message(req: MessageRequest):
             "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
             "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
+            "- COMPARE tickers ('NVDA vs SPY vs TSM', 'which performed better') → ONE widget, never a stock_card per ticker: canvas_add_widget(widget_type='chart', config={'compare_symbols': ['NVDA','SPY','TSM'], 'range': '6mo'}). The server fetches every ticker and draws a single normalized %-change chart with a legend. Ranges: 1d,5d,1mo,3mo,6mo,1y,5y,10y,max. To add a ticker to an existing comparison, call it again with the SAME widget_id and the full new symbol list.\n"
             "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → RESEARCH IT, same discipline as general news:\n"
             "    1. mcp__lazy-tool-service__html_notes_stock_news(query='<company or ticker>') — its 'matches' array also gives you tickers to feed into html_notes_stock_history.\n"
             "    2. mcp__lazy-tool-service__html_notes_read_page on the 2-3 stories that actually move the thesis.\n"
@@ -7574,7 +7735,19 @@ async def send_message(req: MessageRequest):
                         # model just fetched. It only has to name the subject —
                         # {"symbol": "AMZN"} — instead of hand-typing the whole
                         # snapshot back to us, which was costing ~55s a turn.
-                        if widget_type == "stock_card" and not config.get("values"):
+                        if widget_type == "chart" and config.get("compare_symbols"):
+                            # Multi-ticker comparison: the model names the
+                            # tickers, the server fetches every series and
+                            # builds the normalized chart. Model-supplied
+                            # chart data (if any) is replaced — same policy
+                            # as images: it can't have real market data.
+                            cmp_cfg = await build_stock_compare_config(
+                                config["compare_symbols"], config.get("range", "6mo"))
+                            if cmp_cfg:
+                                logger.info(f"[WIDGET INJECTOR] Built stock compare "
+                                            f"chart: {cmp_cfg['compare_symbols']}")
+                                config = cmp_cfg
+                        elif widget_type == "stock_card" and not config.get("values"):
                             cached = get_cached_tool_result(f"stock:{config.get('symbol', '')}")
                             if cached:
                                 logger.info(f"[WIDGET INJECTOR] Rehydrated stock_card for {config.get('symbol')}")
