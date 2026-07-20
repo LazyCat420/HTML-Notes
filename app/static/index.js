@@ -769,34 +769,58 @@ document.addEventListener("DOMContentLoaded", () => {
      * background), so a widget can't get stuck wearing the highlight.
      */
     /**
-     * Print the revised wording into a widget that a follow-up just rewrote.
+     * Glitch a widget's text from its OLD wording to its new one.
      *
-     * Words are wrapped in spans and faded in left-to-right rather than the text
-     * being truncated and re-typed. Three reasons:
-     *   - No layout shift. The text occupies its final box from frame one, which
-     *     matters because the masonry grid measures row spans off widget height —
-     *     a growing card would make every card below it jump.
-     *   - Element structure survives. Links, <strong>, list items and their
-     *     styling stay intact; only text nodes are touched.
-     *   - It degrades safely: if anything goes wrong the words are already there,
-     *     just transparent, and the cleanup below makes them visible.
+     * A follow-up rewriting a card used to swap the text instantly, which read as
+     * a silent substitution. Now the old words visibly decay into noise and the
+     * new answer resolves out of it, left to right.
      *
-     * Total duration is BUDGETED, not per-word, so a two-line answer and a
-     * twenty-line one both finish in about the same time.
+     * Text NODES are rewritten in place — no wrapper elements are created. That
+     * matters for more than performance: an earlier span-based version had to be
+     * unwrapped again afterwards, because the server adopts the client canvas as
+     * canonical and any leftover markup would be baked in permanently and would
+     * change the widget's data-sig. With nothing added there is nothing to leak;
+     * the only state is the text itself, and finishGlitches() restores it.
+     *
+     * Character COUNT is preserved on every frame, so the text keeps its shape
+     * and the card never reflows around a growing string.
      */
-    // Duration scales with length but is clamped at both ends, so a one-line
-    // answer still reads as printing and a long one doesn't outstay its welcome.
-    // MEASURED: a real research data_card carries ~480 animatable words. An
-    // earlier fixed 260-word cap silently skipped the reveal on exactly the cards
-    // this feature exists for — always count a REAL widget before picking a bound.
-    const TYPE_MIN_MS = 450;
-    const TYPE_MAX_MS = 1400;
-    const TYPE_MS_PER_WORD = 1.6;
-    // Only a runaway guard now (a pathological card), not a normal-size cutoff.
-    const TYPE_MAX_WORDS = 2000;
+    const GLITCH_MIN_MS = 550;
+    const GLITCH_MAX_MS = 1500;
+    const GLITCH_MS_PER_CHAR = 0.45;
+    // Fraction of the run a single character spends scrambling before it settles.
+    // Small = a crisp left-to-right wipe; large = the whole card boils at once.
+    const GLITCH_CHAR_LIFE = 0.28;
+    const GLITCH_MAX_CHARS = 9000;   // runaway guard, not a normal-size cutoff
+    const GLITCH_GLYPHS = '!<>-_\\/[]{}=+*^?#%&@$~;:aAbB0123456789';
+    // Live animations, so a request going out mid-glitch can force them to their
+    // final text first — the canvas we send must never contain noise.
+    const activeGlitches = new Set();
+
+    function finishGlitches() {
+        activeGlitches.forEach(g => g.finish());
+        activeGlitches.clear();
+    }
+
+    /**
+     * Run the glitch after the paint pipeline has settled.
+     *
+     * Two frames, then re-find the widget BY ID rather than holding the node
+     * reference: whatever runs after reconcileCanvas's loop (WidgetLayout.apply,
+     * renderDynamicComponents, Alpine init) can replace the node we were handed,
+     * and animating a detached node is invisible work. Measured the hard way —
+     * 488 words animated, zero of them on screen.
+     */
+    function scheduleGlitch(grid, widgetId, oldText) {
+        if (!widgetId) return;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            const live = grid.querySelector(`#${CSS.escape(widgetId)}`);
+            if (live && live.isConnected) glitchIntoText(live, oldText);
+        }));
+    }
+
     // Widgets whose content is live, interactive, or continuously re-rendered.
-    // Wrapping their text fights Alpine or flickers a running player.
-    const TYPE_SKIP_SELECTOR = ['.map-widget', '.youtube-widget', '.music-widget'].join(',');
+    const GLITCH_SKIP_SELECTOR = ['.map-widget', '.youtube-widget', '.music-widget'].join(',');
 
     /**
      * True when Alpine actively manages this widget's contents.
@@ -804,138 +828,115 @@ document.addEventListener("DOMContentLoaded", () => {
      * Enumerating component names was tried first and was wrong within minutes —
      * the music player is `musicPlayerWidget`, not the `miniMusicPlayer` its
      * widget_type suggested, so it silently fell through the skip list. Read the
-     * structure instead: a STATIC card carries the trivial `x-data="{}"`, while a
-     * live one carries a component call, `x-data="clockWidget('local')"`. That
-     * distinction holds for widgets nobody has written yet.
+     * structure instead: a STATIC card carries the trivial `x-data="{}"`, a live
+     * one carries a component call. That holds for widgets nobody has written yet.
      */
     function isAlpineDriven(el) {
         const xd = (el.getAttribute && el.getAttribute('x-data') || '').trim();
         return !!xd && xd !== '{}' && xd !== '{ }';
     }
 
-    /**
-     * Run the reveal after the paint pipeline has settled.
-     *
-     * Two frames, then re-find the widget BY ID rather than holding the node
-     * reference: whatever runs after reconcileCanvas's loop can replace the node
-     * we were handed, and animating a detached node is invisible work.
-     */
-    function scheduleTypeIn(grid, widgetId) {
-        if (!widgetId) return;
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-            const live = grid.querySelector(`#${CSS.escape(widgetId)}`);
-            if (live && live.isConnected) typeInRevisedText(live);
-        }));
+    /** The text nodes worth animating: prose only, never chrome or Alpine's. */
+    function glitchTextNodes(widget) {
+        const walker = document.createTreeWalker(widget, NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                if (!node.nodeValue || !node.nodeValue.trim())
+                    return NodeFilter.FILTER_REJECT;
+                for (let p = node.parentElement; p && p !== widget; p = p.parentElement) {
+                    const tag = p.tagName;
+                    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEMPLATE' ||
+                        tag === 'BUTTON' || tag === 'svg')
+                        return NodeFilter.FILTER_REJECT;
+                    // Alpine owns this text and will rewrite it under us.
+                    if (p.hasAttribute('x-text') || p.hasAttribute('x-html') ||
+                        p.hasAttribute('x-for'))
+                        return NodeFilter.FILTER_REJECT;
+                    if (p.classList && p.classList.contains('widget-header'))
+                        return NodeFilter.FILTER_REJECT;
+                }
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        });
+        const out = [];
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) out.push(n);
+        return out;
     }
 
-    function typeInRevisedText(widget) {
+    /** Concatenated prose of a widget — the "before" text for the morph. */
+    function captureWidgetText(widget) {
+        try {
+            return glitchTextNodes(widget).map(n => n.nodeValue).join('');
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function glitchIntoText(widget, oldText) {
         try {
             if (!widget || !widget.querySelectorAll) return;
             if (window.matchMedia &&
                 window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-            if (widget.matches(TYPE_SKIP_SELECTOR)) return;
+            if (widget.matches(GLITCH_SKIP_SELECTOR)) return;
             if (isAlpineDriven(widget)) return;
 
-            // Body text only. The header carries the title and the close button —
-            // re-typing those reads as the whole card reloading.
-            const body = widget.querySelector('.widget-body, .glass-card-body')
-                || widget;
-            const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
-                acceptNode(node) {
-                    if (!node.nodeValue || !node.nodeValue.trim())
-                        return NodeFilter.FILTER_REJECT;
-                    for (let p = node.parentElement; p && p !== widget; p = p.parentElement) {
-                        const tag = p.tagName;
-                        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEMPLATE' ||
-                            tag === 'BUTTON' || tag === 'svg')
-                            return NodeFilter.FILTER_REJECT;
-                        // Alpine owns this text and will rewrite it; our spans
-                        // would be clobbered mid-animation (or survive as litter).
-                        if (p.hasAttribute('x-text') || p.hasAttribute('x-html') ||
-                            p.hasAttribute('x-for'))
-                            return NodeFilter.FILTER_REJECT;
-                        if (p.classList && p.classList.contains('widget-header'))
-                            return NodeFilter.FILTER_REJECT;
-                    }
-                    return NodeFilter.FILTER_ACCEPT;
-                }
-            });
+            const nodes = glitchTextNodes(widget);
+            if (!nodes.length) return;
 
-            const textNodes = [];
-            for (let n = walker.nextNode(); n; n = walker.nextNode()) textNodes.push(n);
-            if (!textNodes.length) return;
+            const finals = nodes.map(n => n.nodeValue);
+            const totalChars = finals.reduce((a, s) => a + s.length, 0);
+            if (!totalChars || totalChars > GLITCH_MAX_CHARS) return;
 
-            const spans = [];
-            textNodes.forEach(node => {
-                // Split on whitespace but KEEP it, so spacing is byte-identical
-                // to what the server sent.
-                const parts = node.nodeValue.split(/(\s+)/);
-                const frag = document.createDocumentFragment();
-                parts.forEach(part => {
-                    if (!part) return;
-                    if (/^\s+$/.test(part)) {
-                        frag.appendChild(document.createTextNode(part));
-                        return;
-                    }
-                    const s = document.createElement('span');
-                    s.className = 'tw-word';
-                    s.textContent = part;
-                    frag.appendChild(s);
-                    spans.push(s);
-                });
-                node.parentNode.replaceChild(frag, node);
-            });
-
-            if (!spans.length) return;
-            if (spans.length > TYPE_MAX_WORDS) {
-                unwrapTypedWords(widget);
-                return;
-            }
-
-            const totalMs = Math.max(TYPE_MIN_MS,
-                Math.min(TYPE_MAX_MS, spans.length * TYPE_MS_PER_WORD));
-            const step = totalMs / spans.length;
+            const prev = oldText || '';
+            const totalMs = Math.max(GLITCH_MIN_MS,
+                Math.min(GLITCH_MAX_MS, totalChars * GLITCH_MS_PER_CHAR));
             const started = performance.now();
-            let i = 0;
+
+            const handle = {
+                finish() {
+                    activeGlitches.delete(handle);
+                    nodes.forEach((n, i) => {
+                        if (n.nodeValue !== finals[i]) n.nodeValue = finals[i];
+                    });
+                }
+            };
+            activeGlitches.add(handle);
+
             const tick = (now) => {
-                // The node was replaced by a newer update, or removed — stop and
-                // let the new one run its own reveal.
-                if (!widget.isConnected) return;
-                const due = Math.min(spans.length,
-                                     Math.ceil((now - started) / step));
-                for (; i < due; i++) spans[i].classList.add('tw-in');
-                if (i < spans.length) requestAnimationFrame(tick);
-                else unwrapTypedWords(widget);
+                // Replaced by a newer update, or removed — the new node runs its
+                // own glitch; ours would just fight it.
+                if (!widget.isConnected) { activeGlitches.delete(handle); return; }
+                const t = (now - started) / totalMs;
+                if (t >= 1) { handle.finish(); return; }
+
+                let offset = 0;
+                for (let ni = 0; ni < nodes.length; ni++) {
+                    const final = finals[ni];
+                    let out = '';
+                    for (let i = 0; i < final.length; i++) {
+                        const ch = final[i];
+                        // Whitespace never scrambles: it holds the word shapes, so
+                        // the card still reads as text rather than a block of noise.
+                        if (ch === ' ' || ch === '\n' || ch === '\t') { out += ch; offset++; continue; }
+                        const charStart = ((offset) / totalChars) * (1 - GLITCH_CHAR_LIFE);
+                        const p = (t - charStart) / GLITCH_CHAR_LIFE;
+                        if (p >= 1) out += ch;
+                        else if (p <= 0) out += (prev[offset] && prev[offset].trim() ? prev[offset] : ch);
+                        else out += GLITCH_GLYPHS[(Math.random() * GLITCH_GLYPHS.length) | 0];
+                        offset++;
+                    }
+                    if (nodes[ni].nodeValue !== out) nodes[ni].nodeValue = out;
+                }
+                requestAnimationFrame(tick);
             };
             requestAnimationFrame(tick);
 
-            // Safety net: never leave a card half-transparent if rAF is starved
-            // (backgrounded tab) or an exception lands mid-reveal.
-            setTimeout(() => unwrapTypedWords(widget), totalMs + 1200);
+            // Never leave a card full of noise if rAF is starved (backgrounded
+            // tab) or something throws mid-run.
+            setTimeout(() => handle.finish(), totalMs + 1500);
         } catch (e) {
-            console.warn('typeInRevisedText failed', e);
-            unwrapTypedWords(widget);
+            console.warn('glitchIntoText failed', e);
+            finishGlitches();
         }
-    }
-
-    /**
-     * Put the text back exactly as the server sent it.
-     *
-     * Not cosmetic housekeeping — REQUIRED. The server adopts the client's
-     * rendered canvas as canonical between turns, so any tw-word span still in
-     * the DOM when the next request goes out would be baked into the stored
-     * canvas permanently and change its data-sig. Same hazard as the crt-on /
-     * is-focused transient classes. getCleanedCanvasHtml() strips these too, as
-     * a second line of defence for a request sent mid-reveal.
-     */
-    function unwrapTypedWords(root) {
-        if (!root || !root.querySelectorAll) return;
-        root.querySelectorAll('span.tw-word').forEach(s => {
-            s.replaceWith(document.createTextNode(s.textContent));
-        });
-        // Merge the split text nodes back into one, so the next reconcile's
-        // structural comparison sees the same shape the server produced.
-        if (root.normalize) root.normalize();
     }
 
     function flagCanvasChange(el, cls) {
@@ -1018,6 +1019,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     // structural comparison against the previous paint.
                     return;
                 }
+                // Capture the outgoing wording BEFORE the swap — the glitch morphs
+                // old text into new, so frame one must still look like the answer
+                // the user was reading.
+                const outgoingText = captureWidgetText(existing);
                 existing.replaceWith(newWidget);
                 flagCanvasChange(newWidget, 'is-updating');
                 // A follow-up rewrote this card in place. Print the new wording
@@ -1031,7 +1036,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 // Alpine init). Measured — 488 words wrapped, zero ever revealed,
                 // spans gone within 150ms. Animate whatever node is actually live
                 // once the paint pipeline has settled.
-                scheduleTypeIn(grid, newWidget.id);
+                scheduleGlitch(grid, newWidget.id, outgoingText);
             } else {
                 grid.appendChild(newWidget);
                 flagCanvasChange(newWidget, 'is-entering');
@@ -1175,6 +1180,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function getCleanedCanvasHtml() {
+        // Force any running glitch to its FINAL text first. The server adopts
+        // this HTML as the canonical canvas, so serializing mid-animation would
+        // persist scrambled glyphs as the widget's real content — and change its
+        // data-sig, making an unchanged widget look changed on every later diff.
+        finishGlitches();
         const temp = document.createElement("div");
         temp.innerHTML = elements.liveCanvas.innerHTML;
         
@@ -1210,11 +1220,10 @@ document.addEventListener("DOMContentLoaded", () => {
                                     'is-entering', 'is-updating');
             });
 
-        // Typewriter word spans, if a request goes out mid-reveal. These are
-        // normally unwrapped when the animation ends, but the server adopts this
-        // HTML as canonical — a span that slipped through would be permanent and
-        // would change the widget's data-sig, making an unchanged widget look
-        // changed on every future diff.
+        // Legacy: the word-span reveal that preceded the glitch could leave
+        // span.tw-word in a canvas saved while it was live. Nothing produces them
+        // any more, but stripping them keeps an old saved canvas from carrying
+        // meaningless markup forward for the rest of its life.
         temp.querySelectorAll('span.tw-word').forEach(s => {
             s.replaceWith(document.createTextNode(s.textContent));
         });

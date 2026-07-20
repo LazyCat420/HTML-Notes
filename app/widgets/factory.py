@@ -231,10 +231,15 @@ def render_data_card(widget_id: str, config: dict) -> str:
     body_parts = []
 
     if hero:
+        # A fixed h-32 letterbox cropped most photos to an unreadable strip — a
+        # portrait shot of footwear came through as a band of ankles. Give the
+        # hero a real 16/9 box so the subject survives the crop, cap it so it
+        # can't eat a card whose value is the prose below it, and anchor the crop
+        # at the TOP (subjects sit above centre far more often than below).
         body_parts.append(f"""
-            <div class="hero-image w-full h-32 shrink-0 overflow-hidden relative">
-                <img src="{esc(hero)}" alt="{esc(title)}" class="w-full h-full object-cover" loading="lazy">
-                <div class="absolute inset-0 bg-gradient-to-t from-slate-950/80 to-transparent"></div>
+            <div class="hero-image w-full shrink-0 overflow-hidden relative aspect-video max-h-52 bg-slate-950/60">
+                <img src="{esc(hero)}" alt="{esc(title)}" class="w-full h-full object-cover object-top" loading="lazy">
+                <div class="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/85 to-transparent"></div>
             </div>
         """)
 
@@ -347,8 +352,12 @@ def render_data_card(widget_id: str, config: dict) -> str:
         ) or '<p class="text-slate-400 text-xs italic text-center py-6">No data provided</p>'
         body_parts.append(f'<div class="data-card-content p-4 overflow-y-auto flex-grow custom-scrollbar">{rows}</div>')
 
+    # A hero eats ~208px of a 380px card, leaving barely two lines of the answer
+    # visible before the reader has to scroll — which reads as "the picture broke
+    # the card". Cards carrying a photo get the height back.
+    card_h = "h-[560px]" if hero else "h-[380px]"
     return f"""
-    <div id="{widget_id}" x-data="{{}}" class="widget-container data-card col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+    <div id="{widget_id}" x-data="{{}}" class="widget-container data-card col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col {card_h} group">
         {widget_header(title, icon, subtitle)}
         {''.join(body_parts)}
     </div>

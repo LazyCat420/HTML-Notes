@@ -222,21 +222,20 @@ def test_runaway_thresholds_sit_above_healthy_traffic():
 
 # ── typewriter reveal: the contract the server depends on ──────────────────
 
-def test_typewriter_spans_are_stripped_from_the_canvas_we_send():
-    """The server adopts the client canvas as canonical, so a tw-word span left
-    in the HTML would be permanent AND would change the widget's data-sig,
-    making an unchanged widget look changed on every future diff. Both the
-    animation's own cleanup and getCleanedCanvasHtml must remove them."""
+def test_glitch_is_finished_before_the_canvas_is_serialized():
+    """The server adopts the client canvas as canonical. Serializing mid-glitch
+    would persist scrambled glyphs as the widget's real content AND change its
+    data-sig, making an unchanged widget look changed on every later diff.
+    getCleanedCanvasHtml must force every running glitch to its final text."""
     js = open(os.path.join(os.path.dirname(__file__), "..", "app", "static",
                            "index.js")).read()
-    clean_start = js.index("function getCleanedCanvasHtml")
-    clean_body = js[clean_start:clean_start + 4000]
-    assert "span.tw-word" in clean_body, \
-        "getCleanedCanvasHtml no longer strips typewriter spans"
-    assert "unwrapTypedWords" in js
+    clean = js[js.index("function getCleanedCanvasHtml"):][:4000]
+    assert "finishGlitches()" in clean, \
+        "getCleanedCanvasHtml no longer finishes in-flight glitches"
+    assert "activeGlitches" in js, "no registry of running glitches to finish"
 
 
-def test_typewriter_skips_alpine_driven_widgets():
+def test_glitch_skips_alpine_driven_widgets():
     """Enumerating component names was tried and was wrong within minutes (the
     music player is musicPlayerWidget, not miniMusicPlayer). The rule must stay
     structural: a static card has x-data="{}", a live one has a component call."""
@@ -244,3 +243,16 @@ def test_typewriter_skips_alpine_driven_widgets():
                            "index.js")).read()
     assert "function isAlpineDriven" in js
     assert "isAlpineDriven(widget)" in js
+
+
+def test_glitch_runs_after_the_paint_pipeline():
+    """Running it synchronously inside reconcileCanvas animated a node that had
+    already been replaced — 488 words animated, zero on screen. It must defer
+    and re-find the widget by id."""
+    js = open(os.path.join(os.path.dirname(__file__), "..", "app", "static",
+                           "index.js")).read()
+    assert "function scheduleGlitch" in js
+    assert "scheduleGlitch(grid, newWidget.id" in js
+    sched = js[js.index("function scheduleGlitch"):][:700]
+    assert sched.count("requestAnimationFrame") >= 2, "must defer two frames"
+    assert "querySelector" in sched, "must re-find the widget by id"
