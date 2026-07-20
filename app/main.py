@@ -2364,6 +2364,12 @@ _SUBJECT_STOP = {
     # "happened"/"next" counted as subject tokens and made the fresh-subject
     # guard read it as a new topic.
     "happened", "next", "then", "else", "again", "info", "information",
+    # Vague-scope filler. Live: "tell me more about the deals at costco
+    # anything hardware related?" scored 2/5 against the costco card — under
+    # the 0.5 threshold purely because "anything"/"related" diluted the
+    # overlap. The subject is {deals, costco, hardware}; these words scope it,
+    # they don't name it.
+    "anything", "something", "everything", "related", "specifically", "etc",
 }
 
 
