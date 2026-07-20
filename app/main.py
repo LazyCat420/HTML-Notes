@@ -2259,6 +2259,15 @@ def find_existing_widget(session_id: str, widget_type: str) -> Optional[str]:
 # _place_media_widget; these are the data widgets that were stacking duplicates.
 SINGLETON_WIDGET_TYPES = {"map", "weather"}
 
+# Roles that should exist at most once, identified by their widget id PREFIX
+# rather than their widget_type. Needed because a role's rendered type is not
+# stable: traffic renders as `map` or `iframe_app` depending on whether the place
+# geocoded, so type-keyed reuse silently stacked a duplicate whenever consecutive
+# asks landed on different sides of that fork. Deliberately narrow — a shared
+# prefix means "same slot on the canvas", which is only true for these roles;
+# widening it to e.g. "answer" would merge two unrelated cards into one.
+SINGLETON_ROLE_PREFIXES = {"traffic", "map", "weather"}
+
 # Answer-style cards where a *follow-up on the same thread* should refine the open
 # card in place instead of stacking a new one — but a genuinely NEW subject still
 # gets its own card. Unlike SINGLETON_WIDGET_TYPES (always one), reuse here is
@@ -2578,16 +2587,24 @@ def _widget_on_canvas(session_id: str, wid: str, widget_type: str) -> Optional[s
 
 def _resolve_widget_target(session_id: str, widget_type: str, model_target: str,
                            message: str = "", subject: str = "",
-                           focus_widget_id: str = "") -> Optional[str]:
+                           focus_widget_id: str = "", id_prefix: str = "") -> Optional[str]:
     """The id to render into, most trustworthy signal first:
       P0  focus_widget_id — the CLIENT told us which widget the question came
           from. That is a fact, not an inference, so it outranks everything.
       P1  the model's explicit `target`, when it names a real widget of this type.
       P2  deterministic topical reuse (find_reuse_target).
+      P3  the widget's semantic ROLE, via its id prefix — for roles that are
+          singletons but whose widget_type varies. A traffic ask renders as `map`
+          when geocoding succeeds and `iframe_app` when it misses or the ask is
+          "from A to B", and every P0-P2 signal above is keyed on widget_type, so
+          two traffic asks landing on different sides of that fork could not see
+          each other and stacked a second widget every time.
     Returns None to mint a fresh id."""
     return (_widget_on_canvas(session_id, focus_widget_id, widget_type)
             or _widget_on_canvas(session_id, model_target, widget_type)
-            or find_reuse_target(session_id, widget_type, message, subject))
+            or find_reuse_target(session_id, widget_type, message, subject)
+            or (find_existing_widget_by_id_prefix(session_id, id_prefix)
+                if id_prefix in SINGLETON_ROLE_PREFIXES else None))
 
 
 def _resolve_agent_widget_id(session_id: str, widget_type: str,
@@ -5915,6 +5932,12 @@ async def send_message(req: MessageRequest):
                                or widget_id
                                or find_reuse_target(req.session_id, widget_type, req.message,
                                                     subject=widget_config.get("title", ""))
+                               # Role-prefix reuse, for roles whose rendered TYPE
+                               # varies between asks (traffic → map or iframe_app).
+                               # Every lookup above is type-keyed and so cannot see
+                               # across that fork. See SINGLETON_ROLE_PREFIXES.
+                               or (find_existing_widget_by_id_prefix(req.session_id, id_prefix)
+                                   if id_prefix in SINGLETON_ROLE_PREFIXES else None)
                                or f"{id_prefix}-{uuid.uuid4().hex[:8]}")
 
                 def _append(soup):
@@ -6053,7 +6076,8 @@ async def send_message(req: MessageRequest):
                         # "a fresh news card per follow-up".
                         reuse = _resolve_widget_target(req.session_id, wtype, model_target,
                                                        req.message, (wcfg or {}).get("title", ""),
-                                                       req.focus_widget_id or "")
+                                                       req.focus_widget_id or "",
+                                                       id_prefix=id_prefix)
                         rid = reuse or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
                         placed.append((rid, wtype, wcfg or {}))
                         # Media widgets (video, music) swap the current player in
@@ -6428,17 +6452,11 @@ async def send_message(req: MessageRequest):
                     traffic_widget, traffic_cfg = await build_traffic_widget(
                         req.message, force_traffic=True)
                     if traffic_cfg:
-                        # Reuse the open traffic widget by ID PREFIX. Type-keyed
-                        # reuse can't span the map/iframe_app fork above, so every
-                        # traffic ask that geocoded differently from the last one
-                        # stacked a duplicate instead of updating in place.
-                        existing = find_existing_widget_by_id_prefix(
-                            req.session_id, "traffic")
-                        if existing:
-                            logger.info(f"[TRAFFIC] reusing open traffic widget {existing}")
+                        # Reuse is handled centrally by the "traffic" id prefix —
+                        # see SINGLETON_ROLE_PREFIXES — so both this fast path and
+                        # the router branch collapse onto the same open widget.
                         return spawn_widget_stream(
                             traffic_widget, "traffic", config=traffic_cfg,
-                            widget_id=existing,
                             status="pulling up the map and live traffic...")
                 return spawn_widget_stream(
                     "data_card", "directions",
