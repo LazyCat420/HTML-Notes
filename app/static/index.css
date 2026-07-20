@@ -2068,6 +2068,19 @@ body::after { display: none !important; }
     animation: widgetEnter .38s cubic-bezier(.22, 1, .36, 1) both;
 }
 
+/* Held until the narration reaches it (see the paced-reveal block in index.js).
+   `visibility` rather than `display:none` so the widget still occupies its grid
+   cell: the masonry layout is computed while it is hidden, so revealing it is a
+   pure fade with no reflow of everything around it.
+
+   Note this is a TRANSIENT class. It is stripped by revealAllPending() before the
+   canvas is serialized, because the server adopts the client canvas as canonical
+   and a persisted `is-pending-reveal` would make a widget invisible forever. */
+.widget-container.is-pending-reveal {
+    visibility: hidden;
+    opacity: 0;
+}
+
 /* The update pulse rides on the widget itself so it works for every widget
    type, including the server-rendered ones we cannot wrap. */
 .widget-container.is-updating {

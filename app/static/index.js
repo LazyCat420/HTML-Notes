@@ -977,6 +977,63 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // ── Paced widget reveal ───────────────────────────────────────────────
+    // Widgets used to land the instant the canvas frame arrived, all at once,
+    // while the narration describing them played independently — so a burst of
+    // asks dumped the whole grid and then talked about it afterwards. A new
+    // widget is now held back and revealed as its sentence STARTS being spoken,
+    // so the canvas fills at the pace of the voice.
+    //
+    // SAFETY IS THE WHOLE DESIGN HERE: a widget must never be lost because audio
+    // failed. Every hold has a hard timeout, anything queued is flushed the moment
+    // speech stops, and gating is skipped entirely when TTS can't run (muted, or
+    // the service is in its offline back-off — it was down for a whole session
+    // recently, which would have hidden every widget on the canvas).
+    const REVEAL_HOLD_MAX_MS = 3500;   // never hold a widget longer than this
+    const pendingReveals = [];         // widget ids awaiting their cue, in order
+
+    function revealGateActive() {
+        // Only gate when speech is actually going to happen for THIS turn.
+        return ttsAvailable() && (isProcessingQueue || ttsQueue.length > 0);
+    }
+
+    function holdWidgetForReveal(el) {
+        if (!el || !el.id) return false;
+        el.classList.add('is-pending-reveal');
+        pendingReveals.push(el.id);
+        // Backstop: if no sentence ever cues this widget (TTS died mid-turn, the
+        // model wrote fewer sentences than widgets), show it anyway.
+        setTimeout(() => revealWidget(el.id), REVEAL_HOLD_MAX_MS);
+        return true;
+    }
+
+    function revealWidget(id) {
+        const idx = pendingReveals.indexOf(id);
+        if (idx !== -1) pendingReveals.splice(idx, 1);
+        const el = document.getElementById(id);
+        if (!el || !el.classList.contains('is-pending-reveal')) return;
+        el.classList.remove('is-pending-reveal');
+        flagCanvasChange(el, 'is-entering');
+        if (window.__masonryLayout) requestAnimationFrame(window.__masonryLayout);
+    }
+
+    // Called when a sentence begins playing: bring in the next widget in step.
+    function revealNextWidget() {
+        if (pendingReveals.length) revealWidget(pendingReveals[0]);
+    }
+
+    // Called when speech ends, on mute, and before serializing the canvas.
+    function revealAllPending() {
+        while (pendingReveals.length) revealWidget(pendingReveals[0]);
+        // Belt and braces: catch any node whose id left the queue but kept the
+        // class (e.g. replaced mid-flight), so nothing can stay invisible.
+        document.querySelectorAll('.widget-container.is-pending-reveal')
+            .forEach(el => {
+                el.classList.remove('is-pending-reveal');
+                flagCanvasChange(el, 'is-entering');
+            });
+    }
+
     function flagCanvasChange(el, cls) {
         if (!el || !el.classList) return;
         el.classList.remove('is-entering', 'is-updating');
@@ -1077,7 +1134,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 scheduleGlitch(grid, newWidget.id, outgoingText);
             } else {
                 grid.appendChild(newWidget);
-                flagCanvasChange(newWidget, 'is-entering');
+                // Hold it back so it appears in time with the narration; shows
+                // immediately when nothing is going to be spoken.
+                if (!(revealGateActive() && holdWidgetForReveal(newWidget))) {
+                    flagCanvasChange(newWidget, 'is-entering');
+                }
             }
             relayoutOnMediaSettle(newWidget);
             changed = true;
@@ -1223,6 +1284,9 @@ document.addEventListener("DOMContentLoaded", () => {
         // persist scrambled glyphs as the widget's real content — and change its
         // data-sig, making an unchanged widget look changed on every later diff.
         finishGlitches();
+        // Same hazard as a mid-glitch serialize: `is-pending-reveal` baked into
+        // the canonical canvas would persist an invisible widget forever.
+        revealAllPending();
         const temp = document.createElement("div");
         temp.innerHTML = elements.liveCanvas.innerHTML;
         
@@ -2562,6 +2626,10 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
         ttsQueue.length = 0;
+        // Speech was cancelled (muted, interrupted, or a new turn started). Nothing
+        // will cue the held widgets now, so show them immediately — muting the
+        // assistant must never mean losing content.
+        revealAllPending();
         if (currentAudio) {
             try {
                 currentAudio.pause();
@@ -2613,6 +2681,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isProcessingQueue) return;
         if (ttsQueue.length === 0) {
             hideSpeechOverlay();
+            // Nothing left to say, so nothing is coming to cue the rest.
+            revealAllPending();
             return;
         }
         
@@ -2638,6 +2708,9 @@ document.addEventListener("DOMContentLoaded", () => {
             overlay.innerHTML = "";
             overlay.style.display = "block";
             overlay.classList.remove("sentence-fade-out");
+            // This sentence is starting — bring in the widget it describes, so the
+            // canvas fills at the pace of the voice rather than all at once.
+            revealNextWidget();
             
             words.forEach((word, index) => {
                 const span = document.createElement("span");
