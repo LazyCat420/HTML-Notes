@@ -231,15 +231,17 @@ def render_data_card(widget_id: str, config: dict) -> str:
     body_parts = []
 
     if hero:
-        # A fixed h-32 letterbox cropped most photos to an unreadable strip — a
-        # portrait shot of footwear came through as a band of ankles. Give the
-        # hero a real 16/9 box so the subject survives the crop, cap it so it
-        # can't eat a card whose value is the prose below it, and anchor the crop
-        # at the TOP (subjects sit above centre far more often than below).
+        # `aspect-video max-h-52` collapsed to a ~3.4:1 letterbox on a wide card,
+        # and object-cover then threw away everything outside that strip — a
+        # product shot came through as the bottom sliver of a hat. There is no
+        # crop anchor that is right for arbitrary hero photos, so stop cropping:
+        # a fixed-height box + object-contain fits the WHOLE subject and letter-
+        # boxes the slack against the card background instead of eating the image.
+        # No bottom scrim either — with contain the subject reaches the box edge,
+        # so a gradient there dims the thing the image exists to show.
         body_parts.append(f"""
-            <div class="hero-image w-full shrink-0 overflow-hidden relative aspect-video max-h-52 bg-slate-950/60">
-                <img src="{esc(hero)}" alt="{esc(title)}" class="w-full h-full object-cover object-top" loading="lazy">
-                <div class="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/85 to-transparent"></div>
+            <div class="hero-image w-full shrink-0 overflow-hidden relative h-48 bg-slate-950/60">
+                <img src="{esc(hero)}" alt="{esc(title)}" class="w-full h-full object-contain" loading="lazy">
             </div>
         """)
 
@@ -378,8 +380,9 @@ def render_image(widget_id: str, config: dict) -> str:
 
     if normalized:
         shown = normalized[:4]
-        # One image → a single square hero; several → a square-tile grid. Either way
-        # each tile is a box (aspect-square + object-cover), never a cropped letterbox.
+        # One image → a single square hero; several → a square-tile grid. Tiles are
+        # object-contain, not cover: a square box still crops a portrait/landscape
+        # source hard, and in a gallery the whole frame IS the content.
         grid_cls = "grid-cols-1" if len(shown) == 1 else "grid-cols-2"
         figures = []
         for img in shown:
@@ -389,7 +392,7 @@ def render_image(widget_id: str, config: dict) -> str:
             )
             figures.append(f"""
                 <figure class="relative aspect-square overflow-hidden rounded-xl bg-slate-950 ring-1 ring-white/10">
-                    <img src="{esc(img['url'])}" alt="{esc(img.get('caption') or title)}" loading="lazy" class="absolute inset-0 w-full h-full object-cover">
+                    <img src="{esc(img['url'])}" alt="{esc(img.get('caption') or title)}" loading="lazy" class="absolute inset-0 w-full h-full object-contain">
                     {caption_html}
                 </figure>
             """)
@@ -454,7 +457,7 @@ def render_products(widget_id: str, config: dict) -> str:
             media = f"""
                 <div class="product-media relative w-full aspect-square overflow-hidden bg-slate-950 shrink-0">
                     <img src="{esc(i_image)}" alt="{esc(i_title)}" loading="lazy"
-                         class="absolute inset-0 w-full h-full object-cover group-hover/card:scale-105 transition-transform duration-300">
+                         class="absolute inset-0 w-full h-full object-contain p-2 group-hover/card:scale-105 transition-transform duration-300">
                     {f'<span class="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/70 text-emerald-300 backdrop-blur-sm">{esc(i_price)}</span>' if i_price else ''}
                     {f'<span class="absolute top-2 left-2 text-[0.6rem] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/70 text-white backdrop-blur-sm">{esc(i_badge)}</span>' if i_badge else ''}
                 </div>

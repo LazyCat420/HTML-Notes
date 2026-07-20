@@ -28,10 +28,22 @@ runs left in the settled text. `scripts/glitch_check.py`.
 ## Hero image framing
 
 A fixed `h-32` letterbox cropped most photos to an unreadable strip — a shot of
-footwear came through as a band of ankles. The hero now gets a real 16/9 box
-capped at `max-h-52` with the crop anchored at the TOP (subjects sit above centre
-more often than below). A hero eats ~208px, which left barely two lines of a
-380px card visible, so cards carrying a photo get the height back: **560px**.
+footwear came through as a band of ankles. The replacement (`aspect-video` +
+`max-h-52` + `object-cover object-top`) did not fix it: on a wide card the two
+constraints collide into a ~3.4:1 strip, and cover then discards everything
+outside it — a waterproof-hat product shot rendered as white space plus the
+bottom sliver of a brim.
+
+**There is no crop anchor that is correct for arbitrary hero photos**, so the
+hero no longer crops at all: a fixed `h-48` box with `object-contain`. The whole
+subject always fits; the slack letterboxes against the card background. The
+bottom scrim is gone too — with contain the subject reaches the box edge, so a
+gradient there dims the thing the image exists to show. Same reasoning applied
+to the `image` widget tiles and `products` media (the latter keeps `p-2` so the
+price/badge chips don't sit on the product). Item thumbs stay `object-cover`:
+at `w-14 h-14` they're avatars, where filling the box is right.
+
+Cards carrying a photo still get the height back: **560px**.
 
 ## Earlier: typewriter reveal (REPLACED by the glitch above)
 
