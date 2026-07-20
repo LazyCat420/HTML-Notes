@@ -129,6 +129,44 @@ id-resolution chain. Unit tests would not have caught it. Verify by driving
 four consecutive asks must all report the SAME id. `scratch/widget_targeting_check.py`
 reproduces the canvas from the session logs.
 
+## Widget reveal is paced to the narration
+
+Widgets landed the instant the canvas frame arrived — all at once — while the
+speech describing them ran on its own timeline. A burst of asks dumped the whole
+grid and then talked about it afterwards.
+
+A brand-new widget is now held and revealed as its sentence STARTS playing
+(`revealNextWidget()` from `playSentenceTTS`), so the canvas fills at the pace of
+the voice. Updates to an EXISTING widget are not gated — those already have the
+glitch reveal, and holding them would hide content the user is reading.
+
+**The failure mode here is an invisible widget, not a mistimed one**, so the
+safety rails are the design:
+
+- gating is skipped entirely when nothing will be spoken, when muted, or when TTS
+  is in its offline back-off. That last one is not hypothetical — the service was
+  down for an entire session recently, which would otherwise have hidden every
+  widget on the canvas.
+- every hold has a **3.5s backstop timeout**
+- everything held is flushed when the speech queue drains, when speech is
+  cancelled, and on mute
+- `is-pending-reveal` is stripped by `revealAllPending()` inside
+  `getCleanedCanvasHtml()`. The server adopts the client canvas as canonical, so a
+  persisted hidden class would make a widget invisible permanently — the same
+  hazard class the glitch code documents for mid-animation serializing.
+
+Uses `visibility` rather than `display:none` so the widget keeps its grid cell:
+masonry is computed while it is hidden, so revealing is a pure fade with no
+reflow of the widgets around it.
+
+**Known tradeoff:** with a long speech backlog the 3.5s backstop wins and widgets
+run ahead of the narration again. That is deliberate — content visible late is a
+bug, content never visible is a much worse one.
+
+`scripts/reveal_pacing_check.py` brace-matches the real functions out of
+`index.js` and drives them headless: ordering, all four skip paths, the timeout
+backstop, and fewer-sentences-than-widgets.
+
 ## Spoken output (TTS): say the finding, not the filing
 
 It spoke a canned "Added it to your canvas.", twice in a row — useless to anyone
