@@ -2689,10 +2689,23 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
                 best_id, best_score = wid, score
     except Exception as e:
         logger.warning(f"_followup_target_id scoring failed: {e}")
-    if best_id and best_score >= _REUSE_SCORE_THRESHOLD and best_id != focus_id:
-        logger.info(f"[WIDGET TARGET] follow-up names a subject — topical "
-                    f"#{best_id} (score {best_score:.2f}) beats recency #{focus_id}")
+    if best_id and best_score >= _REUSE_SCORE_THRESHOLD:
+        if best_id != focus_id:
+            logger.info(f"[WIDGET TARGET] follow-up names a subject — topical "
+                        f"#{best_id} (score {best_score:.2f}) beats recency #{focus_id}")
         return best_id
+    # No widget matches. If the message CARRIES a subject anyway, it's a new
+    # topic that happened to trip the (loose) refinement regex — live, "find
+    # me MORE info on birkenstock arizona" matched `more\b` right after the
+    # costco card was built, and the recency fallback ordered birkenstock
+    # content INTO the costco card. Two or more content words that match
+    # nothing on canvas mean a fresh subject: no directive, let the agent
+    # open a new widget. One or zero content words ("tell me more", "what
+    # about the cheaper ones") is genuinely deictic — keep the recency focus.
+    if len(_subject_tokens(message)) >= 2:
+        logger.info(f"[WIDGET TARGET] follow-up phrasing but fresh subject "
+                    f"(no canvas match) — not forcing an in-place update")
+        return None
     return focus_id
 
 

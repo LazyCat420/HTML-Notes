@@ -312,3 +312,17 @@ def test_followup_target_with_empty_canvas_returns_focus(canvas):
     canvas["html"] = ""
     assert m._followup_target_id("s", None, "tell me more") is None
     assert m._followup_target_id("s", "w-1", "tell me more") == "w-1"
+
+
+def test_fresh_subject_with_followup_phrasing_gets_no_directive(canvas):
+    """Live regression: 'find me MORE info on birkenstock arizona' (right after
+    the costco card) trips the loose `more\\b` trigger, matches nothing on
+    canvas, and the recency fallback ordered birkenstock content INTO the
+    costco card. Subject-carrying misses must return None — new widget."""
+    canvas["html"] = _canvas(
+        ("costco-concord-deals", "data-card", "Costco Concord Deals"))
+    _ledger("s", ("what deals are at the costco in concord?",
+                  "costco-concord-deals", "data_card", "costco deals kirkland"))
+    got = m._followup_target_id(
+        "s", "costco-concord-deals", "find me more info on birkenstock arizona")
+    assert got is None, "a fresh subject must never be forced into the focus widget"
