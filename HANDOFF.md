@@ -1,3 +1,39 @@
+# Handoff — 2026-07-21 (video-by-time wave 2: "newest" made idempotent)
+
+**Deployed:** synology `:8035` (`7096dab`) — 561 pytest green (21 in
+`tests/test_video_recency.py`). Follow-up to the wave below: user retested with
+"newest paul barron video" (no "Network") and got a DIFFERENT video on every
+identical ask. Three holes in wave 1, all reproduced live before fixing:
+
+1. **The bidirectional name gate rejected the REAL channel.** Subject
+   "paul barron" vs channel "Paul Barron Network" → bwd 0.67 < 0.7 → feed path
+   never ran for the natural phrasing (users drop trailing words). Gate is now
+   forward-containment ≥0.7 + backward sanity floor ≥0.5 (still rejects
+   "top gun maverick" → "Top Gun" on fwd 0.67, and "paul barron" → a long fan-
+   channel title on the floor). Single-word subjects bind ONLY on exact equality
+   with the TOP channel result ("fireship" → Fireship; "bitcoin" never binds).
+2. **The unseen-first filter ROTATED the feed** — repeat asks served feed[1],
+   feed[2]… "Newest" is a factual ask with ONE right answer: already-shown
+   exclusion removed from the strict path; repeats return the same latest upload.
+3. **Fallback tiers lost strictness.** A consent-walled primary scrape fell to
+   the relevance-ordered scraper pool ("newest"→"popular" silently).
+   `_youtube_results_via_scraper` now takes `strict_recency` (date-sorted fetch,
+   age-sorted output, NO diversity reshuffle), and the builder age-sorts
+   relevance-fallback hits before picking.
+
+**Publish-time verification is now observable:** the picked video's `published`
+timestamp rides in the widget config and the server logs
+`[YOUTUBE] newest via channel feed: <id> published <ts> (~N min ago)` — grep
+that to answer "did it verify the time" from the container log. Verified live
+with the exact failing phrasing: 3 identical runs → same video (published
+2026-07-21 20:14 UTC) = feed[0] of the resolved Paul Barron Network channel.
+
+**Rule of thumb this wave encodes:** deterministic asks (newest/live/named
+channel) must never pass through `pick_varied_video` OR the shown-this-session
+exclusion — both exist for *variety* asks only.
+
+---
+
 # Handoff — 2026-07-21 (video-by-time: newest video + named-channel feed)
 
 **Deployed:** synology `:8035` (`cd2ae92`) — 558 pytest green (18 new in
