@@ -1,3 +1,39 @@
+# Handoff — 2026-07-20 (trending-stocks discovery)
+
+**Deployed:** synology `:8035`. 480 pytest green (19 new in
+`tests/test_trending_stocks.py`). Live-verified: the exact failing ask now
+renders a 5-series compare chart.
+
+"compare the top trending stocks this last month, top 5 on a chart" broke
+because it is a DISCOVERY ask: tier-1 regexes miss it, the tier-2 router
+classified it `stock`, and the stock builder's `_resolve_ticker("top trending
+stocks")` gets nothing from Yahoo symbol search → all builds empty → degraded
+answer card (no chart, LLM-guessed table). It never reached the agent — and a
+direct probe of prism `/agent` on this ask showed the agent takes ~189s and
+invents its candidate list (ranked 10 mega-caps from memory; the real trending
+list was AMC/IREN/ACHR…), so agent routing was the wrong fix anyway.
+
+Fix (deterministic, ~2-10s): Yahoo's KEYLESS discovery feeds →
+`build_trending_compare_config` → the existing normalized multi-series chart.
+- `trending/US` for "trending/hottest"; predefined screeners `day_gainers` /
+  `day_losers` / `most_actives` for gainers/losers/actives (`_trend_kind`).
+- "top N" honored (cap `_COMPARE_MAX_TICKERS`=8, default 5); overfetch +3 so
+  snapshot failures don't thin the chart; crypto/futures/indices filtered.
+- `_range_from_message`: today→1d, week→5d, quarter→3mo, year→1y, month→1mo
+  (default 1mo). Ordered longest-window-first.
+- Routing: new `stock_trending` ROUTER_WIDGETS type, PLUS a
+  `TRENDING_STOCK_RE` guard inside the `stock` router branch so a plain
+  `stock` classification still lands in discovery. Explicitly typed tickers
+  ("top performers: NVDA vs SPY") beat the feed. Works in prism AND lazy mode
+  (both go through the tier-2 router for this shape).
+
+Console-log trap found during the audit: `index.js` prints
+`route: fast-path → undefined` for ANY non-agent route — a router-path debug
+event has `widgets`, not `widget_type`. "fast-path → undefined" means TIER-2
+ROUTER, not a tier-1 heuristic.
+
+---
+
 # Handoff — 2026-07-21 (new widgets: converter, reminder, notes-v2 + Obsidian)
 
 **Deployed:** synology `:8035`. 461 pytest + 16 node green. All three
