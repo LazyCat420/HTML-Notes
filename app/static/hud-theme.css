@@ -565,6 +565,9 @@ body::after {
     --hud-key-ink: #fbf6ec;
     --hud-glow: rgba(193, 122, 60, 0.10);
     --hud-grid-opacity: 0; --hud-scan-opacity: 0; --hud-bracket-opacity: 0;
+    /* index.css drives default widget text off ITS own vars — flip them dark
+       so the app's dark-first text reads on cream (see the contrast block below). */
+    --text-color: #4a3a26; --text-dim: #8a745a; --ice: #3a2c1a;
 }
 
 /* PASTEL — soft light: cool off-white, lavender panels, orchid accent. */
@@ -579,6 +582,7 @@ body::after {
     --hud-key-ink: #fbfaff;
     --hud-glow: rgba(167, 139, 250, 0.12);
     --hud-grid-opacity: 0; --hud-scan-opacity: 0; --hud-bracket-opacity: 0;
+    --text-color: #443c5a; --text-dim: #837b9c; --ice: #322a48;
 }
 
 /* Light themes: the header/readout glows read as smudges on a light bg —
@@ -593,3 +597,22 @@ body::after {
 :root[data-theme="pastel"] .widget-container .font-mono {
     text-shadow: none !important;
 }
+
+/* Light themes: the app is built dark-first — widgets use `text-white`
+   (and opacity variants) directly, and index.css remaps `.text-slate-900`
+   to a light blue for the same reason. Both vanish on a light surface, so
+   flip every would-be-light widget text back to the palette ink. The
+   [class*="text-white"] selector catches text-white, text-white/90, /80… */
+:root[data-theme="egg"] .live-canvas [class*="text-white"],
+:root[data-theme="pastel"] .live-canvas [class*="text-white"],
+:root[data-theme="egg"] .widget-container .text-slate-900,
+:root[data-theme="pastel"] .widget-container .text-slate-900,
+:root[data-theme="egg"] .widget-container .text-slate-100,
+:root[data-theme="egg"] .widget-container .text-slate-200,
+:root[data-theme="pastel"] .widget-container .text-slate-100,
+:root[data-theme="pastel"] .widget-container .text-slate-200 {
+    color: var(--hud-ink) !important;
+}
+/* Tailwind white/light backgrounds baked into widgets (e.g. an image card's
+   white matte) read fine, but a pure black/dark chip on a light panel needs
+   its light text kept — leave bg-* alone; only text is flipped above. */
