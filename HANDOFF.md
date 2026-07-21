@@ -1,3 +1,52 @@
+# Handoff — 2026-07-21 (video-by-time: newest video + named-channel feed)
+
+**Deployed:** synology `:8035` (`cd2ae92`) — 558 pytest green (18 new in
+`tests/test_video_recency.py`). Server-only (`app/main.py`), no schema change.
+
+**The bug (user report):** "newest Paul Barron Network video" returned a days-old
+popular clip instead of the upload from 42 min ago. The engine parses publish age
+(minute precision, `youtube_search.py:_parse_age_days`) but threw the ordering
+away. THREE compounding causes, all fixed:
+
+1. **"newest" never triggered date mode.** `RECENCY_RE` lacked it (`\bnew\b`
+   doesn't match "newest"). Added it, plus a stronger **`NEWEST_RE`** (newest /
+   most recent / latest / just posted / N mins ago / this morning / past hour) for
+   STRICT recency.
+2. **The blended scorer overrode date order.** freshness is a 0.4-weight,
+   year-scaled axis (`1 - age_days/365`) — it can't separate 42 min from 3 days,
+   while authority (log-views) favors the older video that had time to rack up
+   views, so a fresh upload ALWAYS lost the blend (proved: 3-day/60k-view scored
+   2.2584 vs 42-min/800-view at 2.1893). Added **`strict_recency`** to
+   `search_youtube_videos`/`_search_youtube_scrape`: sort purely by `age_days`,
+   bypassing the scorer, channel-diversity cap AND rerank.
+3. **`pick_varied_video` randomised the final pick** "for variety". A strict
+   newest ask now takes `hits[0]` deterministically.
+
+**The real fix for named creators.** A keyword search for "Paul Barron Network"
+returns that channel's clips mixed with everyone else's in popularity order — so
+search alone can't answer "newest <creator>". Added `_resolve_youtube_channel`
+(channel-only results filter `sp=EgIQAg%3D%3D` + parse `channelRenderer` +
+**strict bidirectional name-match gate** `_yt_channel_name_match` ≥0.7 both ways,
+so "top gun maverick" won't bind to a fan channel "Top Gun"; single-word subjects
+skip resolution) → `_youtube_channel_uploads` reads the keyless, strictly
+reverse-chronological uploads RSS (`youtube.com/feeds/videos.xml?channel_id=…`),
+so `feed[0]` IS the latest upload. The video builder ([main.py] `build_router_widget`
+video branch) tries this FIRST for a `want_newest` ask, falls through to strict
+keyword date search, then to relevance. MCP `html_notes_youtube_search` honors
+`order=date` / a "newest" query as strict too. **Verified live:** builder returns
+the Paul Barron Network upload from ~145 min ago, matching `feed[0]`.
+
+**Seams / gotchas:** the legacy fast-path cascade (`main.py` ~7705, `use_lazy_agent`
+mode) is SKIPPED in prism mode — the live path is `build_router_widget`, which is
+what I patched. `_yt_fetch_html` = httpx-first (a browser UA clears the
+results/feed pages) with `_scrape` real-browser fallback. `_unescape` is now
+imported from youtube_search as `_yt_unescape` (channelRenderer titles are
+JSON-escaped, not HTML). The scorer in `youtube_search.py` is UNCHANGED (the strict
+path bypasses it) so the `bench/` numbers don't move — if you ever want freshness
+to matter on the *blended* path too, steepen its curve there and re-run the bench.
+
+---
+
 # Handoff — 2026-07-21 (stock discovery: index scoping + provenance tagging)
 
 **Deployed:** synology `:8035` (`8ff0cd4`) — 540 pytest green. No lazy-agent
