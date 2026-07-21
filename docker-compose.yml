@@ -22,6 +22,10 @@ services:
       - PYTHONPATH=/app:/app/lazycat-sdk
       # The DEEP_RESEARCH agent lives on the lazy-tool-service gateway.
       - LAZY_AGENT_URL=${LAZY_AGENT_URL:-http://10.0.0.16:5591}
+      # Shared secret for /internal/execute auth (caller: lazy-tool-service).
+      # Interpolated from the staged .env (deploy-kit/.env.deploy) at deploy;
+      # empty = endpoint runs in compat (unauthenticated) mode with a warning.
+      - INTERNAL_EXECUTE_TOKEN=${INTERNAL_EXECUTE_TOKEN:-}
     volumes:
       - ./data:/app/data
       # Shared SDK (research helper) — synced to the NAS by deploy.sh's
