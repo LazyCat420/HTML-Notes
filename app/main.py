@@ -1203,6 +1203,114 @@ async def build_stock_compare_config(symbols: list, range_: str = "6mo") -> Opti
     }
 
 
+# ── Trending / gainers discovery ─────────────────────────────────────────────
+# "compare the top trending stocks", "biggest gainers today" is a DISCOVERY
+# ask: there is no ticker in the text to resolve, so the old path
+# (_resolve_ticker on the whole phrase) got nothing back from Yahoo's symbol
+# search, every build came up empty, and the turn degraded to a sourceless
+# answer card. The candidate list has to come from a real discovery feed —
+# Yahoo's keyless trending/screener endpoints — never from an LLM's memory of
+# famous tickers (the agent, probed on this exact ask, ranked ten mega-caps it
+# already knew and answered META/AAPL/MSFT while the actual trending list was
+# AMC/IREN/ACHR).
+
+# A superlative/discovery word within reach of a stock noun. "gainers"/"losers"
+# also stand alone ("show me today's gainers") — they are finance-only words.
+# "movers" deliberately is NOT standalone ("find me movers in Seattle").
+TRENDING_STOCK_RE = re.compile(
+    r'\b(trending|hottest|most (?:active|traded|popular)|top|best[\s-]?performing|'
+    r'biggest|largest|worst[\s-]?performing)\b'
+    r'[^.?!]{0,40}\b(stocks?|tickers?|equities|shares|movers?|gainers?|losers?)\b'
+    r'|\b(gainers?|losers?)\b', re.I)
+
+_TREND_KINDS = (
+    (re.compile(r'\b(losers?|worst)\b', re.I), "day_losers"),
+    (re.compile(r'\b(most (?:active|traded)|volume)\b', re.I), "most_actives"),
+    (re.compile(r'\b(gainers?|best[\s-]?perform\w*|top[\s-]?perform\w*)\b', re.I),
+     "day_gainers"),
+)
+
+# Ordered longest-window-first so "3 months" never half-matches "month".
+_RANGE_WORDS = (
+    (re.compile(r'\btoday\b|\b(?:1|one) ?day\b|\b24 ?h', re.I), "1d"),
+    (re.compile(r'\bweek\b', re.I), "5d"),
+    (re.compile(r'\bquarter\b|\b(?:3|three) ?months?\b', re.I), "3mo"),
+    (re.compile(r'\b(?:6|six) ?months?\b|\bhalf a year\b', re.I), "6mo"),
+    (re.compile(r'\byear\b|\bytd\b|\b12 ?months?\b', re.I), "1y"),
+    (re.compile(r'\bmonth\b', re.I), "1mo"),
+)
+
+
+def _trend_kind(text: str) -> str:
+    for rx, kind in _TREND_KINDS:
+        if rx.search(text or ""):
+            return kind
+    return "trending"
+
+
+def _range_from_message(text: str, default: str = "1mo") -> str:
+    for rx, range_ in _RANGE_WORDS:
+        if rx.search(text or ""):
+            return range_
+    return default
+
+
+async def _trending_symbols(kind: str = "trending", limit: int = 10) -> list:
+    """Real candidate tickers from Yahoo's keyless discovery feeds: trending/US
+    for 'trending', the predefined screeners for gainers/losers/most-actives.
+    Crypto (BTC-USD), futures (ES=F) and indices (^GSPC) are dropped — the ask
+    said stocks. Empty trending falls back to most_actives; [] means the feeds
+    are down and the caller should degrade."""
+    if kind == "trending":
+        url = "https://query1.finance.yahoo.com/v1/finance/trending/US?count=25"
+    else:
+        url = ("https://query1.finance.yahoo.com/v1/finance/screener/predefined/"
+               f"saved?scrIds={kind}&count=25")
+    syms: list = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers={"User-Agent": _YAHOO_UA})
+            result = (resp.json().get("finance", {}).get("result") or [{}])[0] or {}
+            for q in result.get("quotes") or []:
+                s = str((q or {}).get("symbol") or "").upper()
+                if re.fullmatch(r"[A-Z][A-Z0-9]{0,4}(?:\.[A-Z])?", s) and s not in syms:
+                    syms.append(s)
+                if len(syms) >= limit:
+                    break
+    except Exception as e:
+        logger.warning(f"[TRENDING] {kind} feed failed: {e}")
+    if not syms and kind == "trending":
+        return await _trending_symbols("most_actives", limit)
+    logger.info(f"[TRENDING] {kind} -> {syms}")
+    return syms
+
+
+async def build_trending_compare_config(message: str) -> Optional[dict]:
+    """Discovery ask → real trending/gainer tickers → ONE normalized multi-series
+    chart via build_stock_compare_config. None when the feeds are down or too few
+    series survive — the caller degrades exactly as before."""
+    kind = _trend_kind(message)
+    m = re.search(r'\btop\s+(\d{1,2})\b', message or "", re.I)
+    count = max(2, min(int(m.group(1)) if m else 5, _COMPARE_MAX_TICKERS))
+    # Overfetch: snapshots for fresh small-cap tickers do intermittently fail and
+    # build_stock_compare_config drops them, so extras keep the chart at the
+    # asked-for width. The exact-count list is tried first so "top 5" renders 5
+    # series, not 8.
+    syms = await _trending_symbols(kind, limit=count + 3)
+    if len(syms) < 2:
+        return None
+    range_ = _range_from_message(message)
+    cfg = (await build_stock_compare_config(syms[:count], range_)
+           or await build_stock_compare_config(syms, range_))
+    if not cfg:
+        return None
+    label = {"day_gainers": "gainers", "day_losers": "losers",
+             "most_actives": "most active"}.get(kind, "trending")
+    n = len(cfg.get("compare_symbols") or [])
+    cfg["title"] = f"Top {n} {label} stocks — {cfg.get('range', range_)} % change"
+    return cfg
+
+
 async def stock_news(query: str, limit: int = 8) -> dict:
     """Stock/company news headlines + ticker matches for a free-text query.
 
@@ -5987,6 +6095,7 @@ ROUTER_WIDGETS = {
     "news":       ("news",      'general current headlines. query = the topic (empty for top stories)'),
     "stock_news": ("stock-news", 'stock / market / company NEWS. query = the ticker or company (e.g. "TSLA", "Apple"), or the market itself for a broad market-news ask. ONLY for a genuine finance/markets ask.'),
     "stock":      ("stock",     'a ticker\'s price + chart + technicals. query = company or symbol ("Apple", "TSLA")'),
+    "stock_trending": ("stock-trending", 'the top TRENDING / most-active / biggest-gainer or -loser stocks — a DISCOVERY ask naming NO specific company ("top trending stocks this month", "biggest gainers today", "compare the top 5 hot stocks"). Renders one multi-series comparison chart from live market feeds. query = the whole request'),
     "stock_report": ("stock-report", 'a COMPREHENSIVE research report on ONE stock — synthesizes price, fundamentals, technicals, recent news AND analyst commentary into a written brief. Use for "full report on X", "deep dive / due diligence on X", "analyze X stock". query = company or symbol'),
     "sports":     ("scores",    'scores / fixtures / standings. query = the league or team ("nba", "arsenal")'),
     "map":        ("map",       'where something IS / a map of places. query = the subject ("fires in California")'),
@@ -6429,8 +6538,25 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
         if wtype == "stock_report":
             return ("data_card", "stock-report", await build_stock_report_config(query or message))
 
+        if wtype == "stock_trending":
+            t_cfg = await build_trending_compare_config(query or message)
+            return ("chart", "stock-trending", t_cfg) if t_cfg else None
+
         if wtype == "stock":
             q = query or message
+            # DISCOVERY-shaped ("top trending stocks", "biggest gainers") — there
+            # is no ticker in the text, so symbol-searching the phrase returns
+            # nothing and the whole turn used to degrade to an answer card. Route
+            # to the real trending/screener feeds even when the classifier said
+            # plain 'stock'. Checked before the compare split so "gainers and
+            # losers" isn't shredded into fake ticker segments.
+            # (unless the user typed actual tickers — "top performers: NVDA vs
+            # SPY" compares THOSE, not the market's trending list).
+            if ((TRENDING_STOCK_RE.search(q) or TRENDING_STOCK_RE.search(message))
+                    and len(_extract_compare_tickers(q)) < 2):
+                t_cfg = await build_trending_compare_config(message)
+                if t_cfg:
+                    return ("chart", "stock-trending", t_cfg)
             # A compare-shaped ask ("NVDA vs SPY vs TSM") is ONE question →
             # ONE normalized multi-series chart, never a card per ticker.
             if _COMPARE_SPLIT_RE.search(q):
