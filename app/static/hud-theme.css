@@ -20,23 +20,49 @@
    the widget templates.
    ════════════════════════════════════════════════════════════════ */
 
+/* ─── THEME PALETTES ────────────────────────────────────────────
+   Every color below resolves from a small set of vars, so a palette is
+   just an override of those vars on :root[data-theme="…"] (see the blocks
+   at the bottom of this file). The DEFAULT (no data-theme attribute) is the
+   original cyan HUD, defined here. Three real tones per palette — background,
+   panel surface, and one accent — plus text and a couple of derived stops.
+   Texture (grid / scanlines / corner brackets) is opacity-controlled per
+   theme so soft/light palettes can drop the cockpit noise entirely. */
 :root {
     /* Cockpit surfaces */
+    --hud-bg-top:    #070e18;   /* gradient top stop */
     --hud-bg:        #050a12;
     --hud-bg-deep:   #03060c;
     --hud-panel:     rgba(10, 22, 38, 0.62);
     --hud-panel-2:   rgba(6, 14, 26, 0.55);
+    --hud-panel-solid: #071322;   /* opaque fill (dropdown options) */
 
-    /* Telemetry cyan — the single accent */
+    /* Telemetry cyan — the single accent. RGB triple feeds every alpha use;
+       the named stops derive from it. */
+    --hud-accent-rgb: 85, 214, 255;
+    --hud-line-rgb:   120, 210, 255;
     --hud-cyan:      #55d6ff;
-    --hud-cyan-soft: rgba(85, 214, 255, 0.14);
-    --hud-line:      rgba(120, 210, 255, 0.22);   /* resting hairline */
-    --hud-line-hot:  rgba(120, 210, 255, 0.45);   /* hover hairline   */
-    --hud-glow:      rgba(85, 214, 255, 0.16);     /* SOFT — not a bloom */
+    --hud-accent-mid: #34b8ee;    /* progress/gradient mid stop */
+    --hud-accent-lo:  #0c3a5a;    /* gradient dark stop (album tile) */
+    --hud-cyan-soft: rgba(var(--hud-accent-rgb), 0.14);
+    --hud-line:      rgba(var(--hud-line-rgb), 0.22);   /* resting hairline */
+    --hud-line-hot:  rgba(var(--hud-line-rgb), 0.45);   /* hover hairline   */
+    --hud-glow:      rgba(var(--hud-accent-rgb), 0.16);     /* SOFT — not a bloom */
 
     /* Text */
     --hud-ink:       #d7ecfb;
     --hud-ink-dim:   #8fb2cc;
+    --hud-title:     #bfe6ff;    /* header labels */
+    --hud-bright:    #9fe6ff;    /* bright accent / hover link */
+    --hud-readout:   #a9e4ff;    /* numeric readouts */
+    --hud-ice:       #eaf9ff;    /* near-white (selection, key text) */
+    --hud-key-ink:   #04121e;    /* text on a filled accent key */
+
+    /* Cockpit texture opacities — a soft/light theme zeroes these. */
+    --hud-grid-opacity:    1;      /* faint square grid (its own low alpha) */
+    --hud-scan-opacity:    0.22;   /* CRT scanlines */
+    --hud-bracket-opacity: 0.35;   /* corner L-brackets */
+    --hud-scan-rgb:        3, 8, 16;
 
     /* Warm secondary (status / warnings only) */
     --hud-amber:     #ffb454;
@@ -55,9 +81,9 @@
    both far quieter than the original neon theme so content stays legible. */
 body {
     background:
-        radial-gradient(ellipse 80% 55% at 50% -8%, rgba(58, 140, 210, 0.10), transparent 60%),
-        radial-gradient(ellipse 60% 50% at 92% 108%, rgba(40, 170, 230, 0.06), transparent 62%),
-        linear-gradient(180deg, #070e18 0%, var(--hud-bg) 55%, var(--hud-bg-deep) 100%) !important;
+        radial-gradient(ellipse 80% 55% at 50% -8%, rgba(var(--hud-accent-rgb), 0.10), transparent 60%),
+        radial-gradient(ellipse 60% 50% at 92% 108%, rgba(var(--hud-accent-rgb), 0.06), transparent 62%),
+        linear-gradient(180deg, var(--hud-bg-top) 0%, var(--hud-bg) 55%, var(--hud-bg-deep) 100%) !important;
     color: var(--hud-ink);
 }
 
@@ -70,11 +96,12 @@ body::before {
     pointer-events: none;
     display: block !important;
     background-image:
-        linear-gradient(rgba(120, 210, 255, 0.035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(120, 210, 255, 0.035) 1px, transparent 1px);
+        linear-gradient(rgba(var(--hud-line-rgb), 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(var(--hud-line-rgb), 0.035) 1px, transparent 1px);
     background-size: 52px 52px;
     -webkit-mask-image: radial-gradient(ellipse 92% 82% at 50% 22%, black 20%, transparent 82%);
     mask-image: radial-gradient(ellipse 92% 82% at 50% 22%, black 20%, transparent 82%);
+    opacity: var(--hud-grid-opacity);
 }
 
 /* Static scanlines — no animation, very low opacity. Just enough CRT
@@ -88,12 +115,12 @@ body::after {
     display: block !important;
     background: repeating-linear-gradient(
         0deg,
-        rgba(3, 8, 16, 0.16) 0px,
-        rgba(3, 8, 16, 0.16) 1px,
+        rgba(var(--hud-scan-rgb), 0.16) 0px,
+        rgba(var(--hud-scan-rgb), 0.16) 1px,
         transparent 1px,
         transparent 3px
     );
-    opacity: 0.22;
+    opacity: var(--hud-scan-opacity);
 }
 
 /* ─── Panels: cut corners, hairline, soft glow ──────────────────
@@ -115,7 +142,7 @@ body::after {
         0 calc(100% - var(--hud-cut))
     );
     box-shadow:
-        0 1px 0 rgba(120, 210, 255, 0.05) inset,
+        0 1px 0 rgba(var(--hud-line-rgb), 0.05) inset,
         0 10px 34px rgba(0, 0, 0, 0.5),
         0 0 22px var(--hud-glow) !important;
     color: var(--hud-ink);
@@ -130,9 +157,9 @@ body::after {
 .dashboard-grid .glass-card:hover {
     border-color: var(--hud-line-hot) !important;
     box-shadow:
-        0 1px 0 rgba(120, 210, 255, 0.08) inset,
+        0 1px 0 rgba(var(--hud-line-rgb), 0.08) inset,
         0 14px 42px rgba(0, 0, 0, 0.55),
-        0 0 30px rgba(85, 214, 255, 0.24) !important;
+        0 0 30px rgba(var(--hud-accent-rgb), 0.24) !important;
     transform: translateY(-2px);
 }
 
@@ -154,7 +181,7 @@ body::after {
         /* bottom-right: horizontal + vertical */
         linear-gradient(270deg, var(--hud-cyan), transparent) right bottom / 16px 1.5px no-repeat,
         linear-gradient(0deg, var(--hud-cyan), transparent) right bottom / 1.5px 16px no-repeat;
-    opacity: 0.35;
+    opacity: var(--hud-bracket-opacity);
     transition: opacity 0.22s ease;
 }
 .widget-container:hover::before,
@@ -173,9 +200,9 @@ body::after {
    dot at the far end. */
 .widget-container .widget-header {
     background:
-        linear-gradient(90deg, rgba(6, 16, 30, 0.7), rgba(12, 28, 48, 0.4)) !important;
+        linear-gradient(90deg, var(--hud-panel-2), var(--hud-panel)) !important;
     border-bottom: 1px solid var(--hud-line) !important;
-    box-shadow: 0 1px 0 rgba(120, 210, 255, 0.06);
+    box-shadow: 0 1px 0 rgba(var(--hud-line-rgb), 0.06);
     position: relative;
 }
 /* A quiet status pip riding the right edge of the header bar. Slow breathe,
@@ -190,7 +217,7 @@ body::after {
     margin-top: -2.5px;
     border-radius: 50%;
     background: var(--hud-cyan);
-    box-shadow: 0 0 6px rgba(85, 214, 255, 0.7);
+    box-shadow: 0 0 6px rgba(var(--hud-accent-rgb), 0.7);
     animation: hud-breathe 3.4s ease-in-out infinite;
     pointer-events: none;
 }
@@ -204,14 +231,14 @@ body::after {
     letter-spacing: 0.16em !important;
     font-weight: 400 !important;
     font-size: 0.82rem !important;
-    color: #bfe6ff !important;
-    text-shadow: 0 0 10px rgba(85, 214, 255, 0.28) !important;
+    color: var(--hud-title) !important;
+    text-shadow: 0 0 10px rgba(var(--hud-accent-rgb), 0.28) !important;
 }
 
 /* The icon that opens each header reads as a telemetry glyph. */
 .widget-container .widget-header .material-symbols-outlined {
     color: var(--hud-cyan) !important;
-    filter: drop-shadow(0 0 5px rgba(85, 214, 255, 0.5));
+    filter: drop-shadow(0 0 5px rgba(var(--hud-accent-rgb), 0.5));
 }
 
 /* ─── Numeric readouts → mono, tabular, softly lit ──────────────
@@ -223,8 +250,8 @@ body::after {
 .canvas-widget .font-mono {
     font-family: var(--hud-mono) !important;
     font-variant-numeric: tabular-nums;
-    color: #a9e4ff !important;
-    text-shadow: 0 0 14px rgba(85, 214, 255, 0.35) !important;
+    color: var(--hud-readout) !important;
+    text-shadow: 0 0 14px rgba(var(--hud-accent-rgb), 0.35) !important;
 }
 
 .metric-label {
@@ -240,8 +267,8 @@ body::after {
     text-transform: uppercase !important;
     letter-spacing: 0.28em !important;
     font-weight: 400 !important;
-    color: #bfe6ff !important;
-    text-shadow: 0 0 22px rgba(85, 214, 255, 0.35) !important;
+    color: var(--hud-title) !important;
+    text-shadow: 0 0 22px rgba(var(--hud-accent-rgb), 0.35) !important;
 }
 .system-message p {
     font-family: var(--hud-mono);
@@ -253,7 +280,7 @@ body::after {
    The calm block made this a rounded pill on a #1c1c20 slab. Re-cut it:
    clipped corners, dark cockpit fill, cyan hairline that lights on focus. */
 .input-row {
-    background: linear-gradient(168deg, rgba(9, 20, 36, 0.86), rgba(5, 12, 24, 0.82)) !important;
+    background: linear-gradient(168deg, var(--hud-panel), var(--hud-panel-2)) !important;
     border: 1px solid var(--hud-line) !important;
     border-radius: 0 !important;
     clip-path: polygon(
@@ -275,8 +302,8 @@ body::after {
     border-color: var(--hud-line-hot) !important;
     box-shadow:
         0 12px 40px rgba(0, 0, 0, 0.5),
-        0 0 0 1px rgba(85, 214, 255, 0.22),
-        0 0 26px rgba(85, 214, 255, 0.26) !important;
+        0 0 0 1px rgba(var(--hud-accent-rgb), 0.22),
+        0 0 26px rgba(var(--hud-accent-rgb), 0.26) !important;
 }
 
 #chat-input {
@@ -299,23 +326,23 @@ body::after {
 .btn-icon:hover {
     background: var(--hud-cyan-soft) !important;
     color: var(--hud-cyan);
-    box-shadow: 0 0 12px rgba(85, 214, 255, 0.2);
+    box-shadow: 0 0 12px rgba(var(--hud-accent-rgb), 0.2);
 }
 .btn-icon.recording { color: var(--hud-amber); }
 
 /* Send / stop: filled cyan key with a cut corner to echo the panels. */
 .btn-send, .btn-stop {
-    background: rgba(85, 214, 255, 0.16) !important;
+    background: rgba(var(--hud-accent-rgb), 0.16) !important;
     border: 1px solid var(--hud-line-hot) !important;
-    color: #d8f4ff !important;
+    color: var(--hud-ice) !important;
     border-radius: 6px !important;
     clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
-    box-shadow: 0 0 14px rgba(85, 214, 255, 0.2) !important;
+    box-shadow: 0 0 14px rgba(var(--hud-accent-rgb), 0.2) !important;
     transition: filter 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 .btn-send:hover, .btn-stop:hover {
     filter: brightness(1.15);
-    box-shadow: 0 0 20px rgba(85, 214, 255, 0.4) !important;
+    box-shadow: 0 0 20px rgba(var(--hud-accent-rgb), 0.4) !important;
     transform: none;
 }
 .btn-stop {
@@ -332,12 +359,12 @@ body::after {
     text-transform: uppercase;
     font-size: 0.72rem !important;
 }
-.model-select option { background: #071322; color: var(--hud-ink); }
+.model-select option { background: var(--hud-panel-solid); color: var(--hud-ink); }
 
 /* Health dot in the command bar: online = slow cyan breathe (calm), not a blink. */
 .health-dot.online {
     background-color: var(--hud-cyan) !important;
-    box-shadow: 0 0 8px rgba(85, 214, 255, 0.7) !important;
+    box-shadow: 0 0 8px rgba(var(--hud-accent-rgb), 0.7) !important;
     animation: hud-breathe 3.4s ease-in-out infinite;
 }
 .health-dot.offline {
@@ -350,7 +377,7 @@ body::after {
    the shimmer (the index.css version sweeps a bright gradient endlessly —
    soften it so a long turn isn't a strobe in the corner of the eye). */
 .turn-status {
-    background: linear-gradient(168deg, rgba(9, 20, 36, 0.85), rgba(5, 12, 24, 0.78)) !important;
+    background: linear-gradient(168deg, var(--hud-panel), var(--hud-panel-2)) !important;
     border: 1px solid var(--hud-line) !important;
     border-radius: 0 !important;
     clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px));
@@ -358,8 +385,8 @@ body::after {
 .turn-status-label { font-family: var(--hud-mono); letter-spacing: 0.04em; }
 .turn-status-stage,
 .turn-status-elapsed { font-family: var(--hud-mono); }
-.turn-status-track { background: rgba(120, 210, 255, 0.12) !important; }
-.turn-status-fill { background: linear-gradient(90deg, var(--hud-cyan), #9fe6ff) !important; }
+.turn-status-track { background: rgba(var(--hud-line-rgb), 0.12) !important; }
+.turn-status-fill { background: linear-gradient(90deg, var(--hud-cyan), var(--hud-bright)) !important; }
 /* Gentler shimmer: longer period, lower contrast than index.css. */
 .turn-status:not(.is-done):not(.is-error):not(.is-stopped) .turn-status-fill {
     animation-duration: 2.6s !important;
@@ -369,7 +396,7 @@ body::after {
    Floating overlay panel (already position:fixed, display:none by default).
    Re-cut to match the panels; it never claims canvas width. */
 .execution-log-container {
-    background: linear-gradient(168deg, rgba(9, 20, 36, 0.92), rgba(5, 12, 24, 0.88)) !important;
+    background: linear-gradient(168deg, var(--hud-panel), var(--hud-panel-2)) !important;
     border: 1px solid var(--hud-line) !important;
     border-radius: 0 !important;
     clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
@@ -378,7 +405,7 @@ body::after {
 .execution-log-header {
     font-family: var(--hud-mono);
     letter-spacing: 0.16em !important;
-    color: #bfe6ff !important;
+    color: var(--hud-title) !important;
     border-bottom: 1px solid var(--hud-line);
 }
 .execution-log-content { font-family: var(--hud-mono); }
@@ -392,36 +419,36 @@ body::after {
 /* Album gradient tile → cyan telemetry block. */
 .widget-container .from-fuchsia-500.to-orange-500,
 .canvas-widget .from-fuchsia-500.to-orange-500 {
-    background-image: linear-gradient(to top right, #0c3a5a, var(--hud-cyan)) !important;
-    box-shadow: 0 0 16px rgba(85, 214, 255, 0.3);
+    background-image: linear-gradient(to top right, var(--hud-accent-lo), var(--hud-cyan)) !important;
+    box-shadow: 0 0 16px rgba(var(--hud-accent-rgb), 0.3);
 }
 /* Progress fill + play button → cyan. */
 .widget-container .from-purple-400.to-fuchsia-400,
 .canvas-widget .from-purple-400.to-fuchsia-400 {
-    background-image: linear-gradient(90deg, #34b8ee, #9fe6ff) !important;
+    background-image: linear-gradient(90deg, var(--hud-accent-mid), var(--hud-bright)) !important;
 }
 .widget-container .bg-purple-300,
 .canvas-widget .bg-purple-300 {
-    background-color: rgba(85, 214, 255, 0.9) !important;
-    color: #04121e !important;
-    box-shadow: 0 0 16px rgba(85, 214, 255, 0.5);
+    background-color: rgba(var(--hud-accent-rgb), 0.9) !important;
+    color: var(--hud-key-ink) !important;
+    box-shadow: 0 0 16px rgba(var(--hud-accent-rgb), 0.5);
 }
 .widget-container .text-purple-200,
 .widget-container .text-purple-300,
 .canvas-widget .text-purple-200,
-.canvas-widget .text-purple-300 { color: #a9e4ff !important; }
+.canvas-widget .text-purple-300 { color: var(--hud-readout) !important; }
 .widget-container .accent-purple-400,
 .canvas-widget .accent-purple-400 { accent-color: var(--hud-cyan) !important; }
 
 /* ─── Links inside prose/cards ──────────────────────────────────*/
 .live-canvas a { color: var(--hud-cyan); }
-.live-canvas a:hover { color: #9fe6ff; text-shadow: 0 0 10px rgba(85, 214, 255, 0.5); }
+.live-canvas a:hover { color: var(--hud-bright); text-shadow: 0 0 10px rgba(var(--hud-accent-rgb), 0.5); }
 
 /* ─── Scrollbars + selection to match ───────────────────────────*/
-* { scrollbar-color: rgba(85, 214, 255, 0.35) transparent; }
-::-webkit-scrollbar-thumb { background: rgba(85, 214, 255, 0.3); }
-::-webkit-scrollbar-thumb:hover { background: rgba(85, 214, 255, 0.55); }
-::selection { background: rgba(85, 214, 255, 0.32); color: #eaf9ff; }
+* { scrollbar-color: rgba(var(--hud-accent-rgb), 0.35) transparent; }
+::-webkit-scrollbar-thumb { background: rgba(var(--hud-accent-rgb), 0.3); }
+::-webkit-scrollbar-thumb:hover { background: rgba(var(--hud-accent-rgb), 0.55); }
+::selection { background: rgba(var(--hud-accent-rgb), 0.32); color: var(--hud-ice); }
 
 /* ─── The one shared, deliberately-calm pulse ───────────────────
    Slow opacity breathe. This is the ONLY looping animation the theme
@@ -445,4 +472,124 @@ body::after {
     :root { --hud-cut: 9px; }
     .widget-container::before,
     .dashboard-grid .glass-card::before { opacity: 0.25; }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   THEME PALETTES
+   Selected by <html data-theme="…">. Each is a 3-tone palette (bg /
+   panel / accent) plus text + derived stops. The default (no attribute)
+   is the cyan HUD defined in :root above; data-theme="hud" restates it
+   so the settings picker can name it explicitly.
+   Light themes drop the cockpit texture (grid/scanlines/brackets) and
+   flip ink dark — the HUD structure stays, the mood changes.
+   ════════════════════════════════════════════════════════════════ */
+
+/* HUD — the default cyan cockpit (explicit alias). */
+:root[data-theme="hud"] { }
+
+/* MIDNIGHT — "dark mode": deep indigo, cool white, restrained. */
+:root[data-theme="midnight"] {
+    --hud-bg-top: #0b1020; --hud-bg: #070b16; --hud-bg-deep: #04060e;
+    --hud-panel: rgba(20, 26, 46, 0.66); --hud-panel-2: rgba(12, 16, 30, 0.6);
+    --hud-panel-solid: #0d1226;
+    --hud-accent-rgb: 129, 140, 248; --hud-line-rgb: 129, 140, 248;
+    --hud-cyan: #818cf8; --hud-accent-mid: #6366f1; --hud-accent-lo: #1e1b4b;
+    --hud-ink: #dfe3f5; --hud-ink-dim: #9aa2c8;
+    --hud-title: #c7ccf5; --hud-bright: #a5b4fc; --hud-readout: #c4b5fd; --hud-ice: #eef0ff;
+    --hud-key-ink: #0a0e1e;
+    --hud-scan-opacity: 0.14; --hud-bracket-opacity: 0.28;
+}
+
+/* FOREST — green telemetry on deep evergreen, warm off-white ink. */
+:root[data-theme="forest"] {
+    --hud-bg-top: #0a1a12; --hud-bg: #06120c; --hud-bg-deep: #030b07;
+    --hud-panel: rgba(14, 34, 24, 0.62); --hud-panel-2: rgba(8, 22, 15, 0.56);
+    --hud-panel-solid: #0a1c13;
+    --hud-accent-rgb: 74, 222, 128; --hud-line-rgb: 110, 200, 150;
+    --hud-cyan: #4ade80; --hud-accent-mid: #22c55e; --hud-accent-lo: #14532d;
+    --hud-ink: #e4f3e8; --hud-ink-dim: #9dc4a9;
+    --hud-title: #bfe8cc; --hud-bright: #86efac; --hud-readout: #a7f3c4; --hud-ice: #ecfdf1;
+    --hud-key-ink: #052012;
+    --hud-scan-opacity: 0.16;
+}
+
+/* EMBER — warm sunset: amber-orange accent on charcoal-brown. */
+:root[data-theme="ember"] {
+    --hud-bg-top: #1c1108; --hud-bg: #130b06; --hud-bg-deep: #0a0603;
+    --hud-panel: rgba(40, 26, 16, 0.62); --hud-panel-2: rgba(28, 18, 10, 0.56);
+    --hud-panel-solid: #201308;
+    --hud-accent-rgb: 251, 146, 60; --hud-line-rgb: 230, 160, 90;
+    --hud-cyan: #fb923c; --hud-accent-mid: #f97316; --hud-accent-lo: #7c2d12;
+    --hud-ink: #f6e8da; --hud-ink-dim: #c9a888;
+    --hud-title: #fcd9b6; --hud-bright: #fdba74; --hud-readout: #fed7aa; --hud-ice: #fff4e8;
+    --hud-key-ink: #1f1207; --hud-amber: #fcd34d;
+    --hud-scan-opacity: 0.16;
+}
+
+/* GRAPE — synthwave: magenta-violet on near-black plum. */
+:root[data-theme="grape"] {
+    --hud-bg-top: #16091f; --hud-bg: #0f0616; --hud-bg-deep: #08030d;
+    --hud-panel: rgba(34, 18, 48, 0.64); --hud-panel-2: rgba(24, 12, 34, 0.58);
+    --hud-panel-solid: #180a24;
+    --hud-accent-rgb: 232, 121, 249; --hud-line-rgb: 210, 130, 240;
+    --hud-cyan: #e879f9; --hud-accent-mid: #c026d3; --hud-accent-lo: #4a044e;
+    --hud-ink: #f2e4f7; --hud-ink-dim: #bd9ac9;
+    --hud-title: #eecbf5; --hud-bright: #f0abfc; --hud-readout: #f5d0fe; --hud-ice: #fdf2ff;
+    --hud-key-ink: #1a0820;
+    --hud-scan-opacity: 0.18;
+}
+
+/* MONO — neutral slate: minimal, near-monochrome, faint steel accent. */
+:root[data-theme="mono"] {
+    --hud-bg-top: #14171c; --hud-bg: #0e1116; --hud-bg-deep: #070a0e;
+    --hud-panel: rgba(30, 36, 44, 0.66); --hud-panel-2: rgba(20, 25, 31, 0.6);
+    --hud-panel-solid: #12161c;
+    --hud-accent-rgb: 148, 163, 184; --hud-line-rgb: 148, 163, 184;
+    --hud-cyan: #cbd5e1; --hud-accent-mid: #94a3b8; --hud-accent-lo: #334155;
+    --hud-ink: #e2e8f0; --hud-ink-dim: #94a3b8;
+    --hud-title: #e2e8f0; --hud-bright: #f1f5f9; --hud-readout: #cbd5e1; --hud-ice: #f8fafc;
+    --hud-key-ink: #0b0e12;
+    --hud-grid-opacity: 0.5; --hud-scan-opacity: 0.08; --hud-bracket-opacity: 0.2;
+}
+
+/* EGG — eggshell: warm cream light theme, tan panels, clay accent.
+   Three warm tones; cockpit texture off, ink flips dark. */
+:root[data-theme="egg"] {
+    --hud-bg-top: #f7f1e3; --hud-bg: #f1e8d5; --hud-bg-deep: #e8dcc3;
+    --hud-panel: rgba(255, 251, 242, 0.82); --hud-panel-2: rgba(248, 240, 226, 0.78);
+    --hud-panel-solid: #fbf6ec;
+    --hud-accent-rgb: 193, 122, 60; --hud-line-rgb: 190, 160, 120;
+    --hud-cyan: #b5701f; --hud-accent-mid: #c98a3a; --hud-accent-lo: #e6c89a;
+    --hud-ink: #4a3a26; --hud-ink-dim: #8a745a;
+    --hud-title: #6b4e2e; --hud-bright: #a9611a; --hud-readout: #7a5a34; --hud-ice: #3a2c1a;
+    --hud-key-ink: #fbf6ec;
+    --hud-glow: rgba(193, 122, 60, 0.10);
+    --hud-grid-opacity: 0; --hud-scan-opacity: 0; --hud-bracket-opacity: 0;
+}
+
+/* PASTEL — soft light: cool off-white, lavender panels, orchid accent. */
+:root[data-theme="pastel"] {
+    --hud-bg-top: #f6f4fb; --hud-bg: #eef0f9; --hud-bg-deep: #e4e6f4;
+    --hud-panel: rgba(255, 255, 255, 0.82); --hud-panel-2: rgba(244, 243, 252, 0.78);
+    --hud-panel-solid: #fbfaff;
+    --hud-accent-rgb: 167, 139, 250; --hud-line-rgb: 180, 165, 220;
+    --hud-cyan: #8b6fe0; --hud-accent-mid: #a78bfa; --hud-accent-lo: #ddd6fe;
+    --hud-ink: #443c5a; --hud-ink-dim: #837b9c;
+    --hud-title: #5b4d7a; --hud-bright: #7c5fd0; --hud-readout: #6d5a9a; --hud-ice: #322a48;
+    --hud-key-ink: #fbfaff;
+    --hud-glow: rgba(167, 139, 250, 0.12);
+    --hud-grid-opacity: 0; --hud-scan-opacity: 0; --hud-bracket-opacity: 0;
+}
+
+/* Light themes: the header/readout glows read as smudges on a light bg —
+   drop the accent text-shadow so titles and numbers stay crisp. */
+:root[data-theme="egg"] .widget-container h3,
+:root[data-theme="egg"] .system-message h1,
+:root[data-theme="egg"] .metric-value,
+:root[data-theme="egg"] .widget-container .font-mono,
+:root[data-theme="pastel"] .widget-container h3,
+:root[data-theme="pastel"] .system-message h1,
+:root[data-theme="pastel"] .metric-value,
+:root[data-theme="pastel"] .widget-container .font-mono {
+    text-shadow: none !important;
 }

@@ -1013,6 +1013,85 @@ async def stock_snapshot(symbol: str, range_: str = "1mo") -> dict:
 stock_history = stock_snapshot
 
 
+# ── Themes ───────────────────────────────────────────────────────────────────
+# The palettes live in hud-theme.css as :root[data-theme="…"] blocks. This
+# catalog is the SERVER's view: a name, a human label, the swatch colours the
+# settings widget renders, and the keywords the matcher scores a request
+# against. Keep the names in sync with the CSS. The settings widget applies the
+# theme client-side by name; the server only ever RESOLVES a fuzzy request
+# ("forest vibe", "dark mode") to the closest catalog name.
+THEME_CATALOG = [
+    {"name": "hud", "label": "HUD Cyan", "swatch": ["#050a12", "#0a1626", "#55d6ff"],
+     "dark": True, "keywords": ["hud", "cyan", "default", "blue", "tech", "sci-fi",
+                                 "scifi", "cyberpunk", "cockpit", "teal", "aqua"]},
+    {"name": "midnight", "label": "Midnight", "swatch": ["#070b16", "#141a2e", "#818cf8"],
+     "dark": True, "keywords": ["dark", "midnight", "night", "black", "indigo",
+                                 "navy", "deep", "space", "moody"]},
+    {"name": "forest", "label": "Forest", "swatch": ["#06120c", "#0e2218", "#4ade80"],
+     "dark": True, "keywords": ["forest", "green", "nature", "woods", "emerald",
+                                 "jungle", "moss", "pine", "earth", "outdoors"]},
+    {"name": "ember", "label": "Ember", "swatch": ["#130b06", "#281a10", "#fb923c"],
+     "dark": True, "keywords": ["ember", "sunset", "orange", "warm", "fire",
+                                 "amber", "autumn", "rust", "copper", "flame", "lava"]},
+    {"name": "grape", "label": "Grape", "swatch": ["#0f0616", "#221230", "#e879f9"],
+     "dark": True, "keywords": ["grape", "purple", "magenta", "synthwave", "vaporwave",
+                                 "violet", "neon", "plum", "berry", "retro", "pink"]},
+    {"name": "mono", "label": "Slate", "swatch": ["#0e1116", "#1e242c", "#94a3b8"],
+     "dark": True, "keywords": ["mono", "monochrome", "slate", "gray", "grey",
+                                 "minimal", "neutral", "steel", "clean", "muted"]},
+    # Pastel before egg: on a bare "light mode" both tie, and pastel is the
+    # cleaner/cooler default most people mean by it; egg still wins on its own
+    # warm words (cream, beige, latte) and its name.
+    {"name": "pastel", "label": "Pastel", "swatch": ["#eef0f9", "#fbfaff", "#a78bfa"],
+     "dark": False, "keywords": ["pastel", "soft", "light", "lavender", "mint",
+                                 "gentle", "calm", "airy", "white", "bright",
+                                 "day", "light mode"]},
+    {"name": "egg", "label": "Eggshell", "swatch": ["#f1e8d5", "#fbf6ec", "#b5701f"],
+     "dark": False, "keywords": ["egg", "eggshell", "cream", "beige", "tan",
+                                 "sand", "latte", "warm", "paper", "vanilla",
+                                 "coffee", "wheat"]},
+]
+_THEME_NAMES = {t["name"] for t in THEME_CATALOG}
+_THEME_STOP = {"theme", "themed", "mode", "color", "colour", "colors", "colours",
+               "palette", "make", "change", "switch", "set", "want", "the", "it",
+               "to", "a", "please", "give", "me", "my", "look", "style", "into",
+               "everything", "canvas", "use", "turn", "go"}
+
+
+def pick_theme(text: str) -> Optional[str]:
+    """Resolve a free-text appearance request to the closest catalog theme name.
+
+    Scores each theme by how many request tokens hit its keywords (fuzzy, so
+    "forset"/"pastal" still land), with an exact theme-name mention winning
+    outright. A light/dark hint ("light mode", "dark") breaks ties toward the
+    matching family. Returns None when nothing scores — the caller then just
+    opens settings without changing the theme, letting the user pick."""
+    if not text:
+        return None
+    low = text.lower()
+    for name in _THEME_NAMES:
+        if re.search(rf"\b{name}\b", low):
+            return name
+    toks = [w for w in re.findall(r"[a-z]+", low)
+            if w not in _THEME_STOP and len(w) > 2]
+    if not toks:
+        return None
+    best, best_score = None, 0.0
+    for t in THEME_CATALOG:
+        kw = set()
+        for k in t["keywords"]:
+            kw.update(k.split())
+        score = sum(1 for w in toks if _fuzzy_hit(w, kw))
+        # A family hint is a light nudge, never enough on its own.
+        if ("light" in toks or "bright" in toks or "day" in toks) and not t["dark"]:
+            score += 0.5
+        if ("dark" in toks or "night" in toks) and t["dark"]:
+            score += 0.5
+        if score > best_score:
+            best, best_score = t["name"], score
+    return best if best_score > 0 else None
+
+
 # ── Multi-ticker comparison ──────────────────────────────────────────────────
 # "NVDA vs SPY vs TSM" used to fan out into one stock_card PER ticker (the
 # router classified each as its own stock spec, and nothing merged them). A
@@ -3731,6 +3810,18 @@ CLEAR_ALL_RE = re.compile(
     r'\b(everything|every widget|all (the |my )?(widgets?|cards?)|all of (it|them)|'
     r'the (whole |entire )?(canvas|dashboard|screen)|it all)\b')
 NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
+# Appearance/theme/settings — a UI-control verb (like CLEAR_ALL), handled by a
+# deterministic fast-path so a bare "dark mode" flips instantly instead of
+# spinning up the ~30s agent. Deliberately narrow: it must read as a look/skin
+# change or an explicit settings request, not merely contain a color word.
+THEME_INTENT_RE = re.compile(
+    r'\b(theme|themes|appearance|palette|colou?r ?scheme|colou?rway|skin)\b'
+    r'|\b(dark|light|day|night) ?mode\b'
+    r'|\b(open|show|change|edit)\b[^.]*\bsettings\b'
+    r'|\b(make|set|change|switch|turn)\b[^.]{0,30}\b('
+    r'dark|light|forest|pastel|egg|eggshell|cream|midnight|ember|sunset|'
+    r'grape|purple|synthwave|mono|monochrome|slate|green|orange)\b'
+    r'|^\s*settings\s*$', re.I)
 # A question/how-to/recipe that wants a SYNTHESISED answer (summary + sources),
 # not a widget noun and not a data feed. Routed to build_answer_config so the
 # user gets the actual recipe/steps/definition instead of the ~30-60s agent loop.
@@ -6575,6 +6666,47 @@ async def send_message(req: MessageRequest):
                 media_type="text/event-stream",
             )
 
+        def _stream_settings():
+            """Pop (or update) the singleton settings panel and, when the ask
+            named a look, apply the closest palette. A UI-control action, so it
+            skips the agent — same class as clearing the canvas above."""
+            apply = pick_theme(req.message)
+            cfg = {
+                "themes": [{"name": t["name"], "label": t["label"], "swatch": t["swatch"]}
+                           for t in THEME_CATALOG],
+                "active": apply or "hud",
+                "apply": apply or "",
+            }
+            status = (f"switching to the {apply} theme..." if apply else "opening settings...")
+
+            async def stream():
+                yield f'data: {json.dumps({"type": "status", "message": status})}\n\n'
+                html = render_widget("settings", "settings-panel", cfg)
+
+                def _mutate(soup):
+                    existing = soup.find(id="settings-panel")
+                    node = BeautifulSoup(html, "html.parser")
+                    if existing is not None:
+                        existing.replace_with(node)
+                    else:
+                        grid = soup.select_one('#dashboard-grid')
+                        (grid or soup).append(node)
+
+                event = await commit_canvas(req.session_id, _mutate)
+                if event:
+                    record_turn(req.session_id, req.message, "settings",
+                                [("settings-panel", "settings", "appearance settings", "")])
+                    yield event
+                spoken = (f"Switched to the {apply} theme." if apply
+                          else "Here are your settings.")
+                yield f'data: {json.dumps({"type": "chunk", "content": spoken, "widget_id": "settings-panel"})}\n\n'
+                yield 'data: {"type": "done"}\n\n'
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
+                media_type="text/event-stream",
+            )
+
         def spawn_router_stream(specs: list, reason: str = None):
             """Build the router's chosen widget(s) and append them to the canvas in
             ONE commit. Building happens inside the stream (with a status line) so
@@ -6737,6 +6869,15 @@ async def send_message(req: MessageRequest):
         # edit (which can contain "all") never triggers a full wipe.
         if CLEAR_ALL_RE.search(text_clean) and not LIST_ITEM_REMOVE_RE.search(text_clean):
             return _stream_clear_canvas()
+
+        # THEME / SETTINGS — a UI-control action (like CLEAR_ALL). A pure look
+        # change or a settings request flips instantly via the singleton panel,
+        # no agent spin-up. Anything phrased oddly still reaches the agent, which
+        # knows the same settings route. Guarded against media asks so "dark
+        # ambient music" / "night lofi" never trips it.
+        if (THEME_INTENT_RE.search(text_clean)
+                and not re.search(r'\b(music|radio|song|playlist|video|watch)\b', text_clean)):
+            return _stream_settings()
 
         # LIST RESTORE — "bring back my grocery list": restore saved items instead
         # of regenerating. Guarded against edits/removals so those still route
@@ -7327,6 +7468,7 @@ async def send_message(req: MessageRequest):
             "- picture of X → canvas_add_widget(widget_type='image', config={'image_query': '<what to show>'}). You have NO image tool and CANNOT know real image URLs — NEVER write 'url' or 'images' entries; a URL you produce is fabricated and renders as the wrong picture or a broken frame. The server searches, vision-checks and captions real pictures from image_query. 'Show me X vs Y' is still ONE image widget: image_query='X vs Y'.\n"
             "- COMPARE / contrast / 'which is better' asks → data_card with config={'search_query': '<X vs Y>'} — the server writes a Markdown comparison table with sources. If the user explicitly asked to SEE them, ALSO add ONE image widget with image_query naming both subjects. Never answer a comparison with images alone.\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
+            "- APPEARANCE / theme / colors ('dark mode', 'forest theme', 'make it pastel', 'egg colors'), OR settings/preferences → canvas_add_widget(widget_type='settings', config={'theme':'<what the user asked — e.g. dark, forest, pastel, egg, sunset, purple>'}). The server picks the CLOSEST palette from what you pass and applies it; omit 'theme' to just open settings without changing the look. This is the ONLY way to change the theme — never hand-edit colors. It's a singleton, so it updates in place.\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- EDIT an existing widget (change a timer's duration, a clock's timezone, a chart's data, swap the stock) → call canvas_add_widget AGAIN with the SAME widget_id from CURRENT CANVAS and the full updated config. It re-renders that widget in place — no duplicate. This is the ONLY way to change a clock/timer/stock/scoreboard/chart: canvas_modify_dom CANNOT rebuild these (they are server-rendered) and will break them. Example: to set the timer #clock-1 to 30s → canvas_add_widget(widget_type='clock', widget_id='clock-1', config={'mode':'countdown','duration_seconds':30}).\n"
             "- REMOVE something, or tweak a hand-built custom widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove'|'replace') using an id from CURRENT CANVAS\n\n"
@@ -7730,6 +7872,24 @@ async def send_message(req: MessageRequest):
                                 config = json.loads(config)
                             except Exception:
                                 config = {}
+
+                        # Settings panel: a singleton appearance/prefs surface.
+                        # The server owns the theme catalog and resolves the
+                        # user's phrasing ("dark mode", "forest vibe") to the
+                        # closest palette; the widget applies it client-side.
+                        if widget_type == "settings":
+                            widget_id = "settings-panel"   # one panel, reused
+                            requested = (config.get("theme") or config.get("name")
+                                         or config.get("palette") or "")
+                            apply = pick_theme(str(requested)) or pick_theme(req.message)
+                            config = {
+                                "themes": [{"name": t["name"], "label": t["label"],
+                                            "swatch": t["swatch"]} for t in THEME_CATALOG],
+                                "active": apply or "hud",
+                                "apply": apply or "",
+                            }
+                            if apply:
+                                logger.info(f"[WIDGET INJECTOR] Settings: applying theme {apply!r}")
 
                         # Rehydrate data-heavy widgets from the tool result the
                         # model just fetched. It only has to name the subject —

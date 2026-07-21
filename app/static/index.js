@@ -357,6 +357,68 @@ document.addEventListener("DOMContentLoaded", () => {
 
     localStorage.setItem("html_notes_session_id", state.sessionId);
 
+    // ─── THEME ENGINE ───────────────────────────────────────────────────────
+    // Themes are pure CSS: <html data-theme="…"> selects a palette in
+    // hud-theme.css. This engine sets the attribute, persists it, and keeps
+    // Chart.js in sync (charts draw on <canvas>, so they can't read CSS vars on
+    // their own — we feed them the current palette's ink/line colors and redraw
+    // the live ones). An inline script in <head> applies the saved theme before
+    // first paint to avoid a flash; this re-applies it to also sync the charts.
+    const THEME_KEY = "html_notes_theme";
+    window.HN = window.HN || {};
+    window.__hnCharts = window.__hnCharts || new Set();
+
+    window.HN.chartColors = function () {
+        const cs = getComputedStyle(document.documentElement);
+        const v = (n, d) => (cs.getPropertyValue(n).trim() || d);
+        return {
+            tick: v("--hud-ink-dim", "#8fb2cc"),
+            grid: `rgba(${v("--hud-line-rgb", "120,210,255")}, 0.10)`,
+            ink: v("--hud-ink", "#d7ecfb"),
+        };
+    };
+    window.HN.registerChart = function (chart) {
+        if (!chart) return;
+        window.__hnCharts.add(chart);
+        window.HN.themeChart(chart);
+    };
+    window.HN.themeChart = function (chart) {
+        try {
+            const c = window.HN.chartColors();
+            const o = chart.options || (chart.options = {});
+            o.color = c.ink;
+            const leg = o.plugins && o.plugins.legend && o.plugins.legend.labels;
+            if (leg) leg.color = c.ink;
+            if (o.scales) for (const ax of Object.values(o.scales)) {
+                if (ax && ax.ticks) ax.ticks.color = c.tick;
+                if (ax && ax.grid) ax.grid.color = c.grid;
+            }
+        } catch (e) { /* a chart with an unusual options shape just keeps its baked colors */ }
+    };
+    window.HN.currentTheme = function () {
+        return document.documentElement.getAttribute("data-theme") || "hud";
+    };
+    window.HN.applyTheme = function (name) {
+        const root = document.documentElement;
+        if (!name || name === "hud") root.removeAttribute("data-theme");
+        else root.setAttribute("data-theme", name);
+        try { localStorage.setItem(THEME_KEY, name || "hud"); } catch (e) {}
+        if (window.Chart) {
+            const c = window.HN.chartColors();
+            Chart.defaults.color = c.ink;
+            Chart.defaults.borderColor = c.grid;
+        }
+        // Recolor + redraw every live chart; drop any that were destroyed.
+        window.__hnCharts.forEach(ch => {
+            try { window.HN.themeChart(ch); ch.update("none"); }
+            catch (e) { window.__hnCharts.delete(ch); }
+        });
+        // Interactive widgets (stock card) listen to redraw their own canvas.
+        window.dispatchEvent(new CustomEvent("hn:theme", { detail: { name: name || "hud" } }));
+    };
+    // Sync Chart.defaults + charts to the theme the head script already applied.
+    window.HN.applyTheme(localStorage.getItem(THEME_KEY) || "hud");
+
     window.WidgetResizer.observe(document.getElementById("live-canvas"));
 
     // ─── FOLLOW-UP FOCUS TRACKING ───────────────────────────────────────────
@@ -555,23 +617,27 @@ document.addEventListener("DOMContentLoaded", () => {
     // Load history
     loadHistory();
 
+    // Mute control, shared by the command-bar button AND the settings widget so
+    // both stay in sync. Exposed on window.HN for the settings panel.
+    window.HN.setMuted = function (next) {
+        state.isMuted = !!next;
+        localStorage.setItem("html_notes_is_muted", state.isMuted);
+        updateMuteButtonUI();
+        if (state.isMuted) {
+            clearSpeechQueue();
+        } else {
+            // Unmuting is a user gesture: clear any offline latch and prime
+            // audio so playback isn't blocked by autoplay policy.
+            markTtsHealthy();
+            primeAudioPlayback();
+        }
+        window.dispatchEvent(new CustomEvent("hn:mute", { detail: { muted: state.isMuted } }));
+    };
+    window.HN.isMuted = function () { return !!state.isMuted; };
+
     // Mute Button listener
     if (elements.btnMute) {
-        elements.btnMute.addEventListener("click", () => {
-            state.isMuted = !state.isMuted;
-            localStorage.setItem("html_notes_is_muted", state.isMuted);
-            updateMuteButtonUI();
-            if (state.isMuted) {
-                clearSpeechQueue();
-            } else {
-                // Unmuting is a user gesture: clear any offline latch and prime
-                // audio so playback isn't blocked by autoplay policy. Previously a
-                // tripped failure counter stayed tripped until a page reload, so
-                // toggling mute appeared to do nothing.
-                markTtsHealthy();
-                primeAudioPlayback();
-            }
-        });
+        elements.btnMute.addEventListener("click", () => window.HN.setMuted(!state.isMuted));
     }
 
     // Forget-me listener — wipe the persistent user profile (name/location/likes).
@@ -1872,11 +1938,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 const pre = block.parentElement;
                 pre.parentNode.replaceChild(canvasContainer, pre);
                 
-                // Initialize Chart.js with dark mode defaults
-                Chart.defaults.color = '#c9d1d9';
-                Chart.defaults.borderColor = '#30363d';
-                
-                new Chart(canvas, config);
+                // Theme-aware defaults: ticks/grid read the active palette so
+                // charts stay legible on light themes (egg/pastel) too.
+                const cc = window.HN.chartColors();
+                Chart.defaults.color = cc.ink;
+                Chart.defaults.borderColor = cc.grid;
+
+                const ch = new Chart(canvas, config);
+                // Register so a later theme switch recolors + redraws it, and
+                // override any colors baked into the config server-side.
+                window.HN.registerChart(ch);
+                ch.update('none');
             } catch (err) {
                 console.error("Failed to render chart component:", err);
             }

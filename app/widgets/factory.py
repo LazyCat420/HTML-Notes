@@ -726,6 +726,56 @@ def render_clock(widget_id: str, config: dict) -> str:
     </div>
     """
 
+def render_settings(widget_id: str, config: dict) -> str:
+    """Appearance + preferences panel the agent pops up ("open settings",
+    "change the theme"). The theme swatches come from the server's THEME_CATALOG
+    (config['themes']); clicking one applies + persists the palette client-side
+    via window.HN. `active` is the current theme; `apply` (when set) is a theme
+    the agent wants applied on render — the widget applies it in init()."""
+    themes = config.get("themes") or []
+    active = config.get("active") or "hud"
+    apply = config.get("apply") or ""
+    cfg_js = (f"{{ themes: {json_escape(themes)}, active: {json_escape(active)}, "
+              f"apply: {json_escape(apply)} }}")
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col group"
+         x-data="settingsWidget({cfg_js})">
+        {widget_header("Settings", "settings")}
+        <div class="p-4 flex flex-col gap-4 overflow-y-auto">
+            <!-- Appearance / themes -->
+            <div>
+                <div class="text-[0.62rem] uppercase tracking-wider text-slate-500 mb-2">Appearance</div>
+                <div class="grid grid-cols-2 gap-2">
+                    <template x-for="t in themes" :key="t.name">
+                        <button @click="setTheme(t.name)"
+                                class="flex items-center gap-2 px-2.5 py-2 rounded-xl border transition-colors text-left min-w-0"
+                                :class="t.name === active ? 'border-white/40 bg-white/10' : 'border-white/10 hover:bg-white/5'">
+                            <span class="flex shrink-0 rounded-md overflow-hidden border border-white/10" style="width:36px;height:22px">
+                                <span :style="'background:'+t.swatch[0]" style="width:34%;height:100%"></span>
+                                <span :style="'background:'+t.swatch[1]" style="width:33%;height:100%"></span>
+                                <span :style="'background:'+t.swatch[2]" style="width:33%;height:100%"></span>
+                            </span>
+                            <span class="text-xs truncate" x-text="t.label"></span>
+                            <span x-show="t.name === active" class="material-symbols-outlined text-[0.95rem] ml-auto shrink-0">check</span>
+                        </button>
+                    </template>
+                </div>
+            </div>
+            <!-- Preferences -->
+            <div class="flex flex-col gap-2 border-t border-white/10 pt-3">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs text-slate-300">Voice replies</span>
+                    <button @click="toggleMute()"
+                            class="px-3 py-1 rounded-lg text-xs border transition-colors"
+                            :class="muted ? 'border-white/10 text-slate-400 hover:bg-white/5' : 'border-white/30 bg-white/10 text-white'"
+                            x-text="muted ? 'Off' : 'On'">On</button>
+                </div>
+                <button @click="resetLayout()" class="text-xs text-slate-400 hover:text-white transition-colors text-left">Reset widget sizes &amp; order</button>
+            </div>
+        </div>
+    </div>
+    """
+
 def render_notes(widget_id: str, config: dict) -> str:
     title = config.get("title", "Quick Notes")
     content = config.get("content", "")
@@ -1353,6 +1403,7 @@ WIDGET_RENDERERS = {
     "stock_card": render_stock_card,
     "weather": render_weather,
     "map": render_map,
+    "settings": render_settings,
 }
 
 def _content_sig(widget_type: str, config: dict) -> str:

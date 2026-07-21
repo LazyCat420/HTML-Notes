@@ -23,6 +23,14 @@
          that re-skins the calm-neutral block at the tail of index.css into the
          restrained sci-fi HUD look. Class-safe / CSS-only. -->
     <link rel="stylesheet" href="hud-theme.css?v=1.0">
+    <!-- Apply the saved palette BEFORE first paint so a reload never flashes the
+         default cyan theme. The full engine (persist, chart recolor) is in index.js. -->
+    <script>
+        try {
+            var t = localStorage.getItem("html_notes_theme");
+            if (t && t !== "hud") document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {}
+    </script>
 </head>
 <body>
     <!-- Live Canvas Area -->

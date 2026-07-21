@@ -33,6 +33,15 @@ document.addEventListener('alpine:init', () => {
 
         init() {
             this.$nextTick(() => this.drawChart());
+            // Redraw the price sparkline when the palette changes — its axis
+            // colors are theme-derived and Chart.js can't read CSS vars live.
+            this._onTheme = () => this.$nextTick(() => this.drawChart());
+            window.addEventListener('hn:theme', this._onTheme);
+        },
+
+        destroy() {
+            if (this._onTheme) window.removeEventListener('hn:theme', this._onTheme);
+            if (this.chart) { this.chart.destroy(); this.chart = null; }
         },
 
         async setRange(range) {
@@ -61,6 +70,10 @@ document.addEventListener('alpine:init', () => {
             const values = this.snapshot.values || [];
             const up = (this.snapshot.change_pct || 0) >= 0;
             const line = up ? '#34d399' : '#fb7185';
+            // Axis colors from the active palette (readable on light themes too).
+            const tc = (window.HN && window.HN.chartColors)
+                ? window.HN.chartColors()
+                : { tick: 'rgba(255,255,255,0.35)', grid: 'rgba(255,255,255,0.06)' };
 
             const gradient = canvas.getContext('2d').createLinearGradient(0, 0, 0, 170);
             gradient.addColorStop(0, up ? 'rgba(52,211,153,0.28)' : 'rgba(251,113,133,0.28)');
@@ -97,7 +110,7 @@ document.addEventListener('alpine:init', () => {
                         x: {
                             grid: { display: false },
                             ticks: {
-                                color: 'rgba(255,255,255,0.35)',
+                                color: tc.tick,
                                 font: { size: 9 },
                                 maxTicksLimit: 8,
                                 maxRotation: 0,
@@ -105,9 +118,9 @@ document.addEventListener('alpine:init', () => {
                         },
                         y: {
                             position: 'right',
-                            grid: { color: 'rgba(255,255,255,0.06)' },
+                            grid: { color: tc.grid },
                             ticks: {
-                                color: 'rgba(255,255,255,0.35)',
+                                color: tc.tick,
                                 font: { size: 9 },
                                 maxTicksLimit: 5,
                             },
@@ -335,6 +348,56 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('notesWidget', (title, initialContent = '') => ({
         title: title || 'Quick Notes',
         content: initialContent
+    }));
+
+    // 3b. Settings — appearance (theme swatches) + preferences. The agent pops
+    // this up; all controls act on the live page through window.HN, so a click
+    // here changes the theme/mute for real, no round-trip.
+    Alpine.data('settingsWidget', (cfg = {}) => ({
+        themes: (cfg && cfg.themes) || [],
+        active: (cfg && cfg.active) || 'hud',
+        muted: false,
+
+        init() {
+            // The agent asked for a specific theme this turn → apply it now.
+            if (cfg && cfg.apply && window.HN && window.HN.applyTheme) {
+                window.HN.applyTheme(cfg.apply);
+                this.active = cfg.apply;
+            } else if (window.HN && window.HN.currentTheme) {
+                this.active = window.HN.currentTheme();
+            }
+            this.muted = !!(window.HN && window.HN.isMuted && window.HN.isMuted());
+            // Keep the toggle honest if mute changes from the command bar.
+            this._onMute = (e) => { this.muted = !!(e.detail && e.detail.muted); };
+            window.addEventListener('hn:mute', this._onMute);
+            // Reflect a theme change made elsewhere (another settings panel).
+            this._onTheme = (e) => { this.active = (e.detail && e.detail.name) || this.active; };
+            window.addEventListener('hn:theme', this._onTheme);
+        },
+
+        destroy() {
+            if (this._onMute) window.removeEventListener('hn:mute', this._onMute);
+            if (this._onTheme) window.removeEventListener('hn:theme', this._onTheme);
+        },
+
+        setTheme(name) {
+            if (window.HN && window.HN.applyTheme) window.HN.applyTheme(name);
+            this.active = name;
+        },
+
+        toggleMute() {
+            const next = !this.muted;
+            if (window.HN && window.HN.setMuted) window.HN.setMuted(next);
+            this.muted = next;
+        },
+
+        resetLayout() {
+            try {
+                localStorage.removeItem('widget_sizes');
+                localStorage.removeItem('widget_order');
+            } catch (e) {}
+            location.reload();
+        },
     }));
 
     // 4. Mini Music Player — a thin client over the music-player service.
