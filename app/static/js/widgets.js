@@ -211,9 +211,17 @@ document.addEventListener('alpine:init', () => {
         },
     }));
 
-    Alpine.data('checklistWidget', (title, initialItems = []) => ({
+    Alpine.data('checklistWidget', (title, initialItems = []) => {
+        // Snapshot the server baseline BEFORE anything can mutate it. `items`
+        // must NOT alias initialItems: Alpine's reactive proxy wraps the same
+        // underlying array, so a done-toggle would also mutate the "baseline"
+        // we compare against on restore — the saved state then always looked
+        // stale and the server won, wiping the user's edits (caught live in a
+        // browser check, not by unit tests).
+        const baseline = JSON.stringify(Array.isArray(initialItems) ? initialItems : []);
+        return {
         title: title || 'Checklist',
-        items: initialItems,
+        items: JSON.parse(baseline),
         newItem: '',
 
         // User edits (added tasks, done toggles) live only in Alpine memory and
@@ -224,7 +232,7 @@ document.addEventListener('alpine:init', () => {
         // changed (the agent rewrote the list), the server wins.
         init() {
             const s = this.load();
-            if (s && Array.isArray(s.items) && s.base === JSON.stringify(initialItems)) {
+            if (s && Array.isArray(s.items) && s.base === baseline) {
                 this.items = s.items;
             } else {
                 this.persist();
@@ -257,12 +265,13 @@ document.addEventListener('alpine:init', () => {
             try {
                 localStorage.setItem(this._key(), JSON.stringify({
                     items: JSON.parse(JSON.stringify(this.items)),
-                    base: JSON.stringify(initialItems),
+                    base: baseline,
                 }));
             } catch (e) {}
         },
         load() { try { return JSON.parse(localStorage.getItem(this._key()) || 'null'); } catch (e) { return null; } }
-    }));
+        };
+    });
 
     // 2. Clock Widget — three modes: 'clock' (default), 'stopwatch', 'countdown'
     Alpine.data('clockWidget', (initialTimezone = 'local', mode = 'clock', durationSeconds = 0) => ({
