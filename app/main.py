@@ -2355,6 +2355,12 @@ logging.basicConfig(level=logging.INFO)
 
 import logging
 
+# httpx logs every request URL at INFO — including query strings, which is how
+# the TomTom key (a ?key= param on every proxied tile fetch) ended up in the
+# logs in plaintext. Secrets travel in URLs in several integrations, so cap
+# httpx at WARNING globally rather than redacting call sites one by one.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # ── Canvas state & turn concurrency ─────────────────────────────────────────
@@ -9681,12 +9687,48 @@ class InternalToolRequest(BaseModel):
     tool: str
     args: Dict[str, Any] = {}
 
+# The complete dispatch set of internal_tool_execute. Membership is checked
+# BEFORE dispatch so a compromised or misconfigured caller can only name these
+# tools — anything else is rejected without touching the elif chain.
+_INTERNAL_EXECUTE_TOOLS = frozenset({
+    "html_notes_create_note", "html_notes_update_note", "html_notes_get_note",
+    "html_notes_search_notes", "html_notes_link_notes", "html_notes_modify_dom",
+    "render_component", "canvas_read_dom", "canvas_modify_dom",
+    "html_notes_add_youtube_widget", "create_widget", "update_widget",
+    "html_notes_youtube_search", "html_notes_web_search", "html_notes_read_page",
+    "html_notes_news", "html_notes_stock_history", "html_notes_stock_news",
+    "html_notes_get_weather", "html_notes_sports_scores", "canvas_add_widget",
+})
+_internal_execute_auth_warned = False
+
 @app.post("/internal/execute")
-async def internal_tool_execute(req: InternalToolRequest):
+async def internal_tool_execute(req: InternalToolRequest, request: Request = None):
     """
     Internal tool dispatcher. Called by lazy-tool-service when the model
     fires an html_notes_* or render_component tool call.
+
+    Auth: when INTERNAL_EXECUTE_TOKEN is configured (env or vault), the caller
+    must send it in the x-internal-token header. When it is not configured the
+    endpoint stays open for compatibility but warns once per boot — provision
+    the token in both this service's and lazy-tool-service's .env to close it.
     """
+    global _internal_execute_auth_warned
+    expected = await _fetch_secret("INTERNAL_EXECUTE_TOKEN")
+    if expected:
+        import hmac as _hmac
+        supplied = request.headers.get("x-internal-token", "") if request is not None else ""
+        if not _hmac.compare_digest(supplied, expected):
+            raise HTTPException(status_code=401,
+                                detail="invalid or missing x-internal-token")
+    elif not _internal_execute_auth_warned:
+        _internal_execute_auth_warned = True
+        logger.warning("[SECURITY] /internal/execute is UNAUTHENTICATED — set "
+                       "INTERNAL_EXECUTE_TOKEN in this service's and "
+                       "lazy-tool-service's env to enforce auth")
+
+    if req.tool not in _INTERNAL_EXECUTE_TOOLS:
+        return {"error": f"Tool not allowed: {req.tool}", "is_error": True}
+
     t = req.tool
     a = req.args
 
