@@ -1286,29 +1286,134 @@ async def _trending_symbols(kind: str = "trending", limit: int = 10) -> list:
     return syms
 
 
+# ── Index universe (accuracy filter) ─────────────────────────────────────────
+# "top 5 stocks in the s&p" used to ignore "s&p" entirely: the candidate list
+# came from Yahoo's site-wide trending/US feed, which is most-VIEWED + momentum
+# micro-caps (CPHI, VIVK, NBIS…), almost none of them S&P members. Naming an
+# index has to actually SCOPE the pull — otherwise the answer is confidently
+# wrong and a follow-up ("why are these trending?") finds no news because the
+# tickers were never newsworthy, just volatile.
+_INDEX_SOURCES = {
+    # Keyless, community-maintained constituent lists (CSV, Symbol in col 1).
+    "sp500": "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/"
+             "main/data/constituents.csv",
+}
+# name -> (fetched_at, frozenset[symbols]); one day is well within membership churn.
+_index_cache: Dict[str, tuple] = {}
+_INDEX_TTL = 86400.0
+
+# "s&p", "s and p", "s&p 500", "sp500", "spx" — the qualifiers that mean the
+# S&P 500 universe. Kept deliberately tight so "top stocks" (no index) stays
+# unscoped and behaves as before.
+_UNIVERSE_RE = (
+    (re.compile(r'\bs\s*(?:&|and)\s*p\s*(?:500)?\b|\bsp\s?500\b|\bspx\b', re.I),
+     "sp500"),
+)
+_UNIVERSE_LABEL = {"sp500": "S&P 500"}
+
+
+def _universe_from_message(text: str) -> str:
+    """The named index a discovery ask is scoped to ('sp500'), or '' for none."""
+    for rx, name in _UNIVERSE_RE:
+        if rx.search(text or ""):
+            return name
+    return ""
+
+
+async def _index_constituents(name: str) -> frozenset:
+    """Cached membership set for a stock index. Empty set means 'unknown' — the
+    caller must NOT filter on an empty set (that would drop every ticker), it
+    should degrade to the unscoped feed and say so in the provenance."""
+    name = (name or "").lower()
+    url = _INDEX_SOURCES.get(name)
+    if not url:
+        return frozenset()
+    cached = _index_cache.get(name)
+    if cached and time.time() - cached[0] <= _INDEX_TTL:
+        return cached[1]
+    syms = set()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers={"User-Agent": _YAHOO_UA})
+            for line in resp.text.splitlines()[1:]:          # skip CSV header
+                sym = line.split(",", 1)[0].strip().upper()
+                if re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,6}", sym):
+                    syms.add(sym)
+    except Exception as e:
+        logger.warning(f"[INDEX] {name} constituents fetch failed: {e}")
+    if syms:
+        _index_cache[name] = (time.time(), frozenset(syms))
+        logger.info(f"[INDEX] {name} -> {len(syms)} members")
+        return _index_cache[name][1]
+    # Fetch failed: keep serving a stale set rather than dropping the filter.
+    return cached[1] if cached else frozenset()
+
+
 async def build_trending_compare_config(message: str) -> Optional[dict]:
     """Discovery ask → real trending/gainer tickers → ONE normalized multi-series
-    chart via build_stock_compare_config. None when the feeds are down or too few
+    chart via build_stock_compare_config, TAGGED with provenance so a follow-up
+    knows where the list came from. None when the feeds are down or too few
     series survive — the caller degrades exactly as before."""
     kind = _trend_kind(message)
     m = re.search(r'\btop\s+(\d{1,2})\b', message or "", re.I)
     count = max(2, min(int(m.group(1)) if m else 5, _COMPARE_MAX_TICKERS))
+    range_ = _range_from_message(message)
+
     # Overfetch: snapshots for fresh small-cap tickers do intermittently fail and
     # build_stock_compare_config drops them, so extras keep the chart at the
     # asked-for width. The exact-count list is tried first so "top 5" renders 5
     # series, not 8.
-    syms = await _trending_symbols(kind, limit=count + 3)
+    universe = _universe_from_message(message)
+    members = await _index_constituents(universe) if universe else frozenset()
+    filtered = False
+    source_kind = kind
+    if members:
+        # Index-scoped ask. The trending/US feed is unscoped most-viewed noise, so
+        # a bare "top stocks in the s&p" means the best-PERFORMING members today:
+        # pull a large ranked screener pool and keep only members, in rank order.
+        source_kind = kind if kind != "trending" else "day_gainers"
+        pool = await _trending_symbols(source_kind, limit=250)
+        syms = [s for s in pool if s in members][:count + 3]
+        filtered = len(syms) >= 2
+        if not filtered:
+            # Filter emptied the pool (feed down, or none of the ranked names are
+            # members). Fall back to the unscoped feed rather than a dead turn —
+            # provenance will flag that the list is NOT index-scoped.
+            source_kind = kind
+            syms = await _trending_symbols(kind, limit=count + 3)
+    else:
+        syms = await _trending_symbols(kind, limit=count + 3)
     if len(syms) < 2:
         return None
-    range_ = _range_from_message(message)
+
     cfg = (await build_stock_compare_config(syms[:count], range_)
            or await build_stock_compare_config(syms, range_))
     if not cfg:
         return None
-    label = {"day_gainers": "gainers", "day_losers": "losers",
-             "most_actives": "most active"}.get(kind, "trending")
+
     n = len(cfg.get("compare_symbols") or [])
-    cfg["title"] = f"Top {n} {label} stocks — {cfg.get('range', range_)} % change"
+    range_lbl = cfg.get("range", range_)
+    kind_word = {"day_gainers": "gainers", "day_losers": "losers",
+                 "most_actives": "most active"}.get(source_kind, "trending")
+    scope = f"{_UNIVERSE_LABEL.get(universe, '')} " if filtered else ""
+    cfg["title"] = f"Top {n} {scope}{kind_word} stocks — {range_lbl} % change"
+
+    # Provenance: HOW the tickers were chosen + each one's move, pulled straight
+    # off the chart's own series labels (no refetch). This rides into the ledger
+    # via _widget_detail, so a later "why are these trending?" is answered from
+    # the momentum data rather than an empty per-ticker news search.
+    moves = [str(d.get("label", "")).strip()
+             for d in (cfg.get("chart", {}).get("data", {}).get("datasets") or [])]
+    moves_txt = ", ".join(m for m in moves if m)[:120]
+    if filtered:
+        src = (f"{_UNIVERSE_LABEL.get(universe, universe)} {kind_word} today "
+               "(Yahoo screener, then filtered to index members)")
+    elif source_kind == "trending":
+        src = ("Yahoo trending/US feed — most-viewed + price momentum, "
+               "NOT news-driven and NOT filtered to any index")
+    else:
+        src = f"Yahoo {kind_word} today (US screener)"
+    cfg["provenance"] = f"tickers picked via {src}; {range_lbl} move — {moves_txt}"
     return cfg
 
 
@@ -3069,9 +3174,27 @@ def _spoken_summary(widget_type: str, config: dict, question: str = "") -> str:
 
 
 def _widget_detail(config: dict) -> str:
-    """A <=200-char gist of what a widget shows, for the ledger: the first line of
-    its answer, or its top item/story titles. This is what lets a later follow-up
-    ('what about the taco bell one?') be tied back to the right widget.
+    """A <=200-char gist of what a widget shows, for the ledger — the anaphora +
+    PROVENANCE record a follow-up reads. It carries the content gist (so 'what
+    about the taco bell one?' ties back to the right widget) and, when the
+    builder tagged one, `config['provenance']`: HOW the data was gathered. That
+    provenance is what makes a follow-up context-aware — 'why are these
+    trending?' can be answered from the momentum data the trending chart was
+    built from, instead of a fresh (and empty) per-ticker news lookup."""
+    if not isinstance(config, dict):
+        return ""
+    gist = _widget_content_gist(config)
+    prov = str(config.get("provenance") or "").strip()
+    if prov:
+        # Provenance goes LAST so the content gist (names a follow-up anaphora
+        # matches on) is never the part that gets clipped at 200.
+        return ((gist + " · " if gist else "") + prov)[:200]
+    return gist
+
+
+def _widget_content_gist(config: dict) -> str:
+    """The content half of the ledger detail: the first line of a widget's
+    answer, or its top item/story titles.
 
     The gist is the session's anaphora database, so it must carry the
     DISTINCTIVE NAMES from the whole text, not just a prefix. Live: a sushi
