@@ -345,10 +345,121 @@ document.addEventListener('alpine:init', () => {
     }));
 
     // 3. Notes Widget
-    Alpine.data('notesWidget', (title, initialContent = '') => ({
-        title: title || 'Quick Notes',
-        content: initialContent
-    }));
+    // 3. Notes — markdown editor with edit/preview, interactive checklists,
+    // tables, tags, and Save-to-Obsidian-vault. Accepts an options object;
+    // legacy positional notesWidget('title','content') still resolves (old
+    // canvases rehydrate through the same component).
+    Alpine.data('notesWidget', (cfgOrTitle = {}, legacyContent = '') => {
+        const cfg = (typeof cfgOrTitle === 'object' && cfgOrTitle !== null)
+            ? cfgOrTitle
+            : { title: cfgOrTitle, content: legacyContent };
+        return {
+            title: cfg.title || 'Quick Notes',
+            content: cfg.content || '',
+            tags: Array.isArray(cfg.tags) ? cfg.tags : [],
+            slug: cfg.slug || '',
+            mode: 'edit', tagInput: '',
+            saving: false, saved: '', dirty: false,
+
+            init() {
+                // Restore unsaved local edits for THIS widget id (typed content
+                // isn't captured by canvas serialization, so it would be lost on
+                // reload). But if the SERVER content changed since the draft was
+                // saved (the agent rewrote the note), the server wins — compare
+                // against the baseline stored with the draft.
+                const s = this.load();
+                if (s && (s.content || s.title) && s.base === (cfg.content || '')) {
+                    this.title = s.title ?? this.title;
+                    this.content = s.content ?? this.content;
+                    this.tags = Array.isArray(s.tags) ? s.tags : this.tags;
+                    this.slug = s.slug || this.slug;
+                } else {
+                    // Fresh, or the agent changed it: adopt the server content as
+                    // the new baseline so future edits autosave against it.
+                    this._persist();
+                }
+            },
+
+            insert(snippet) {
+                const ta = this.$refs.ta;
+                if (ta && typeof ta.selectionStart === 'number') {
+                    const a = ta.selectionStart, b = ta.selectionEnd;
+                    this.content = this.content.slice(0, a) + snippet + this.content.slice(b);
+                    this.$nextTick(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = a + snippet.length; });
+                } else {
+                    this.content += (this.content && !this.content.endsWith('\n') ? '\n' : '') + snippet;
+                }
+                this.autosave();
+            },
+
+            addTag() {
+                const t = (this.tagInput || '').trim().replace(/,+$/, '');
+                if (t && !this.tags.includes(t)) { this.tags.push(t); this.autosave(); }
+                this.tagInput = '';
+            },
+            removeTag(i) { this.tags.splice(i, 1); this.autosave(); },
+
+            rendered() {
+                const src = this.content || '_Nothing yet — switch to Edit._';
+                try {
+                    let html = window.marked ? marked.parse(src, { gfm: true, breaks: true })
+                                             : this.esc(src);
+                    // Enable the task-list checkboxes marked renders disabled.
+                    html = html.replace(/<input([^>]*?)\sdisabled(="")?([^>]*?)>/g, '<input$1$3>');
+                    if (window.DOMPurify)
+                        html = DOMPurify.sanitize(html, { ADD_TAGS: ['input'], ADD_ATTR: ['type', 'checked'] });
+                    return html;
+                } catch (e) { return this.esc(src); }
+            },
+
+            onPreviewClick(e) {
+                const box = e.target;
+                if (!box || box.type !== 'checkbox') return;
+                e.preventDefault();
+                const boxes = [...e.currentTarget.querySelectorAll('input[type=checkbox]')];
+                this.toggleTask(boxes.indexOf(box));
+            },
+
+            // Toggle the Nth "- [ ] / - [x]" in the source (order matches preview).
+            toggleTask(idx) {
+                let i = -1;
+                this.content = this.content.replace(/(-\s*\[)([ xX])(\])/g, (m, p1, c, p3) => {
+                    i++;
+                    if (i !== idx) return m;
+                    return p1 + (c === ' ' ? 'x' : ' ') + p3;
+                });
+                this.autosave();
+            },
+
+            async save() {
+                this.saving = true; this.saved = '';
+                try {
+                    const res = await fetch('/api/notes/save', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ title: this.title, content: this.content, tags: this.tags, slug: this.slug }),
+                    });
+                    const d = await res.json();
+                    if (d && d.ok) { this.slug = d.slug; this.dirty = false; this.saved = '✓ Saved to vault'; this.autosave(); }
+                    else this.saved = 'Save failed';
+                } catch (e) { this.saved = 'Save failed'; }
+                this.saving = false;
+                if (this.saved.startsWith('✓')) setTimeout(() => { this.saved = ''; }, 2500);
+            },
+
+            esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
+            _key() { return 'hn_note_' + ((this.$el && this.$el.id) || 'x'); },
+            _persist() {
+                try {
+                    localStorage.setItem(this._key(), JSON.stringify({
+                        title: this.title, content: this.content, tags: this.tags,
+                        slug: this.slug, base: cfg.content || '',
+                    }));
+                } catch (e) {}
+            },
+            autosave() { this.dirty = true; this._persist(); },
+            load() { try { return JSON.parse(localStorage.getItem(this._key()) || 'null'); } catch (e) { return null; } },
+        };
+    });
 
     // 3d. Reminder / alarm — counts down to a target, then notifies + beeps.
     // Client-side (fires while the tab is open); target persists in localStorage

@@ -880,18 +880,66 @@ def render_reminder(widget_id: str, config: dict) -> str:
 
 
 def render_notes(widget_id: str, config: dict) -> str:
-    title = config.get("title", "Quick Notes")
-    content = config.get("content", "")
-    
+    """Markdown notes: edit ⇄ preview, interactive checklists, tables, tags, and
+    Save-to-vault (writes a .md with frontmatter to the Obsidian vault). Typing
+    autosaves to localStorage so it survives a reload; Save makes it durable +
+    portable to Obsidian. `slug` is set when the note came from the vault."""
+    cfg_js = (f"{{ title: {json_escape(config.get('title', 'Quick Notes'))}, "
+              f"content: {json_escape(config.get('content', ''))}, "
+              f"tags: {json_escape(config.get('tags', []))}, "
+              f"slug: {json_escape(config.get('slug', ''))} }}")
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[280px] group" x-data="notesWidget({json_escape(title)}, {json_escape(content)})">
-        <!-- Close Button -->
-        <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
-            <span class="material-symbols-outlined text-[1.2rem]">close</span>
-        </button>
-        
-        <h3 class="text-lg font-bold mb-2 text-white pr-6 truncate" x-text="title"></h3>
-        <textarea x-model="content" class="w-full bg-white/5 text-slate-200 p-3.5 rounded-2xl border border-white/10 focus:outline-none focus:border-purple-500 resize-none flex-grow shadow-inner text-sm leading-relaxed" placeholder="Type your notes here..."></textarea>
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[360px] group"
+         x-data="notesWidget({cfg_js})">
+        {widget_header("Notes", "edit_note")}
+        <div class="flex flex-col flex-grow min-h-0 p-3 gap-2">
+            <!-- Title + mode -->
+            <div class="flex items-center gap-2">
+                <input x-model="title" @input="autosave()" placeholder="Untitled"
+                       class="flex-grow min-w-0 bg-transparent text-sm font-semibold text-white focus:outline-none border-b border-transparent focus:border-white/20 pb-0.5">
+                <button @click="mode = (mode === 'edit' ? 'preview' : 'edit')"
+                        class="shrink-0 px-2.5 py-1 rounded-lg text-[0.7rem] font-semibold uppercase tracking-wide bg-white/10 hover:bg-white/20 border border-white/10 transition-colors"
+                        x-text="mode === 'edit' ? 'Preview' : 'Edit'"></button>
+            </div>
+
+            <!-- Tags -->
+            <div class="flex items-center gap-1.5 flex-wrap">
+                <template x-for="(t, i) in tags" :key="i">
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[0.65rem] bg-purple-500/20 text-purple-200 border border-purple-400/20">
+                        <span x-text="t"></span>
+                        <button @click="removeTag(i)" class="hover:text-white leading-none">×</button>
+                    </span>
+                </template>
+                <input x-model="tagInput" @keydown.enter.prevent="addTag()" @keydown.comma.prevent="addTag()"
+                       placeholder="+ tag" class="w-16 bg-transparent text-[0.7rem] text-slate-300 focus:outline-none placeholder:text-slate-600">
+            </div>
+
+            <!-- EDIT -->
+            <div x-show="mode === 'edit'" class="flex flex-col flex-grow min-h-0 gap-1.5">
+                <div class="flex gap-1">
+                    <button @click="insert('- [ ] ')" title="Checklist item" class="px-2 py-0.5 rounded text-xs bg-white/5 hover:bg-white/10 border border-white/10">☑</button>
+                    <button @click="insert('| Col A | Col B |\\n| --- | --- |\\n| 1 | 2 |\\n')" title="Table" class="px-2 py-0.5 rounded text-xs bg-white/5 hover:bg-white/10 border border-white/10">▦</button>
+                    <button @click="insert('## ')" title="Heading" class="px-2 py-0.5 rounded text-xs bg-white/5 hover:bg-white/10 border border-white/10">H</button>
+                </div>
+                <textarea x-ref="ta" x-model="content" @input="autosave()" spellcheck="true"
+                          class="w-full flex-grow bg-black/20 text-slate-200 p-3 rounded-xl border border-white/10 focus:outline-none focus:border-purple-500 resize-none shadow-inner text-sm leading-relaxed font-mono"
+                          placeholder="Markdown — # headings, - [ ] checklists, | tables |, **bold**…"></textarea>
+            </div>
+
+            <!-- PREVIEW -->
+            <div x-show="mode === 'preview'" @click="onPreviewClick($event)"
+                 class="notes-preview flex-grow min-h-0 overflow-y-auto bg-black/20 rounded-xl border border-white/10 p-3 text-sm leading-relaxed"
+                 x-html="rendered()"></div>
+
+            <!-- Save row -->
+            <div class="flex items-center gap-2 shrink-0">
+                <button @click="save()" :disabled="saving"
+                        class="px-3 py-1 rounded-lg text-xs font-semibold bg-purple-600/50 hover:bg-purple-500/60 border border-white/10 transition-colors disabled:opacity-50"
+                        x-text="saving ? 'Saving…' : 'Save to vault'"></button>
+                <span class="text-[0.65rem] text-slate-400" x-text="saved"></span>
+                <span x-show="dirty && !saved" class="text-[0.6rem] text-amber-400/60">unsaved</span>
+            </div>
+        </div>
     </div>
     """
 

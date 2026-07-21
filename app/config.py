@@ -27,3 +27,13 @@ VAULT_SERVICE_TOKEN = os.getenv("VAULT_SERVICE_TOKEN", "")
 db_dir = os.path.dirname(DATABASE_URL)
 if db_dir:
     os.makedirs(db_dir, exist_ok=True)
+
+# Obsidian vault: notes saved from the canvas are written here as .md files with
+# YAML frontmatter (title/tags/created/updated), so they show up in Obsidian and
+# you can piggyback on its markdown + metadata. Defaults to a subdir of the
+# writable data volume (./data/vault on the NAS) so it works out of the box; to
+# use your REAL vault, mount it in docker-compose and set OBSIDIAN_VAULT_DIR to
+# the mount path (e.g. -v /volume1/Obsidian/MyVault:/app/vault, OBSIDIAN_VAULT_DIR=/app/vault).
+OBSIDIAN_VAULT_DIR = os.getenv(
+    "OBSIDIAN_VAULT_DIR", os.path.join(db_dir or "data", "vault"))
+os.makedirs(OBSIDIAN_VAULT_DIR, exist_ok=True)

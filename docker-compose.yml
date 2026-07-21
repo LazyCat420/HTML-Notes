@@ -27,6 +27,12 @@ services:
       # Shared SDK (research helper) — synced to the NAS by deploy.sh's
       # EXTRA_SSH_SYNC. Read-only so the container can't mutate it.
       - ../lazycat-sdk:/app/lazycat-sdk:ro
+      # Notes saved from the canvas are written as .md files with frontmatter to
+      # OBSIDIAN_VAULT_DIR (default /app/data/vault → ./data/vault on the NAS, so
+      # it works out of the box). To piggyback on your REAL Obsidian vault, mount
+      # it here (writable, uid 1001 must have access) and set OBSIDIAN_VAULT_DIR:
+      # - /volume1/Obsidian/MyVault:/app/vault
+      # then add `- OBSIDIAN_VAULT_DIR=/app/vault` to environment above.
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8035/health/app"]

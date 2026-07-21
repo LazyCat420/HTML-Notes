@@ -2143,7 +2143,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN
+from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR
 import asyncio
 import contextvars
 import datetime
@@ -4493,15 +4493,19 @@ async def build_notes_config(message: str) -> dict:
     """Notes config with written content, for "notes about X" (not a bare notepad)."""
     data = await fast_llm_json(
         'Return ONLY a JSON object, no prose and no markdown fence:\n'
-        '{"title": "<short title, max 4 words>", "content": "<the note body>"}\n'
+        '{"title": "<short title, max 4 words>", "content": "<the note body in Markdown>", '
+        '"tags": ["<1-3 short topic tags>"]}\n'
         f'The user asked: "{message}"\n'
-        'Write a concise, useful note (plain text, max ~120 words).'
+        'Write a concise, useful note in Markdown (max ~150 words). Use '
+        '"- [ ] item" for anything checklist-like and a | table | when comparing.'
     )
     if not data or not data.get("content"):
         return {}
+    tags = data.get("tags")
     return {
         "title": str(data.get("title") or "Notes")[:60],
         "content": str(data["content"])[:2000],
+        "tags": [str(t)[:24] for t in tags[:5]] if isinstance(tags, list) else [],
     }
 
 
@@ -8788,6 +8792,140 @@ async def api_fx(base: str):
     """Backs the converter's currency tab — latest rates for `base` (keyless,
     cached). Empty {} degrades to 'Rates unavailable' client-side."""
     return await fetch_fx_rates(base)
+
+
+# ── Obsidian vault: notes saved from the canvas become .md files ─────────────
+def _note_slug(title: str) -> str:
+    """A filesystem-safe slug from a note title. No path separators, no dots at
+    the ends — so a title can never escape the vault dir."""
+    s = re.sub(r"[^\w\s-]", "", (title or "").lower()).strip()
+    s = re.sub(r"[\s_-]+", "-", s).strip("-.")
+    return (s or "note")[:80]
+
+
+def _note_path(slug: str) -> Optional[pathlib.Path]:
+    """Resolve a slug to a .md path INSIDE the vault, or None if it would escape."""
+    safe = _note_slug(slug)
+    if not safe:
+        return None
+    vault = pathlib.Path(OBSIDIAN_VAULT_DIR).resolve()
+    p = (vault / f"{safe}.md").resolve()
+    try:
+        p.relative_to(vault)   # must stay within the vault
+    except ValueError:
+        return None
+    return p
+
+
+def _yaml_frontmatter(meta: dict) -> str:
+    """Minimal YAML frontmatter Obsidian reads. Hand-rolled (no pyyaml dep):
+    title quoted, tags as an inline array, timestamps as ISO strings."""
+    def q(v):
+        return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    tags = meta.get("tags") or []
+    tags_line = "[" + ", ".join(_note_slug(t) for t in tags if t) + "]"
+    lines = ["---",
+             f"title: {q(meta.get('title', 'Untitled'))}",
+             f"tags: {tags_line}",
+             f"created: {meta.get('created', '')}",
+             f"updated: {meta.get('updated', '')}",
+             "source: html-notes",
+             "---", ""]
+    return "\n".join(lines)
+
+
+def _parse_frontmatter(text: str) -> dict:
+    """Pull title/tags/created out of an existing note's frontmatter block, so an
+    update preserves `created` and can round-trip the metadata."""
+    out = {"title": "", "tags": [], "created": "", "body": text}
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.S)
+    if not m:
+        return out
+    fm, body = m.group(1), m.group(2)
+    out["body"] = body
+    for line in fm.splitlines():
+        km = re.match(r"\s*(\w+)\s*:\s*(.*)$", line)
+        if not km:
+            continue
+        key, val = km.group(1), km.group(2).strip()
+        if key == "title":
+            if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+                val = val[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+            out["title"] = val
+        elif key == "created":
+            out["created"] = val.strip('"')
+        elif key == "tags":
+            inner = val.strip("[]")
+            out["tags"] = [t.strip().strip('"') for t in inner.split(",") if t.strip()]
+    return out
+
+
+class SaveNoteRequest(BaseModel):
+    title: str = "Untitled"
+    content: str = ""
+    tags: List[str] = []
+    slug: str = ""      # set when re-saving an existing note (keeps the same file)
+
+
+@app.post("/api/notes/save")
+async def api_notes_save(req: SaveNoteRequest):
+    """Write a note to the Obsidian vault as `<slug>.md` with YAML frontmatter.
+    Upsert: an existing file's `created` is preserved; `updated` is bumped."""
+    slug = _note_slug(req.slug or req.title)
+    path = _note_path(slug)
+    if path is None:
+        raise HTTPException(status_code=400, detail="invalid note name")
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    created = now
+    if path.exists():
+        try:
+            prev = _parse_frontmatter(path.read_text(encoding="utf-8"))
+            created = prev.get("created") or now
+        except Exception:
+            pass
+    meta = {"title": req.title or "Untitled", "tags": req.tags or [],
+            "created": created, "updated": now}
+    try:
+        path.write_text(_yaml_frontmatter(meta) + (req.content or ""), encoding="utf-8")
+    except Exception as e:
+        logger.error(f"note save failed ({slug}): {e}")
+        raise HTTPException(status_code=500, detail="could not write note")
+    logger.info(f"[VAULT] saved note {path.name} ({len(req.content or '')} chars)")
+    return {"ok": True, "slug": slug, "updated": now, "created": created,
+            "file": path.name}
+
+
+@app.get("/api/notes/list")
+async def api_notes_list():
+    """Every note in the vault: slug + title + tags + updated, newest first."""
+    vault = pathlib.Path(OBSIDIAN_VAULT_DIR)
+    out = []
+    try:
+        for p in vault.glob("*.md"):
+            try:
+                fm = _parse_frontmatter(p.read_text(encoding="utf-8"))
+            except Exception:
+                fm = {"title": p.stem, "tags": []}
+            out.append({"slug": p.stem, "title": fm.get("title") or p.stem,
+                        "tags": fm.get("tags") or [],
+                        "updated": datetime.datetime.utcfromtimestamp(
+                            p.stat().st_mtime).replace(microsecond=0).isoformat()})
+    except Exception as e:
+        logger.warning(f"note list failed: {e}")
+    out.sort(key=lambda n: n["updated"], reverse=True)
+    return {"notes": out, "vault": str(vault)}
+
+
+@app.get("/api/notes/load")
+async def api_notes_load(slug: str):
+    """Load one note's body + metadata (for reopening a saved note)."""
+    path = _note_path(slug)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="note not found")
+    fm = _parse_frontmatter(path.read_text(encoding="utf-8"))
+    return {"slug": _note_slug(slug), "title": fm.get("title") or slug,
+            "tags": fm.get("tags") or [], "content": fm.get("body", ""),
+            "created": fm.get("created", "")}
 
 
 @app.get("/api/youtube/candidates")
