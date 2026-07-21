@@ -1,3 +1,46 @@
+# Handoff — 2026-07-21 (stock discovery: index scoping + provenance tagging)
+
+**Deployed:** synology `:8035` (`8ff0cd4`) — 540 pytest green. No lazy-agent
+schema change (server-only logic in `app/main.py`).
+
+**The bug (user report):** "top 5 stocks in the s&p" returned CPHI/VIVK/NBIS/
+CBRS — micro-caps, not S&P members — then a follow-up "why are these trending?"
+routed to the agent, which ran `stock_news` per ticker, found nothing, and said
+"the news doesn't talk about them." Two root causes: (1) the "s&p" qualifier was
+ignored — the list came from Yahoo's site-wide `trending/US` most-viewed+momentum
+feed, filtered to nothing; (2) turns weren't context-aware — the follow-up had no
+record of WHERE the list came from (momentum, not news), so it hunted for news
+that never existed.
+
+**Fix 1 — accuracy (index scoping).** `build_trending_compare_config` now calls
+`_universe_from_message` (matches s&p / sp500 / spx). When an index is named it
+pulls a large ranked screener pool (`day_gainers` for a bare "top" ask, else the
+kind word) and keeps ONLY members via `_index_constituents("sp500")` — cached 24h
+from the datahub S&P-500 CSV (`_INDEX_SOURCES`), in screener-rank order. Empty
+set = "unknown", NEVER filter on it (would drop every ticker); degrades to the
+unscoped feed and says so in provenance. Verified live: the exact bug query now
+returns SNDK/WDC/TER/MU — all real S&P members.
+
+**Fix 2 — context-awareness (provenance tag).** Builders can set
+`config['provenance']` = HOW the data was gathered + each item's move.
+`_widget_detail` now = `_widget_content_gist` (renamed old body) + provenance,
+provenance LAST so anaphora names aren't clipped at the 200-char ledger budget.
+That rides into the session ledger → `build_turn_context` RECENT TURNS → agent
+system prompt, so a follow-up sees "picked via S&P 500 gainers today … DHR +4.2%"
+and can answer from momentum instead of an empty news search. The mechanism is
+generic — any builder can tag provenance now; only the trending path uses it yet.
+
+**Seams / extend here:** provenance is the reusable context-tagging hook — wire
+it into `build_stock_news_config`, `build_news_config`, `build_answer_config`
+next so every follow-up knows its source. `_INDEX_SOURCES` only has sp500; add
+nasdaq100/dow the same way (keyless CSV, Symbol in col 1). Yahoo's `day_gainers`
+screener caps at ~25 rows, so an S&P intersection can yield <N (query returned 4,
+not 5) — acceptable, title reflects actual n. Tests: `tests/test_trending_stocks.py`
+(31, +8 new: universe regex, scoped filter, unscoped provenance, degrade path,
+`_widget_detail` provenance).
+
+---
+
 # Handoff — 2026-07-21 (deep-audit fix wave + widget pack v2)
 
 **Deployed:** synology `:8035` (d8ed34a) + lazy-agent-service schema
