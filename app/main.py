@@ -19,6 +19,7 @@ from app.youtube_search import (
     detect_language as _yt_detect_language,
     clean_query as _yt_clean_query,
     Intent as _YtIntent,
+    _unescape as _yt_unescape,
 )
 
 # Needed up here, not in the import block further down: the helper functions
@@ -90,7 +91,7 @@ async def _llm_rerank_videos(query: str, videos: list) -> list:
 
 
 async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance",
-                                rerank: bool = False) -> list:
+                                rerank: bool = False, strict_recency: bool = False) -> list:
     """Enriched, scored YouTube search. Returns dicts with the SAME keys the old
     scraper did (video_id, id, title, channel) PLUS the parsed signals (views,
     duration_sec, age_days, verified, is_live, is_short, score), best-first.
@@ -100,6 +101,12 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     date-sorted results for a recency ask, and caps per-channel so a broad query
     stops returning the same handful of clips. order="date"/"live" pass through.
 
+    `strict_recency=True` returns results ordered purely by publish time (newest
+    first), bypassing the relevance/views scorer, the channel-diversity cap and the
+    LLM rerank — for "give me THE newest" asks the blended score would otherwise
+    surface an older, more-watched video (its freshness axis is year-scaled and
+    can't separate 42 minutes from 3 days).
+
     `rerank=True` adds a one-shot LLM rerank, but ONLY on 'hard' queries (ambiguous
     format words / explicit language) where the bench showed it helps — clear
     queries keep the zero-latency heuristic order.
@@ -107,7 +114,7 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     q = (query or "").strip()
     if not q:
         return []
-    ranked = await _search_youtube_scrape(q, limit, order, rerank)
+    ranked = await _search_youtube_scrape(q, limit, order, rerank, strict_recency)
     if ranked:
         return ranked
     # The direct httpx scrape came back empty (markup shift, a consent wall on this
@@ -179,7 +186,7 @@ async def _youtube_proxy_fallback(query: str) -> list:
 
 
 async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relevance",
-                                 rerank: bool = False) -> list:
+                                 rerank: bool = False, strict_recency: bool = False) -> list:
     """Direct youtube.com scrape + scoring (primary path). Returns [] on any
     failure so search_youtube_videos can fall through to the proxy."""
     q = (query or "").strip()
@@ -189,6 +196,8 @@ async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relev
         lang, explicit = _yt_detect_language(q)
         cleaned = _yt_clean_query(q, explicit_lang=explicit) or q
         want_fresh = bool(RECENCY_RE.search(q.lower()))
+        if strict_recency:
+            order = "date"       # newest-first straight from YouTube's own sort
         intent = _YtIntent(query=cleaned, lang=lang, want_fresh=want_fresh,
                            want_live=(order == "live"), explicit_lang=explicit)
         # Fetch a deeper pool than requested so scoring + channel-diversity have
@@ -202,6 +211,14 @@ async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relev
             if v.video_id and v.video_id not in seen:
                 seen.add(v.video_id)
                 deduped.append(v)
+        # STRICT recency: sort purely by publish time (newest first) and return —
+        # NO relevance re-score, NO channel-diversity reshuffle, NO variety pick.
+        # An unknown age sorts last so a hit missing publishedTimeText can't jump
+        # ahead of a real fresh upload.
+        if strict_recency:
+            ordered = sorted(deduped,
+                             key=lambda v: v.age_days if v.age_days is not None else 1e9)
+            return [v.to_dict() for v in ordered][:max(limit, 1)]
         scored = _yt_score_videos(deduped, intent)
         # Live asks keep YouTube's own order (the LIVE filter already did the work).
         ranked = [v.to_dict() for v in scored]
@@ -214,6 +231,115 @@ async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relev
     except Exception as e:
         logger.error(f"search_youtube_videos error: {e}")
         return []
+
+
+# ── Named-channel recency: resolve the channel, read its uploads feed ─────────
+# A keyword search for "Paul Barron Network" returns that channel's clips MIXED
+# with everyone else's, in popularity order — so "newest <creator> video" can't
+# be answered by search alone. YouTube publishes a keyless, strictly
+# reverse-chronological uploads RSS per channel; resolve the name to a channel_id
+# once, read the feed, and entry[0] IS the latest upload, guaranteed.
+_YT_CHANNEL_SP = "EgIQAg%3D%3D"      # results-page filter: channels only
+_YT_ATOM_NS = {"a": "http://www.w3.org/2005/Atom",
+               "yt": "http://www.youtube.com/xml/schemas/2015",
+               "media": "http://search.yahoo.com/mrss/"}
+
+
+def _yt_name_tokens(s: str) -> set:
+    return {w for w in re.findall(r"\w+", (s or "").lower()) if len(w) > 1}
+
+
+def _yt_channel_name_match(subject: str, title: str) -> bool:
+    """A channel is the right one only on a near-exact name match in BOTH
+    directions — so 'top gun maverick' (a movie) does NOT bind to a fan channel
+    called 'Top Gun', but 'Paul Barron Network' binds to the exact channel."""
+    a, b = _yt_name_tokens(subject), _yt_name_tokens(title)
+    if not a or not b:
+        return False
+    fwd = len(a & b) / len(a)
+    bwd = len(a & b) / len(b)
+    return min(fwd, bwd) >= 0.7
+
+
+async def _yt_fetch_html(url: str, timeout: float = 12.0) -> str:
+    """Plain httpx GET (a realistic UA clears the results/feed pages), falling
+    back to the real-browser scraper only if httpx comes back empty."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": _YAHOO_UA})
+            if resp.status_code == 200 and resp.text:
+                return resp.text
+    except Exception as e:
+        logger.warning(f"[YOUTUBE] httpx fetch failed for {url[:80]!r}: {e}")
+    try:
+        return await _scrape(url, engine="auto", timeout=20.0) or ""
+    except Exception:
+        return ""
+
+
+async def _resolve_youtube_channel(name: str) -> Optional[dict]:
+    """Best-match YouTube channel for a creator name → {channel_id, title}, or
+    None. Uses the channel-only search filter and the strict name-match gate so a
+    non-channel subject falls through to a normal keyword search."""
+    name = (name or "").strip()
+    if len(_yt_name_tokens(name)) < 2:      # single-word subjects are too ambiguous
+        return None
+    url = (f"https://www.youtube.com/results?search_query="
+           f"{urllib.parse.quote(name)}&sp={_YT_CHANNEL_SP}")
+    html = await _yt_fetch_html(url)
+    if not html:
+        return None
+    # channelRenderer carries channelId early and the title later in the same block.
+    for cid, title in re.findall(
+            r'"channelRenderer":\{"channelId":"([^"]+)".*?'
+            r'"title":\{"simpleText":"([^"]+)"', html, re.S)[:5]:
+        title = _yt_unescape(title)
+        if _yt_channel_name_match(name, title):
+            logger.info(f"[YOUTUBE] channel {name!r} -> {title!r} ({cid})")
+            return {"channel_id": cid, "title": title}
+    return None
+
+
+async def _youtube_channel_uploads(channel_id: str, limit: int = 8) -> list:
+    """Latest uploads for a channel_id from its RSS feed, newest first. Normalised
+    to the same hit shape as search_youtube_videos so callers are interchangeable."""
+    if not channel_id:
+        return []
+    xml = await _yt_fetch_html(
+        f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
+    if not xml:
+        return []
+    try:
+        root = ET.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
+    except Exception as e:
+        logger.warning(f"[YOUTUBE] uploads feed parse failed for {channel_id}: {e}")
+        return []
+    now = datetime.datetime.now(datetime.timezone.utc)
+    chan_title = (root.findtext("a:title", default="", namespaces=_YT_ATOM_NS) or "")
+    out = []
+    for e in root.findall("a:entry", _YT_ATOM_NS):
+        vid = e.findtext("yt:videoId", default="", namespaces=_YT_ATOM_NS)
+        if not vid:
+            continue
+        title = e.findtext("a:title", default="", namespaces=_YT_ATOM_NS) or ""
+        pub = e.findtext("a:published", default="", namespaces=_YT_ATOM_NS) or ""
+        age_days = None
+        if pub:
+            try:
+                age_days = (now - datetime.datetime.fromisoformat(pub)).total_seconds() / 86400
+            except Exception:
+                pass
+        thumb = e.find(".//media:thumbnail", _YT_ATOM_NS)
+        out.append({
+            "video_id": vid, "id": vid, "title": title, "channel": chan_title,
+            "thumbnail": (thumb.get("url") if thumb is not None else ""),
+            "age_days": age_days,
+            "published": pub[:16].replace("T", " ") if len(pub) >= 16 else None,
+            "score": 0,
+        })
+    # The feed is already reverse-chronological; sort defensively anyway.
+    out.sort(key=lambda h: h["age_days"] if h["age_days"] is not None else 1e9)
+    return out[:max(limit, 1)]
 
 
 # crawl4ai renders Brave's result page as markdown with the outbound hrefs
@@ -3820,8 +3946,23 @@ VIDEO_ASK_RE = re.compile(r'\b(youtube|video|videos|yt|watch|clip|clips|trailer|
 
 # A news video must be sorted by DATE. "fifa news video" searched by relevance
 # returns whatever is most-watched for those words — a years-old recap — which is
-# never what "news" means. Recency words flip the search to order='date'.
-RECENCY_RE = re.compile(r'\b(news|latest|recent|recently|today|tonight|breaking|update|updates|current|new)\b')
+# never what "news" means. Recency words flip the search to order='date' (a
+# freshness NUDGE — the blended scorer still runs).
+RECENCY_RE = re.compile(r'\b(news|latest|newest|recent|recently|today|tonight|breaking|update|updates|current|new)\b')
+
+# STRICT recency: the user wants THE most recently published video, not the most
+# relevant/popular one ("newest Paul Barron Network video", "bitcoin video from an
+# hour ago"). This is stronger than RECENCY_RE — it BYPASSES the relevance/views
+# scorer and the variety picker entirely and sorts purely by publish time, because
+# freshness is only a 0.4-weight, year-scaled axis that can't tell 42 minutes from
+# 3 days, so a brand-new upload always loses to an older popular one on the blend.
+NEWEST_RE = re.compile(
+    r'\b(newest|most[\s-]?recent|latest|just (?:posted|uploaded|dropped|released|out)|'
+    r'brand[\s-]?new|freshest|last upload|latest upload)\b'
+    r'|\b(?:in|from|over|within) the (?:past|last) (?:hour|few hours|day|24\s?h(?:ours?)?)\b'
+    r'|\b\d+\s+(?:minutes?|mins?|hours?|hrs?)\s+ago\b'
+    r'|\b(?:an?|one)\s+hour\s+ago\b'
+    r'|\bthis (?:morning|afternoon|evening)\b|\bmoments ago\b|\bjust now\b', re.I)
 
 # Words that describe the medium, not the subject. "fifa news video" should search
 # YouTube for "fifa news", not for the literal word "video".
@@ -6953,20 +7094,56 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             # returns promo/off-topic clips.
             g = await ground_query(query or message)
             vq = clean_video_query(g.get("retrieval_query") or query or message)
-            # Recency guard, mirrored from the legacy fast path (its comment:
-            # 'a news video searched by relevance returns a years-old recap').
-            # Checked against the ORIGINAL message, not the grounded query —
-            # ground_query's LLM rewrite can drop the recency word and silently
-            # kill the freshness bias. Falls back to relevance on no hits.
-            want_dated = bool(RECENCY_RE.search((message or "").lower()))
+            # Recency guards, checked against the ORIGINAL message (ground_query's
+            # LLM rewrite can drop the recency word and silently kill the bias).
+            # want_newest = "give me THE latest" — a strict, pure-date ask.
+            # want_dated = a softer freshness nudge ('news video searched by
+            # relevance returns a years-old recap').
+            want_newest = bool(NEWEST_RE.search((message or "").lower()))
+            want_dated = want_newest or bool(RECENCY_RE.search((message or "").lower()))
+
+            # NAMED CHANNEL + newest → resolve the channel and read its uploads
+            # feed (strictly reverse-chronological), so "newest Paul Barron Network
+            # video" returns the actual latest upload, not the most-watched clip.
+            # The subject is the message minus recency/medium words; the resolver's
+            # strict name-match gate makes a non-channel subject a no-op fall-through.
+            if want_newest:
+                subject = clean_video_query(
+                    NEWEST_RE.sub(" ", RECENCY_RE.sub(" ", message or "")))
+                try:
+                    chan = await _resolve_youtube_channel(subject)
+                    if chan:
+                        feed = filter_blocked_videos(
+                            await _youtube_channel_uploads(chan["channel_id"], limit=6))
+                        unseen = [h for h in feed
+                                  if h.get("video_id") not in _shown_video_ids(session_id)]
+                        feed = unseen or feed
+                        if feed:
+                            top = feed[0]
+                            _remember_current_video(session_id, top, vq)
+                            return ("youtube_player", "video", {
+                                "video_id": top["video_id"],
+                                "title": top.get("title") or vq, "query": vq,
+                                "candidates": [v["video_id"] for v in feed[1:]
+                                               if v.get("video_id")]})
+                except Exception as e:
+                    logger.warning(f"[YOUTUBE] channel-feed path failed for "
+                                   f"{subject!r}: {e}")
+
             hits = []
             if want_dated:
                 hits = filter_blocked_videos(
-                    await search_youtube_videos(vq, limit=10, order="date"))
+                    await search_youtube_videos(vq, limit=10, order="date",
+                                                strict_recency=want_newest))
             if not hits:
                 hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
-            top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id),
-                                           wide=is_query_vague(vq))
+            # A strict "newest" ask wants THE latest, not a varied pick from top-k.
+            if want_newest and hits:
+                top = hits[0]
+                cands = [v["video_id"] for v in hits[1:] if v.get("video_id")][:5]
+            else:
+                top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id),
+                                               wide=is_query_vague(vq))
             if not top:
                 return None
             _remember_current_video(session_id, top, vq)
@@ -10106,7 +10283,11 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
             query = a.get("query", "")
             limit = int(a.get("limit", 5))
             order = a.get("order", "relevance")
-            results = await search_youtube_videos(query, limit=limit, order=order)
+            # A "newest X" query wants pure-date order, not the popularity blend —
+            # honor it even when the agent didn't pass order='date'.
+            strict = bool(NEWEST_RE.search((query or "").lower())) or order == "date"
+            results = await search_youtube_videos(query, limit=limit, order=order,
+                                                  strict_recency=strict)
             return {"results": results, "count": len(results)}
 
         elif t == "html_notes_web_search":
