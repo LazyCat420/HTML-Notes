@@ -536,11 +536,16 @@ document.addEventListener('alpine:init', () => {
         init() {
             const parsed = this.parseSeed(cfg.seed || '');
             this.tab = parsed.tab || this.tab;
-            // Apply the parsed selections AFTER the first render, so the <select>
-            // options (from x-for) exist when x-model looks for its value — set
-            // synchronously in init(), the selects default to the first option.
+            Object.assign(this, parsed.state || {});   // uCat drives the option lists
+            // A <select x-model> bound to options from x-for can't reflect a value
+            // that was set before those options rendered — it falls back to the
+            // first option. Clear the select-bound fields, then restore them on
+            // the next tick (options now exist) so each select shows the right one.
+            const sels = ['uFrom', 'uTo', 'cFrom', 'cTo'];
+            const keep = {};
+            sels.forEach(k => { keep[k] = this[k]; this[k] = ''; });
             this.$nextTick(() => {
-                Object.assign(this, parsed.state || {});
+                sels.forEach(k => { this[k] = keep[k]; });
                 this.$nextTick(() => {
                     if (this.tab === 'calc') this.calc();
                     else if (this.tab === 'units') this.conv();
