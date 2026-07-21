@@ -8974,7 +8974,7 @@ async def send_message(req: MessageRequest):
                                             # the prose fallback below still fires
                                             # if nothing ever lands.
                                             logger.warning(f"[AGENT] {failed_tool} produced no canvas change — not counted as committed")
-                                            yield f'data: {json.dumps({"type": "status", "message": "that edit didn\'t match anything on the canvas"})}\n\n'
+                                            yield f'data: {json.dumps({"type": "status", "message": "that edit did not match anything on the canvas"})}\n\n'
 
                                 if event_type == "chunk":
                                     # Text token from LLM
@@ -9017,7 +9017,7 @@ async def send_message(req: MessageRequest):
                                                     break
                                             else:
                                                 logger.warning(f"[AGENT] {failed_tool} produced no canvas change — not counted as committed")
-                                                yield f'data: {json.dumps({"type": "status", "message": "that edit didn\'t match anything on the canvas"})}\n\n'
+                                                yield f'data: {json.dumps({"type": "status", "message": "that edit did not match anything on the canvas"})}\n\n'
                                         elif status in ("calling", "done", "success", "error"):
                                             active_tool_name = None
                                             active_tool_args = {}
