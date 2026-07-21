@@ -350,6 +350,115 @@ document.addEventListener('alpine:init', () => {
         content: initialContent
     }));
 
+    // 3d. Reminder / alarm — counts down to a target, then notifies + beeps.
+    // Client-side (fires while the tab is open); target persists in localStorage
+    // so a reload restores it.
+    Alpine.data('reminderWidget', (cfg = {}) => ({
+        label: cfg.label || 'Reminder',
+        target: 0, remaining: '--:--', done: false, timer: null, permHint: '',
+
+        init() {
+            const saved = this.load();
+            if (saved && saved.target > Date.now()) {
+                this.target = saved.target; this.label = saved.label || this.label;
+            } else {
+                this.target = this.computeTarget(cfg);
+            }
+            this.save();
+            this.requestPerm();
+            this.tick();
+            this.timer = setInterval(() => this.tick(), 1000);
+        },
+
+        destroy() { if (this.timer) clearInterval(this.timer); },
+
+        computeTarget(c) {
+            if (c.offset_seconds > 0) return Date.now() + c.offset_seconds * 1000;
+            if (c.at_time) {
+                const [h, m] = c.at_time.split(':').map(Number);
+                const d = new Date(); d.setHours(h, m, 0, 0);
+                if (c.tomorrow) d.setDate(d.getDate() + 1);
+                else if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1); // passed today → tomorrow
+                return d.getTime();
+            }
+            return Date.now() + 10 * 60 * 1000; // no time given → default 10 min
+        },
+
+        tick() {
+            const ms = this.target - Date.now();
+            if (ms <= 0 && !this.done) this.fire();
+            this.remaining = this.fmt(Math.max(0, ms));
+        },
+
+        fmt(ms) {
+            const s = Math.floor(ms / 1000);
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+            return (h ? h + ':' : '') + String(m).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+        },
+
+        fire() {
+            this.done = true;
+            if (this.timer) { clearInterval(this.timer); this.timer = null; }
+            this.beep();
+            try {
+                if (window.Notification && Notification.permission === 'granted')
+                    new Notification('⏰ ' + this.label, { body: 'Reminder', silent: false });
+            } catch (e) {}
+        },
+
+        beep() {
+            try {
+                const AC = window.AudioContext || window.webkitAudioContext;
+                if (!AC) return;
+                const ctx = new AC();
+                [0, 0.35, 0.7].forEach(t => {
+                    const o = ctx.createOscillator(), g = ctx.createGain();
+                    o.connect(g); g.connect(ctx.destination);
+                    o.type = 'sine'; o.frequency.value = 880;
+                    g.gain.setValueAtTime(0.0001, ctx.currentTime + t);
+                    g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + t + 0.02);
+                    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.28);
+                    o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.3);
+                });
+            } catch (e) {}
+        },
+
+        snooze(min) {
+            this.target = Date.now() + min * 60 * 1000;
+            this.done = false; this.save();
+            if (this.timer) clearInterval(this.timer);
+            this.tick(); this.timer = setInterval(() => this.tick(), 1000);
+        },
+
+        dismiss() {
+            this.done = false;
+            try { localStorage.removeItem(this._key()); } catch (e) {}
+            const el = this.$el;
+            if (el && window.WidgetManager) window.WidgetManager.dismiss(el);
+        },
+
+        requestPerm() {
+            try {
+                if (!window.Notification) { this.permHint = ''; return; }
+                if (Notification.permission === 'default')
+                    Notification.requestPermission().then(p => {
+                        if (p !== 'granted') this.permHint = 'Allow notifications to be alerted';
+                    });
+                else if (Notification.permission === 'denied')
+                    this.permHint = 'Notifications blocked — the beep still plays';
+            } catch (e) {}
+        },
+
+        targetLabel() {
+            try { return new Date(this.target).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+            catch (e) { return ''; }
+        },
+
+        _key() { return 'hn_reminder_' + ((this.$el && this.$el.id) || 'x'); },
+        save() { try { localStorage.setItem(this._key(), JSON.stringify({ target: this.target, label: this.label })); } catch (e) {} },
+        load() { try { return JSON.parse(localStorage.getItem(this._key()) || 'null'); } catch (e) { return null; } },
+    }));
+
     // 3c. Converter — calculator + unit + currency. Fully client-side so each
     // calculation is instant (no agent turn); the server only seeds the initial
     // tab + input from the user's phrasing.
@@ -427,25 +536,32 @@ document.addEventListener('alpine:init', () => {
         init() {
             const parsed = this.parseSeed(cfg.seed || '');
             this.tab = parsed.tab || this.tab;
-            if (this.tab === 'calc') this.calc();
-            else if (this.tab === 'units') this.conv();
-            else this.loadFx();
+            // Apply the parsed selections AFTER the first render, so the <select>
+            // options (from x-for) exist when x-model looks for its value — set
+            // synchronously in init(), the selects default to the first option.
+            this.$nextTick(() => {
+                Object.assign(this, parsed.state || {});
+                this.$nextTick(() => {
+                    if (this.tab === 'calc') this.calc();
+                    else if (this.tab === 'units') this.conv();
+                    else this.loadFx();
+                });
+            });
         },
 
-        // Route the seed phrase to a tab + prefill the inputs.
+        // Route the seed to a tab; return the field values to apply in $nextTick.
         parseSeed(seed) {
             const s = (seed || '').trim();
-            if (!s) return { tab: this.tab };
+            if (!s) return { tab: this.tab, state: {} };
             // currency: "20 usd to eur", "$50 in gbp"
             const cur = s.match(/([\d.,]+)\s*([a-z]{3}|[$€£¥₹])\s*(?:to|in|into|=|→)?\s*([a-z]{3}|[$€£¥₹])/i);
             if (cur) {
                 const from = (_SYM[cur[2]] || cur[2]).toUpperCase();
                 const to = (_SYM[cur[3]] || cur[3]).toUpperCase();
-                this.cVal = parseFloat(cur[1].replace(/,/g, '')) || 1;
-                this.cFrom = from; this.cTo = to;
                 if (!this.currencies.includes(from)) this.currencies.push(from);
                 if (!this.currencies.includes(to)) this.currencies.push(to);
-                return { tab: 'currency' };
+                return { tab: 'currency',
+                         state: { cVal: parseFloat(cur[1].replace(/,/g, '')) || 1, cFrom: from, cTo: to } };
             }
             // units: "5 miles in km"
             const alias = {
@@ -457,23 +573,17 @@ document.addEventListener('alpine:init', () => {
             };
             const um = s.match(/([\d.,]+)\s*([a-z°]+\/?[a-z]*2?)\s*(?:to|in|into|=|→)\s*([a-z°]+\/?[a-z]*2?)/i);
             if (um) {
-                const norm = u => alias[u.toLowerCase()] || u;
-                let from = norm(um[2]), to = norm(um[3]);
-                // normalize bare temperature letters to the dropdown keys
                 const tnorm = { c: '°C', f: '°F', k: 'K', '°c': '°C', '°f': '°F' };
-                from = tnorm[from.toLowerCase()] || from;
-                to = tnorm[to.toLowerCase()] || to;
+                const norm = u => { const a = alias[u.toLowerCase()] || u; return tnorm[a.toLowerCase()] || a; };
+                const from = norm(um[2]), to = norm(um[3]);
                 for (const [cat, tbl] of Object.entries(this.units)) {
                     if (tbl[from] !== undefined && tbl[to] !== undefined) {
-                        this.uCat = cat; this.uFrom = from; this.uTo = to;
-                        this.uVal = parseFloat(um[1].replace(/,/g, '')) || 1;
-                        return { tab: 'units' };
+                        return { tab: 'units',
+                                 state: { uCat: cat, uFrom: from, uTo: to, uVal: parseFloat(um[1].replace(/,/g, '')) || 1 } };
                     }
                 }
             }
-            // else: calculator
-            this.expr = s;
-            return { tab: 'calc' };
+            return { tab: 'calc', state: { expr: s } };
         },
 
         calc() {

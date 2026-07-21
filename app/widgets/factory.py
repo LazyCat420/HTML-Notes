@@ -850,6 +850,35 @@ def render_converter(widget_id: str, config: dict) -> str:
     """
 
 
+def render_reminder(widget_id: str, config: dict) -> str:
+    """A reminder/alarm: counts down to a target time, then fires a browser
+    notification + a beep. Client-side (works while the tab is open); the target
+    persists in localStorage so a reload restores the countdown."""
+    label = config.get("label", "Reminder")
+    cfg_js = (f"{{ label: {json_escape(label)}, "
+              f"offset_seconds: {int(config.get('offset_seconds', 0) or 0)}, "
+              f"at_time: {json_escape(config.get('at_time', ''))}, "
+              f"tomorrow: {str(bool(config.get('tomorrow'))).lower()} }}")
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col justify-between h-[280px] group"
+         x-data="reminderWidget({cfg_js})">
+        {widget_header("Reminder", "alarm")}
+        <div class="flex-grow flex flex-col items-center justify-center gap-2 p-4 text-center">
+            <div class="text-xs uppercase tracking-widest text-slate-400 px-2 truncate max-w-full" x-text="label"></div>
+            <div class="text-4xl font-mono tabular-nums" :class="done ? 'text-amber-300 animate-pulse' : 'text-white'"
+                 x-text="done ? 'Done!' : remaining">--:--</div>
+            <div class="text-xs text-slate-500" x-text="done ? 'was set for ' + targetLabel() : 'at ' + targetLabel()"></div>
+            <div x-show="permHint" class="text-[0.6rem] text-amber-400/70" x-text="permHint" style="display:none"></div>
+        </div>
+        <div class="flex gap-2 justify-center p-3">
+            <button @click="snooze(5)" class="px-3 py-1 rounded-lg text-xs bg-white/10 hover:bg-white/20 border border-white/10 transition-colors" x-text="done ? '+5 min' : 'Snooze 5'"></button>
+            <button @click="snooze(10)" class="px-3 py-1 rounded-lg text-xs bg-white/10 hover:bg-white/20 border border-white/10 transition-colors">+10 min</button>
+            <button x-show="done" @click="dismiss()" class="px-3 py-1 rounded-lg text-xs bg-amber-500/25 hover:bg-amber-500/35 border border-amber-400/30 transition-colors" style="display:none">Dismiss</button>
+        </div>
+    </div>
+    """
+
+
 def render_notes(widget_id: str, config: dict) -> str:
     title = config.get("title", "Quick Notes")
     content = config.get("content", "")
@@ -1479,6 +1508,7 @@ WIDGET_RENDERERS = {
     "map": render_map,
     "settings": render_settings,
     "converter": render_converter,
+    "reminder": render_reminder,
 }
 
 def _content_sig(widget_type: str, config: dict) -> str:

@@ -70,3 +70,51 @@ def test_router_and_prompt_know_converter():
     assert "converter" in m.ROUTER_WIDGETS
     src = __import__("pathlib").Path(m.__file__).read_text()
     assert "widget_type='converter'" in src
+
+
+# ── Reminder widget ──────────────────────────────────────────────────────────
+import pytest as _pt
+
+@_pt.mark.parametrize("q,label,off,at", [
+    ("remind me in 20 minutes", "Reminder", 1200, ""),
+    ("remind me to take out the trash in 2 hours", "take out the trash", 7200, ""),
+    ("remind me at 3pm to call mom", "call mom", 0, "15:00"),
+    ("set an alarm for 7am", "Reminder", 0, "07:00"),
+    ("alarm for 6:30am", "Reminder", 0, "06:30"),
+    ("remind me at noon to eat lunch", "eat lunch", 0, "12:00"),
+])
+def test_reminder_parse(q, label, off, at):
+    c = m.build_reminder_config(q)
+    assert c["label"].lower() == label.lower()
+    assert c["offset_seconds"] == off
+    assert c["at_time"] == at
+
+
+def test_reminder_tomorrow_flag():
+    assert m.build_reminder_config("remind me tomorrow at 9am")["tomorrow"] is True
+    assert m.build_reminder_config("remind me at 9am")["tomorrow"] is False
+
+
+@_pt.mark.parametrize("q,fires", [
+    ("remind me in 20 minutes", True), ("set an alarm for 7am", True),
+    ("reminder to water plants", True),
+    ("set a 5 minute timer", False), ("stopwatch", False), ("what time is it", False),
+])
+def test_reminder_fastpath(q, fires):
+    assert bool(m.REMINDER_INTENT_RE.search(q)) == fires
+
+
+def test_reminder_registered_and_renders():
+    from app.widgets.factory import WIDGET_RENDERERS
+    assert "reminder" in WIDGET_RENDERERS
+    html = generate_widget_html("reminder", "rem-1",
+                                {"label": "call mom", "offset_seconds": 0, "at_time": "15:00"})
+    assert "reminderWidget(" in html and "&quot;call mom&quot;" in html
+    assert "at_time: &quot;15:00&quot;" in html
+    assert html.count("{{") == 0
+
+
+def test_new_widgets_classified_on_canvas():
+    for xdata, wt in [("converterWidget", "converter"), ("reminderWidget", "reminder"),
+                      ("settingsWidget", "settings")]:
+        assert m._CANVAS_XDATA_TYPE[xdata] == wt

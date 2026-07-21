@@ -2373,7 +2373,8 @@ _CANVAS_CLASS_TYPE = {
 _CANVAS_XDATA_TYPE = {
     "checklistWidget": "checklist", "clockWidget": "clock", "notesWidget": "notes",
     "musicPlayerWidget": "mini_music_player", "youtubePlayerWidget": "youtube_player",
-    "stockCardWidget": "stock_card",
+    "stockCardWidget": "stock_card", "converterWidget": "converter",
+    "reminderWidget": "reminder", "settingsWidget": "settings",
 }
 
 
@@ -3819,6 +3820,10 @@ CONVERT_INTENT_RE = re.compile(
     r'|\b\d[\d,.]*\s*(?:%|percent)\s+(?:of|off)\b'
     r'|\b\d[\d,.]*\s*(?:[a-z°]{1,5}2?|\$|€|£|¥|₹)\s+(?:to|in|into|=)\s+[a-z°$€£¥₹]{1,5}\b'
     r'|^[\s\d.,()+\-*/^%×÷]+$', re.I)
+# Reminder / alarm at a time. "timer/stopwatch/countdown" stay with the clock
+# widget; a reminder carries a THING to be reminded of, or an alarm time.
+REMINDER_INTENT_RE = re.compile(
+    r'\bremind me\b|\bset (a|an) (reminder|alarm)\b|\balarm (for|at)\b|\breminder to\b', re.I)
 # Appearance/theme/settings — a UI-control verb (like CLEAR_ALL), handled by a
 # deterministic fast-path so a bare "dark mode" flips instantly instead of
 # spinning up the ~30s agent. Deliberately narrow: it must read as a look/skin
@@ -4417,6 +4422,46 @@ def build_converter_config(message: str) -> dict:
     elif re.search(r"[\d).]\s*[-+*/^%]|\bof\b|%", low) and re.search(r"\d", low):
         tab = "calc"
     return {"seed": (message or "").strip()[:120], "tab": tab}
+
+
+_TIME_AT_RE = re.compile(
+    r'\b(?:at|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b|\b(?:at|for)\s+(noon|midnight)\b', re.I)
+
+
+def build_reminder_config(message: str) -> dict:
+    """Parse a reminder into what the client needs to set an alarm:
+    a relative offset ("in 20 min"), an absolute clock time ("at 3pm" → HH:MM,
+    computed CLIENT-side so it's in the user's timezone), a `tomorrow` flag, and
+    a label (the ask minus the time + reminder verb). No time → the widget
+    defaults to +10 min, editable."""
+    low = (message or "").lower()
+    offset = _parse_duration_seconds(message)
+    at_time = ""
+    tomorrow = "tomorrow" in low
+    if offset <= 0:
+        tm = _TIME_AT_RE.search(message or "")
+        if tm:
+            if tm.group(4):  # noon / midnight
+                at_time = "12:00" if tm.group(4).lower() == "noon" else "00:00"
+            else:
+                h = int(tm.group(1)); mi = int(tm.group(2) or 0)
+                ap = (tm.group(3) or "").lower()
+                if ap == "pm" and h < 12:
+                    h += 12
+                if ap == "am" and h == 12:
+                    h = 0
+                at_time = f"{h % 24:02d}:{mi % 60:02d}"
+    label = re.sub(r'\b(set\s+(a|an)?\s*)?(remind(er)?|alarm)(\s+me)?\b',
+                   '', message or '', flags=re.I)
+    label = re.sub(r'\b(in\s+\d+[^,.]*?(seconds?|minutes?|mins?|hours?|hrs?|secs?)'
+                   r'|(at|for)\s+\d[\d:]*\s*(am|pm)?|(at|for)\s+(noon|midnight)|tomorrow)\b',
+                   '', label, flags=re.I)
+    # Drop a leading connective left behind ("...to call mom" → "call mom").
+    label = re.sub(r'^\s*(to|that|about|for)\s+', '', label.strip(" ,.:;-"), flags=re.I)
+    label = label.strip(" ,.:;-") or "Reminder"
+    return {"label": label[:80],
+            "offset_seconds": offset if offset > 0 else 0,
+            "at_time": at_time, "tomorrow": tomorrow}
 
 
 async def fetch_fx_rates(base: str) -> dict:
@@ -5953,6 +5998,7 @@ ROUTER_WIDGETS = {
     "notes":      ("notes",     'a notepad, optionally pre-filled. query = the whole request'),
     "clock":      ("clock",     'a clock / world clock / timer / countdown / stopwatch. query = the whole request'),
     "converter":  ("converter", 'a calculation OR a unit/currency conversion ("40% of 1250", "5 miles in km", "20 usd to eur"). query = the whole request'),
+    "reminder":   ("reminder",  'a reminder / alarm at a time ("remind me in 20 minutes", "remind me at 3pm to call mom"). query = the whole request'),
 }
 
 # In PRISM MODE (use_lazy_agent=False), these router widget types are RESEARCH asks
@@ -6499,6 +6545,9 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
         if wtype == "converter":
             return ("converter", "converter", build_converter_config(query or message))
 
+        if wtype == "reminder":
+            return ("reminder", "reminder", build_reminder_config(query or message))
+
         if wtype == "clock":
             text = (query or message).lower()
             if re.search(r"\b(timer|countdown|pomodoro)\b", text):
@@ -6949,6 +6998,14 @@ async def send_message(req: MessageRequest):
         if (THEME_INTENT_RE.search(text_clean)
                 and not re.search(r'\b(music|radio|song|playlist|video|watch)\b', text_clean)):
             return _stream_settings()
+
+        # REMINDER / alarm — checked before the converter (a reminder can carry
+        # a time that looks numeric) and before the clock timer branch.
+        if REMINDER_INTENT_RE.search(text_clean):
+            return spawn_widget_stream(
+                "reminder", "reminder",
+                config=build_reminder_config(req.message),
+                status="setting a reminder...")
 
         # CALC / CONVERT — instant interactive widget, no agent. Guarded off a
         # stock compare ("NVDA vs SPY"), which is a chart, not a conversion.
@@ -7549,6 +7606,7 @@ async def send_message(req: MessageRequest):
             "- COMPARE / contrast / 'which is better' asks → data_card with config={'search_query': '<X vs Y>'} — the server writes a Markdown comparison table with sources. If the user explicitly asked to SEE them, ALSO add ONE image widget with image_query naming both subjects. Never answer a comparison with images alone.\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
             "- CALCULATE or CONVERT ('40% of 1250', '5 miles in km', '20 usd to eur', 'what is 15*23') → canvas_add_widget(widget_type='converter', config={'seed':'<the whole ask>'}). The widget does the math client-side and stays interactive — never compute it yourself in prose.\n"
+            "- REMIND / alarm ('remind me in 20 min', 'remind me at 3pm to call mom', 'set an alarm for 7am') → canvas_add_widget(widget_type='reminder', config={'label':'<what to remind>', 'offset_seconds':<N for a relative time, else 0>, 'at_time':'<HH:MM 24h for an absolute time, else empty>'}). The widget counts down and alerts.\n"
             "- APPEARANCE / theme / colors ('dark mode', 'forest theme', 'make it pastel', 'egg colors'), OR settings/preferences → canvas_add_widget(widget_type='settings', config={'theme':'<what the user asked — e.g. dark, forest, pastel, egg, sunset, purple>'}). The server picks the CLOSEST palette from what you pass and applies it; omit 'theme' to just open settings without changing the look. This is the ONLY way to change the theme — never hand-edit colors. It's a singleton, so it updates in place.\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- EDIT an existing widget (change a timer's duration, a clock's timezone, a chart's data, swap the stock) → call canvas_add_widget AGAIN with the SAME widget_id from CURRENT CANVAS and the full updated config. It re-renders that widget in place — no duplicate. This is the ONLY way to change a clock/timer/stock/scoreboard/chart: canvas_modify_dom CANNOT rebuild these (they are server-rendered) and will break them. Example: to set the timer #clock-1 to 30s → canvas_add_widget(widget_type='clock', widget_id='clock-1', config={'mode':'countdown','duration_seconds':30}).\n"
