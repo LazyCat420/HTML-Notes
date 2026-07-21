@@ -751,9 +751,9 @@ def render_settings(widget_id: str, config: dict) -> str:
                                 class="flex items-center gap-2 px-2.5 py-2 rounded-xl border transition-colors text-left min-w-0"
                                 :class="t.name === active ? 'border-white/40 bg-white/10' : 'border-white/10 hover:bg-white/5'">
                             <span class="flex shrink-0 rounded-md overflow-hidden border border-white/10" style="width:36px;height:22px">
-                                <span class="h-full" :style="{ background: t.swatch[0], width: '34%' }"></span>
-                                <span class="h-full" :style="{ background: t.swatch[1], width: '33%' }"></span>
-                                <span class="h-full" :style="{ background: t.swatch[2], width: '33%' }"></span>
+                                <span class="h-full" :style="{{ background: t.swatch[0], width: '34%' }}"></span>
+                                <span class="h-full" :style="{{ background: t.swatch[1], width: '33%' }}"></span>
+                                <span class="h-full" :style="{{ background: t.swatch[2], width: '33%' }}"></span>
                             </span>
                             <span class="text-xs truncate" x-text="t.label"></span>
                             <span x-show="t.name === active" class="material-symbols-outlined text-[0.95rem] ml-auto shrink-0">check</span>
