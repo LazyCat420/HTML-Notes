@@ -1,8 +1,20 @@
 # Handoff — 2026-07-21 (deep-audit fix wave + widget pack v2)
 
-**Deployed:** synology `:8035`. 528 pytest green (34 new in
-`tests/test_widget_pack_v2.py`). Full verified audit: `AUDIT_2026-07-21.md`
-(48-agent adversarially-verified deep-research pass — 40 findings, 0 refuted).
+**Deployed:** synology `:8035` (d8ed34a) + lazy-agent-service schema
+(fc617e6) — new widget_type enum verified live in the container. 528 pytest +
+16 node green (34 new in `tests/test_widget_pack_v2.py`). Full verified audit:
+`AUDIT_2026-07-21.md` (48-agent adversarially-verified deep-research pass —
+40 findings, 0 refuted). Live E2E: products 15s (router-local in prism mode),
+profile_card 37-56s, versus_card 146s w/ winner highlighting; browser-verified
+chart survives serialize→adopt→reload and checklist edits survive reload.
+
+Post-deploy browser verification caught TWO client bugs pytest could not:
+(1) Alpine reactive-proxy aliasing — `this.items = initialItems` made the
+done-toggle mutate the restore baseline too; snapshot the baseline as JSON
+before assigning. (2) inside an x-for row, `$el` is the cloned row element
+(no id), so `$el.id`-keyed localStorage saved under the 'x' fallback while
+init() read the root-id key — `widgetStorageId()` now climbs to
+`.widget-container` (applied to checklist/notes/reminder keys).
 
 ## New premade widget types (7) — for faster/richer data display
 All registered in `WIDGET_RENDERERS`, stamped with data-sig/type, routed in the
