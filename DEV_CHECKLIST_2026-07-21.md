@@ -50,16 +50,23 @@ are the deliberately-deferred items.
       ~1300) — that config can only be tightened AFTER scripts stop living in
       the canvas. Acceptance: a custom widget still works interactively; its
       script cannot read `localStorage`/cookies of the app origin.
-- [ ] **Authenticate `POST /internal/execute`** (`app/main.py` ~9450): shared
-      secret header known to lazy-tool-service only; reject `req.tool` values
-      not in an explicit allowlist. Today it dispatches unauthenticated.
+- [x] **Authenticate `POST /internal/execute`** — DONE 2026-07-21 (6f2c03a +
+      lazy-agent 646c2f1): `x-internal-token` shared secret (constant-time
+      compare, env-first/vault fallback via `_fetch_secret`), provisioned in
+      both services' NAS `.env`; unset = compat mode with once-per-boot
+      warning. `req.tool` checked against the complete 21-tool dispatch set
+      before the elif chain. 528 pytest green; py3.11 AST ok.
 - [ ] **Enforce enabledTools server-side.** Prism forces its core tools in
       regardless of the allowlist (`coreToolsLocked` unreachable for CUSTOM
       agents — documented at `app/main.py` ~8790). Add a server-side check in
       the SSE interceptor that logs (first) then rejects mutations from tools
       outside `enabled_tools`.
-- [ ] **TomTom key**: still plaintext in the repo (older finding, see memory
-      `html-notes-router-intent-reinference`). Move to env/compose secret.
+- [x] **TomTom key** — RESOLVED 2026-07-21 (6f2c03a). The finding was actually
+      a LOG leak: httpx logged every request URL at INFO, exposing the `?key=`
+      param on each proxied tile fetch. httpx logger now capped at WARNING.
+      No key is committed anywhere; note `TOMTOM_API_KEY` is currently absent
+      from env AND vault, so the traffic overlay serves blank tiles until a
+      key is added (free: developer.tomtom.com).
 
 ## P2 — Consistency seams (all evidenced in AUDIT file with file:line)
 
