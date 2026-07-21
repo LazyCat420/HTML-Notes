@@ -1,3 +1,71 @@
+# Handoff — 2026-07-21 (new widgets: converter, reminder, notes-v2 + Obsidian)
+
+**Deployed:** synology `:8035`. 461 pytest + 16 node green. All three
+live-verified (browser-driven + on-disk vault file inspected).
+
+Three widgets added from the brainstorm; each is a full widget_type (renderer +
+Alpine component + router catalog + SYSTEM_PROMPT line + fast-path), following
+the recipe in the theme handoff below.
+
+## 1. Converter (`converter`)
+Interactive calculator + unit + currency, all client-side (instant, no agent
+turn per calc). Server `build_converter_config` only seeds the tab from the
+phrasing; the widget computes. Currency via keyless open.er-api.com
+(`GET /api/fx/{base}`, cached ~5m). Fast-path `CONVERT_INTENT_RE` (guarded off
+"X vs Y" stock-compare).
+GOTCHA fixed twice: a `<select x-model>` whose `<option>`s come from `x-for`
+shows the FIRST option, not the bound value, when the model is set during
+`init()` (options don't exist yet). Fix: set select-bound fields to `''` then
+restore them in `$nextTick`. Reassigning the same value does NOT re-sync — you
+must clear first. This bites any select+x-for+x-model widget.
+
+## 2. Reminder (`reminder`)
+Counts down to a relative ("in 20 min") or absolute ("at 3pm", "tomorrow at
+9am") time, then fires a browser Notification + a WebAudio beep. Server parses
+time+label; absolute times resolve CLIENT-side (user's timezone). Target
+persists in localStorage (survives reload); snooze/+5/+10, dismiss. Client-only
+firing — works while the tab is open (server-push reminders would need a
+different mechanism). Fast-path `REMINDER_INTENT_RE` (before the clock/timer
+branch, since a reminder carries a time too).
+
+## 3. Notes v2 (`notes`) + Obsidian vault — the big one
+Rewrote the plain-textarea notes widget into a markdown editor:
+- Edit ⇄ Preview (marked + DOMPurify), **interactive GFM checklists** (clicking
+  a box in preview toggles the `- [ ] / - [x]` source line via
+  `toggleTask`/`onPreviewClick`), tables, headings, tags.
+- **Save to Obsidian vault**: `POST /api/notes/save` writes `<slug>.md` with
+  YAML frontmatter (title/tags/created/updated/source) to `OBSIDIAN_VAULT_DIR`.
+  Upsert preserves `created`. `GET /api/notes/list` + `/api/notes/load` back
+  reopening. Slugs are path-safe (`_note_path` refuses anything that escapes the
+  vault). Frontmatter is hand-rolled (no pyyaml dep) — write via
+  `_yaml_frontmatter`, read via `_parse_frontmatter`.
+- **Persistence subtlety**: a textarea's typed value is NOT in serialized
+  `innerHTML`, so canvas serialization drops note edits. The widget autosaves to
+  localStorage keyed by widget id and restores on init — BUT only when the
+  server content is unchanged from the saved baseline (`s.base === cfg.content`);
+  if the agent rewrote the note, the server content wins. This is the fix for
+  "typed notes vanish on reload" that the old widget had.
+
+### Vault location (IMPORTANT for the Obsidian piggyback)
+`OBSIDIAN_VAULT_DIR` defaults to `data/vault` → `/app/data/vault` in the
+container → `./data/vault` on the NAS (host-mounted, works out of the box; that
+is where `weekend-plans.md` landed in the live test). **To use a REAL Obsidian
+vault**, mount it in docker-compose (writable, uid 1001) and set
+`OBSIDIAN_VAULT_DIR` to the mount path — commented example is in
+`docker-compose.yml`. Needs a compose edit + redeploy on the NAS; the app code
+already writes valid `.md` the moment the dir points at the vault.
+
+## Not done / watchlist
+- Reminders don't fire when the tab is closed (client-only). A durable
+  server-side reminder would need push or a poll-on-load sweep.
+- Notes: no in-widget "open a saved note" picker yet — `/api/notes/list` +
+  `/load` exist, but the widget only SAVES. A "browse vault" affordance is the
+  natural next step. No conflict handling if the same note is edited in Obsidian
+  and the canvas simultaneously (last-write-wins).
+- FX cache is the shared 5-min tool cache; fine for currency.
+
+---
+
 # Handoff — 2026-07-21 (agentic theme system + settings widget)
 
 **Deployed:** `deabfee` → synology `:8035`. 416 pytest + 16 node green. All 8
