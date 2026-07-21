@@ -122,7 +122,7 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     # scraper-service's real-browser 'auto' engine — it gets past the consent
     # interstitial that blocks plain httpx and returns the full results HTML, which
     # parses into a real POOL (so variety/dedup work, not a single repeated video).
-    pool = await _youtube_results_via_scraper(q, limit)
+    pool = await _youtube_results_via_scraper(q, limit, strict_recency=strict_recency)
     if pool:
         logger.info(f"[YOUTUBE] direct scrape empty for {q!r}; served scraper-service pool ({len(pool)})")
         return pool
@@ -134,13 +134,19 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     return fb
 
 
-async def _youtube_results_via_scraper(query: str, limit: int = 5) -> list:
+async def _youtube_results_via_scraper(query: str, limit: int = 5,
+                                       strict_recency: bool = False) -> list:
     """Fallback pool: scrape youtube.com/results via scraper-service (real browser,
     gets past the consent wall) and parse it with the same parser as the direct
-    path. Returns a scored+diversified list (a POOL, unlike the single-video proxy)."""
+    path. Returns a scored+diversified list (a POOL, unlike the single-video proxy).
+    `strict_recency` fetches under YouTube's date sort and returns newest-first
+    with NO diversity reshuffle — the strict guarantee must survive the fallback
+    tier, or a consent-walled primary silently downgrades 'newest' to 'popular'."""
     try:
         from app.youtube_search import build_search_url, parse_search_html
-        url, _ = build_search_url((query or "").strip(), order="relevance", lang="en")
+        url, _ = build_search_url((query or "").strip(),
+                                  order="date" if strict_recency else "relevance",
+                                  lang="en")
         html = await _scrape(url, engine="auto", timeout=20.0)
         if not html:
             return []
@@ -153,6 +159,9 @@ async def _youtube_results_via_scraper(query: str, limit: int = 5) -> list:
             if d.get("video_id") and d["video_id"] not in seen:
                 seen.add(d["video_id"])
                 out.append(d)
+        if strict_recency:
+            out.sort(key=lambda h: h["age_days"] if h.get("age_days") is not None else 1e9)
+            return out[:max(limit, 1)]
         return _diversify_by_channel(out, per_channel=2)[:max(limit, 1)]
     except Exception as e:
         logger.warning(f"youtube scraper-service fallback failed for {query!r}: {e}")
@@ -250,15 +259,22 @@ def _yt_name_tokens(s: str) -> set:
 
 
 def _yt_channel_name_match(subject: str, title: str) -> bool:
-    """A channel is the right one only on a near-exact name match in BOTH
-    directions — so 'top gun maverick' (a movie) does NOT bind to a fan channel
-    called 'Top Gun', but 'Paul Barron Network' binds to the exact channel."""
+    """A channel is the right one when the subject is (nearly) fully contained in
+    the channel title — 'paul barron' MUST bind to 'Paul Barron Network' (users
+    drop the trailing word), while 'top gun maverick' (a movie, fwd 0.67) does
+    NOT bind to a fan channel called 'Top Gun'. The backward direction is only a
+    loose sanity check: a strict bidirectional gate was live-tested and rejected
+    the real channel the user asked for. Single-word subjects bind on EXACT
+    title equality only ('fireship' → 'Fireship', never 'bitcoin' → 'Bitcoin
+    Magazine')."""
     a, b = _yt_name_tokens(subject), _yt_name_tokens(title)
     if not a or not b:
         return False
+    if len(a) == 1:
+        return a == b
     fwd = len(a & b) / len(a)
     bwd = len(a & b) / len(b)
-    return min(fwd, bwd) >= 0.7
+    return fwd >= 0.7 and bwd >= 0.5
 
 
 async def _yt_fetch_html(url: str, timeout: float = 12.0) -> str:
@@ -279,10 +295,15 @@ async def _yt_fetch_html(url: str, timeout: float = 12.0) -> str:
 
 async def _resolve_youtube_channel(name: str) -> Optional[dict]:
     """Best-match YouTube channel for a creator name → {channel_id, title}, or
-    None. Uses the channel-only search filter and the strict name-match gate so a
-    non-channel subject falls through to a normal keyword search."""
+    None. Uses the channel-only search filter and the name-match gate so a
+    non-channel subject falls through to a normal keyword search. First passing
+    candidate wins — YouTube's own relevance order already puts the canonical
+    channel ahead of same-name secondaries. A single-word subject is only trusted
+    when the TOP channel result matches it exactly (a topic word like 'bitcoin'
+    must not bind to whatever channel ranks first for it)."""
     name = (name or "").strip()
-    if len(_yt_name_tokens(name)) < 2:      # single-word subjects are too ambiguous
+    single = len(_yt_name_tokens(name)) == 1
+    if not _yt_name_tokens(name):
         return None
     url = (f"https://www.youtube.com/results?search_query="
            f"{urllib.parse.quote(name)}&sp={_YT_CHANNEL_SP}")
@@ -290,13 +311,16 @@ async def _resolve_youtube_channel(name: str) -> Optional[dict]:
     if not html:
         return None
     # channelRenderer carries channelId early and the title later in the same block.
-    for cid, title in re.findall(
-            r'"channelRenderer":\{"channelId":"([^"]+)".*?'
-            r'"title":\{"simpleText":"([^"]+)"', html, re.S)[:5]:
+    candidates = re.findall(
+        r'"channelRenderer":\{"channelId":"([^"]+)".*?'
+        r'"title":\{"simpleText":"([^"]+)"', html, re.S)[:1 if single else 5]
+    for cid, title in candidates:
         title = _yt_unescape(title)
         if _yt_channel_name_match(name, title):
             logger.info(f"[YOUTUBE] channel {name!r} -> {title!r} ({cid})")
             return {"channel_id": cid, "title": title}
+    logger.info(f"[YOUTUBE] no channel bound for {name!r} "
+                f"({len(candidates)} candidate(s) checked)")
     return None
 
 
@@ -7115,15 +7139,23 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
                     if chan:
                         feed = filter_blocked_videos(
                             await _youtube_channel_uploads(chan["channel_id"], limit=6))
-                        unseen = [h for h in feed
-                                  if h.get("video_id") not in _shown_video_ids(session_id)]
-                        feed = unseen or feed
+                        # NO already-shown exclusion here: "newest" is a factual
+                        # ask with exactly one right answer, so a repeat must
+                        # return the SAME latest upload, not rotate the feed.
+                        # (Live bug: the unseen-first filter served a different
+                        # video on every identical ask.)
                         if feed:
                             top = feed[0]
+                            age_min = ((top.get("age_days") or 0) * 1440)
+                            logger.info(
+                                f"[YOUTUBE] newest via channel feed: "
+                                f"{top['video_id']} published {top.get('published')}"
+                                f" (~{age_min:.0f} min ago) from {chan['title']!r}")
                             _remember_current_video(session_id, top, vq)
                             return ("youtube_player", "video", {
                                 "video_id": top["video_id"],
                                 "title": top.get("title") or vq, "query": vq,
+                                "published": top.get("published"),
                                 "candidates": [v["video_id"] for v in feed[1:]
                                                if v.get("video_id")]})
                 except Exception as e:
@@ -7138,7 +7170,12 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             if not hits:
                 hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
             # A strict "newest" ask wants THE latest, not a varied pick from top-k.
+            # Sort by age even here: if the date-ordered search came back empty and
+            # the relevance fallback filled `hits`, its order is popularity — the
+            # parsed age_days is what actually honors "newest".
             if want_newest and hits:
+                hits = sorted(hits, key=lambda h: h["age_days"]
+                              if h.get("age_days") is not None else 1e9)
                 top = hits[0]
                 cands = [v["video_id"] for v in hits[1:] if v.get("video_id")][:5]
             else:

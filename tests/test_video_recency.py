@@ -53,11 +53,39 @@ def test_channel_name_match_exact_and_rejects_movie():
     assert not m._yt_channel_name_match("bitcoin price today", "Bitcoin")
 
 
-def test_resolve_channel_skips_single_word_subject(monkeypatch):
-    """Single-word subjects are too ambiguous — no network call, straight None."""
-    async def boom(*a, **k):
-        raise AssertionError("must not fetch for a single-word subject")
-    monkeypatch.setattr(m, "_yt_fetch_html", boom)
+def test_channel_name_match_subject_shorter_than_title():
+    """LIVE BUG: 'newest paul barron video' → subject 'paul barron' was REJECTED
+    by the bidirectional gate against the real channel 'Paul Barron Network'
+    (bwd 0.67 < 0.7), so the feed path never ran. Users drop trailing words —
+    forward containment is the signal, backward is only a sanity floor."""
+    assert m._yt_channel_name_match("paul barron", "Paul Barron Network")
+    assert m._yt_channel_name_match("mkbhd", "MKBHD")          # single word exact
+    assert not m._yt_channel_name_match("bitcoin", "Bitcoin Magazine")
+    # Sanity floor still rejects a subject buried in a long unrelated title.
+    assert not m._yt_channel_name_match("paul barron", "Paul Barron Fan Clips Daily Show")
+
+
+def test_resolve_channel_single_word_exact_top_result_only(monkeypatch):
+    """A single-word subject binds ONLY when the TOP channel result matches it
+    exactly — 'fireship' → channel 'Fireship' binds; 'bitcoin' whose top channel
+    is 'Bitcoin Magazine' does not."""
+    html = ('{"channelRenderer":{"channelId":"UCF","junk":1,'
+            '"title":{"simpleText":"Fireship"}}'
+            '{"channelRenderer":{"channelId":"UCX",'
+            '"title":{"simpleText":"Fireship Clips"}}')
+
+    async def fake_html(url, timeout=12.0):
+        return html
+    monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
+    out = asyncio.run(m._resolve_youtube_channel("fireship"))
+    assert out == {"channel_id": "UCF", "title": "Fireship"}
+
+    html2 = ('{"channelRenderer":{"channelId":"UCM",'
+             '"title":{"simpleText":"Bitcoin Magazine"}}')
+
+    async def fake_html2(url, timeout=12.0):
+        return html2
+    monkeypatch.setattr(m, "_yt_fetch_html", fake_html2)
     assert asyncio.run(m._resolve_youtube_channel("bitcoin")) is None
 
 
@@ -144,3 +172,59 @@ def test_video_builder_uses_channel_feed_for_newest(monkeypatch):
     assert wtype == "youtube_player"
     assert cfg["video_id"] == "NEW1", "must serve the latest upload, not a varied pick"
     assert cfg["candidates"] == ["OLD1"]
+
+
+def test_newest_is_idempotent_even_when_already_shown(monkeypatch):
+    """LIVE BUG: asking 'newest paul barron video' twice returned DIFFERENT
+    videos — the unseen-first filter rotated the feed. 'Newest' is a factual ask
+    with one right answer: a repeat must return the SAME latest upload."""
+    async def fake_ground(msg):
+        return {"retrieval_query": "paul barron"}
+    async def fake_resolve(name):
+        return {"channel_id": "UC123", "title": "Paul Barron Network"}
+    async def fake_uploads(cid, limit=8):
+        return [{"video_id": "NEW1", "id": "NEW1", "title": "Newest",
+                 "channel": "Paul Barron Network", "age_days": 0.02},
+                {"video_id": "OLD1", "id": "OLD1", "title": "Older",
+                 "channel": "Paul Barron Network", "age_days": 5.0}]
+
+    monkeypatch.setattr(m, "ground_query", fake_ground)
+    monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
+    # NEW1 was already shown this session — the old code rotated to OLD1 here.
+    monkeypatch.setattr(m, "_shown_video_ids", lambda sid: {"NEW1"})
+
+    for _ in range(3):
+        out = asyncio.run(m.build_router_widget(
+            {"type": "video", "query": "newest paul barron video"},
+            "sess-repeat", "newest paul barron video"))
+        assert out[2]["video_id"] == "NEW1", "repeat ask must NOT rotate the feed"
+
+
+def test_newest_fallback_sorts_relevance_hits_by_age(monkeypatch):
+    """If the channel path doesn't bind and the date search is empty, the
+    relevance fallback's hits must still be age-sorted for a 'newest' ask."""
+    async def fake_ground(msg):
+        return {"retrieval_query": "paul barron"}
+    async def fake_resolve(name):
+        return None                       # no channel bound
+    calls = {"n": 0}
+    async def fake_search(q, limit=10, order="relevance", rerank=False,
+                          strict_recency=False):
+        calls["n"] += 1
+        if order == "date":
+            return []                     # date search dead → relevance fallback
+        return [{"video_id": "POP", "id": "POP", "title": "Popular", "age_days": 4.0},
+                {"video_id": "FRESH", "id": "FRESH", "title": "Fresh", "age_days": 0.03}]
+
+    monkeypatch.setattr(m, "ground_query", fake_ground)
+    monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    monkeypatch.setattr(m, "search_youtube_videos", fake_search)
+    monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_shown_video_ids", lambda sid: set())
+
+    out = asyncio.run(m.build_router_widget(
+        {"type": "video", "query": "newest paul barron video"},
+        "sess-fb", "newest paul barron video"))
+    assert out[2]["video_id"] == "FRESH", "age must beat relevance order on a newest ask"
