@@ -1,3 +1,69 @@
+# Handoff — 2026-07-21 (agentic theme system + settings widget)
+
+**Deployed:** `deabfee` → synology `:8035`. 416 pytest + 16 node green. All 8
+themes + the settings panel + the agentic flow screenshot/flow-verified live.
+
+## What shipped
+Ask the agent for a look ("dark mode", "forest theme", "make it pastel", "egg
+colors") and it applies the closest of 8 palettes and pops a settings panel;
+the panel's swatches also switch themes on click. Fully agentic per the user's
+direction — theme change is a UI-control action, so it also has a deterministic
+fast-path so a bare "dark mode" is instant.
+
+**Themes** are `<html data-theme="…">` selecting a palette in hud-theme.css.
+6 dark (hud=default cyan, midnight=dark-mode, forest, ember, grape, mono) +
+2 light (egg=warm cream, pastel=cool). Each is a 3-tone palette (bg / panel /
+accent) + text; texture (grid/scanlines/brackets) is opacity-controlled so
+light themes drop the cockpit noise.
+
+## Key implementation facts / gotchas
+- **The HUD's hardcoded cyan literals were converted to vars** (sed +
+  `--hud-accent-rgb`, `--hud-title`, etc.), so a palette is just ~15 var
+  overrides. If you add accent CSS, use the vars or it won't theme. A test
+  (`test_hud_literals_were_converted_to_vars`) guards against new raw literals.
+- **Light themes needed a text-contrast fix**: index.css drives default widget
+  text off ITS OWN `--text-color`/`--text-dim` (light blue) and never remaps
+  `text-white`. On cream/light both vanish. The egg/pastel blocks override
+  those index vars dark AND force `[class*="text-white"]`/slate-900/100/200 to
+  the palette ink. Any NEW light theme must do the same.
+- **Charts can't read CSS vars** (they draw on canvas). `window.HN.chartColors()`
+  feeds them the palette ink/line; `hn:theme` event redraws live charts. Series
+  colors stay vivid (readable on both). Both chart paths covered: language-chart
+  blocks (index.js) register via `window.HN.registerChart`; the stock card
+  redraws on the `hn:theme` event.
+- **Pre-paint**: an inline `<head>` script applies the saved theme before first
+  paint (no flash). The full engine (`window.HN.applyTheme`, persist, chart
+  sync) is in index.js.
+- **Alpine `:style` with a STRING replaces the style attribute** (wiped the
+  swatch bars' width → invisible). Use the object form. And in an f-string the
+  object braces must be doubled `{{ }}`. Both bit me; both fixed.
+- **Settings is a singleton** (`widget_id='settings-panel'`), so repeated theme
+  changes update the same panel. It also carries the voice-reply toggle (wired
+  to the real mute via `window.HN.setMuted`) and reset-layout.
+
+## Server
+`THEME_CATALOG` (name/label/swatch/keywords) + `pick_theme(text)` — fuzzy,
+typo-tolerant, light/dark tiebreak. Fast-path `THEME_INTENT_RE` intercept (with
+a media guard so "dark ambient music" is untouched) → `_stream_settings`. The
+agent path knows the same route via SYSTEM_PROMPT for mixed phrasing.
+
+## Adding a theme (recipe)
+1. `:root[data-theme="X"]` block in hud-theme.css (copy an existing one; set the
+   ~15 vars; light themes also set `--text-color/--text-dim/--ice` + zero the
+   texture opacities). 2. A `THEME_CATALOG` entry in main.py (name matching the
+   CSS, label, 3 swatch hexes, keywords). 3. That's it — settings renders it,
+   pick_theme matches it, tests assert the pairing.
+
+## Not done / watchlist
+- Chart SERIES colors are palette-independent (vivid defaults). Fine on all 8,
+  but a truly monochrome "mono" chart would want series from the accent ramp.
+- Themes recolor structure + text; a few deeply-baked Tailwind widget accents
+  (semantic green/red for up/down, the image-card white matte) are intentionally
+  left — they're meaning, not theme.
+- The next brainstorm (missing basic widgets) is tracked separately.
+
+---
+
 # Handoff — 2026-07-20 (multi-ticker compare + x-for round-trip + tie-break)
 
 **Deployed:** `b585494` → synology `:8035`. 379 pytest + 16 node green.
