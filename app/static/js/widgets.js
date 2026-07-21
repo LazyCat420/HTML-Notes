@@ -350,6 +350,181 @@ document.addEventListener('alpine:init', () => {
         content: initialContent
     }));
 
+    // 3c. Converter — calculator + unit + currency. Fully client-side so each
+    // calculation is instant (no agent turn); the server only seeds the initial
+    // tab + input from the user's phrasing.
+    const _U = {   // conversion factors to each category's base unit
+        Length: { mm: 0.001, cm: 0.01, m: 1, km: 1000, in: 0.0254, ft: 0.3048, yd: 0.9144, mi: 1609.344, nmi: 1852 },
+        Mass:   { mg: 0.001, g: 1, kg: 1000, t: 1e6, oz: 28.349523, lb: 453.59237, st: 6350.29318 },
+        Volume: { ml: 0.001, l: 1, tsp: 0.00492892, tbsp: 0.0147868, cup: 0.236588, pt: 0.473176, qt: 0.946353, gal: 3.785412, floz: 0.0295735 },
+        Speed:  { 'm/s': 1, 'km/h': 0.277778, mph: 0.44704, knot: 0.514444, 'ft/s': 0.3048 },
+        Area:   { cm2: 0.0001, m2: 1, km2: 1e6, ft2: 0.092903, acre: 4046.8564, ha: 10000, mi2: 2589988.11 },
+        Data:   { B: 1, KB: 1024, MB: 1048576, GB: 1073741824, TB: 1099511627776 },
+        Time:   { sec: 1, min: 60, hr: 3600, day: 86400, week: 604800 },
+        // Placeholder factors — Temperature converts via formula (convTemp),
+        // the keys just populate the dropdown.
+        Temperature: { '°C': 1, '°F': 1, K: 1 },
+    };
+    const _SYM = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR' };
+
+    function _evalMath(raw) {
+        let s = (raw || '').trim().toLowerCase();
+        // Percent phrases first, then bare percents.
+        s = s.replace(/(\d+\.?\d*)\s*%\s*of\s*(\d+\.?\d*)/g, '($1/100*$2)');
+        s = s.replace(/(\d+\.?\d*)\s*%\s*off\s*(\d+\.?\d*)/g, '($2*(1-$1/100))');
+        s = s.replace(/(\d+\.?\d*)\s*%\s*(?:on|plus|added to)\s*(\d+\.?\d*)/g, '($2*(1+$1/100))');
+        s = s.replace(/(\d+\.?\d*)\s*%/g, '($1/100)');
+        s = s.replace(/\bx\b/g, '*').replace(/×/g, '*').replace(/÷/g, '/');
+        const toks = s.match(/(\d+\.?\d*|[+\-*/^()%])/g);
+        if (!toks) throw new Error('empty');
+        const prec = { '+': 1, '-': 1, '*': 2, '/': 2, '%': 2, '^': 3 }, right = { '^': 1 };
+        const out = [], ops = []; let prev = null;
+        for (const t of toks) {
+            if (/^\d/.test(t)) { out.push(parseFloat(t)); prev = 'num'; }
+            else if (t === '(') { ops.push(t); prev = '('; }
+            else if (t === ')') {
+                while (ops.length && ops[ops.length - 1] !== '(') out.push(ops.pop());
+                if (!ops.length) throw new Error('paren'); ops.pop(); prev = ')';
+            } else {
+                if (t === '-' && (prev === null || prev === '(' || prev === 'op')) out.push(0);
+                while (ops.length && ops[ops.length - 1] !== '(' &&
+                    (prec[ops[ops.length - 1]] > prec[t] ||
+                        (prec[ops[ops.length - 1]] === prec[t] && !right[t]))) out.push(ops.pop());
+                ops.push(t); prev = 'op';
+            }
+        }
+        while (ops.length) { const o = ops.pop(); if (o === '(') throw new Error('paren'); out.push(o); }
+        const st = [];
+        for (const t of out) {
+            if (typeof t === 'number') st.push(t);
+            else {
+                const b = st.pop(), a = st.pop();
+                if (a === undefined || b === undefined) throw new Error('expr');
+                st.push(t === '+' ? a + b : t === '-' ? a - b : t === '*' ? a * b :
+                    t === '/' ? a / b : t === '%' ? a % b : Math.pow(a, b));
+            }
+        }
+        if (st.length !== 1 || !isFinite(st[0])) throw new Error('expr');
+        return st[0];
+    }
+    function _fmt(n) {
+        if (n === '' || n === null || n === undefined || !isFinite(n)) return '—';
+        const r = Math.round(n * 1e6) / 1e6;
+        return r.toLocaleString('en-US', { maximumFractionDigits: 6 });
+    }
+
+    Alpine.data('converterWidget', (cfg = {}) => ({
+        tab: cfg.tab || 'calc',
+        units: _U,
+        // calc
+        expr: '', calcResult: '0', calcErr: '',
+        // units
+        uCat: 'Length', uVal: 1, uFrom: 'mi', uTo: 'km', uResult: '—',
+        // currency
+        currencies: ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'MXN', 'BRL'],
+        cVal: 1, cFrom: 'USD', cTo: 'EUR', cResult: '—', fxNote: '', rates: null,
+
+        init() {
+            const parsed = this.parseSeed(cfg.seed || '');
+            this.tab = parsed.tab || this.tab;
+            if (this.tab === 'calc') this.calc();
+            else if (this.tab === 'units') this.conv();
+            else this.loadFx();
+        },
+
+        // Route the seed phrase to a tab + prefill the inputs.
+        parseSeed(seed) {
+            const s = (seed || '').trim();
+            if (!s) return { tab: this.tab };
+            // currency: "20 usd to eur", "$50 in gbp"
+            const cur = s.match(/([\d.,]+)\s*([a-z]{3}|[$€£¥₹])\s*(?:to|in|into|=|→)?\s*([a-z]{3}|[$€£¥₹])/i);
+            if (cur) {
+                const from = (_SYM[cur[2]] || cur[2]).toUpperCase();
+                const to = (_SYM[cur[3]] || cur[3]).toUpperCase();
+                this.cVal = parseFloat(cur[1].replace(/,/g, '')) || 1;
+                this.cFrom = from; this.cTo = to;
+                if (!this.currencies.includes(from)) this.currencies.push(from);
+                if (!this.currencies.includes(to)) this.currencies.push(to);
+                return { tab: 'currency' };
+            }
+            // units: "5 miles in km"
+            const alias = {
+                miles: 'mi', mile: 'mi', kilometers: 'km', kilometres: 'km', meters: 'm', metres: 'm',
+                feet: 'ft', foot: 'ft', inches: 'in', inch: 'in', yards: 'yd', pounds: 'lb', pound: 'lb',
+                kilograms: 'kg', grams: 'g', ounces: 'oz', ounce: 'oz', litres: 'l', liters: 'l',
+                gallons: 'gal', gallon: 'gal', cups: 'cup', celsius: '°C', fahrenheit: '°F', kelvin: 'K',
+                minutes: 'min', hours: 'hr', seconds: 'sec', days: 'day', weeks: 'week',
+            };
+            const um = s.match(/([\d.,]+)\s*([a-z°]+\/?[a-z]*2?)\s*(?:to|in|into|=|→)\s*([a-z°]+\/?[a-z]*2?)/i);
+            if (um) {
+                const norm = u => alias[u.toLowerCase()] || u;
+                let from = norm(um[2]), to = norm(um[3]);
+                // normalize bare temperature letters to the dropdown keys
+                const tnorm = { c: '°C', f: '°F', k: 'K', '°c': '°C', '°f': '°F' };
+                from = tnorm[from.toLowerCase()] || from;
+                to = tnorm[to.toLowerCase()] || to;
+                for (const [cat, tbl] of Object.entries(this.units)) {
+                    if (tbl[from] !== undefined && tbl[to] !== undefined) {
+                        this.uCat = cat; this.uFrom = from; this.uTo = to;
+                        this.uVal = parseFloat(um[1].replace(/,/g, '')) || 1;
+                        return { tab: 'units' };
+                    }
+                }
+            }
+            // else: calculator
+            this.expr = s;
+            return { tab: 'calc' };
+        },
+
+        calc() {
+            if (!this.expr.trim()) { this.calcResult = '0'; this.calcErr = ''; return; }
+            try { this.calcResult = _fmt(_evalMath(this.expr)); this.calcErr = ''; }
+            catch (e) { this.calcErr = 'Not a valid expression'; }
+        },
+
+        onCatChange() {
+            const keys = Object.keys(this.units[this.uCat]);
+            this.uFrom = keys[0]; this.uTo = keys[1] || keys[0]; this.conv();
+        },
+
+        conv() {
+            const v = parseFloat(this.uVal);
+            if (!isFinite(v)) { this.uResult = '—'; return; }
+            if (this.uCat === 'Temperature') { this.uResult = _fmt(this.convTemp(v, this.uFrom, this.uTo)); return; }
+            const tbl = this.units[this.uCat];
+            const base = v * tbl[this.uFrom];
+            this.uResult = _fmt(base / tbl[this.uTo]);
+        },
+
+        convTemp(v, from, to) {
+            const f = from.replace('°', '').toUpperCase(), t = to.replace('°', '').toUpperCase();
+            const c = f === 'C' ? v : f === 'F' ? (v - 32) * 5 / 9 : v - 273.15;   // to Celsius
+            return t === 'C' ? c : t === 'F' ? c * 9 / 5 + 32 : c + 273.15;
+        },
+
+        async loadFx() {
+            try {
+                const res = await fetch(`/api/fx/${encodeURIComponent(this.cFrom)}`);
+                const data = await res.json();
+                if (data && data.rates) {
+                    this.rates = data.rates;
+                    this.fxNote = data.updated ? `Rates ${data.updated}` : '';
+                    // widen the currency list to everything the API returned
+                    const all = Object.keys(data.rates).sort();
+                    this.currencies = [...new Set([this.cFrom, ...this.currencies, ...all])]
+                        .filter(c => c === this.cFrom || all.includes(c));
+                } else { this.fxNote = 'Rates unavailable'; }
+            } catch (e) { this.fxNote = 'Rates unavailable'; this.rates = null; }
+            this.fxConv();
+        },
+
+        fxConv() {
+            const v = parseFloat(this.cVal);
+            if (!isFinite(v) || !this.rates || !this.rates[this.cTo]) { this.cResult = '—'; return; }
+            this.cResult = _fmt(v * this.rates[this.cTo]);
+        },
+    }));
+
     // 3b. Settings — appearance (theme swatches) + preferences. The agent pops
     // this up; all controls act on the live page through window.HN, so a click
     // here changes the theme/mute for real, no round-trip.

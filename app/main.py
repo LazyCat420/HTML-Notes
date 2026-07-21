@@ -3810,6 +3810,15 @@ CLEAR_ALL_RE = re.compile(
     r'\b(everything|every widget|all (the |my )?(widgets?|cards?)|all of (it|them)|'
     r'the (whole |entire )?(canvas|dashboard|screen)|it all)\b')
 NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
+# Calculator / unit / currency conversion. A bare "X to Y" or "N% of M" or a
+# plain arithmetic expression opens the converter directly. Kept off the
+# stock-compare "vs" phrasing (that's the multi-ticker chart) and off anything
+# with a research verb.
+CONVERT_INTENT_RE = re.compile(
+    r'\b(convert|calculate|calculator)\b'
+    r'|\b\d[\d,.]*\s*(?:%|percent)\s+(?:of|off)\b'
+    r'|\b\d[\d,.]*\s*(?:[a-z°]{1,5}2?|\$|€|£|¥|₹)\s+(?:to|in|into|=)\s+[a-z°$€£¥₹]{1,5}\b'
+    r'|^[\s\d.,()+\-*/^%×÷]+$', re.I)
 # Appearance/theme/settings — a UI-control verb (like CLEAR_ALL), handled by a
 # deterministic fast-path so a bare "dark mode" flips instantly instead of
 # spinning up the ~30s agent. Deliberately narrow: it must read as a look/skin
@@ -4375,6 +4384,64 @@ def _resolve_restorable_list(message: str) -> Optional[dict]:
         except Exception:
             pass
     return None
+
+
+# Currency codes the converter recognizes when classifying a seed.
+_CURRENCY_CODES = {
+    "usd", "eur", "gbp", "jpy", "cad", "aud", "chf", "cny", "inr", "mxn", "brl",
+    "nzd", "sek", "nok", "dkk", "sgd", "hkd", "krw", "zar", "rub", "try", "pln",
+}
+_UNIT_WORDS = {
+    "mm", "cm", "m", "km", "in", "inch", "inches", "ft", "foot", "feet", "yd",
+    "yard", "yards", "mi", "mile", "miles", "nmi", "mg", "g", "gram", "grams",
+    "kg", "oz", "ounce", "ounces", "lb", "lbs", "pound", "pounds", "st", "ml",
+    "l", "liter", "litre", "liters", "litres", "tsp", "tbsp", "cup", "cups",
+    "pt", "qt", "gal", "gallon", "gallons", "floz", "mph", "kph", "knot",
+    "celsius", "fahrenheit", "kelvin", "c", "f", "k", "mb", "gb", "tb", "kb",
+}
+
+
+def build_converter_config(message: str) -> dict:
+    """Seed the converter: pick a tab from the phrasing so it opens on the right
+    tool with the user's numbers prefilled. Pure regex — no LLM, no network.
+    The widget itself does the actual math client-side."""
+    low = (message or "").lower()
+    tab = "calc"
+    # currency: a 3-letter code or a currency symbol present
+    if re.search(r"[$€£¥₹]", message or "") or any(
+            re.search(rf"\b{c}\b", low) for c in _CURRENCY_CODES):
+        tab = "currency"
+    elif any(re.search(rf"\b{re.escape(u)}\b", low) for u in _UNIT_WORDS) \
+            and re.search(r"\b(to|in|into|=)\b", low):
+        tab = "units"
+    elif re.search(r"[\d).]\s*[-+*/^%]|\bof\b|%", low) and re.search(r"\d", low):
+        tab = "calc"
+    return {"seed": (message or "").strip()[:120], "tab": tab}
+
+
+async def fetch_fx_rates(base: str) -> dict:
+    """Latest FX rates for `base`, keyless via open.er-api.com, cached via the
+    shared tool cache (~5m — rates barely move intraday).
+    Returns {base, rates:{CODE:rate}, updated} or {} on failure."""
+    base = (base or "USD").upper()
+    if not re.fullmatch(r"[A-Z]{3}", base):
+        return {}
+    cached = get_cached_tool_result(f"fx:{base}")
+    if cached:
+        return cached
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            r = await client.get(f"https://open.er-api.com/v6/latest/{base}")
+            data = r.json()
+        if data.get("result") != "success" or not isinstance(data.get("rates"), dict):
+            return {}
+        out = {"base": base, "rates": data["rates"],
+               "updated": (data.get("time_last_update_utc") or "")[:16]}
+        cache_tool_result(f"fx:{base}", out)
+        return out
+    except Exception as e:
+        logger.warning(f"fetch_fx_rates({base}) failed: {e}")
+        return {}
 
 
 async def build_notes_config(message: str) -> dict:
@@ -5885,6 +5952,7 @@ ROUTER_WIDGETS = {
     "list":       ("checklist", 'a checklist / to-do / shopping list to CREATE. query = the whole request'),
     "notes":      ("notes",     'a notepad, optionally pre-filled. query = the whole request'),
     "clock":      ("clock",     'a clock / world clock / timer / countdown / stopwatch. query = the whole request'),
+    "converter":  ("converter", 'a calculation OR a unit/currency conversion ("40% of 1250", "5 miles in km", "20 usd to eur"). query = the whole request'),
 }
 
 # In PRISM MODE (use_lazy_agent=False), these router widget types are RESEARCH asks
@@ -6428,6 +6496,9 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
         if wtype == "notes":
             return ("notes", "notes", await build_notes_config(query or message))
 
+        if wtype == "converter":
+            return ("converter", "converter", build_converter_config(query or message))
+
         if wtype == "clock":
             text = (query or message).lower()
             if re.search(r"\b(timer|countdown|pomodoro)\b", text):
@@ -6878,6 +6949,15 @@ async def send_message(req: MessageRequest):
         if (THEME_INTENT_RE.search(text_clean)
                 and not re.search(r'\b(music|radio|song|playlist|video|watch)\b', text_clean)):
             return _stream_settings()
+
+        # CALC / CONVERT — instant interactive widget, no agent. Guarded off a
+        # stock compare ("NVDA vs SPY"), which is a chart, not a conversion.
+        if (CONVERT_INTENT_RE.search(text_clean)
+                and not re.search(r'\b[A-Za-z]{1,5}\s+vs\.?\s+[A-Za-z]{1,5}\b', text_clean)):
+            return spawn_widget_stream(
+                "converter", "converter",
+                config=build_converter_config(req.message),
+                status="opening the converter...")
 
         # LIST RESTORE — "bring back my grocery list": restore saved items instead
         # of regenerating. Guarded against edits/removals so those still route
@@ -7468,6 +7548,7 @@ async def send_message(req: MessageRequest):
             "- picture of X → canvas_add_widget(widget_type='image', config={'image_query': '<what to show>'}). You have NO image tool and CANNOT know real image URLs — NEVER write 'url' or 'images' entries; a URL you produce is fabricated and renders as the wrong picture or a broken frame. The server searches, vision-checks and captions real pictures from image_query. 'Show me X vs Y' is still ONE image widget: image_query='X vs Y'.\n"
             "- COMPARE / contrast / 'which is better' asks → data_card with config={'search_query': '<X vs Y>'} — the server writes a Markdown comparison table with sources. If the user explicitly asked to SEE them, ALSO add ONE image widget with image_query naming both subjects. Never answer a comparison with images alone.\n"
             "- clock, checklist, notes, music, embedded app → canvas_add_widget with that widget_type\n"
+            "- CALCULATE or CONVERT ('40% of 1250', '5 miles in km', '20 usd to eur', 'what is 15*23') → canvas_add_widget(widget_type='converter', config={'seed':'<the whole ask>'}). The widget does the math client-side and stays interactive — never compute it yourself in prose.\n"
             "- APPEARANCE / theme / colors ('dark mode', 'forest theme', 'make it pastel', 'egg colors'), OR settings/preferences → canvas_add_widget(widget_type='settings', config={'theme':'<what the user asked — e.g. dark, forest, pastel, egg, sunset, purple>'}). The server picks the CLOSEST palette from what you pass and applies it; omit 'theme' to just open settings without changing the look. This is the ONLY way to change the theme — never hand-edit colors. It's a singleton, so it updates in place.\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- EDIT an existing widget (change a timer's duration, a clock's timezone, a chart's data, swap the stock) → call canvas_add_widget AGAIN with the SAME widget_id from CURRENT CANVAS and the full updated config. It re-renders that widget in place — no duplicate. This is the ONLY way to change a clock/timer/stock/scoreboard/chart: canvas_modify_dom CANNOT rebuild these (they are server-rendered) and will break them. Example: to set the timer #clock-1 to 30s → canvas_add_widget(widget_type='clock', widget_id='clock-1', config={'mode':'countdown','duration_seconds':30}).\n"
@@ -8642,6 +8723,13 @@ async def api_stock(symbol: str, range: str = "1mo"):
     """Backs the stock widget's range tabs — switching 1D/1M/1Y/10Y/MAX refetches
     here instead of going through the agent again."""
     return await stock_snapshot(symbol, range)
+
+
+@app.get("/api/fx/{base}")
+async def api_fx(base: str):
+    """Backs the converter's currency tab — latest rates for `base` (keyless,
+    cached). Empty {} degrades to 'Rates unavailable' client-side."""
+    return await fetch_fx_rates(base)
 
 
 @app.get("/api/youtube/candidates")

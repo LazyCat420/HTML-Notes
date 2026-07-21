@@ -776,6 +776,80 @@ def render_settings(widget_id: str, config: dict) -> str:
     </div>
     """
 
+def render_converter(widget_id: str, config: dict) -> str:
+    """Calculator + unit/currency converter. Interactive client-side (no agent
+    round-trip per calculation); the server only seeds the initial tab + input
+    from the user's phrasing. `seed` is the raw ask ("40% of 1250", "5 mi in km",
+    "20 usd to eur"); `tab` is the server's guess (calc / units / currency)."""
+    seed = config.get("seed", "")
+    tab = config.get("tab", "calc")
+    cfg_js = f"{{ seed: {json_escape(seed)}, tab: {json_escape(tab)} }}"
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col group"
+         x-data="converterWidget({cfg_js})">
+        {widget_header("Converter", "calculate")}
+        <div class="p-4 flex flex-col gap-3 overflow-y-auto">
+            <!-- Tabs -->
+            <div class="flex gap-1">
+                <template x-for="t in ['calc','units','currency']" :key="t">
+                    <button @click="tab = t" class="px-3 py-1 rounded-lg text-xs font-semibold uppercase tracking-wide transition-colors"
+                            :class="tab === t ? 'bg-white/15 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'"
+                            x-text="t === 'calc' ? 'Calc' : (t === 'units' ? 'Units' : 'Currency')"></button>
+                </template>
+            </div>
+
+            <!-- CALCULATOR -->
+            <div x-show="tab === 'calc'" class="flex flex-col gap-2">
+                <input x-model="expr" @input="calc()" @keydown.enter="calc()" spellcheck="false"
+                       class="w-full bg-black/30 text-slate-100 font-mono text-sm rounded-xl border border-white/10 px-3 py-2 focus:outline-none focus:border-purple-500"
+                       placeholder="e.g. 40% of 1250, (3+4)*2, 15^2">
+                <div class="text-right text-2xl font-mono tabular-nums px-1" :class="calcErr ? 'text-rose-400 text-sm' : 'text-emerald-300'"
+                     x-text="calcErr || calcResult"></div>
+            </div>
+
+            <!-- UNITS -->
+            <div x-show="tab === 'units'" class="flex flex-col gap-2">
+                <select x-model="uCat" @change="onCatChange()"
+                        class="bg-black/30 text-slate-200 text-xs rounded-xl border border-white/10 px-3 py-2 focus:outline-none focus:border-purple-500 appearance-none cursor-pointer">
+                    <template x-for="c in Object.keys(units)" :key="c"><option :value="c" x-text="c"></option></template>
+                </select>
+                <div class="flex items-center gap-2">
+                    <input x-model.number="uVal" @input="conv()" type="number"
+                           class="flex-1 min-w-0 bg-black/30 text-slate-100 font-mono text-sm rounded-xl border border-white/10 px-3 py-2 focus:outline-none focus:border-purple-500">
+                    <select x-model="uFrom" @change="conv()" class="bg-black/30 text-slate-200 text-xs rounded-xl border border-white/10 px-2 py-2 appearance-none cursor-pointer max-w-[7rem]">
+                        <template x-for="u in Object.keys(units[uCat])" :key="u"><option :value="u" x-text="u"></option></template>
+                    </select>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 min-w-0 text-right text-lg font-mono tabular-nums text-emerald-300 px-1" x-text="uResult"></div>
+                    <select x-model="uTo" @change="conv()" class="bg-black/30 text-slate-200 text-xs rounded-xl border border-white/10 px-2 py-2 appearance-none cursor-pointer max-w-[7rem]">
+                        <template x-for="u in Object.keys(units[uCat])" :key="u"><option :value="u" x-text="u"></option></template>
+                    </select>
+                </div>
+            </div>
+
+            <!-- CURRENCY -->
+            <div x-show="tab === 'currency'" class="flex flex-col gap-2">
+                <div class="flex items-center gap-2">
+                    <input x-model.number="cVal" @input="fxConv()" type="number"
+                           class="flex-1 min-w-0 bg-black/30 text-slate-100 font-mono text-sm rounded-xl border border-white/10 px-3 py-2 focus:outline-none focus:border-purple-500">
+                    <select x-model="cFrom" @change="loadFx()" class="bg-black/30 text-slate-200 text-xs rounded-xl border border-white/10 px-2 py-2 appearance-none cursor-pointer max-w-[7rem]">
+                        <template x-for="c in currencies" :key="c"><option :value="c" x-text="c"></option></template>
+                    </select>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 min-w-0 text-right text-lg font-mono tabular-nums text-emerald-300 px-1" x-text="cResult"></div>
+                    <select x-model="cTo" @change="fxConv()" class="bg-black/30 text-slate-200 text-xs rounded-xl border border-white/10 px-2 py-2 appearance-none cursor-pointer max-w-[7rem]">
+                        <template x-for="c in currencies" :key="c"><option :value="c" x-text="c"></option></template>
+                    </select>
+                </div>
+                <div class="text-[0.62rem] text-slate-500 px-1" x-text="fxNote"></div>
+            </div>
+        </div>
+    </div>
+    """
+
+
 def render_notes(widget_id: str, config: dict) -> str:
     title = config.get("title", "Quick Notes")
     content = config.get("content", "")
@@ -1404,6 +1478,7 @@ WIDGET_RENDERERS = {
     "weather": render_weather,
     "map": render_map,
     "settings": render_settings,
+    "converter": render_converter,
 }
 
 def _content_sig(widget_type: str, config: dict) -> str:
