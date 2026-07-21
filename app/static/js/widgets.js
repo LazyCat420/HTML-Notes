@@ -211,6 +211,17 @@ document.addEventListener('alpine:init', () => {
         },
     }));
 
+    // Resolve the persistence key from the WIDGET ROOT, not $el. Inside an
+    // x-for template (checklist rows) — and in any nested-element handler —
+    // Alpine evaluates $el as the element the expression ran on (a checkbox,
+    // a textarea), which has no id, so saves landed under the 'x' fallback
+    // key while init() read the root-id key: edits saved, restore missed.
+    function widgetStorageId(el) {
+        if (!el) return 'x';
+        const root = el.closest ? el.closest('.widget-container') : null;
+        return (root && root.id) || el.id || 'x';
+    }
+
     Alpine.data('checklistWidget', (title, initialItems = []) => {
         // Snapshot the server baseline BEFORE anything can mutate it. `items`
         // must NOT alias initialItems: Alpine's reactive proxy wraps the same
@@ -260,7 +271,7 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        _key() { return 'hn_checklist_' + ((this.$el && this.$el.id) || 'x'); },
+        _key() { return 'hn_checklist_' + widgetStorageId(this.$el); },
         persist() {
             try {
                 localStorage.setItem(this._key(), JSON.stringify({
@@ -491,7 +502,7 @@ document.addEventListener('alpine:init', () => {
             },
 
             esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; },
-            _key() { return 'hn_note_' + ((this.$el && this.$el.id) || 'x'); },
+            _key() { return 'hn_note_' + widgetStorageId(this.$el); },
             _persist() {
                 try {
                     localStorage.setItem(this._key(), JSON.stringify({
@@ -609,7 +620,7 @@ document.addEventListener('alpine:init', () => {
             catch (e) { return ''; }
         },
 
-        _key() { return 'hn_reminder_' + ((this.$el && this.$el.id) || 'x'); },
+        _key() { return 'hn_reminder_' + widgetStorageId(this.$el); },
         save() { try { localStorage.setItem(this._key(), JSON.stringify({ target: this.target, label: this.label })); } catch (e) {} },
         load() { try { return JSON.parse(localStorage.getItem(this._key()) || 'null'); } catch (e) { return null; } },
     }));
