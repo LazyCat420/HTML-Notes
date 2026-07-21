@@ -13,7 +13,13 @@ window.HN = (function () {
         try {
             const tmp = document.createElement('div');
             tmp.innerHTML = html || '';
-            tmp.querySelectorAll('.widget-container, .rendered-component').forEach(el => {
+            tmp.querySelectorAll('.widget-container, .glass-card, .rendered-component').forEach(el => {
+                // data-widget-type is the authoritative stamp (set by
+                // generate_widget_html on every widget root); the class
+                // heuristic below misreported 12 of the factory types (they
+                // carry no '-widget' class) as an icon glyph or a layout class.
+                const stamped = el.getAttribute('data-widget-type');
+                if (stamped) { out.push(stamped); return; }
                 const cls = [...el.classList].find(c => c.endsWith('-widget'));
                 const icon = el.querySelector('.material-symbols-outlined, .text-xl');
                 out.push(cls || icon?.textContent?.trim() || el.className.split(' ')[1] || 'widget');
@@ -918,7 +924,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // Widgets whose content is live, interactive, or continuously re-rendered.
-    const GLITCH_SKIP_SELECTOR = ['.map-widget', '.youtube-widget', '.music-widget'].join(',');
+    // Keyed on the authoritative data-widget-type stamp — the previous
+    // '.youtube-widget' / '.music-widget' class selectors matched NOTHING (no
+    // renderer emits those classes; those widgets were saved only by the
+    // isAlpineDriven structural check below).
+    const GLITCH_SKIP_SELECTOR = [
+        '.map-widget',
+        '[data-widget-type="map"]',
+        '[data-widget-type="youtube_player"]',
+        '[data-widget-type="mini_music_player"]'
+    ].join(',');
 
     /**
      * True when Alpine actively manages this widget's contents.
@@ -1136,16 +1151,24 @@ document.addEventListener("DOMContentLoaded", () => {
         // wrapper (nothing existed yet for the server to append into) — fall back
         // to any widget-container found anywhere in the parsed document.
         const sourceRoot = doc.querySelector('#dashboard-grid') || doc.body;
-        const newWidgets = Array.from(sourceRoot.querySelectorAll('.widget-container'));
+        // Match loadHistory's widget census: create_widget custom widgets are
+        // '.glass-card canvas-widget', NOT '.widget-container' — selecting only
+        // the latter meant a custom widget's component event never painted live
+        // (the tool reported success, nothing appeared until reload), and a
+        // server-side removal of one left a zombie card on screen forever.
+        const newWidgets = Array.from(sourceRoot.querySelectorAll('.widget-container, .glass-card, .canvas-widget'))
+            .filter(w => !w.parentElement || !w.parentElement.closest('.widget-container, .glass-card, .canvas-widget'));
         const newIds = new Set(newWidgets.map(w => w.id).filter(Boolean));
 
         // The server dropped a widget (explicit remove) — take it off the live canvas.
-        Array.from(grid.querySelectorAll('.widget-container')).forEach(existing => {
-            if (existing.id && !newIds.has(existing.id)) {
-                widgetSourceSnapshots.delete(existing.id);
-                existing.remove();
-            }
-        });
+        Array.from(grid.querySelectorAll('.widget-container, .glass-card, .canvas-widget'))
+            .filter(w => !w.parentElement || !w.parentElement.closest('.widget-container, .glass-card, .canvas-widget'))
+            .forEach(existing => {
+                if (existing.id && !newIds.has(existing.id)) {
+                    widgetSourceSnapshots.delete(existing.id);
+                    existing.remove();
+                }
+            });
 
         let changed = false;
         newWidgets.forEach(newWidget => {
@@ -1405,6 +1428,33 @@ document.addEventListener("DOMContentLoaded", () => {
         // Strip legacy dataset listener tags that were serialized to HTML
         const allElements = temp.querySelectorAll('[data-has-listener]');
         allElements.forEach(el => el.removeAttribute('data-has-listener'));
+
+        // Strip the script-revival marker. It is client-side execution state,
+        // not content — serialized into the canonical canvas it told the NEXT
+        // page load "this script already ran" in a document where it never did,
+        // so every create_widget custom widget went permanently dead after one
+        // adopt+reload cycle.
+        temp.querySelectorAll('script[data-revived]').forEach(s => s.removeAttribute('data-revived'));
+
+        // Strip rendered chart canvases + their marker, keeping the hidden
+        // config <pre> as the persisted source of truth: a <canvas> serializes
+        // empty, and renderDynamicComponents rebuilds the live chart from the
+        // config block on the next paint/load.
+        temp.querySelectorAll('.chart-container').forEach(el => el.remove());
+        temp.querySelectorAll('[data-chart-rendered]').forEach(el => el.removeAttribute('data-chart-rendered'));
+
+        // Error banners are transient UI, never canvas content.
+        temp.querySelectorAll('.system-error-banner').forEach(el => el.remove());
+
+        // The music player's height lives in an Alpine :class binding
+        // (showQueue ? h-[420px] : h-[280px]); Alpine merges the RESOLVED class
+        // into the class attribute, so serializing while the queue is open baked
+        // h-[420px] as a STATIC class that Alpine (which only removes classes it
+        // added in this document) never clears after rehydrate — a stuck
+        // double-height card. Strip both; the binding re-applies the right one.
+        temp.querySelectorAll('[x-data*="musicPlayerWidget"]').forEach(el => {
+            el.classList.remove('h-[280px]', 'h-[420px]');
+        });
 
         // crt-on/crt-off are transient power-on/off animation classes. If a
         // request goes out mid-animation they'd otherwise get baked into the
@@ -1848,7 +1898,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function renderError(msg) {
-        elements.liveCanvas.innerHTML = `<div class="system-message" style="color: var(--danger-color); margin-top: 1rem;">${msg}</div>`;
+        // NEVER wipe the canvas: this used to assign liveCanvas.innerHTML, so one
+        // failed turn (an SSE error, an HTTP 500, a network blip) replaced every
+        // widget — including ones committed by successful sibling turns — with a
+        // single error line. Worse, the next message serialized that empty canvas
+        // and the server ADOPTED it as canonical (no new commit had bumped the
+        // version), deleting every widget server-side. Surface the error as a
+        // transient banner instead; the widgets stay.
+        const existing = elements.liveCanvas.querySelector('.system-error-banner');
+        if (existing) existing.remove();
+        const banner = document.createElement('div');
+        banner.className = 'system-message system-error-banner';
+        banner.style.cssText = 'color: var(--danger-color); margin: 0.5rem 0;';
+        banner.textContent = msg;
+        elements.liveCanvas.prepend(banner);
+        setTimeout(() => banner.remove(), 10000);
     }
 
     function scrollToBottom() {
@@ -1915,8 +1979,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const chartBlocks = container.querySelectorAll('pre code.language-chart');
         chartBlocks.forEach((block) => {
             try {
+                const pre = block.parentElement;
+                // Already converted on a previous pass — the live canvas sits
+                // next to this (hidden) config block; don't double-render.
+                if (pre.dataset.chartRendered === '1') return;
+
                 const config = JSON.parse(block.innerText);
-                
+
                 // Create canvas container
                 const canvasContainer = document.createElement('div');
                 canvasContainer.className = 'chart-container';
@@ -1930,13 +1999,19 @@ document.addEventListener("DOMContentLoaded", () => {
                     canvasContainer.style.height = '400px';
                     canvasContainer.style.marginBottom = '1.5rem';
                 }
-                
+
                 const canvas = document.createElement('canvas');
                 canvasContainer.appendChild(canvas);
-                
-                // Replace the <pre> tag (parent of code block) with the canvas container
-                const pre = block.parentElement;
-                pre.parentNode.replaceChild(canvasContainer, pre);
+
+                // KEEP the hidden config <pre> and insert the canvas as its
+                // sibling. Replacing the pre destroyed the only copy of the
+                // chart config, so the client-serialize → server-adopt loop
+                // persisted a config-less chart widget: after any reload it was
+                // a blank card (nothing left for this converter to find).
+                // getCleanedCanvasHtml strips .chart-container + the marker, so
+                // the canonical canvas always carries the pristine config block.
+                pre.dataset.chartRendered = '1';
+                pre.insertAdjacentElement('afterend', canvasContainer);
                 
                 // Theme-aware defaults: ticks/grid read the active palette so
                 // charts stay legible on light themes (egg/pastel) too.
@@ -2027,7 +2102,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     newWidget.id = widget.id;
                     // Height moved from a static class to a :class binding so the
                     // queue panel can expand the card — strip any stale static one.
-                    newWidget.className = widget.className.replace(/\bh-\[280px\]\b/g, '').replace(/\s+/g, ' ').trim();
+                    newWidget.className = widget.className.replace(/\bh-\[(280|420)px\]\b/g, '').replace(/\s+/g, ' ').trim();
                     newWidget.setAttribute(':class', "showQueue ? 'h-[420px]' : 'h-[280px]'");
                     // kind unknown for a rehydrated node — '' means genre-first
                     // with artist failover. base omitted → hostname:8002 default.

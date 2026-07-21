@@ -120,15 +120,26 @@ def test_canvas_history_summary_degrades_safely():
 
 # ── the tier split ───────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("wtype", ["products", "answer", "image", "wikipedia",
+@pytest.mark.parametrize("wtype", ["answer", "image", "wikipedia",
                                    "news", "stock_news"])
 def test_research_types_go_to_the_agent(wtype):
     """These need search -> read pages -> synthesis, which is what an agent is for.
 
     news/stock_news are here deliberately: the value in news is corroborating
     across outlets and naming what they DISAGREE on, which a per-story summariser
-    structurally cannot do."""
+    structurally cannot do.
+
+    products is deliberately NOT here (2026-07-21 audit): deferring it left
+    render_products unreachable in prism mode — the agent's prompt renders a
+    data_card, so the same shopping ask produced a photo grid in lazy-agent
+    mode and a text card in prism mode. The router's local products builder
+    runs in both modes now."""
     assert wtype in m._AGENT_RESEARCH_TYPES
+
+
+def test_products_stays_local():
+    assert "products" not in m._AGENT_RESEARCH_TYPES
+    assert "products" in m.ROUTER_WIDGETS
 
 
 @pytest.mark.parametrize("wtype", ["weather", "stock", "sports", "clock",

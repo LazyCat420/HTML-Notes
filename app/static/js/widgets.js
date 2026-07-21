@@ -215,18 +215,53 @@ document.addEventListener('alpine:init', () => {
         title: title || 'Checklist',
         items: initialItems,
         newItem: '',
-        
+
+        // User edits (added tasks, done toggles) live only in Alpine memory and
+        // canvas serialization deliberately strips the expanded <li>s, so a
+        // reload restored the ORIGINAL list — every checked box and added task
+        // silently vanished. Same localStorage pattern as notesWidget: persist
+        // keyed by widget id with the server baseline; if the SERVER items
+        // changed (the agent rewrote the list), the server wins.
+        init() {
+            const s = this.load();
+            if (s && Array.isArray(s.items) && s.base === JSON.stringify(initialItems)) {
+                this.items = s.items;
+            } else {
+                this.persist();
+            }
+        },
+
         addTask() {
             const taskText = this.newItem.trim();
             if (taskText) {
                 this.items.push({ text: taskText, done: false });
                 this.newItem = '';
+                this.persist();
             }
         },
-        
+
         removeTask(index) {
             this.items.splice(index, 1);
-        }
+            this.persist();
+        },
+
+        toggleTask(index) {
+            if (this.items[index]) {
+                this.items[index].done = !this.items[index].done;
+                this.persist();
+            }
+        },
+
+        _key() { return 'hn_checklist_' + ((this.$el && this.$el.id) || 'x'); },
+        persist() {
+            try {
+                localStorage.setItem(this._key(), JSON.stringify({
+                    items: JSON.parse(JSON.stringify(this.items)),
+                    base: JSON.stringify(initialItems),
+                }));
+            } catch (e) {}
+        },
+        load() { try { return JSON.parse(localStorage.getItem(this._key()) || 'null'); } catch (e) { return null; } }
     }));
 
     // 2. Clock Widget — three modes: 'clock' (default), 'stopwatch', 'countdown'

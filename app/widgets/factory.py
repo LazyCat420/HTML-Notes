@@ -3,7 +3,7 @@ import hashlib
 import html
 import json
 import urllib.parse
-from typing import Any
+from typing import Any, Optional
 
 def json_escape(val: Any) -> str:
     return html.escape(json.dumps(val))
@@ -594,13 +594,82 @@ def render_products(widget_id: str, config: dict) -> str:
     </div>
     """
 
+# Series palette for multi-series charts. Values mirror main.py's
+# _COMPARE_COLORS (factory must not import from main — main imports us).
+_SERIES_COLORS = ["#4fc3f7", "#f472b6", "#a3e635", "#fbbf24",
+                  "#c084fc", "#fb923c", "#34d399", "#f87171"]
+
+
+def _normalize_series(config: dict) -> Optional[dict]:
+    """A generic multi-series contract → a full Chart.js config, or None.
+
+    Contract: {labels: [str], series: [{label, values, color?}], type?,
+    normalize?: bool, unit?: str}. This is the non-stock counterpart of
+    build_stock_compare_config: 'compare rainfall in Seattle vs Portland' or
+    'GDP of US vs China' has matched series but no ticker, so the stock-only
+    compare path could never draw it and the agent had to hand-author raw
+    Chart.js JSON it was never shown."""
+    labels = config.get("labels") or []
+    series = config.get("series") or []
+    if not (isinstance(labels, list) and isinstance(series, list) and labels and series):
+        return None
+    datasets = []
+    for i, s in enumerate(series[:8]):
+        if not isinstance(s, dict):
+            continue
+        vals = s.get("values") or s.get("data") or []
+        if not isinstance(vals, list) or not vals:
+            continue
+        # Pad/truncate to the label count so a ragged series can't skew the axis.
+        vals = (list(vals) + [None] * len(labels))[:len(labels)]
+        if config.get("normalize"):
+            base = next((v for v in vals if isinstance(v, (int, float)) and v), None)
+            if base:
+                vals = [round((v / base - 1) * 100, 2) if isinstance(v, (int, float)) else None
+                        for v in vals]
+        color = str(s.get("color") or _SERIES_COLORS[i % len(_SERIES_COLORS)])
+        if not _re.fullmatch(r'#[0-9a-fA-F]{3,8}', color):
+            color = _SERIES_COLORS[i % len(_SERIES_COLORS)]
+        datasets.append({
+            "label": str(s.get("label") or s.get("name") or f"Series {i + 1}")[:60],
+            "data": vals,
+            "borderColor": color,
+            "backgroundColor": color,
+            "fill": False,
+            "tension": 0.3,
+            "pointRadius": 0,
+            "borderWidth": 2,
+        })
+    if len(datasets) < 1:
+        return None
+    unit = str(config.get("unit") or ("%" if config.get("normalize") else ""))
+    return {
+        "type": config.get("type", "line"),
+        "data": {"labels": [str(l) for l in labels], "datasets": datasets},
+        "options": {
+            "responsive": True, "maintainAspectRatio": False,
+            "interaction": {"mode": "index", "intersect": False},
+            "plugins": {"legend": {"display": True, "labels": {"boxWidth": 12}}},
+            "scales": {
+                "x": {"ticks": {"maxTicksLimit": 8}},
+                "y": {"title": {"display": bool(unit), "text": unit}},
+            },
+        },
+    }
+
+
 def render_chart(widget_id: str, config: dict) -> str:
     """Chart widget. Contract: {title?, chart: <full Chart.js config>} or
-    {title?, type?, labels: [str], values: [num]} — normalized here, baked as a
-    language-chart code block that the frontend converts to a Chart.js canvas.
-    Falls back to a data_card of label/value rows if the data is unusable."""
+    {title?, labels: [str], series: [{label, values}]} (multi-series, any data)
+    or {title?, type?, labels: [str], values: [num]} — normalized here, baked
+    as a language-chart code block that the frontend converts to a Chart.js
+    canvas. Falls back to a data_card of label/value rows if the data is
+    unusable. Also registered as 'multi_chart' so a comparison ask can never be
+    coerced into a stock_card (coerce_widget_type only hijacks 'chart')."""
     title = config.get("title", "Chart")
     chart_config = config.get("chart")
+    if not isinstance(chart_config, dict) or "data" not in chart_config:
+        chart_config = _normalize_series(config)
     if not isinstance(chart_config, dict) or "data" not in chart_config:
         labels = config.get("labels") or []
         values = config.get("values") or config.get("data") or []
@@ -668,8 +737,8 @@ def render_checklist(widget_id: str, config: dict) -> str:
             <template x-for="(item, idx) in items" :key="idx">
                 <li class="flex items-center gap-3 p-2 rounded-xl transition-all duration-300 group/item border border-transparent"
                     :class="{{'bg-green-500/10 border-green-500/20 text-green-300': item.done, 'hover:bg-white/5': !item.done}}">
-                    <input type="checkbox" x-model="item.done" class="rounded border-white/10 text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer">
-                    <span :class="{{'line-through opacity-50': item.done}}" x-text="item.text" class="text-sm flex-grow cursor-pointer" @click="item.done = !item.done"></span>
+                    <input type="checkbox" x-model="item.done" @change="persist()" class="rounded border-white/10 text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer">
+                    <span :class="{{'line-through opacity-50': item.done}}" x-text="item.text" class="text-sm flex-grow cursor-pointer" @click="toggleTask(idx)"></span>
                     <button @click="removeTask(idx)" class="opacity-0 group-hover/item:opacity-100 text-red-400 hover:text-red-300 transition-opacity">×</button>
                 </li>
             </template>
@@ -969,12 +1038,27 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
                      "openstreetmap.org/export", "google.com/maps/embed",
                      "output=embed",  # classic keyless Google Maps embed (traffic/directions)
                      "player.vimeo.com", "codepen.io", "en.m.wikipedia.org")
-        lu = url.lower()
-        embeddable = any(h in lu for h in _FRAME_OK)
+        # Match against netloc+path, NOT the whole URL: a substring test over the
+        # full string let `https://evil.com/?x=youtube.com/embed` frame directly.
+        try:
+            parsed = urllib.parse.urlparse(url)
+            frame_target = f"{parsed.netloc}{parsed.path}".lower()
+            # "output=embed" is a QUERY marker (classic keyless Google Maps embed)
+            # — only honor it when the host really is Google Maps.
+            frame_query = parsed.query.lower() if "google." in parsed.netloc.lower() else ""
+        except Exception:
+            frame_target, frame_query = "", ""
+        embeddable = any(h in frame_target or h in frame_query for h in _FRAME_OK)
         src = url if embeddable else f"/widgets/embed?u={urllib.parse.quote(url, safe='')}"
+        # No allow-same-origin: the non-embeddable branch frames OUR origin
+        # (/widgets/embed), and scripts + same-origin in a same-origin frame is a
+        # sandbox no-op — any script in that document would get the parent's
+        # cookies/localStorage/fetch. The reader renders bounded markdown and
+        # needs no same-origin capability; direct embeds (YouTube etc.) are
+        # cross-origin players that work sandboxed the same way.
         body = (
             f'<iframe src="{esc(src)}" class="w-full flex-grow border-none bg-slate-950" '
-            f'sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>'
+            f'sandbox="allow-scripts allow-forms allow-popups"></iframe>'
         )
         open_link = (
             f'<a href="{esc(url)}" target="_blank" rel="noopener" '
@@ -987,8 +1071,8 @@ def render_iframe_app(widget_id: str, config: dict) -> str:
         <!-- Title Bar -->
         <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
             <div class="flex items-center gap-2">
-                <span class="text-xl">{icon}</span>
-                <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]">{title}</h3>
+                <span class="text-xl">{esc(icon)}</span>
+                <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]">{esc(title)}</h3>
             </div>
             <div class="flex items-center gap-3">
                 {open_link}
@@ -1539,6 +1623,447 @@ def render_map(widget_id: str, config: dict) -> str:
     """
 
 
+def _spark_svg(values, color: str = "#4fc3f7", w: int = 100, h: int = 28) -> str:
+    """A tiny inline-SVG sparkline. Static markup — unlike the Chart.js path it
+    needs no <canvas> or script revival, so it survives innerHTML sanitization
+    (SVG/polyline are in DOMPurify's default allowlist)."""
+    nums = [v for v in (values or []) if isinstance(v, (int, float))]
+    if len(nums) < 2:
+        return ""
+    lo, hi = min(nums), max(nums)
+    span = (hi - lo) or 1
+    pts = " ".join(
+        f"{(i / (len(nums) - 1)) * w:.1f},{h - 2 - ((v - lo) / span) * (h - 4):.1f}"
+        for i, v in enumerate(nums))
+    if not _re.fullmatch(r'#[0-9a-fA-F]{3,8}', color or ""):
+        color = "#4fc3f7"
+    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" class="w-20 h-6 shrink-0">'
+            f'<polyline fill="none" stroke="{color}" stroke-width="2" points="{pts}"/></svg>')
+
+
+# Micro-label + value cell, the weather stat-cell idiom shared by the stat-grid
+# widgets below (kpi_row, versus_card, profile_card).
+def _stat_cell(label: str, value_html: str) -> str:
+    return (f'<div class="flex flex-col min-w-0">'
+            f'<span class="text-[0.6rem] uppercase tracking-wider text-slate-400 truncate">{esc(label)}</span>'
+            f'{value_html}</div>')
+
+
+def render_table(widget_id: str, config: dict) -> str:
+    """Real data table: typed columns, right-aligned tabular numerics, row cap.
+    The markdown-table branch in _render_markdown is text-only (no alignment, no
+    formatting, no cap) — this is the widget for structured/ranked rows.
+
+    Contract: {title, subtitle?, icon?, columns:[{key, label, align?('right'),
+    format?('number'|'currency'|'percent'|'text')}], rows:[{<key>: value}] or
+    [[v1, v2…]], sort?: {key, dir:'asc'|'desc'}, max_rows?: int}.
+    Also accepts the legacy {headers:[str], rows:[[str]]} shape."""
+    title = config.get("title", "Table")
+    subtitle = config.get("subtitle", "")
+    icon = config.get("icon", "table_chart")
+    columns = config.get("columns") or []
+    rows = config.get("rows") or []
+
+    # Legacy render_component shape: headers + positional rows.
+    if not columns and config.get("headers"):
+        columns = [{"key": str(i), "label": str(hdr)} for i, hdr in enumerate(config["headers"])]
+        rows = [{str(i): c for i, c in enumerate(r)} for r in rows if isinstance(r, (list, tuple))]
+
+    cols = []
+    for i, c in enumerate(columns[:8]):
+        if isinstance(c, str):
+            c = {"key": c, "label": c}
+        if not isinstance(c, dict):
+            continue
+        key = str(c.get("key") or c.get("label") or i)
+        fmt = str(c.get("format") or "text")
+        cols.append({"key": key, "label": str(c.get("label") or key),
+                     "numeric": fmt in ("number", "currency", "percent") or c.get("align") == "right",
+                     "fmt": fmt})
+    norm_rows = []
+    for r in rows:
+        if isinstance(r, (list, tuple)):
+            r = {c["key"]: v for c, v in zip(cols, r)}
+        if isinstance(r, dict):
+            norm_rows.append(r)
+    if not (cols and norm_rows):
+        return render_data_card(widget_id, {"title": title, "icon": icon,
+                                            "content": config.get("content", "") or "No table data provided."})
+
+    sort = config.get("sort") or {}
+    if isinstance(sort, dict) and sort.get("key"):
+        def _sort_val(row):
+            v = row.get(sort["key"])
+            try:
+                return (0, float(_re.sub(r'[^\d.\-]', '', str(v))))
+            except (TypeError, ValueError):
+                return (1, str(v))
+        try:
+            norm_rows.sort(key=_sort_val, reverse=str(sort.get("dir", "asc")).lower() == "desc")
+        except Exception:
+            pass
+
+    try:
+        max_rows = max(1, min(100, int(config.get("max_rows") or 50)))
+    except (TypeError, ValueError):
+        max_rows = 50
+    shown, dropped = norm_rows[:max_rows], max(0, len(norm_rows) - max_rows)
+
+    def _cell(col, val):
+        if val is None:
+            return '<span class="text-slate-500">—</span>'
+        s = str(val)
+        if col["fmt"] in ("number", "currency", "percent"):
+            try:
+                n = float(_re.sub(r'[^\d.\-]', '', s))
+                if col["fmt"] == "currency":
+                    s = f"${n:,.2f}".rstrip("0").rstrip(".") if "." in f"{n}" else f"${n:,.0f}"
+                elif col["fmt"] == "percent":
+                    s = f"{n:,.2f}".rstrip("0").rstrip(".") + "%"
+                else:
+                    s = f"{n:,.2f}".rstrip("0").rstrip(".")
+            except (TypeError, ValueError):
+                pass
+            return esc(s)
+        return _md_inline(s)
+
+    head = "".join(
+        f'<th class="{"text-right" if c["numeric"] else "text-left"} font-semibold text-white px-2.5 py-1.5 '
+        f'border-b border-white/15 whitespace-nowrap">{esc(c["label"])}</th>' for c in cols)
+    body = "".join(
+        "<tr class='hover:bg-white/5 transition-colors'>" + "".join(
+            f'<td class="px-2.5 py-1.5 border-b border-white/5 align-top text-sm '
+            f'{"text-right tabular-nums" if c["numeric"] else "text-left"}">{_cell(c, r.get(c["key"]))}</td>'
+            for c in cols) + "</tr>"
+        for r in shown)
+    more = (f'<div class="text-[0.65rem] text-slate-500 px-3 py-1.5">+{dropped} more rows not shown</div>'
+            if dropped else "")
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container table-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(title, icon, subtitle)}
+        <div class="flex-grow overflow-y-auto custom-scrollbar min-h-0">
+            <div class="overflow-x-auto">
+                <table class="w-full text-slate-200 border-collapse">
+                    <thead class="sticky top-0 bg-slate-900/95 backdrop-blur-sm z-10"><tr>{head}</tr></thead>
+                    <tbody>{body}</tbody>
+                </table>
+            </div>
+            {more}
+        </div>
+    </div>
+    """
+
+
+def render_kpi_row(widget_id: str, config: dict) -> str:
+    """A row of big-number metric tiles with signed deltas and optional
+    sparklines — the 'how is X doing right now' shape nothing else rendered
+    (data_card buries numbers in prose; a chart is overkill for 3 values).
+
+    Contract: {title, subtitle?, icon?, metrics:[{label, value, unit?, delta?,
+    direction?('up'|'down'), good?('up'|'down'), spark?:[num]}], note?}."""
+    title = config.get("title", "Metrics")
+    subtitle = config.get("subtitle", "")
+    icon = config.get("icon", "monitoring")
+    metrics = [m for m in (config.get("metrics") or config.get("stats") or [])
+               if isinstance(m, dict)][:8]
+    if not metrics:
+        return render_data_card(widget_id, {"title": title, "icon": icon,
+                                            "content": config.get("note", "") or "No metrics provided."})
+
+    tiles = []
+    for m in metrics:
+        label = str(m.get("label") or m.get("name") or "")
+        value = m.get("value")
+        unit = str(m.get("unit") or "")
+        delta = str(m.get("delta") or "")
+        direction = str(m.get("direction") or ("down" if delta.strip().startswith("-") else
+                                               "up" if delta.strip().startswith("+") else ""))
+        good = str(m.get("good") or "up")
+        if direction:
+            positive = (direction == good)
+            tone = "text-emerald-400" if positive else "text-rose-400"
+            arrow = "trending_up" if direction == "up" else "trending_down"
+        else:
+            tone, arrow = "text-slate-400", ""
+        delta_html = (
+            f'<span class="flex items-center gap-0.5 text-[0.7rem] font-semibold tabular-nums {tone}">'
+            + (f'<span class="material-symbols-outlined text-[0.85rem]">{arrow}</span>' if arrow else "")
+            + f'{esc(delta)}</span>'
+            if delta else "")
+        spark = _spark_svg(m.get("spark"), "#34d399" if (not direction or direction == good) else "#f87171")
+        tiles.append(f"""
+            <div class="flex flex-col gap-1 px-3.5 py-3 rounded-2xl bg-white/5 border border-white/10 min-w-0">
+                <span class="text-[0.62rem] uppercase tracking-wider text-slate-400 truncate">{esc(label)}</span>
+                <span class="text-2xl font-semibold tabular-nums leading-none text-white">{esc(value if value is not None else '—')}<span class="text-sm text-slate-400 ml-0.5">{esc(unit)}</span></span>
+                <div class="flex items-center justify-between gap-2 min-h-[1.25rem]">{delta_html}{spark}</div>
+            </div>
+        """)
+
+    grid_cols = {1: "grid-cols-1", 2: "grid-cols-2", 3: "grid-cols-3"}.get(len(tiles), "grid-cols-4")
+    note = config.get("note") or ""
+    note_html = (f'<div class="px-4 pb-3 text-[0.68rem] text-slate-400 leading-snug">{_md_inline(str(note))}</div>'
+                 if note else "")
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container kpi-row-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col group">
+        {widget_header(title, icon, subtitle)}
+        <div class="grid {grid_cols} gap-2.5 p-3 flex-grow content-start overflow-y-auto custom-scrollbar">{''.join(tiles)}</div>
+        {note_html}
+    </div>
+    """
+
+
+def render_timeline(widget_id: str, config: dict) -> str:
+    """Chronology on a vertical rail: date chips, per-event summaries, optional
+    thumbnails and source links. News items always carry dates; nothing could
+    lay them on a time axis before this.
+
+    Contract: {title, subtitle?, icon?, order?('asc'|'desc'), events:[{date,
+    title, description?|summary?, badge?, url?, image?}]}. Events are sorted by
+    parsed date server-side; unparseable dates keep emission order."""
+    import datetime as _dt
+    title = config.get("title", "Timeline")
+    subtitle = config.get("subtitle", "")
+    icon = config.get("icon", "timeline")
+    events = [e for e in (config.get("events") or []) if isinstance(e, dict)][:30]
+    if not events:
+        return render_data_card(widget_id, {"title": title, "icon": icon,
+                                            "content": config.get("content", "") or "No events provided."})
+
+    def _parse_date(s):
+        s = str(s or "").strip()
+        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y/%m/%d", "%d %b %Y", "%b %d, %Y", "%B %d, %Y"):
+            try:
+                return _dt.datetime.strptime(s[:len(_dt.datetime.now().strftime(fmt))], fmt)
+            except ValueError:
+                continue
+        try:
+            return _dt.datetime.fromisoformat(s)
+        except ValueError:
+            return None
+
+    parsed = [(_parse_date(e.get("date")), i, e) for i, e in enumerate(events)]
+    if all(p[0] is not None for p in parsed):
+        parsed.sort(key=lambda p: (p[0], p[1]),
+                    reverse=str(config.get("order", "desc")).lower() == "desc")
+
+    lis = []
+    for dt, _i, e in parsed:
+        e_title = str(e.get("title") or e.get("text") or "")
+        e_desc = str(e.get("description") or e.get("summary") or "")
+        e_badge = str(e.get("badge") or "")
+        e_url = str(e.get("url") or e.get("link") or "")
+        e_img = str(e.get("image") or e.get("thumbnail") or "")
+        date_label = dt.strftime("%b %d, %Y") if dt else str(e.get("date") or "")
+        thumb = (f'<img src="{esc(e_img)}" alt="" loading="lazy" class="item-thumb w-12 h-12 shrink-0 rounded-lg object-cover ring-1 ring-white/10">'
+                 if e_img else "")
+        badge_html = (f'<span class="item-badge text-[0.58rem] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-200 border border-purple-400/30 shrink-0">{esc(e_badge)}</span>'
+                      if e_badge else "")
+        source_html = (f'<a href="{esc(e_url)}" target="_blank" rel="noopener" class="text-[0.62rem] text-purple-300/70 hover:text-purple-200 hover:underline">{esc(_host_of(e_url))} ↗</a>'
+                       if e_url and e_url.lower().startswith(("http://", "https://")) else "")
+        desc_html = (f'<p class="text-xs text-slate-300 leading-relaxed mt-0.5 line-clamp-4">{_md_inline(e_desc)}</p>'
+                     if e_desc else "")
+        lis.append(f"""
+            <li class="relative pl-5 pb-4">
+                <span class="absolute left-[-5px] top-1.5 w-2 h-2 rounded-full bg-purple-400 ring-4 ring-purple-400/15"></span>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-[0.62rem] font-semibold uppercase tracking-wider text-sky-300 font-mono">{esc(date_label)}</span>
+                    {badge_html}
+                    {source_html}
+                </div>
+                <div class="flex items-start gap-2.5 mt-1">
+                    {thumb}
+                    <div class="min-w-0">
+                        <span class="text-sm font-semibold text-white leading-snug">{esc(e_title)}</span>
+                        {desc_html}
+                    </div>
+                </div>
+            </li>
+        """)
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container timeline-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[460px] group">
+        {widget_header(title, icon, subtitle)}
+        <ol class="flex flex-col p-4 pl-5 ml-1.5 border-l-2 border-purple-400/30 overflow-y-auto flex-grow custom-scrollbar my-2 mr-1">
+            {''.join(lis)}
+        </ol>
+    </div>
+    """
+
+
+def render_versus_card(widget_id: str, config: dict) -> str:
+    """Side-by-side comparison of 2-4 entities with aligned stat rows and
+    winner highlighting — the answer shape for 'X vs Y, which is better'.
+    Before this, comparisons were a text-only Markdown table with no per-row
+    winner marking and no verdict line.
+
+    Contract: {title, subtitle?, icon?, entities:[{name, caption?, image?}],
+    rows:[{label, values:[…], winner?: idx|null}], verdict?}."""
+    title = config.get("title", "Comparison")
+    subtitle = config.get("subtitle", "")
+    icon = config.get("icon", "compare_arrows")
+    entities = [e if isinstance(e, dict) else {"name": str(e)}
+                for e in (config.get("entities") or [])][:4]
+    rows = [r for r in (config.get("rows") or []) if isinstance(r, dict)][:14]
+    if len(entities) < 2 or not rows:
+        return render_data_card(widget_id, {"title": title, "icon": icon,
+                                            "answer": config.get("verdict", "") or "Not enough comparison data.",
+                                            "items": config.get("items") or []})
+    n = len(entities)
+    grid_style = f"grid-template-columns: minmax(0,1.1fr) repeat({n}, minmax(0,1fr));"
+
+    header_cells = ['<div></div>']
+    for e in entities:
+        name = str(e.get("name") or "—")
+        caption = str(e.get("caption") or "")
+        img = str(e.get("image") or "")
+        visual = (f'<img src="{esc(img)}" alt="{esc(name)}" loading="lazy" class="w-10 h-10 rounded-xl object-contain bg-slate-950/60 ring-1 ring-white/10 mx-auto">'
+                  if img else
+                  f'<div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-slate-700 to-slate-500 flex items-center justify-center ring-1 ring-white/10 mx-auto"><span class="text-base font-bold text-white/80">{esc(name[:1].upper())}</span></div>')
+        header_cells.append(
+            f'<div class="flex flex-col items-center gap-1 text-center min-w-0">{visual}'
+            f'<span class="text-sm font-semibold text-white truncate max-w-full">{esc(name)}</span>'
+            + (f'<span class="text-[0.62rem] text-slate-400 truncate max-w-full">{esc(caption)}</span>' if caption else "")
+            + '</div>')
+
+    row_html = []
+    for r in rows:
+        vals = r.get("values") or []
+        if not isinstance(vals, list):
+            continue
+        vals = (list(vals) + ["—"] * n)[:n]
+        winner = r.get("winner")
+        winner = winner if isinstance(winner, int) and 0 <= winner < n else None
+        cells = [f'<div class="text-[0.7rem] text-slate-400 uppercase tracking-wide self-center truncate">{esc(str(r.get("label") or ""))}</div>']
+        for i, v in enumerate(vals):
+            if winner is None:
+                cls = "text-slate-200"
+            elif i == winner:
+                cls = "text-white font-semibold bg-emerald-500/10 ring-1 ring-emerald-400/25 rounded-lg"
+            else:
+                cls = "text-slate-400"
+            cells.append(f'<div class="text-center text-sm tabular-nums px-1.5 py-1 {cls}">{esc(str(v))}</div>')
+        row_html.append(f'<div class="grid gap-x-2 items-center py-0.5 border-b border-white/5" style="{grid_style}">{"".join(cells)}</div>')
+
+    verdict = str(config.get("verdict") or "")
+    verdict_html = (
+        f'<div class="shrink-0 mx-3 mb-3 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-200 leading-relaxed">'
+        f'<span class="material-symbols-outlined text-[0.9rem] text-purple-300 align-middle mr-1">verified</span>{_md_inline(verdict)}</div>'
+        if verdict else "")
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container versus-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+        {widget_header(title, icon, subtitle)}
+        <div class="grid gap-x-2 px-3 pt-3 pb-2 border-b border-white/10 shrink-0" style="{grid_style}">{''.join(header_cells)}</div>
+        <div class="flex-grow overflow-y-auto custom-scrollbar px-3 py-1.5">{''.join(row_html)}</div>
+        {verdict_html}
+    </div>
+    """
+
+
+def render_profile_card(widget_id: str, config: dict) -> str:
+    """Wikipedia-style infobox for a person / company / place: portrait,
+    label/value facts, a short bio, links. The agent emits {profile_query} and
+    the server resolves the payload (image provenance: Wikipedia thumbnail or
+    og:image — never a model-typed URL).
+
+    Contract: {title, subtitle?, image?, image_caption?, facts:[{label, value}],
+    answer?(markdown bio), links:[{label, url}]}."""
+    title = config.get("title", "Profile")
+    subtitle = config.get("subtitle", "")
+    image = str(config.get("image") or "")
+    caption = str(config.get("image_caption") or config.get("caption") or "")
+    facts = [f for f in (config.get("facts") or []) if isinstance(f, dict)][:10]
+    bio = str(config.get("answer") or config.get("bio") or config.get("content") or "")
+    links = [l for l in (config.get("links") or []) if isinstance(l, dict) and
+             str(l.get("url", "")).lower().startswith(("http://", "https://"))][:4]
+
+    if image:
+        visual = f"""
+            <figure class="rounded-xl overflow-hidden border border-white/10 bg-slate-950/60 shadow-lg shrink-0">
+                <img src="{esc(image)}" alt="{esc(title)}" loading="lazy" class="block w-full h-auto max-h-44 object-contain bg-slate-950/40">
+                {f'<figcaption class="px-2 py-1 text-[0.6rem] text-slate-400 border-t border-white/10">{esc(caption)}</figcaption>' if caption else ''}
+            </figure>"""
+    else:
+        visual = (f'<div class="h-24 rounded-xl bg-gradient-to-tr from-slate-700 to-slate-500 flex items-center justify-center ring-1 ring-white/10 shrink-0">'
+                  f'<span class="text-4xl font-bold text-white/70">{esc((title or "?")[:1].upper())}</span></div>')
+
+    fact_cells = "".join(
+        _stat_cell(str(f.get("label") or ""),
+                   f'<span class="text-sm font-semibold text-white leading-snug">{esc(str(f.get("value") or "—"))}</span>')
+        for f in facts if f.get("label"))
+    facts_html = (f'<div class="grid grid-cols-2 gap-x-3 gap-y-2">{fact_cells}</div>' if fact_cells else "")
+    bio_html = (f'<div class="answer-prose text-sm">{_render_markdown(bio)}</div>' if bio else "")
+    links_html = ("".join(
+        f'<a href="{esc(str(l["url"]))}" target="_blank" rel="noopener" class="text-[0.68rem] text-purple-300/80 hover:text-purple-200 hover:underline mr-3">{esc(str(l.get("label") or _host_of(str(l["url"]))))} ↗</a>'
+        for l in links))
+    links_html = f'<div class="pt-2 border-t border-white/10">{links_html}</div>' if links_html else ""
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container profile-widget col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[460px] group">
+        {widget_header(title, "person", subtitle)}
+        <div class="flex flex-col gap-3 p-4 overflow-y-auto flex-grow custom-scrollbar">
+            {visual}
+            {facts_html}
+            {bio_html}
+            {links_html}
+        </div>
+    </div>
+    """
+
+
+def render_progress(widget_id: str, config: dict) -> str:
+    """Labeled progress/goal bars: 'X of Y' quantities readable at a glance.
+    Checklist is boolean-only and a Chart.js bar is a heavy canvas for three
+    numbers — this is the bounded-quantity shape in plain divs.
+
+    Contract: {title, icon?, items:[{label, value?, target?, pct?, unit?,
+    note?}]}. pct wins when present; else pct = value/target."""
+    title = config.get("title", "Progress")
+    icon = config.get("icon", "flag")
+    items = [i for i in (config.get("items") or []) if isinstance(i, dict)][:12]
+    rows = []
+    for it in items:
+        label = str(it.get("label") or it.get("name") or "")
+        unit = str(it.get("unit") or "")
+        pct = it.get("pct")
+        value, target = it.get("value"), it.get("target")
+        if pct is None and isinstance(value, (int, float)) and isinstance(target, (int, float)) and target:
+            pct = value / target * 100
+        try:
+            pct = max(0.0, min(100.0, float(pct)))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, (int, float)) and isinstance(target, (int, float)):
+            amount = f"{unit}{value:,.10g} / {unit}{target:,.10g}"
+        else:
+            amount = f"{pct:.0f}%"
+        note = str(it.get("note") or "")
+        fill = "bg-emerald-400" if pct >= 100 else "bg-purple-500"
+        rows.append(f"""
+            <div class="flex flex-col gap-1">
+                <div class="flex items-baseline justify-between gap-2">
+                    <span class="text-sm text-white truncate">{esc(label)}</span>
+                    <span class="text-xs text-slate-300 tabular-nums shrink-0">{esc(amount)}</span>
+                </div>
+                <div class="h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div class="h-full rounded-full {fill}" style="width:{pct:.0f}%"></div>
+                </div>
+                {f'<span class="item-meta text-[0.65rem] text-slate-400 tracking-wide">{esc(note)}</span>' if note else ''}
+            </div>
+        """)
+    if not rows:
+        return render_data_card(widget_id, {"title": title, "icon": icon,
+                                            "content": "No progress data provided."})
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container progress-widget col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[280px] group">
+        {widget_header(title, icon)}
+        <div class="flex flex-col gap-3 p-4 overflow-y-auto flex-grow custom-scrollbar">{''.join(rows)}</div>
+    </div>
+    """
+
+
 WIDGET_RENDERERS = {
     "checklist": render_checklist,
     "scoreboard": render_scoreboard,
@@ -1557,6 +2082,18 @@ WIDGET_RENDERERS = {
     "settings": render_settings,
     "converter": render_converter,
     "reminder": render_reminder,
+    # Widget-pack additions (2026-07-21): dense data, comparison and composite
+    # display shapes the audit found inexpressible with the original set.
+    "table": render_table,
+    "kpi_row": render_kpi_row,
+    "timeline": render_timeline,
+    "versus_card": render_versus_card,
+    "profile_card": render_profile_card,
+    "progress": render_progress,
+    # Alias with its own slug on purpose: coerce_widget_type only hijacks
+    # widget_type == 'chart' into stock_card, so a non-stock multi-series
+    # comparison emitted as 'multi_chart' can never be coerced away.
+    "multi_chart": render_chart,
 }
 
 def _content_sig(widget_type: str, config: dict) -> str:

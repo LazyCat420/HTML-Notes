@@ -1,3 +1,16 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DEAD FILE — imported by NOTHING in this repo (verified 2026-07-21).
+#
+# It predates the canvas_add_widget flow: it omits canvas_add_widget entirely
+# (the one tool the live agent flow depends on) and its render_component
+# component_type enum describes app/templates.py's legacy TEMPLATES, not the
+# live WIDGET_RENDERERS in app/widgets/factory.py. Do NOT regenerate MCP tool
+# schemas from this file — the live schema is maintained in lazy-agent-service's
+# tool_schemas/ (html-notes owner) and served by lazy-tool-service.
+#
+# Kept only as a historical reference for the /internal/execute render_component
+# handler; delete both together when that endpoint's legacy branch goes.
+# ─────────────────────────────────────────────────────────────────────────────
 import json
 
 HTML_NOTES_TOOLS_JSON = """

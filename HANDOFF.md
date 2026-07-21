@@ -1,3 +1,70 @@
+# Handoff — 2026-07-21 (deep-audit fix wave + widget pack v2)
+
+**Deployed:** synology `:8035`. 528 pytest green (34 new in
+`tests/test_widget_pack_v2.py`). Full verified audit: `AUDIT_2026-07-21.md`
+(48-agent adversarially-verified deep-research pass — 40 findings, 0 refuted).
+
+## New premade widget types (7) — for faster/richer data display
+All registered in `WIDGET_RENDERERS`, stamped with data-sig/type, routed in the
+SYSTEM_PROMPT and in the live canvas_add_widget tool schema
+(lazy-agent-service `tool_schemas/html-notes/html-notes.json`, flat artifacts
+rebuilt for lazy-agent-service / trading-service / trading-client):
+- `versus_card` — 2-4 entities side-by-side, aligned stat rows, per-row winner
+  highlighting, verdict strip ("AAPL vs MSFT", "compare these laptops").
+- `multi_chart` — generic multi-series contract `{labels, series:[{label,
+  values}], normalize?, unit?}` (also accepted by `chart`); distinct slug so
+  coerce_widget_type can never hijack it into a stock_card. Non-ticker
+  comparisons ("rainfall Seattle vs Portland") are now ONE chart.
+- `table` — typed columns (`format: number|currency|percent` right-align +
+  format), server-side sort, 50-row cap with "+N more" note; accepts legacy
+  {headers, rows} shape.
+- `kpi_row` — 2-8 big-number tiles with colored deltas (`good: up|down` sets
+  polarity) and inline-SVG sparklines (no canvas/script needed).
+- `timeline` — dated events on a rail, date-sorted server-side; agent emits
+  `{timeline_query}` and `build_timeline_config` researches news and maps
+  events to sources (server attaches image+url; hand-built events get model
+  image URLs STRIPPED).
+- `profile_card` — person/company infobox; agent emits `{profile_query}`,
+  `build_profile_config` fetches the Wikipedia summary + thumbnail (never a
+  model URL) and structures facts via one fast_llm_json pass; degrades to the
+  answer card when no article exists.
+- `progress` — labeled goal/percentage bars (value/target or pct).
+
+## Fixes (see AUDIT_2026-07-21.md for evidence + line refs)
+Silent-success class: agent tier no longer reports success on failed/no-op
+mutations (commit tracking in execute_mutation); update_widget rejects factory
+widgets + aborts when nothing matched; canvas_modify_dom/update_widget bump
+data-sig so the client actually repaints; reconcileCanvas now paints/removes
+create_widget glass-cards; chart config block preserved (chart survives
+serialize→adopt→reload); data-revived stripped on serialize; renderError no
+longer wipes the canvas (transient banner); checklist edits persist via
+localStorage (notesWidget pattern — factory template now calls
+toggleTask/persist).
+
+Guardrails: create_widget title escaped + htmlContent audited
+(audit_html_fragment; failed audit renders as text); iframe_app title/icon
+escaped, sandbox loses allow-same-origin, embeddable check is host-parsed;
+SSRF guard `_is_public_http_url` on read_web_page + /widgets/embed;
+build_answer_config sources fenced as untrusted data + today's date injected.
+
+Routing: prompt names real types (music→mini_music_player, embed→iframe_app)
++ `_WIDGET_TYPE_ALIASES` rescue map; "make it green" with a focus widget no
+longer hijacked by the theme intercept; settings turns persist to DB (survive
+reload); router video branch date-sorts recency asks; products builds locally
+in prism mode again; router defers appearance asks; reminder reuses the open
+countdown.
+
+## Known-open (deliberate, in AUDIT file)
+- create_widget jsContent still executes (product feature) — srcdoc isolation
+  is the real fix; DOMPurify stays permissive by design (Alpine).
+- /internal/execute unauthenticated + prism enabledTools fail-open.
+- Agent tier still lacks P3 traffic-prefix reuse; follow-up type-morph seam
+  (verbatim-id bypass); data-req-seq only guards media swaps.
+- Backlog widgets: stock volume underlay, map+list split, weather compare
+  resolver, sports standings tool, gallery_facts/video_shelf/calendar.
+
+---
+
 # Handoff — 2026-07-20 (trending-stocks discovery)
 
 **Deployed:** synology `:8035`. 480 pytest green (19 new in
