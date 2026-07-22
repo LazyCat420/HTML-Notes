@@ -302,15 +302,20 @@ document.addEventListener('alpine:init', () => {
 
         statRows() {
             const s = this.snapshot;
-            const rows = [
-                { label: 'Market Cap', value: s.market_cap || '—' },
-                { label: 'Volume 24h', value: s.volume || '—' },
-                { label: '24h High', value: s.high_24h || '—' },
-                { label: '24h Low', value: s.low_24h || '—' },
-                { label: 'ATH', value: s.ath || '—' },
-            ];
-            if (s.ath_change_pct !== null && s.ath_change_pct !== undefined) {
-                rows.push({ label: 'From ATH', value: `${s.ath_change_pct}%` });
+            const rows = [{ label: 'Market Cap', value: s.market_cap || '—' },
+                          { label: 'Volume 24h', value: s.volume || '—' }];
+            // DexScreener-sourced microcaps carry liquidity but no ATH/high/low;
+            // canonical CoinGecko coins carry the reverse. Show whichever exist.
+            if (s.liquidity && s.liquidity !== '—') {
+                rows.push({ label: 'Liquidity', value: s.liquidity });
+                if (s.dex) rows.push({ label: 'DEX', value: s.dex });
+            } else {
+                rows.push({ label: '24h High', value: s.high_24h || '—' });
+                rows.push({ label: '24h Low', value: s.low_24h || '—' });
+                rows.push({ label: 'ATH', value: s.ath || '—' });
+                if (s.ath_change_pct !== null && s.ath_change_pct !== undefined) {
+                    rows.push({ label: 'From ATH', value: `${s.ath_change_pct}%` });
+                }
             }
             return rows;
         },

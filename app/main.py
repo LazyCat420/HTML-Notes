@@ -5866,6 +5866,12 @@ _CRYPTO_RANGES = {"1d": "1", "7d": "7", "30d": "30", "90d": "90",
                   "1y": "365", "max": "max"}
 
 
+async def _noop_dict() -> dict:
+    """An awaitable {} — lets asyncio.gather keep a fixed shape when one branch
+    (CoinGecko description) is skipped for a DexScreener-sourced token."""
+    return {}
+
+
 def _fmt_usd(v) -> str:
     """Compact USD for stat chips: $1.2B, $3.4M, $0.0000029."""
     try:
@@ -5889,9 +5895,59 @@ def _fmt_usd(v) -> str:
     return f"${n:.8f}".rstrip("0").rstrip(".")
 
 
+async def _dexs_snapshot(ref: str, range_: str = "30d") -> dict:
+    """DexScreener-sourced token (a "dexs:<chainId>:<pool>" ref) -> the same
+    crypto_card payload, using DexScreener for live price/liquidity/mcap and
+    GeckoTerminal for the OHLCV chart. This is the keyless path that makes ANY
+    token with a live pool chartable — microcap memecoins CoinGecko never listed."""
+    try:
+        _, chain_id, pool = ref.split(":", 2)
+    except ValueError:
+        return {"is_error": True}
+    gt_net = cryptolib.DEXS_CHAIN.get(chain_id, (chain_id, chain_id))[1]
+    slug = cryptolib.DEXS_CHAIN.get(chain_id, (chain_id, chain_id))[0]
+    pair, (labels, values) = await asyncio.gather(
+        cryptolib.dexscreener_pair(chain_id, pool),
+        cryptolib.gt_ohlcv(gt_net, pool, range_),
+    )
+    if not pair:
+        return {"is_error": True}
+    bt = pair.get("baseToken") or {}
+    try:
+        price = float(pair.get("priceUsd")) if pair.get("priceUsd") else None
+    except (TypeError, ValueError):
+        price = None
+    chg = (pair.get("priceChange") or {}).get("h24")
+    return {
+        "is_error": False,
+        "coin_id": ref,
+        "name": bt.get("name", ""),
+        "symbol": (bt.get("symbol") or "").upper(),
+        "image": (pair.get("info") or {}).get("imageUrl", "") or "",
+        "price": price,
+        "price_str": _fmt_usd(price),
+        "change_pct": round(chg, 2) if isinstance(chg, (int, float)) else None,
+        "market_cap": _fmt_usd(pair.get("marketCap") or pair.get("fdv")),
+        "market_cap_rank": None,
+        "volume": _fmt_usd((pair.get("volume") or {}).get("h24")),
+        "liquidity": _fmt_usd((pair.get("liquidity") or {}).get("usd")),
+        "high_24h": "—", "low_24h": "—", "ath": "—", "ath_change_pct": None,
+        "supply": None,
+        "range": range_,
+        "labels": labels,
+        "values": values,
+        "platforms": {slug: bt.get("address", "")} if bt.get("address") else {},
+        "dex": pair.get("dexId", ""),
+        "source": "dexscreener",
+    }
+
+
 async def _crypto_snapshot(coin_id: str, range_: str = "30d") -> dict:
-    """Coin id -> the crypto_card payload (price header + chart + stats +
-    contracts). {is_error:True} when the coin can't be loaded."""
+    """Coin ref -> the crypto_card payload (price header + chart + stats +
+    contracts). A "dexs:*" ref goes to DexScreener+GeckoTerminal; anything else is
+    a CoinGecko coin id. {is_error:True} when it can't be loaded."""
+    if coin_id.startswith("dexs:"):
+        return await _dexs_snapshot(coin_id, range_)
     days = _CRYPTO_RANGES.get(range_, "30")
     coin, (labels, values) = await asyncio.gather(
         cryptolib.cg_coin(coin_id),
@@ -5932,15 +5988,47 @@ async def _crypto_snapshot(coin_id: str, range_: str = "30d") -> dict:
         "values": values,
         "platforms": platforms,   # {chain_slug or cg-platform: address}
     }
+    # "Chart no matter what": if CoinGecko's chart came back empty (rate-limited,
+    # or a thinly-covered microcap) but the coin has an on-chain contract, pull
+    # the price series from GeckoTerminal via its DEX pool instead.
+    if not values and platforms:
+        gl, gv = await _gt_chart_for_contract(platforms, range_)
+        if gv:
+            snap["labels"], snap["values"] = gl, gv
+    return snap
+
+
+async def _gt_chart_for_contract(platforms: dict, range_: str) -> tuple:
+    """Given a coin's {cg-platform: address} map, find its deepest DEX pool via
+    DexScreener and pull GeckoTerminal OHLCV — the keyless chart fallback for any
+    token with a live pool. ([], []) if none found."""
+    for cg_platform, addr in platforms.items():
+        if not addr:
+            continue
+        try:
+            best = cryptolib._best_pair(
+                await cryptolib.dexscreener_by_address(addr), None)
+            if not best:
+                continue
+            chain_id = best.get("chainId")
+            gt_net = cryptolib.DEXS_CHAIN.get(chain_id, (chain_id, chain_id))[1]
+            gl, gv = await cryptolib.gt_ohlcv(gt_net, best.get("pairAddress", ""), range_)
+            if gv:
+                return gl, gv
+        except Exception as e:
+            logger.info(f"[CRYPTO] GT chart fallback failed for {addr}: {e}")
+    return [], []
 
 
 async def build_crypto_card_config(message: str) -> Optional[dict]:
     """Resolve a token from free text / symbol / contract → its price+chart card.
-    None when nothing resolves (caller degrades)."""
+    Works for canonical coins (CoinGecko) AND unlisted microcaps (DexScreener +
+    GeckoTerminal chart). None when nothing resolves anywhere (caller degrades)."""
     ident = await cryptolib.resolve_crypto(message)
-    if not ident or not ident.get("coin_id"):
+    ref = (ident or {}).get("ref") or (ident or {}).get("coin_id")
+    if not ref:
         return None
-    snap = await _crypto_snapshot(ident["coin_id"])
+    snap = await _crypto_snapshot(ref)
     return None if snap.get("is_error") else snap
 
 
@@ -6072,28 +6160,31 @@ async def build_crypto_report_config(message: str) -> dict:
     price card if the coin can't be resolved, and to a numbers-only brief if the
     LLM pass fails. Rendered as a data_card."""
     ident = await cryptolib.resolve_crypto(message)
-    if not ident or not ident.get("coin_id"):
+    ref = (ident or {}).get("ref") or (ident or {}).get("coin_id")
+    if not ref:
         # Can't pin a coin — hand back a generic answer card via the news path.
         return await build_answer_config(message)
 
-    coin_id = ident["coin_id"]
+    # CoinGecko `description` only exists for a listed coin id, never a "dexs:*"
+    # microcap ref — skip the cg_coin call for those.
+    is_cg = not ref.startswith("dexs:")
     snap, coin = await asyncio.gather(
-        _crypto_snapshot(coin_id), cryptolib.cg_coin(coin_id))
+        _crypto_snapshot(ref),
+        cryptolib.cg_coin(ref) if is_cg else _noop_dict())
     snap = snap if isinstance(snap, dict) and not snap.get("is_error") else {}
     coin = coin if isinstance(coin, dict) else {}
 
     # On-chain distribution, when the token lives on a chain we can read.
     graph = None
     try:
-        graph = await build_wallet_graph_config(ident.get("address") or coin_id
-                                                or message)
+        graph = await build_wallet_graph_config(ident.get("address") or message)
     except Exception as e:
         logger.info(f"[CRYPTO-REPORT] holder graph failed: {e}")
 
     # A little news, read for real (reuse the web search + read pipeline).
     news_blocks = []
     try:
-        results = await web_search(f"{ident.get('name') or coin_id} crypto news", limit=5)
+        results = await web_search(f"{ident.get('name') or ref} crypto news", limit=5)
         for r in (results or [])[:4]:
             news_blocks.append(f"- {r.get('title','')}: {(r.get('snippet') or '')[:200]}")
     except Exception:

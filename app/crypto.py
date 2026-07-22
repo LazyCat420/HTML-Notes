@@ -142,6 +142,13 @@ async def _get_json(url: str, params: Optional[dict] = None, timeout: float = 12
             r = await c.get(url, params=params,
                             headers={"User-Agent": "html-notes/1.0",
                                      "Accept": "application/json"})
+            # CoinGecko's free tier rate-limits (429) under bursts; one short
+            # backoff usually clears it. Keeps a run of crypto asks from failing.
+            if r.status_code == 429:
+                await asyncio.sleep(1.5)
+                r = await c.get(url, params=params,
+                                headers={"User-Agent": "html-notes/1.0",
+                                         "Accept": "application/json"})
             if r.status_code != 200:
                 logger.info("[crypto] %s -> %s", url, r.status_code)
                 return None
@@ -226,20 +233,27 @@ def _fmt_ts_label(epoch: float, days: str) -> str:
 async def resolve_crypto(query: str) -> Optional[dict]:
     """Name / symbol / contract-address → a normalized identity we can build on:
 
-        {coin_id, name, symbol, chain, address, image, source}
+        {coin_id, ref, name, symbol, chain, address, pool, gt_network, image, source}
 
-    - A 0x… string resolves via CoinGecko's contract endpoint (tries chains in
-      order) so a bare address still names its token.
-    - Otherwise the best search match wins (lowest market-cap rank), symbol-exact
-      preferred so "eth" -> Ethereum, not a random shitcoin whose name contains
-      "eth".
-    Returns None when nothing resolves. `address`/`chain` may be empty for a coin
-    with no single on-chain contract (e.g. native BTC)."""
+    Resolution strategy — CoinGecko for CANONICAL coins, DexScreener for the long
+    tail (microcap memecoins CoinGecko never lists, e.g. "jimothy"):
+    - An address resolves via CoinGecko's contract endpoint first (canonical),
+      then DexScreener by-address (any chain).
+    - A name/symbol takes a CoinGecko name/symbol-EXACT match if one exists
+      (canonical, real multi-year history), else falls back to DexScreener search
+      (finds anything with a live DEX pool), else CoinGecko's best fuzzy match.
+
+    `ref` is the routable id the card/API use: a CoinGecko coin id, or
+    "dexs:<chainId>:<pool>" for a DexScreener-sourced token. Returns None when
+    nothing resolves anywhere."""
     q = (query or "").strip()
     if not q:
         return None
 
-    # Bare EVM contract address → resolve token identity across common chains.
+    def _by_rank(cs):
+        return sorted(cs, key=lambda c: (c.get("market_cap_rank") or 10**9))
+
+    # ── Address ──
     m = EVM_ADDR_RE.search(q)
     if m:
         addr = m.group(0).lower()
@@ -248,33 +262,65 @@ async def resolve_crypto(query: str) -> Optional[dict]:
             c = await cg_coin_by_contract(platform, addr)
             if c and c.get("id"):
                 return _identity_from_coin(c, prefer_chain=CG_PLATFORM_TO_CHAIN.get(platform))
-        # Unknown to CoinGecko but still a valid ETH address — let the caller try
-        # Ethplorer directly for a raw holder graph.
-        return {"coin_id": "", "name": "", "symbol": "", "chain": "ethereum",
-                "address": addr, "image": "", "source": "address"}
+        di = await resolve_dexscreener_address(addr)
+        if di:
+            return di
+        # Unknown to both but a valid ETH address — let the holder-graph path try
+        # Ethplorer directly on the raw address.
+        return {"coin_id": "", "ref": "", "name": "", "symbol": "",
+                "chain": "ethereum", "address": addr, "pool": "", "gt_network": "eth",
+                "image": "", "source": "address"}
 
-    coins = await cg_search(q)
-    if not coins:
-        # A base58 string that isn't a known coin is very likely a Solana mint.
-        sm = SOL_ADDR_RE.search(q)
-        if sm and not EVM_ADDR_RE.search(q):
-            return {"coin_id": "", "name": "", "symbol": "", "chain": "solana",
-                    "address": sm.group(0), "image": "", "source": "address"}
-        return None
+    sm = SOL_ADDR_RE.search(q)
+    if sm and not m and _looks_like_solana_addr(q):
+        di = await resolve_dexscreener_address(sm.group(0))
+        if di:
+            return di
+        return {"coin_id": "", "ref": "", "name": "", "symbol": "",
+                "chain": "solana", "address": sm.group(0), "pool": "",
+                "gt_network": "solana", "image": "", "source": "address"}
 
+    # ── Name / symbol ── strip filler ("price of X", "who holds X") to the
+    # token words before searching.
+    subject = _clean_crypto_query(q)
+    ql = subject.lower()
+
+    # Majors short-circuit — canonical id, no search, no impostor risk.
+    if ql in MAJORS:
+        full = await cg_coin(MAJORS[ql])
+        if full and full.get("id"):
+            return _identity_from_coin(full)
+
+    coins = await cg_search(subject)
     # Scam memecoins hijack famous names/symbols — CoinGecko search for "bitcoin"
-    # returns a token whose SYMBOL is literally "BITCOIN" (rank ~5000) alongside
-    # real Bitcoin (rank 1). So match by name first, then symbol, and WITHIN each
-    # tier pick the best market-cap rank — the impostors all rank far lower.
-    ql = q.lower()
-    def _by_rank(cs):
-        return sorted(cs, key=lambda c: (c.get("market_cap_rank") or 10**9))
+    # returns a token whose SYMBOL is literally "BITCOIN" (rank ~5000) next to
+    # real Bitcoin (rank 1). Take a name-exact then symbol-exact CoinGecko match,
+    # best-rank within tier — those are the canonical coins with real history.
     name_exact = [c for c in coins if (c.get("name") or "").lower() == ql]
     sym_exact = [c for c in coins if (c.get("symbol") or "").lower() == ql]
-    ranked = _by_rank(name_exact) or _by_rank(sym_exact) or _by_rank(coins)
-    best = ranked[0]
-    full = await cg_coin(best["id"])
-    return _identity_from_coin(full or best)
+    strong = _by_rank(name_exact) or _by_rank(sym_exact)
+    if strong:
+        full = await cg_coin(strong[0]["id"])
+        return _identity_from_coin(full or strong[0])
+
+    # No canonical match — this is where microcaps live. DexScreener finds
+    # anything with a live pool ("jimothy" -> the pump.fun raccoon token).
+    di = await resolve_dexscreener(subject)
+    if di:
+        return di
+
+    # Last resort: CoinGecko's best fuzzy match (a loose name hit).
+    if coins:
+        full = await cg_coin(_by_rank(coins)[0]["id"])
+        return _identity_from_coin(full or coins[0])
+    return None
+
+
+def _looks_like_solana_addr(q: str) -> bool:
+    """A base58 32-44 string that is the whole query (or nearly) — not an English
+    sentence that happens to contain a long word. Guards the Solana-address path."""
+    toks = [t for t in re.split(r"\s+", q.strip()) if t]
+    return len(toks) == 1 and bool(SOL_ADDR_RE.fullmatch(toks[0]))
 
 
 def _identity_from_coin(coin: dict, prefer_chain: Optional[str] = None) -> dict:
@@ -294,15 +340,234 @@ def _identity_from_coin(coin: dict, prefer_chain: Optional[str] = None) -> dict:
             break
     img = ((coin.get("image") or {}).get("large")
            or (coin.get("image") or {}).get("small") or "")
+    cid = coin.get("id", "")
     return {
-        "coin_id": coin.get("id", ""),
+        "coin_id": cid,
+        "ref": cid,
         "name": coin.get("name", ""),
         "symbol": (coin.get("symbol") or "").upper(),
         "chain": chain,
         "address": address,
+        "pool": "",
+        "gt_network": "",
         "image": img,
         "source": "coingecko",
     }
+
+
+# ── DexScreener + GeckoTerminal: the keyless long-tail (microcaps) ────────────
+# DexScreener indexes every DEX PAIR across chains (price/liquidity/mcap/24h) and
+# has a name search — so it resolves "jimothy" the moment a pool exists, where
+# CoinGecko (which lists canonical coins) returns nothing. GeckoTerminal (also
+# keyless, CoinGecko's on-chain arm) then supplies OHLCV candles for that pool so
+# even an unlisted memecoin gets a real price chart. Neither needs a key.
+DEXS_BASE = "https://api.dexscreener.com/latest/dex"
+GT_BASE = "https://api.geckoterminal.com/api/v2"
+
+# DexScreener chainId -> (our chain slug, GeckoTerminal network id). The GT
+# network ids differ from the chain names ("eth", not "ethereum").
+DEXS_CHAIN = {
+    "ethereum": ("ethereum", "eth"),
+    "solana": ("solana", "solana"),
+    "bsc": ("bsc", "bsc"),
+    "base": ("base", "base"),
+    "polygon": ("polygon", "polygon_pos"),
+    "arbitrum": ("arbitrum", "arbitrum"),
+    "avalanche": ("avalanche", "avax"),
+    "optimism": ("optimism", "optimism"),
+}
+
+# Range -> (GeckoTerminal timeframe, aggregate, candle limit).
+_GT_RANGE = {
+    "1d": ("minute", 15, 96),
+    "7d": ("hour", 1, 168),
+    "30d": ("hour", 4, 180),
+    "90d": ("day", 1, 90),
+    "1y": ("day", 1, 365),
+    "max": ("day", 1, 1000),
+}
+_RANGE_DAYS = {"1d": "1", "7d": "7", "30d": "30", "90d": "90", "1y": "365", "max": "max"}
+
+
+async def dexscreener_search(query: str) -> list:
+    d = await _get_json(f"{DEXS_BASE}/search", {"q": query})
+    return (d or {}).get("pairs", []) or []
+
+
+async def dexscreener_by_address(address: str) -> list:
+    d = await _get_json(f"{DEXS_BASE}/tokens/{address}")
+    return (d or {}).get("pairs", []) or []
+
+
+async def dexscreener_pair(chain_id: str, pool: str) -> dict:
+    d = await _get_json(f"{DEXS_BASE}/pairs/{chain_id}/{pool}")
+    if not d:
+        return {}
+    ps = d.get("pairs") or ([d["pair"]] if d.get("pair") else [])
+    return ps[0] if ps else {}
+
+
+def _liq(p: dict) -> float:
+    return float((p.get("liquidity") or {}).get("usd") or 0.0)
+
+
+# Filler stripped before a name/symbol search so "price of jimothy the raccoon"
+# searches "jimothy raccoon", not the whole sentence (which name-matches nothing).
+_CRYPTO_FILLER = {
+    "the", "a", "an", "of", "for", "me", "please", "show", "get", "pull", "up",
+    "price", "prices", "chart", "charts", "graph", "token", "tokens", "coin",
+    "coins", "crypto", "cryptocurrency", "cryptocurrencies", "value", "worth",
+    "holders", "holder", "holds", "hold", "holding", "whales", "whale",
+    "distribution", "distributed", "wallet", "wallets", "connected", "connections",
+    "network", "map", "fair", "launch", "pump", "dump", "rug", "scam", "safe",
+    "legit", "deep", "dive", "dd", "due", "diligence", "analyze", "analysis",
+    "research", "who", "owns", "own", "top", "report", "on", "about", "what",
+    "whats", "is", "it", "how", "much", "current", "live", "now", "today", "buy",
+    "should", "i", "and", "or", "vs", "to", "this", "that", "in",
+}
+
+# Top coins short-circuit the search entirely: name/symbol -> canonical CoinGecko
+# id. This makes the majors bulletproof and instant — they never depend on a
+# CoinGecko search call (which can rate-limit) and so can NEVER resolve to a
+# DexScreener impostor named "Ethereum" with a $75k pool.
+MAJORS = {
+    "bitcoin": "bitcoin", "btc": "bitcoin",
+    "ethereum": "ethereum", "eth": "ethereum", "ether": "ethereum",
+    "solana": "solana", "sol": "solana",
+    "dogecoin": "dogecoin", "doge": "dogecoin",
+    "ripple": "ripple", "xrp": "ripple",
+    "cardano": "cardano", "ada": "cardano",
+    "litecoin": "litecoin", "ltc": "litecoin",
+    "polkadot": "polkadot", "dot": "polkadot",
+    "avalanche": "avalanche-2", "avax": "avalanche-2",
+    "chainlink": "chainlink", "link": "chainlink",
+    "tron": "tron", "trx": "tron",
+    "polygon": "matic-network", "matic": "matic-network",
+    "shiba": "shiba-inu", "shib": "shiba-inu", "shiba inu": "shiba-inu",
+    "pepe": "pepe",
+    "uniswap": "uniswap", "uni": "uniswap",
+    "tether": "tether", "usdt": "tether",
+    "usdc": "usd-coin",
+    "dai": "dai",
+    "monero": "monero", "xmr": "monero",
+    "stellar": "stellar", "xlm": "stellar",
+    "cosmos": "cosmos", "atom": "cosmos",
+    "bonk": "bonk",
+    "dogwifhat": "dogwifhat", "wif": "dogwifhat",
+    "near": "near",
+    "aptos": "aptos", "apt": "aptos",
+    "arbitrum": "arbitrum", "arb": "arbitrum",
+    "optimism": "optimism", "op": "optimism",
+    "bnb": "binancecoin", "binance coin": "binancecoin",
+    "cronos": "crypto-com-chain", "cro": "crypto-com-chain",
+    "toncoin": "the-open-network", "ton": "the-open-network",
+    "sui": "sui", "sei": "sei-network", "hbar": "hedera-hashgraph",
+    "floki": "floki", "mog": "mog-coin", "brett": "based-brett",
+}
+
+
+def _clean_crypto_query(query: str) -> str:
+    """Strip filler so a name/symbol search sees just the token words. Keeps
+    $CASHTAGs and addresses intact (caller handles those before this)."""
+    words = re.split(r"[^A-Za-z0-9$]+", query or "")
+    kept = [w for w in words if w and w.lower() not in _CRYPTO_FILLER]
+    return " ".join(kept).strip() or (query or "").strip()
+
+
+def _best_pair(pairs: list, query: Optional[str]) -> Optional[dict]:
+    """Pick the token to show from a DexScreener result set. With a query, SCORE
+    each pair by how well its base token name/symbol matches the query words
+    (symbol-exact > symbol-substring > name-word > name-substring), then break
+    ties by deepest liquidity — so a scam clone with a $50 pool can't win, and a
+    high-liquidity but UNRELATED token can't hijack a no-match query (that returns
+    None instead, so the caller degrades honestly). Without a query (address
+    lookup) the deepest-liquidity pool wins outright."""
+    cands = [p for p in pairs if (p.get("baseToken") or {}).get("address")
+             and p.get("chainId") in DEXS_CHAIN]
+    if not cands:
+        return None
+    if not query:
+        return max(cands, key=_liq)
+
+    words = [w for w in re.split(r"[^a-z0-9]+", query.lower())
+             if len(w) >= 2 and w not in _CRYPTO_FILLER]
+    if not words:
+        return max(cands, key=_liq)
+
+    def _score(p):
+        bt = p.get("baseToken") or {}
+        sym = (bt.get("symbol") or "").lower()
+        name = (bt.get("name") or "").lower()
+        name_words = set(re.split(r"[^a-z0-9]+", name))
+        s = 0
+        for w in words:
+            if w == sym:
+                s += 4
+            elif w in sym:
+                s += 2
+            elif w in name_words:
+                s += 3
+            elif w in name:
+                s += 1
+        return s
+
+    scored = [(_score(p), _liq(p), p) for p in cands]
+    best = max(s for s, _, _ in scored)
+    if best <= 0:
+        return None   # query given but nothing matched — don't grab a whale
+    return max((t for t in scored if t[0] == best), key=lambda t: t[1])[2]
+
+
+def _identity_from_pair(p: dict) -> Optional[dict]:
+    chain_id = p.get("chainId")
+    if chain_id not in DEXS_CHAIN:
+        return None
+    slug, gt = DEXS_CHAIN[chain_id]
+    bt = p.get("baseToken") or {}
+    pool = p.get("pairAddress", "")
+    return {
+        "coin_id": f"dexs:{chain_id}:{pool}",
+        "ref": f"dexs:{chain_id}:{pool}",
+        "name": bt.get("name", ""),
+        "symbol": (bt.get("symbol") or "").upper(),
+        "chain": slug,
+        "address": bt.get("address", ""),
+        "pool": pool,
+        "gt_network": gt,
+        "dexs_chain": chain_id,
+        "image": (p.get("info") or {}).get("imageUrl", "") or "",
+        "source": "dexscreener",
+    }
+
+
+async def resolve_dexscreener(query: str) -> Optional[dict]:
+    best = _best_pair(await dexscreener_search(query), query)
+    return _identity_from_pair(best) if best else None
+
+
+async def resolve_dexscreener_address(address: str) -> Optional[dict]:
+    best = _best_pair(await dexscreener_by_address(address), None)
+    return _identity_from_pair(best) if best else None
+
+
+async def gt_ohlcv(network: str, pool: str, range_: str = "30d") -> tuple:
+    """(labels, values) close-price series for a DEX pool via GeckoTerminal.
+    Keyless. ([], []) on failure. GT returns newest-first; we flip to oldest-first
+    so the chart reads left→right in time."""
+    tf, agg, lim = _GT_RANGE.get(range_, ("hour", 4, 180))
+    d = await _get_json(f"{GT_BASE}/networks/{network}/pools/{pool}/ohlcv/{tf}",
+                        {"aggregate": agg, "limit": lim, "currency": "usd"})
+    ol = (((d or {}).get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+    ol = list(reversed(ol))
+    days = _RANGE_DAYS.get(range_, "30")
+    labels, values = [], []
+    for row in ol:
+        if len(row) < 5:
+            continue
+        ts, _o, _h, _l, close = row[0], row[1], row[2], row[3], row[4]
+        labels.append(_fmt_ts_label(float(ts), days))
+        values.append(close)
+    return labels, values
 
 
 # ── Ethplorer: Ethereum holders / transfers / address ────────────────────────
