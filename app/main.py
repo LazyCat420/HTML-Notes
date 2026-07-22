@@ -4168,6 +4168,12 @@ CRYPTO_WORD_RE = re.compile(
     r'litecoin|polkadot|avalanche|avax|chainlink|link|uniswap|uni|tether|usdt|'
     r'usdc|dai|matic|polygon|tron|trx|monero|xmr|dogwifhat|wif|floki|mog|'
     r'wojak|turbo|brett|degen|toshi)\b', re.I)
+# Soft signal: "<name> token/coin/memecoin" is how people name a microcap
+# ("jimothy token", "the doge coin"). "coin"/"token" are generic, so this only
+# counts on a SHORT query (a lookup, not a sentence like "explain oauth tokens")
+# — see the length guard in the fast lane. The builder pre-resolves via
+# DexScreener and falls through on a miss, so a stray hit just costs one lookup.
+CRYPTO_SOFT_RE = re.compile(r'\b(tokens?|coins?|memecoins?|shitcoins?)\b', re.I)
 # A $CASHTAG ($PEPE) or a 0x… contract address — strong crypto/token signal.
 CASHTAG_RE = re.compile(r'\$[A-Za-z][A-Za-z0-9]{1,9}\b')
 EVM_ADDR_RE_MAIN = re.compile(r'\b0x[a-fA-F0-9]{40}\b')
@@ -8239,8 +8245,13 @@ async def send_message(req: MessageRequest):
         # asks still fall through. Builds are fast + cached, so we PRE-RESOLVE and
         # only spawn on success, else fall through instead of an empty shell.
         _has_addr = bool(EVM_ADDR_RE_MAIN.search(req.message))
+        # Soft "<name> token/coin" only counts on a short lookup-shaped query, so a
+        # long sentence that merely mentions "tokens" doesn't trigger a lookup.
+        _soft_crypto = (CRYPTO_SOFT_RE.search(text_clean)
+                        and len(text_clean.split()) <= 4)
         _crypto_ctx = bool(CRYPTO_WORD_RE.search(text_clean)
-                           or CASHTAG_RE.search(req.message) or _has_addr)
+                           or CASHTAG_RE.search(req.message) or _has_addr
+                           or _soft_crypto)
         if _crypto_ctx and not wants_removal and not is_video_ask and not wants_music:
             # 1. HOLDER GRAPH — "who holds PEPE", "$BONK whales", "is X a fair
             #    launch", "pump and dump wallets". The headline feature.
