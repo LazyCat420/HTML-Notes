@@ -1,3 +1,43 @@
+# Handoff — 2026-07-21 (crypto wave 2: keyless charts for ANY token — DexScreener + GeckoTerminal)
+
+**Deployed :8035 `d5d5a49`.** Follow-up to the crypto feature below. User's test:
+"jimothy" (a microcap pump.fun memecoin) returned no chart — CoinGecko only lists
+canonical coins, so the whole card came back empty. Decision: **keyless only, no
+keys ever** (user's explicit choice).
+
+**Fix — two keyless sources added to `app/crypto.py`, both no-key/no-signup:**
+- **DexScreener** (`api.dexscreener.com`) — indexes every DEX *pair* across chains
+  with a name search, so it resolves anything with a live pool ("jimothy" → the
+  raccoon token) + live price/liquidity/mcap/24h. NOTE: DexScreener has **no
+  holder data** (pairs, not wallets) — confirmed, so it does NOT help the whale
+  graph, only price/identity.
+- **GeckoTerminal** (`api.geckoterminal.com`, CoinGecko's on-chain arm) — OHLCV
+  candles for a DEX pool, so an unlisted memecoin gets a real price chart.
+
+**Resolution is now tiered** (`resolve_crypto`): MAJORS map (top ~35 coins →
+canonical CoinGecko id, bulletproof, no search) → CoinGecko name/symbol-EXACT →
+**DexScreener fallback** (the long tail) → CoinGecko fuzzy. A CoinGecko coin whose
+chart comes back empty (rate-limit / thin coverage) **also** falls back to the
+GeckoTerminal pool chart (`_gt_chart_for_contract`), so a chart renders no matter
+what. `ref` is the routable id: a coin id, or `dexs:<chainId>:<pool>` →
+`_dexs_snapshot` / `/api/crypto` both dispatch on the `dexs:` prefix.
+
+**Query-hygiene fixes (found via live testing):** `_clean_crypto_query` strips
+filler ("price of X", "who holds X") to token words before searching;
+`_best_pair` scores name/symbol word matches and returns None on no-match instead
+of grabbing an unrelated high-liquidity whale (fixed "jimothy the raccoon" → wrong
+$17B "00" token, "who holds pepe" → "MinnowHolds" $48 scam). 429-aware retry on
+CoinGecko. Microcap cards show liquidity + DEX instead of ATH/high/low.
+
+**Verified live on the NAS:** `/api/crypto/jimothy-the-raccoon` → JIMOTHY $0.027,
+$27.1M mcap, 115 chart points; "price of jimothy" and "jimothy the raccoon chart"
+both render the card with a chart. dogecoin/solana/bitcoin/pepe/$WIF all resolve
+correct. **Solana holder GRAPH still degrades to the price card** when the public
+RPC rate-limits (the accepted keyless-only limit — a free Helius key in the vault
+would fix it, no code change, but user chose no keys).
+
+---
+
 # Handoff — 2026-07-21 (crypto + wallet-graph feature: tokens, holders, whales)
 
 **New capability:** the canvas now answers crypto asks — a token's price/chart,
