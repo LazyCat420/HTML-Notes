@@ -167,12 +167,15 @@ def update_note(
     new_version = note["version"] + 1
     now = datetime.utcnow().isoformat()
     
-    # Merge values
-    updated_title = title if title is not None else note["title"]
+    # Merge values. title/rendered_html additionally treat empty/whitespace as
+    # "keep existing" — an update carrying "" used to clobber real content and
+    # write an empty note_versions row (last line of defense; the auditor now
+    # rejects empty fragments upstream too).
+    updated_title = title if title is not None and str(title).strip() else note["title"]
     updated_tags = tags if tags is not None else note["tags"]
     updated_links = links if links is not None else note["links"]
     updated_blocks = canonical_blocks if canonical_blocks is not None else note["canonical_blocks"]
-    updated_html = rendered_html if rendered_html is not None else note["rendered_html"]
+    updated_html = rendered_html if rendered_html is not None and str(rendered_html).strip() else note["rendered_html"]
     
     source_messages = note["source_messages"]
     if source_message and source_message not in source_messages:

@@ -41,7 +41,10 @@ def audit_html_fragment(html_content: str) -> Dict[str, Any]:
     Returns a dict with 'is_valid', 'errors', and 'tags'.
     """
     if not html_content.strip():
-        return {"is_valid": True, "errors": [], "tags": []}
+        # Every caller uses this as a commit gate — an empty fragment used to
+        # pass and produced blank note rows (and let an update clobber real
+        # content with ""). Empty is never a valid note body.
+        return {"is_valid": False, "errors": ["empty content"], "tags": []}
         
     parser = NoteHTMLParser()
     try:
