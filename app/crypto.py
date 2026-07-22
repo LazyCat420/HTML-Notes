@@ -591,6 +591,38 @@ async def eth_transfers(address: str, limit: int = 100) -> list:
     return (d or {}).get("operations", []) or []
 
 
+async def eth_address_token_history(address: str, token: str, limit: int = 30) -> list:
+    """ONE holder's transfers of a SPECIFIC token [{from, to, value, timestamp}].
+    This is what makes the flow graph real: for each top holder we see who it
+    actually sent to / received from — including counterparties that aren't
+    themselves top holders (a shared funder that seeded several whale wallets)."""
+    d = await _get_json(f"{ETHPLORER_BASE}/getAddressHistory/{address}",
+                        {"apiKey": ETHPLORER_KEY, "token": token,
+                         "type": "transfer", "limit": limit})
+    return (d or {}).get("operations", []) or []
+
+
+async def eth_holder_flows(token: str, holder_addrs: list, per_holder: int = 30,
+                           concurrency: int = 4) -> list:
+    """Fetch each holder's transfers of `token` and return the flattened union —
+    the edge material for the flow graph. Bounded concurrency keeps the shared
+    Ethplorer freekey from 429-ing on a burst; results are TTL-cached so a re-ask
+    is instant. Returns [{from,to,value,timestamp}, ...]."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(addr):
+        async with sem:
+            return await eth_address_token_history(addr, token, per_holder)
+
+    batches = await asyncio.gather(*[_one(a) for a in holder_addrs],
+                                   return_exceptions=True)
+    flows = []
+    for b in batches:
+        if isinstance(b, list):
+            flows.extend(b)
+    return flows
+
+
 async def eth_address_info(address: str) -> dict:
     d = await _get_json(f"{ETHPLORER_BASE}/getAddressInfo/{address}",
                         {"apiKey": ETHPLORER_KEY})
@@ -672,25 +704,49 @@ def _classify_evm(addr: str, share: float, token_addr: str) -> tuple:
     return "holder", _short(addr)
 
 
+def _humanize_tokens(raw: float, decimals: int) -> str:
+    """Raw on-chain integer amount → human token count (1.2M, 3.4B)."""
+    try:
+        n = float(raw) / (10 ** int(decimals or 0))
+    except (TypeError, ValueError):
+        return "?"
+    a = abs(n)
+    if a >= 1e12:
+        return f"{n/1e12:.2f}T"
+    if a >= 1e9:
+        return f"{n/1e9:.2f}B"
+    if a >= 1e6:
+        return f"{n/1e6:.2f}M"
+    if a >= 1e3:
+        return f"{n/1e3:.1f}K"
+    if 0 < a < 0.01:
+        return "<0.01"
+    return f"{n:.2f}"
+
+
 def build_holder_graph(token: dict, holders: list, transfers: list,
-                       chain: str) -> dict:
-    """Holders (+ transfers, EVM only) → a cytoscape config + concentration
-    metrics. Pure. Contract:
+                       chain: str, decimals: int = 0) -> dict:
+    """Holders + their transfer flows → a cytoscape config + concentration &
+    coordination metrics. Pure. Contract:
 
         token = {name, symbol, address}
         holders = [{address, share, balance/amount}]   (share = % of supply)
-        transfers = [{from, to, value}]                (EVM; [] for Solana)
+        transfers = [{from, to, value, timestamp}]     (the UNION of each top
+                    holder's own transfers of this token — EVM; [] for Solana)
 
-    Returns {title, chain, token, elements, metrics, note}. `elements` is a flat
-    cytoscape list of node + edge {data:{…}} objects. Nodes carry kind/label/
-    share for color+size; edges carry weight (transfer count between the pair)."""
+    Edges answer "who transferred what to where": a directed edge per (from→to)
+    pair carries the summed amount + count. A counterparty that isn't itself a top
+    holder but connects TWO OR MORE top holders is promoted to a red "shared
+    source" node — the coordinated-seeding / pump-and-dump tell. Returns
+    {title, chain, token, elements, metrics, note}."""
     token_addr = (token.get("address") or "").lower()
     is_evm = chain != "solana"
 
-    # ── Nodes ──
+    # ── Holder nodes ──
     holder_set = set()
     nodes = []
-    kind_share = {}   # kind -> summed % (for the CEX/burn/DEX breakdown)
+    node_index = {}   # addr -> node dict (so we can flag it later)
+    kind_share = {}
     shares = []
     for h in holders:
         addr = (h.get("address") or "").strip()
@@ -708,55 +764,91 @@ def build_holder_graph(token: dict, holders: list, transfers: list,
             kind = "whale" if share >= 1.0 else "holder"
             label = _short(addr)
         kind_share[kind] = kind_share.get(kind, 0.0) + share
-        nodes.append({"data": {
+        node = {"data": {
             "id": low, "addr": addr, "label": label, "kind": kind,
             "share": round(share, 3),
-            # Node diameter: sqrt so a 40%-holder isn't 40x a 1%-holder, but the
-            # eye still reads dominance. 18–90px.
             "size": round(18 + min(72, (share ** 0.5) * 12), 1),
-        }})
+        }}
+        nodes.append(node)
+        node_index[low] = node
 
-    # ── Edges (EVM only) ── transfers where BOTH ends are top holders. That is
-    # the signal: whales shuffling supply between each other (wash / coordinated
-    # distribution) vs supply flowing out to fresh wallets.
-    edge_weight = {}
+    # ── Flow edges ── tally each holder's real transfers of this token.
+    pair = {}                 # (from,to) -> [sum_raw, count]
+    counterparties = {}       # non-holder addr -> set(holder addrs it touched)
     for t in (transfers or []):
         f = (t.get("from") or "").lower()
         to = (t.get("to") or "").lower()
-        if f in holder_set and to in holder_set and f != to:
-            key = (f, to)
-            edge_weight[key] = edge_weight.get(key, 0) + 1
-    edges = []
-    for (f, to), w in edge_weight.items():
-        edges.append({"data": {
-            "id": f"{f[:8]}-{to[:8]}", "source": f, "target": to,
-            "weight": w, "width": round(1 + min(6, w * 1.2), 1),
-        }})
+        if not f or not to or f == to:
+            continue
+        raw = float(t.get("value") or 0)
+        p = pair.setdefault((f, to), [0.0, 0])
+        p[0] += raw
+        p[1] += 1
+        if f in holder_set and to not in holder_set:
+            counterparties.setdefault(to, set()).add(f)
+        elif to in holder_set and f not in holder_set:
+            counterparties.setdefault(f, set()).add(to)
 
-    # ── Metrics ── everything is over the FETCHED holders (top N), not full
-    # supply — labelled as such so nobody reads top-50 HHI as whole-market.
+    # Promote a counterparty to a node when it links ≥2 top holders (a shared
+    # funder/router — the coordination signal), or when it's a known entity
+    # (CEX/burn/DEX). Others stay off the graph to avoid a hairball.
+    promoted = {a for a, hs in counterparties.items()
+                if len(hs) >= 2 or a in KNOWN_EVM or a == token_addr}
+    for a in promoted:
+        if a in holder_set:
+            continue
+        if is_evm:
+            kind, label = _classify_evm(a, 0.0, token_addr)
+            if kind == "holder":            # unlabeled but ties whales together
+                kind, label = "source", "shared source"
+        else:
+            kind, label = "source", _short(a)
+        node = {"data": {"id": a, "addr": a, "label": label, "kind": kind,
+                         "share": 0.0, "size": 26,
+                         "ties": len(counterparties.get(a, ()))}}
+        nodes.append(node)
+        node_index[a] = node
+
+    node_ids = set(node_index)
+    edges = []
+    for (f, to), (amt, cnt) in pair.items():
+        if f in node_ids and to in node_ids:
+            edges.append({"data": {
+                "id": f"{f[:8]}-{to[:8]}", "source": f, "target": to,
+                "count": cnt, "amount": _humanize_tokens(amt, decimals),
+                "amount_raw": amt,
+                "width": round(1 + min(6, (cnt ** 0.5) * 1.5), 1),
+            }})
+
+    # Whales tied together through a promoted "source" node = coordination.
+    source_ids = {n["data"]["id"] for n in nodes if n["data"]["kind"] == "source"}
+    clustered = set()
+    for a in source_ids:
+        for h in counterparties.get(a, ()):
+            clustered.add(h)
+    clustered_whales = len(clustered)
+
+    # ── Metrics ──
     shares_sorted = sorted(shares, reverse=True)
     top10 = sum(shares_sorted[:10])
     cex = kind_share.get("cex", 0.0)
     burn = kind_share.get("burn", 0.0)
     dex = kind_share.get("dex", 0.0)
     contract = kind_share.get("contract", 0.0)
-    # Concentration in real holders: strip custody (CEX), burned and LP/router
-    # and the contract itself — those aren't a person who can dump. Top-10 of the
-    # whale/holder-only list.
     real_shares = sorted(
         (n["data"]["share"] for n in nodes if n["data"]["kind"] in ("whale", "holder")),
         reverse=True)
     top10_ex = sum(real_shares[:10])
-    hhi = sum(s * s for s in shares)                 # Herfindahl over fetched
+    hhi = sum(s * s for s in shares)
     gini = _gini(shares)
     whales = sum(1 for n in nodes if n["data"]["kind"] == "whale")
 
-    verdict, tone = _distribution_verdict(top10_ex, whales, burn, len(nodes))
+    verdict, tone = _distribution_verdict(top10_ex, whales, burn, len(shares),
+                                          clustered_whales)
 
     metrics = {
         "holder_count": int(token.get("holders_count") or 0),
-        "fetched": len(nodes),
+        "fetched": len(shares),
         "top10_share": round(top10, 2),
         "top10_share_real": round(top10_ex, 2),
         "cex_share": round(cex, 2),
@@ -766,6 +858,8 @@ def build_holder_graph(token: dict, holders: list, transfers: list,
         "hhi": round(hhi, 1),
         "gini": round(gini, 3),
         "edge_count": len(edges),
+        "source_count": len(source_ids),
+        "clustered_whales": clustered_whales,
         "verdict": verdict,
         "tone": tone,
     }
@@ -773,11 +867,17 @@ def build_holder_graph(token: dict, holders: list, transfers: list,
     note = ""
     if not is_evm:
         note = ("Solana graph shows the top token accounts by balance and their "
-                "concentration. Wallet-to-wallet transfer edges aren't drawn on "
-                "Solana yet.")
+                "concentration. Wallet-to-wallet transfer flows aren't drawn on "
+                "Solana (needs an indexer key).")
+    elif len(source_ids):
+        note = (f"{clustered_whales} top wallets are linked through "
+                f"{len(source_ids)} shared source wallet(s) (red) — possible "
+                f"coordinated seeding. Tap an edge for the amount moved.")
     elif not edges:
-        note = ("No transfers between the top holders in the recent window — "
-                "supply is moving to fresh wallets, not shuffling among whales.")
+        note = ("No transfers among the top holders in the sampled history — "
+                "supply came from fresh wallets, not shuffled between whales.")
+    else:
+        note = "Edges show real transfers between top wallets. Tap one for the amount."
 
     sym = token.get("symbol") or "token"
     return {
@@ -807,20 +907,26 @@ def _gini(shares: list) -> float:
 
 
 def _distribution_verdict(top10_real: float, whales: int, burn: float,
-                          n: int) -> tuple:
-    """Plain-English read of the distribution, + a tone flag (bad/warn/ok) for
-    the chip color. Based on real-holder top-10 concentration."""
+                          n: int, clustered: int = 0) -> tuple:
+    """Plain-English read of the distribution + a tone flag (bad/warn/ok) for the
+    chip color. Based on real-holder top-10 concentration, escalated when the flow
+    graph shows several whales linked through a shared source (coordination)."""
     if n == 0:
         return "No holder data available.", "warn"
-    if top10_real >= 60:
+    # Coordination overrides: several whales seeded through one source is a
+    # stronger pump/rug signal than concentration alone.
+    coord = (f" ⚠ {clustered} of the top wallets are linked through a shared "
+             f"source — looks coordinated." if clustered >= 3 else "")
+    if top10_real >= 60 or clustered >= 3:
         return (f"Highly concentrated — the top real holders control "
-                f"~{top10_real:.0f}% of supply. A handful of wallets could crash "
-                f"the price by selling. High rug/dump risk.", "bad")
+                f"~{top10_real:.0f}% of supply.{coord} A handful of wallets could "
+                f"crash the price. High rug/dump risk.", "bad")
     if top10_real >= 35:
         return (f"Concentrated — top holders sit on ~{top10_real:.0f}% of supply. "
-                f"Watch these {whales} whale wallets for coordinated selling.", "warn")
+                f"Watch these {whales} whale wallets for coordinated selling.{coord}",
+                "warn")
     if top10_real >= 18:
         return (f"Moderately distributed — top holders hold ~{top10_real:.0f}%. "
-                f"Some whale presence but not dominant.", "warn")
+                f"Some whale presence but not dominant.{coord}", "warn")
     return (f"Fairly distributed — top real holders hold only "
-            f"~{top10_real:.0f}% of supply, spread across many wallets.", "ok")
+            f"~{top10_real:.0f}% of supply, spread across many wallets.{coord}", "ok")

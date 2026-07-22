@@ -2080,11 +2080,18 @@ document.addEventListener("DOMContentLoaded", () => {
                                 }},
                                 { selector: 'edge', style: {
                                     'width': 'data(width)',
-                                    'line-color': 'rgba(148,163,184,0.35)',
-                                    'target-arrow-color': 'rgba(148,163,184,0.5)',
+                                    'line-color': 'rgba(148,163,184,0.4)',
+                                    'target-arrow-color': 'rgba(148,163,184,0.55)',
                                     'target-arrow-shape': 'triangle',
-                                    'arrow-scale': 0.6, 'curve-style': 'bezier',
-                                    'opacity': 0.6,
+                                    'arrow-scale': 0.7, 'curve-style': 'bezier',
+                                    'opacity': 0.7,
+                                }},
+                                // Edges touching a red "shared source" pop so the
+                                // coordinated-seeding pattern is visible at a glance.
+                                { selector: 'edge[?_hot]', style: {
+                                    'line-color': 'rgba(239,68,68,0.55)',
+                                    'target-arrow-color': 'rgba(239,68,68,0.7)',
+                                    'opacity': 0.85,
                                 }},
                                 { selector: 'node:selected', style: {
                                     'border-width': 3, 'border-color': '#fff',
@@ -2100,14 +2107,29 @@ document.addEventListener("DOMContentLoaded", () => {
                             minZoom: 0.2, maxZoom: 3,
                             wheelSensitivity: 0.2,
                         });
+                        // Flag edges touching a red "shared source" node so the
+                        // coordination pattern stands out (see the [?_hot] style).
+                        cy.nodes('[kind = "source"]').connectedEdges().forEach(e => e.data('_hot', 1));
                         // Tap a node → toast its address + share so a whale is
-                        // one click from the explorer.
+                        // one click from the explorer (and copy the address).
                         cy.on('tap', 'node', (evt) => {
                             const d = evt.target.data();
-                            const msg = `${d.label || ''} · ${d.share ?? 0}% of supply\n${d.addr || d.id}`;
+                            const extra = d.kind === 'source' ? `\n⚠ funded ${d.ties || 2}+ top wallets` : '';
+                            const msg = `${d.label || ''} · ${d.share ?? 0}% of supply${extra}\n${d.addr || d.id}`;
                             if (window.HN && window.HN.toast) window.HN.toast(msg);
                             else console.log('[graph]', msg);
                             if (d.addr) navigator.clipboard?.writeText(d.addr).catch(() => {});
+                        });
+                        // Tap an EDGE → "who sent what to where": amount + count +
+                        // direction between the two wallets.
+                        cy.on('tap', 'edge', (evt) => {
+                            const d = evt.target.data();
+                            const src = evt.target.source().data();
+                            const tgt = evt.target.target().data();
+                            const msg = `${src.label || src.id} → ${tgt.label || tgt.id}\n`
+                                + `${d.amount || '?'} tokens over ${d.count || 1} transfer(s)`;
+                            if (window.HN && window.HN.toast) window.HN.toast(msg);
+                            else console.log('[graph edge]', msg);
                         });
                         cy.fit(undefined, 20);
                     } catch (e) {

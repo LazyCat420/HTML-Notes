@@ -1471,10 +1471,12 @@ _GRAPH_KIND_COLORS = {
     "dex": "#22d3ee",        # teal — DEX router / LP / market maker
     "burn": "#64748b",       # slate — burned / dead
     "contract": "#fbbf24",   # amber — the token contract itself
+    "source": "#ef4444",     # red — a wallet that funded ≥2 whales (coordination)
 }
 _GRAPH_KIND_LABEL = {
     "whale": "Whale (>1%)", "holder": "Holder", "cex": "Exchange",
     "dex": "DEX / LP", "burn": "Burn / dead", "contract": "Token contract",
+    "source": "Shared source ⚠",
 }
 
 
@@ -1512,14 +1514,25 @@ def render_wallet_graph(widget_id: str, config: dict) -> str:
                 f'<span class="text-[0.55rem] uppercase tracking-wider text-slate-500">{esc(label)}</span>'
                 f'<span class="text-sm font-semibold tabular-nums text-white">{esc(value)}</span></div>')
 
-    chips = "".join([
+    chip_list = [
         chip("Top-10 real", f'{metrics.get("top10_share_real", 0)}%'),
         chip("Exchanges", f'{metrics.get("cex_share", 0)}%'),
         chip("Burned", f'{metrics.get("burn_share", 0)}%'),
         chip("Whales", str(metrics.get("whale_count", 0))),
-        chip("Holders", f'{metrics.get("holder_count", 0):,}' if metrics.get("holder_count") else "—"),
-        chip("Gini", str(metrics.get("gini", "—"))),
-    ])
+        chip("Flows", str(metrics.get("edge_count", 0))),
+    ]
+    # Only show the coordination chip when there IS coordination — a red flag that
+    # earns its space (whales linked through a shared funder wallet).
+    if metrics.get("clustered_whales"):
+        chip_list.append(
+            f'<div class="flex flex-col px-2.5 py-1.5 rounded-lg bg-rose-500/20 '
+            f'border border-rose-500/40 shrink-0">'
+            f'<span class="text-[0.55rem] uppercase tracking-wider text-rose-300">Linked ⚠</span>'
+            f'<span class="text-sm font-semibold tabular-nums text-white">'
+            f'{metrics.get("clustered_whales")}</span></div>')
+    else:
+        chip_list.append(chip("Gini", str(metrics.get("gini", "—"))))
+    chips = "".join(chip_list)
 
     # Legend from the kinds actually present.
     present = []
