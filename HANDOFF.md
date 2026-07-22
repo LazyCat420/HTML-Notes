@@ -1,3 +1,49 @@
+# Handoff — 2026-07-21 (crypto wave 4: keyless "squeeze harder" — persistent cache, 100 holders, Solana RPC rotation)
+
+**Context:** user asked how to get BETTER holder/flow data and chose "stay keyless,
+no keys ever." Investigated the ceiling first: **Blockscout is unreachable from the
+NAS** (Cloudflare TLS `wrong version number` even over IPv4 — a middlebox blocks
+the NAS IP; confirmed from the host AND inside the container), and **direct
+`eth_getLogs` on public RPCs is gated** ("Archive requests require a personal
+token"). So the keyless holder ceiling is: **Ethplorer freekey (ETH, max 100
+holders/call, shared-rate-limited) + a mostly-dead public Solana RPC.** The fix
+isn't a better endpoint — it's spending the rate budget more efficiently.
+
+**What shipped (all keyless, no signups):**
+1. **Persistent two-layer cache** (`app/crypto.py`): in-memory hot layer + a
+   **sqlite layer at `data/crypto_cache.db`** that survives container restarts.
+   Per-source TTLs via `_ttl_for()` — holder/flow/token calls 15 min, prices 90s,
+   coins 5 min. Verified: a FRESH process with `httpx` nulled still served 100
+   holders from disk in 0.5ms. This is the lever that lets us sample deeper: a
+   popular token / re-ask / range-tab switch never re-spends the Ethplorer budget.
+2. **100 holder nodes** (was 50 — freekey's confirmed max; `limit=1000` returns
+   empty) and **flow tracing over the top 20 whales** (was 15). The cache absorbs
+   the extra per-holder calls on repeat, so depth is up without more 429s on a
+   re-ask. First-ask still partially 429s (expected) — the graph builds from what
+   succeeds (verified: PEPE = 105 nodes / 27 edges / 2 shared-source even with
+   several 429s) and fills in on re-ask as the cache warms.
+3. **Solana public-RPC rotation** (`_SOLANA_RPCS` + `_sol_rpc_call`): tries
+   mainnet-beta → publicnode → (Helius first when a key exists) until one answers.
+   Honest reality unchanged: keyless Solana holders OFTEN fail (all public RPCs
+   429 / need keys from the NAS) → degrades to the price card. Only a free Helius
+   key fixes Solana; user declined keys.
+
+**Not changed:** the flow-graph logic, frontend, and DexScreener/GeckoTerminal
+chart path from waves 2-3 are untouched and still verified. Solana flow EDGES
+remain impossible keyless.
+
+**Verified:** py3.11 compiles; cache persists across process restart; PEPE graph
+105 nodes/27 edges/4 clustered whales with real amounts ("5.78T over 4 transfers");
+JIMOTHY microcap chart 131 pts via DexScreener. NOT browser-click-tested.
+
+**If the user ever reconsiders keys:** one free **Etherscan V2** key (100k/day,
+all EVM chains) removes the freekey rate limit + unlocks full holder lists + full
+history + Base/BSC/Arbitrum in one move; **Helius** free tier unlocks Solana
+flows. Both would slot into the existing vault-key pattern (`HELIUS_API_KEY` is
+already read) with no architecture change.
+
+---
+
 # Handoff — 2026-07-21 (crypto wave 3: real holder FLOW graph — who sent what to whom)
 
 **Deployed :8035 `4292257`.** User asked whether "top holders" gives a graph of

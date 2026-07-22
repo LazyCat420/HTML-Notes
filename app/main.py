@@ -6047,14 +6047,15 @@ async def build_wallet_graph_config(message: str) -> Optional[dict]:
     if chain == "ethereum" and address:
         info, holders = await asyncio.gather(
             cryptolib.eth_token_info(address),
-            cryptolib.eth_top_holders(address, limit=50),
+            cryptolib.eth_top_holders(address, limit=100),   # freekey max
         )
         if not holders:
             return None
         # Flow edges: fetch each of the TOP holders' own transfers of this token
-        # and connect them (incl. shared funders). Bounded to the top 15 so the
-        # shared Ethplorer freekey doesn't 429; that's where the whales are.
-        top_addrs = [h.get("address") for h in holders[:15] if h.get("address")]
+        # and connect them (incl. shared funders). Bounded to the top 20 whales;
+        # the persistent cache absorbs repeats so this doesn't re-spend the
+        # Ethplorer rate budget on a re-ask.
+        top_addrs = [h.get("address") for h in holders[:20] if h.get("address")]
         flows = await cryptolib.eth_holder_flows(address, top_addrs, per_holder=25)
         decimals = int(float((info or {}).get("decimals") or 0) or 0)
         token = {

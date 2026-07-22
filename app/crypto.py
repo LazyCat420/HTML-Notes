@@ -113,13 +113,57 @@ KNOWN_EVM = {
 }
 
 
-# Tiny TTL cache. The Ethplorer freekey and the public Solana RPC are shared and
-# rate-limited (429), and the canvas re-renders/re-asks the same token often, so
-# caching GET results for a minute both softens the limit and makes a re-ask
-# instant. Keyed by (url, sorted params). A cached miss (None) is NOT stored, so
-# a transient 429 doesn't poison the next real attempt.
+# Two-layer TTL cache: an in-memory hot layer + a PERSISTENT sqlite layer that
+# survives restarts. The keyless sources (Ethplorer freekey, public Solana RPC,
+# CoinGecko free) are all shared and rate-limited (429). Persisting responses
+# means a popular token, a re-ask, or a range-tab switch never re-spends the rate
+# budget — which is what lets us sample DEEPER (100 holders + per-holder flows)
+# without 429-ing. Per-URL TTLs: holder/flow/token data is slow-moving (15 min),
+# prices are fresh (90s). A miss (None) is never cached, so a transient 429
+# doesn't poison the next real attempt.
+import os as _os
+import sqlite3 as _sqlite3
+import threading as _threading
+import time as _time
+
 _CACHE: dict = {}
-_CACHE_TTL = 60.0
+_CACHE_LOCK = _threading.Lock()
+_DB_PATH = _os.path.join(
+    _os.path.dirname(_os.getenv("DATABASE_URL", "data/notes.db")) or "data",
+    "crypto_cache.db")
+_db_conn = None
+
+
+def _cache_db():
+    global _db_conn
+    if _db_conn is None:
+        try:
+            _os.makedirs(_os.path.dirname(_DB_PATH) or ".", exist_ok=True)
+            _db_conn = _sqlite3.connect(_DB_PATH, check_same_thread=False)
+            _db_conn.execute(
+                "CREATE TABLE IF NOT EXISTS crypto_cache "
+                "(k TEXT PRIMARY KEY, v TEXT, exp REAL)")
+            _db_conn.commit()
+        except Exception as e:
+            logger.warning("[crypto] cache db init failed (%s) — memory only", e)
+            _db_conn = False   # sentinel: don't retry every call
+    return _db_conn or None
+
+
+def _ttl_for(url: str) -> float:
+    """Per-source freshness. On-chain holder/flow/token facts move slowly; prices
+    must stay live."""
+    u = url.lower()
+    if ("market_chart" in u or "/ohlcv/" in u or "/search" in u
+            or "dexscreener" in u and "/pairs/" in u):
+        return 90.0
+    if ("gettoptokenholders" in u or "getaddresshistory" in u
+            or "gettokeninfo" in u or "gettokenhistory" in u
+            or "getaddressinfo" in u):
+        return 900.0        # 15 min — the expensive holder/flow calls
+    if "/coins/" in u:
+        return 300.0
+    return 120.0
 
 
 def _cache_key(url: str, params: Optional[dict]) -> str:
@@ -129,21 +173,59 @@ def _cache_key(url: str, params: Optional[dict]) -> str:
     return url + "?" + "&".join(f"{k}={v}" for k, v in items)
 
 
-async def _get_json(url: str, params: Optional[dict] = None, timeout: float = 12.0):
-    """GET → parsed JSON, or None on any error/non-200. Cached for _CACHE_TTL.
-    Never raises."""
-    import time
-    key = _cache_key(url, params)
+def _cache_get(key: str):
     hit = _CACHE.get(key)
-    if hit and (time.time() - hit[0]) < _CACHE_TTL:
-        return hit[1]
+    if hit and _time.time() < hit[0]:
+        return hit[1], True
+    db = _cache_db()
+    if db is not None:
+        try:
+            with _CACHE_LOCK:
+                row = db.execute("SELECT v, exp FROM crypto_cache WHERE k=?",
+                                 (key,)).fetchone()
+            if row and _time.time() < row[1]:
+                import json as _json
+                data = _json.loads(row[0])
+                _CACHE[key] = (row[1], data)   # promote to hot layer
+                return data, True
+        except Exception:
+            pass
+    return None, False
+
+
+def _cache_put(key: str, data, ttl: float):
+    exp = _time.time() + ttl
+    _CACHE[key] = (exp, data)
+    if len(_CACHE) > 512:
+        for k in sorted(_CACHE, key=lambda k: _CACHE[k][0])[:256]:
+            _CACHE.pop(k, None)
+    db = _cache_db()
+    if db is not None:
+        try:
+            import json as _json
+            with _CACHE_LOCK:
+                db.execute(
+                    "INSERT OR REPLACE INTO crypto_cache (k, v, exp) VALUES (?,?,?)",
+                    (key, _json.dumps(data), exp))
+                db.commit()
+        except Exception:
+            pass
+
+
+async def _get_json(url: str, params: Optional[dict] = None, timeout: float = 12.0):
+    """GET → parsed JSON, or None on any error/non-200. Two-layer TTL cached.
+    Never raises."""
+    key = _cache_key(url, params)
+    cached, ok = _cache_get(key)
+    if ok:
+        return cached
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as c:
             r = await c.get(url, params=params,
                             headers={"User-Agent": "html-notes/1.0",
                                      "Accept": "application/json"})
-            # CoinGecko's free tier rate-limits (429) under bursts; one short
-            # backoff usually clears it. Keeps a run of crypto asks from failing.
+            # CoinGecko/Ethplorer free tiers rate-limit (429) under bursts; one
+            # short backoff usually clears it.
             if r.status_code == 429:
                 await asyncio.sleep(1.5)
                 r = await c.get(url, params=params,
@@ -153,10 +235,7 @@ async def _get_json(url: str, params: Optional[dict] = None, timeout: float = 12
                 logger.info("[crypto] %s -> %s", url, r.status_code)
                 return None
             data = r.json()
-            _CACHE[key] = (time.time(), data)
-            if len(_CACHE) > 512:               # crude bound; drop oldest half
-                for k in sorted(_CACHE, key=lambda k: _CACHE[k][0])[:256]:
-                    _CACHE.pop(k, None)
+            _cache_put(key, data, _ttl_for(url))
             return data
     except Exception as e:
         logger.info("[crypto] GET %s failed: %s", url, e)
@@ -630,23 +709,46 @@ async def eth_address_info(address: str) -> dict:
 
 
 # ── Solana RPC: top holders of a mint ────────────────────────────────────────
+# Keyless public RPCs, tried in order until one answers (each is heavily throttled
+# on its own, so a rotation catches more successes). A Helius key, when present,
+# jumps the queue — it's the only reliable option. Honest reality: keyless Solana
+# holder data OFTEN fails; the caller degrades to the price card.
+_SOLANA_RPCS = [
+    SOLANA_PUBLIC_RPC,
+    "https://solana-rpc.publicnode.com",
+    "https://api.mainnet-beta.solana.com",
+]
+
+
+async def _sol_rpc_call(rpcs: list, payload: dict):
+    """POST `payload` to each RPC until one returns a non-error result."""
+    for rpc in rpcs:
+        r = await _post_json(rpc, payload)
+        if r and not r.get("error") and r.get("result") is not None:
+            return r, rpc
+    return None, None
+
+
 async def sol_top_holders(mint: str, limit: int = 20, helius_key: str = "") -> tuple:
     """(holders, supply, decimals) for an SPL mint via RPC. Holders are
-    [{address(owner), amount, share}]. Uses Helius if a key is provided (far more
-    reliable than the throttled public endpoint). Returns ([], 0, 0) on failure —
-    the public RPC 429s often, which is expected and handled by the caller."""
-    rpc = (f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
-           if helius_key else SOLANA_PUBLIC_RPC)
+    [{address(owner), amount, share}]. A Helius key (when present) is tried first;
+    otherwise a rotation of public endpoints. Returns ([], 0, 0) on failure — the
+    public RPCs 429 often, which is expected and handled by the caller."""
+    rpcs = ([f"https://mainnet.helius-rpc.com/?api-key={helius_key}"]
+            if helius_key else []) + _SOLANA_RPCS
 
-    supply_r = await _post_json(rpc, {"jsonrpc": "2.0", "id": 1,
-                                      "method": "getTokenSupply", "params": [mint]})
+    supply_r, rpc = await _sol_rpc_call(
+        rpcs, {"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply",
+               "params": [mint]})
     val = ((supply_r or {}).get("result") or {}).get("value") or {}
     decimals = int(val.get("decimals", 0) or 0)
     supply = float(val.get("uiAmount") or 0.0)
 
-    largest = await _post_json(rpc, {"jsonrpc": "2.0", "id": 2,
-                                     "method": "getTokenLargestAccounts",
-                                     "params": [mint]})
+    # Prefer the RPC that just worked for the (rate-limited) largest-accounts call.
+    largest, rpc = await _sol_rpc_call(
+        ([rpc] if rpc else []) + rpcs,
+        {"jsonrpc": "2.0", "id": 2, "method": "getTokenLargestAccounts",
+         "params": [mint]})
     accts = ((largest or {}).get("result") or {}).get("value") or []
     if not accts:
         return [], supply, decimals
@@ -654,7 +756,7 @@ async def sol_top_holders(mint: str, limit: int = 20, helius_key: str = "") -> t
     # getTokenLargestAccounts returns TOKEN ACCOUNTS, not owner wallets. Resolve
     # each to its owner so the graph shows wallets, not throwaway ATAs.
     pubkeys = [a.get("address") for a in accts[:limit] if a.get("address")]
-    owners = await _sol_owners(rpc, pubkeys)
+    owners = await _sol_owners(rpc or rpcs[0], pubkeys)
     holders = []
     for a in accts[:limit]:
         amt = float((a.get("uiAmount") or 0) or 0)
