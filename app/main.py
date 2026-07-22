@@ -8228,6 +8228,51 @@ async def send_message(req: MessageRequest):
                             "items": restored["items"]},
                     status="bringing your list back...")
 
+        # ── CRYPTO / ON-CHAIN — ALWAYS ON (prism mode included) ──────────────
+        # Deliberately OUTSIDE the prism-mode guard below, like the canvas-control
+        # intercepts: these are fully deterministic (regex + keyless on-chain APIs)
+        # and need NO LLM. In prism mode a crypto ask would otherwise depend on the
+        # LLM router's classify pass — which silently fails to the agent whenever
+        # the fast-LLM backend is down (observed after a power outage). The holder
+        # graph is also something the agent literally cannot build. Conservative
+        # gating (a named coin / crypto word, a $CASHTAG, or a 0x contract); softer
+        # asks still fall through. Builds are fast + cached, so we PRE-RESOLVE and
+        # only spawn on success, else fall through instead of an empty shell.
+        _has_addr = bool(EVM_ADDR_RE_MAIN.search(req.message))
+        _crypto_ctx = bool(CRYPTO_WORD_RE.search(text_clean)
+                           or CASHTAG_RE.search(req.message) or _has_addr)
+        if _crypto_ctx and not wants_removal and not is_video_ask and not wants_music:
+            # 1. HOLDER GRAPH — "who holds PEPE", "$BONK whales", "is X a fair
+            #    launch", "pump and dump wallets". The headline feature.
+            if WALLET_GRAPH_RE.search(text_clean):
+                g_cfg = await build_wallet_graph_config(req.message)
+                if g_cfg:
+                    return spawn_widget_stream("wallet_graph", "wallet-graph", config=g_cfg)
+                # Token resolved to a chain we can't graph → price card; else fall through.
+                c_cfg = await build_crypto_card_config(req.message)
+                if c_cfg:
+                    return spawn_widget_stream("crypto_card", "crypto", config=c_cfg)
+            # 2. WALLET INSPECTOR — an address + holdings framing ("what does
+            #    0x… hold", "balance of this wallet").
+            elif _has_addr and WALLET_INSPECT_RE.search(text_clean):
+                w_cfg = await build_wallet_config(req.message)
+                if w_cfg:
+                    return spawn_widget_stream("data_card", "wallet", config=w_cfg)
+            # 3. CRYPTO REPORT — deep-dive / scam-check framing. Uses the local LLM
+            #    for synthesis; if that's down the builder still returns a numbers
+            #    -only brief, so it degrades rather than falling through.
+            elif CRYPTO_REPORT_RE.search(text_clean):
+                return spawn_widget_stream(
+                    "data_card", "crypto-report",
+                    config_builder=lambda: build_crypto_report_config(req.message),
+                    status="researching the token — price, on-chain distribution and news...")
+            # 4. CRYPTO PRICE CARD — the default for a strong crypto signal that
+            #    isn't a graph/wallet/report ask. Skip a clear news ask.
+            elif not NEWS_ASK_RE.search(text_clean):
+                c_cfg = await build_crypto_card_config(req.message)
+                if c_cfg:
+                    return spawn_widget_stream("crypto_card", "crypto", config=c_cfg)
+
         # PRISM MODE (default): everything below is the "go around prism to
         # save latency" fast-path cascade. It is SKIPPED so every content ask
         # runs through the prism agent + lazy-tool-service MCP tools. The
@@ -8391,53 +8436,8 @@ async def send_message(req: MessageRequest):
             #    ticker token) so "analyze this photo" or "full breakdown of the plot"
             #    don't hijack it. Checked BEFORE the news/price branches so "report"
             #    wins over "news"/"stock".
-            # ── CRYPTO / ON-CHAIN ────────────────────────────────────────────
-            # Placed BEFORE the stock branches on purpose: STOCK_WORD_RE matches
-            # "crypto", so without this a crypto ask would be stolen by the
-            # stock-news / stock-report branches below. Conservative gating: a
-            # strong crypto signal (a named coin / crypto word, a $CASHTAG or a
-            # 0x contract). Softer asks fall through to the LLM router, which now
-            # knows the crypto widget types.
-            # Builds are fast (1-4s, cached), so unlike the slow stock report we
-            # PRE-RESOLVE here and only spawn on success — an unresolvable "crypto"
-            # mention then falls through to the LLM router / agent instead of
-            # rendering an empty shell.
-            _has_addr = bool(EVM_ADDR_RE_MAIN.search(req.message))
-            _crypto_ctx = bool(CRYPTO_WORD_RE.search(text_clean)
-                               or CASHTAG_RE.search(req.message) or _has_addr)
-            if _crypto_ctx and not wants_removal and not is_video_ask and not wants_music:
-                # 1. HOLDER GRAPH — "who holds PEPE", "$BONK whales", "is X a fair
-                #    launch", "pump and dump wallets". The headline feature.
-                if WALLET_GRAPH_RE.search(text_clean):
-                    g_cfg = await build_wallet_graph_config(req.message)
-                    if g_cfg:
-                        return spawn_widget_stream("wallet_graph", "wallet-graph", config=g_cfg)
-                    # Token resolved to a chain we can't graph → price card; else
-                    # fall through.
-                    c_cfg = await build_crypto_card_config(req.message)
-                    if c_cfg:
-                        return spawn_widget_stream("crypto_card", "crypto", config=c_cfg)
-                # 2. WALLET INSPECTOR — an address + holdings framing ("what does
-                #    0x… hold", "balance of this wallet"). Address alone without
-                #    holder-graph framing defaults here.
-                elif _has_addr and WALLET_INSPECT_RE.search(text_clean):
-                    w_cfg = await build_wallet_config(req.message)
-                    if w_cfg:
-                        return spawn_widget_stream("data_card", "wallet", config=w_cfg)
-                # 3. CRYPTO REPORT — deep-dive / scam-check framing. This one is
-                #    slow (LLM synthesis), so keep the streamed status line.
-                elif CRYPTO_REPORT_RE.search(text_clean):
-                    return spawn_widget_stream(
-                        "data_card", "crypto-report",
-                        config_builder=lambda: build_crypto_report_config(req.message),
-                        status="researching the token — price, on-chain distribution and news...")
-                # 4. CRYPTO PRICE CARD — the default for a strong crypto signal
-                #    that isn't a graph/wallet/report ask. Skip if it's clearly a
-                #    news ask (let the news branch handle framing).
-                elif not NEWS_ASK_RE.search(text_clean):
-                    c_cfg = await build_crypto_card_config(req.message)
-                    if c_cfg:
-                        return spawn_widget_stream("crypto_card", "crypto", config=c_cfg)
+            # (Crypto / on-chain intercepts run ABOVE the prism-mode guard — they
+            #  are deterministic and must work even when the LLM classifier is down.)
 
             # 4-pre. DEEP MARKET RESEARCH — "research the market", "deep dive on the
             #   stock market", "in-depth market analysis". Drives the shared
