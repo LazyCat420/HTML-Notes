@@ -15,7 +15,7 @@ MUSIC_PLAYER_URL = os.getenv("MUSIC_PLAYER_URL", "http://10.0.0.16:8002")
 # (search_web/search_news/read_web_page) are registered in the gateway catalog
 # with a null endpoint and its python bridge has no interpreter in the image,
 # so they return "Unknown tool" — this is the only working search path.
-SCRAPER_SERVICE_URL = os.getenv("SCRAPER_SERVICE_URL", "http://10.0.0.16:3031")
+SCRAPER_SERVICE_URL = os.getenv("SCRAPER_SERVICE_URL", "http://10.0.0.16:8001")
 # vault-service is the single source of truth for secrets (GOOGLE_API_KEY, etc).
 # Secrets are fetched at runtime with the bearer token — never hardcoded here.
 VAULT_SERVICE_URL = os.getenv("VAULT_SERVICE_URL", "http://10.0.0.16:5599")
