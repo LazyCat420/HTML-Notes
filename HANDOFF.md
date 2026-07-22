@@ -1,3 +1,38 @@
+# Handoff — 2026-07-22 (crypto wave 5: outage-recovery — deterministic in prism mode + soft "token/coin" signal)
+
+**⚠️ INFRA (power outage):** the main vLLM box **10.0.0.141:8000 is DOWN (000)**
+and has NOT recovered — VLLM_FAST (:8001) returns 404, PRISM (:7777) is up (200).
+Any feature using direct-vLLM synthesis (news briefs, crypto report, the LLM
+router's classify pass) is degraded until .141 is brought back. This is the root
+cause of everything below.
+
+**Symptom:** after the outage "who holds pepe" rendered nothing — it went straight
+to `[AGENT TURN]` with zero `[crypto]` calls. **Root cause:** the crypto/wallet
+fast-lane lived INSIDE the `if req.use_lazy_agent:` guard, so in the DEFAULT prism
+mode it was skipped and crypto was handled by the LLM router's classify pass —
+which `ConnectError`s to the agent when the vLLM backend is down. The agent can't
+build a holder graph, so the ask died.
+
+**Fixes (both deployed + live-verified in prism mode):**
+1. **Moved the crypto fast-lane ABOVE the prism guard** (`main.py` ~8231), next to
+   the "always-on" canvas-control intercepts. It's fully deterministic (regex +
+   keyless APIs), needs no LLM, and the graph is something the agent can't build
+   anyway. Live: "top holders of pepe" → `heuristic-path: spawning wallet_graph`
+   → graph with 18 flow edges, verdict rendered. `crypto_report` still uses the
+   local LLM but already degrades to a numbers-only brief when it's down.
+2. **Soft "<name> token/coin" signal** (`CRYPTO_SOFT_RE`) gated to ≤4-word
+   lookup-shaped queries, so a microcap named "jimothy token" / "doge coin" is
+   recognized as crypto (the user's actual failing test) without a long sentence
+   mentioning "tokens" triggering a lookup. Pre-resolve + fall-through keeps a
+   stray hit to one cheap DexScreener call. Live: "jimothy token", "doge coin" →
+   crypto card. Note: a BARE unknown name ("price of jimothy", no token/coin word)
+   still needs the LLM router — deterministic gating can't know it's a coin.
+
+**Also confirmed live:** persistent cache db is created + written in the container
+volume (`/volume1/docker/html-notes/data/crypto_cache.db`, owned by uid 1001).
+
+---
+
 # Handoff — 2026-07-21 (crypto wave 4: keyless "squeeze harder" — persistent cache, 100 holders, Solana RPC rotation)
 
 **Context:** user asked how to get BETTER holder/flow data and chose "stay keyless,
