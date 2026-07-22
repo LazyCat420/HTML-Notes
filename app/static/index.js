@@ -1442,6 +1442,11 @@ document.addEventListener("DOMContentLoaded", () => {
         // config block on the next paint/load.
         temp.querySelectorAll('.chart-container').forEach(el => el.remove());
         temp.querySelectorAll('[data-chart-rendered]').forEach(el => el.removeAttribute('data-chart-rendered'));
+        // Same treatment for the holder-network graph: drop the live cytoscape
+        // mount and clear the marker so the hidden language-graph config block is
+        // the persisted source of truth and the graph rebuilds on next load.
+        temp.querySelectorAll('.graph-canvas').forEach(el => el.remove());
+        temp.querySelectorAll('[data-graph-rendered]').forEach(el => el.removeAttribute('data-graph-rendered'));
 
         // Error banners are transient UI, never canvas content.
         temp.querySelectorAll('.system-error-banner').forEach(el => el.remove());
@@ -2026,6 +2031,91 @@ document.addEventListener("DOMContentLoaded", () => {
                 ch.update('none');
             } catch (err) {
                 console.error("Failed to render chart component:", err);
+            }
+        });
+
+        // ─── HOLDER-NETWORK GRAPHS (language-graph → cytoscape) ───
+        // Same hydration contract as language-chart above: a hidden
+        // <pre><code class="language-graph"> block carries the cytoscape config;
+        // we mount an interactive graph as its sibling and KEEP the block so the
+        // client-serialize → server-adopt round trip preserves it (getCleaned-
+        // CanvasHtml strips the live .graph-canvas + marker, never the config).
+        const graphBlocks = container.querySelectorAll('pre code.language-graph');
+        graphBlocks.forEach((block) => {
+            try {
+                const pre = block.parentElement;
+                if (pre.dataset.graphRendered === '1') return;
+                if (!window.cytoscape) { console.warn('cytoscape not loaded'); return; }
+                const cfg = JSON.parse(block.innerText);
+                const elements = cfg.elements || [];
+                if (!elements.length) return;
+                const colors = cfg.colors || {};
+
+                const mount = document.createElement('div');
+                mount.className = 'graph-canvas';
+                mount.style.position = 'absolute';
+                mount.style.inset = '0';
+                mount.style.width = '100%';
+                mount.style.height = '100%';
+                pre.dataset.graphRendered = '1';
+                pre.insertAdjacentElement('afterend', mount);
+
+                // Defer to next frame so the mount has real dimensions (cytoscape
+                // needs a laid-out container to compute the layout).
+                requestAnimationFrame(() => {
+                    let cy;
+                    try {
+                        cy = window.cytoscape({
+                            container: mount,
+                            elements: elements,
+                            style: [
+                                { selector: 'node', style: {
+                                    'background-color': (n) => colors[n.data('kind')] || '#38bdf8',
+                                    'width': 'data(size)', 'height': 'data(size)',
+                                    'label': 'data(label)', 'font-size': '7px',
+                                    'color': '#cbd5e1', 'text-outline-color': '#0f172a',
+                                    'text-outline-width': 1.5, 'text-valign': 'bottom',
+                                    'text-margin-y': 2, 'min-zoomed-font-size': 6,
+                                    'border-width': 1, 'border-color': 'rgba(255,255,255,0.25)',
+                                }},
+                                { selector: 'edge', style: {
+                                    'width': 'data(width)',
+                                    'line-color': 'rgba(148,163,184,0.35)',
+                                    'target-arrow-color': 'rgba(148,163,184,0.5)',
+                                    'target-arrow-shape': 'triangle',
+                                    'arrow-scale': 0.6, 'curve-style': 'bezier',
+                                    'opacity': 0.6,
+                                }},
+                                { selector: 'node:selected', style: {
+                                    'border-width': 3, 'border-color': '#fff',
+                                }},
+                            ],
+                            layout: {
+                                name: 'concentric',
+                                concentric: (n) => n.data('share') || 0,
+                                levelWidth: () => 2,
+                                minNodeSpacing: 14,
+                                animate: false,
+                            },
+                            minZoom: 0.2, maxZoom: 3,
+                            wheelSensitivity: 0.2,
+                        });
+                        // Tap a node → toast its address + share so a whale is
+                        // one click from the explorer.
+                        cy.on('tap', 'node', (evt) => {
+                            const d = evt.target.data();
+                            const msg = `${d.label || ''} · ${d.share ?? 0}% of supply\n${d.addr || d.id}`;
+                            if (window.HN && window.HN.toast) window.HN.toast(msg);
+                            else console.log('[graph]', msg);
+                            if (d.addr) navigator.clipboard?.writeText(d.addr).catch(() => {});
+                        });
+                        cy.fit(undefined, 20);
+                    } catch (e) {
+                        console.error('cytoscape init failed', e);
+                    }
+                });
+            } catch (err) {
+                console.error("Failed to render holder graph:", err);
             }
         });
 

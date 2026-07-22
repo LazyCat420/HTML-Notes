@@ -22,6 +22,11 @@ from app.youtube_search import (
     _unescape as _yt_unescape,
 )
 
+# Crypto/on-chain layer: CoinGecko (price/chart/identity), Ethplorer (ETH holders
+# + transfer edges) and Solana RPC (SPL top holders). Self-contained; the config
+# builders below orchestrate it into card / report / holder-graph widgets.
+from app import crypto as cryptolib
+
 # Needed up here, not in the import block further down: the helper functions
 # below are defined before it, and their annotations are evaluated at def time.
 from typing import Any, Dict, List, Optional
@@ -2202,6 +2207,11 @@ _WIDGET_TYPE_ALIASES = {
     "versus": "versus_card", "comparison": "versus_card", "compare_card": "versus_card",
     "profile": "profile_card", "infobox": "profile_card",
     "data_table": "table",
+    # Crypto / on-chain
+    "crypto": "crypto_card", "token": "crypto_card", "coin": "crypto_card",
+    "token_card": "crypto_card",
+    "holder_graph": "wallet_graph", "wallet_network": "wallet_graph",
+    "holder_network": "wallet_graph", "whale_graph": "wallet_graph",
 }
 
 
@@ -2799,11 +2809,13 @@ _CANVAS_CLASS_TYPE = {
     "map-widget": "map", "weather-widget": "weather", "data-card": "data_card",
     "image-widget": "image", "products-widget": "products", "chart-widget": "chart",
     "scoreboard": "scoreboard",
+    "crypto-card": "crypto_card", "wallet-graph-widget": "wallet_graph",
 }
 _CANVAS_XDATA_TYPE = {
     "checklistWidget": "checklist", "clockWidget": "clock", "notesWidget": "notes",
     "musicPlayerWidget": "mini_music_player", "youtubePlayerWidget": "youtube_player",
     "stockCardWidget": "stock_card", "converterWidget": "converter",
+    "cryptoCardWidget": "crypto_card",
     "reminderWidget": "reminder", "settingsWidget": "settings",
 }
 
@@ -2904,7 +2916,7 @@ SINGLETON_ROLE_PREFIXES = {"traffic", "map", "weather"}
 # subject with the open card. This is the deterministic half of the "stop making a
 # fresh widget for every follow-up" fix; the model-driven target decision is P2.
 TOPIC_SINGLETON_TYPES = {"data_card", "scoreboard", "stock_card",
-                         "profile_card", "timeline"}
+                         "profile_card", "timeline", "crypto_card", "wallet_graph"}
 
 # Every type a follow-up may UPDATE IN PLACE. The factory renders 24 types but
 # only a subset is reuse-eligible, so "only the waterproof ones" against a
@@ -4142,6 +4154,39 @@ NEWS_ASK_RE = re.compile(r'\b(news|headlines?)\b')
 # Stock news has its own cleaner path (html_notes_stock_news); keep it off the
 # general news fast-path.
 STOCK_WORD_RE = re.compile(r'\b(stock|stocks|ticker|shares|share price|crypto|nasdaq|equities?)\b')
+
+# ── Crypto fast-lane detection ──────────────────────────────────────────────
+# Deliberately CONSERVATIVE: the deterministic fast lane fires only on strong,
+# unambiguous crypto signals; everything softer ("price of X") falls through to
+# the LLM router, which now knows the crypto/wallet widget types. A cashtag
+# ($PEPE) or a 0x contract is unambiguous; bare "coin"/"token" are NOT included
+# alone because they'd steal non-crypto asks.
+CRYPTO_WORD_RE = re.compile(
+    r'\b(crypto\w*|blockchain|on[\s-]?chain|de[\s-]?fi|web3|memecoin|shitcoin|'
+    r'altcoin|stablecoin|erc[\s-]?20|spl token|bitcoin|btc|ethereum|'
+    r'dogecoin|doge|solana|sol|shiba|shib|pepe|bonk|cardano|ada|ripple|xrp|'
+    r'litecoin|polkadot|avalanche|avax|chainlink|link|uniswap|uni|tether|usdt|'
+    r'usdc|dai|matic|polygon|tron|trx|monero|xmr|dogwifhat|wif|floki|mog|'
+    r'wojak|turbo|brett|degen|toshi)\b', re.I)
+# A $CASHTAG ($PEPE) or a 0x… contract address — strong crypto/token signal.
+CASHTAG_RE = re.compile(r'\$[A-Za-z][A-Za-z0-9]{1,9}\b')
+EVM_ADDR_RE_MAIN = re.compile(r'\b0x[a-fA-F0-9]{40}\b')
+# Holder-graph / distribution intent — "who holds X", "X whales", "is X a fair
+# launch", "pump and dump", "wallet graph". Routes to the holder-network graph.
+WALLET_GRAPH_RE = re.compile(
+    r'\b(holders?|whales?|distribution|holder graph|wallet graph|connected wallets?|'
+    r'pump[\s-]?and[\s-]?dump|pump.{0,4}dump|fair[\s-]?launch|fairly distributed|'
+    r'who holds|concentration|top wallets|sybil|rug\w*|insiders?)\b', re.I)
+# Inspect ONE address's holdings — needs an address AND holdings framing.
+WALLET_INSPECT_RE = re.compile(
+    r'\b(hold(?:s|ing|ings)?|balance|portfolio|owns?|inside|contents? of|whats? in)\b',
+    re.I)
+# A deep-dive / scam-check framing that means "written crypto report".
+CRYPTO_REPORT_RE = re.compile(
+    r'\b(deep[\s-]?dive|full (?:report|analysis|breakdown)|due diligence|\bdd\b|'
+    r'report on|analyz[e]|analysis (?:on|of)|is (?:it|this|\w+) (?:a )?(?:scam|rug|'
+    r'legit|safe|good)|should i (?:buy|ape)|tell me everything about|'
+    r'research)\b', re.I)
 # "market news" without a stock word — still a finance-news ask, routed with them.
 MARKET_WORD_RE = re.compile(r'\bmarkets?\b')
 # A COMPREHENSIVE stock report ask ("full report on NVDA", "deep dive tesla stock",
@@ -5806,6 +5851,327 @@ async def build_stock_report_config(message: str) -> dict:
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CRYPTO / ON-CHAIN BUILDERS
+# The stock builders above are the template: resolve an identity, pull live data
+# from keyless sources, degrade honestly. Four widgets:
+#   crypto_card   — a token's price + chart + key stats + contract addresses
+#   crypto_report — a written brief synthesizing price, distribution and news
+#   wallet_graph  — THE feature: top-holder connection graph + concentration read
+#   wallet_card   — inspect a single address's native + token holdings
+# ══════════════════════════════════════════════════════════════════════════════
+
+# CoinGecko range tab -> its `days` param. Mirrors the stock card's range tabs.
+_CRYPTO_RANGES = {"1d": "1", "7d": "7", "30d": "30", "90d": "90",
+                  "1y": "365", "max": "max"}
+
+
+def _fmt_usd(v) -> str:
+    """Compact USD for stat chips: $1.2B, $3.4M, $0.0000029."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if n == 0:
+        return "$0"
+    a = abs(n)
+    if a >= 1e12:
+        return f"${n/1e12:.2f}T"
+    if a >= 1e9:
+        return f"${n/1e9:.2f}B"
+    if a >= 1e6:
+        return f"${n/1e6:.2f}M"
+    if a >= 1e3:
+        return f"${n/1e3:.1f}K"
+    if a >= 1:
+        return f"${n:,.2f}"
+    # Sub-dollar memecoin prices: keep the first significant digits.
+    return f"${n:.8f}".rstrip("0").rstrip(".")
+
+
+async def _crypto_snapshot(coin_id: str, range_: str = "30d") -> dict:
+    """Coin id -> the crypto_card payload (price header + chart + stats +
+    contracts). {is_error:True} when the coin can't be loaded."""
+    days = _CRYPTO_RANGES.get(range_, "30")
+    coin, (labels, values) = await asyncio.gather(
+        cryptolib.cg_coin(coin_id),
+        cryptolib.cg_market_chart(coin_id, days),
+    )
+    if not coin or not coin.get("id"):
+        return {"is_error": True}
+    md = coin.get("market_data") or {}
+
+    def _usd(d):
+        return (d or {}).get("usd")
+
+    platforms = {k: v for k, v in (coin.get("platforms") or {}).items() if v}
+    chg = md.get("price_change_percentage_24h")
+    return {
+        "is_error": False,
+        "coin_id": coin.get("id"),
+        "name": coin.get("name", ""),
+        "symbol": (coin.get("symbol") or "").upper(),
+        "image": ((coin.get("image") or {}).get("large")
+                  or (coin.get("image") or {}).get("small") or ""),
+        "price": _usd(md.get("current_price")),
+        "price_str": _fmt_usd(_usd(md.get("current_price"))),
+        "change_pct": round(chg, 2) if isinstance(chg, (int, float)) else None,
+        "market_cap": _fmt_usd(_usd(md.get("market_cap"))),
+        "market_cap_rank": coin.get("market_cap_rank"),
+        "volume": _fmt_usd(_usd(md.get("total_volume"))),
+        "high_24h": _fmt_usd(_usd(md.get("high_24h"))),
+        "low_24h": _fmt_usd(_usd(md.get("low_24h"))),
+        "ath": _fmt_usd(_usd(md.get("ath"))),
+        "ath_change_pct": round(md.get("ath_change_percentage", {}).get("usd"), 1)
+            if isinstance(md.get("ath_change_percentage"), dict)
+            and isinstance(md.get("ath_change_percentage", {}).get("usd"), (int, float))
+            else None,
+        "supply": md.get("circulating_supply"),
+        "range": range_,
+        "labels": labels,
+        "values": values,
+        "platforms": platforms,   # {chain_slug or cg-platform: address}
+    }
+
+
+async def build_crypto_card_config(message: str) -> Optional[dict]:
+    """Resolve a token from free text / symbol / contract → its price+chart card.
+    None when nothing resolves (caller degrades)."""
+    ident = await cryptolib.resolve_crypto(message)
+    if not ident or not ident.get("coin_id"):
+        return None
+    snap = await _crypto_snapshot(ident["coin_id"])
+    return None if snap.get("is_error") else snap
+
+
+async def build_wallet_graph_config(message: str) -> Optional[dict]:
+    """The holder-network graph. Resolve the token → detect chain → pull top
+    holders (+ transfer edges on ETH) → build the cytoscape graph + concentration
+    metrics. Returns a wallet_graph config, or None when we can't build a graph
+    (unresolvable token, or a chain we don't cover for holders yet — the caller
+    then degrades to the price card so the ask still lands something real)."""
+    ident = await cryptolib.resolve_crypto(message)
+    if not ident:
+        return None
+    chain = ident.get("chain") or ""
+    address = ident.get("address") or ""
+
+    if chain == "ethereum" and address:
+        info, holders, transfers = await asyncio.gather(
+            cryptolib.eth_token_info(address),
+            cryptolib.eth_top_holders(address, limit=50),
+            cryptolib.eth_transfers(address, limit=100),
+        )
+        if not holders:
+            return None
+        token = {
+            "name": ident.get("name") or (info or {}).get("name") or "",
+            "symbol": (ident.get("symbol")
+                       or (info or {}).get("symbol") or "").upper(),
+            "address": address,
+            "holders_count": int(float((info or {}).get("holdersCount") or 0)),
+            "image": ident.get("image", ""),
+        }
+        g = cryptolib.build_holder_graph(token, holders, transfers, "ethereum")
+        g["coin_id"] = ident.get("coin_id", "")
+        return g
+
+    if chain == "solana" and address:
+        helius = await _fetch_secret("HELIUS_API_KEY")
+        holders, supply, _dec = await cryptolib.sol_top_holders(
+            address, limit=20, helius_key=helius)
+        if not holders:
+            # Public RPC almost certainly rate-limited us and there's no key.
+            return None
+        token = {
+            "name": ident.get("name") or "",
+            "symbol": (ident.get("symbol") or "").upper(),
+            "address": address, "holders_count": 0,
+            "image": ident.get("image", ""),
+        }
+        g = cryptolib.build_holder_graph(token, holders, [], "solana")
+        g["coin_id"] = ident.get("coin_id", "")
+        return g
+
+    # Resolvable token but a chain we don't graph (BTC, or an EVM chain without a
+    # holder source wired up) — signal None so the caller shows the price card.
+    return None
+
+
+async def build_wallet_config(message: str) -> Optional[dict]:
+    """Inspect a single wallet: native + token holdings, portfolio value, tx
+    count. ETH via Ethplorer; other chains degrade with a note. Renders as a
+    data_card. None when no address is present in the message."""
+    m = cryptolib.EVM_ADDR_RE.search(message or "")
+    if not m:
+        # A base58 Solana address? We don't have a keyless Solana portfolio
+        # source, so be honest rather than pretending.
+        sm = cryptolib.SOL_ADDR_RE.search(message or "")
+        if sm and not cryptolib.EVM_ADDR_RE.search(message or ""):
+            return {
+                "title": "Solana wallet",
+                "icon": "account_balance_wallet",
+                "subtitle": cryptolib._short(sm.group(0)),
+                "answer": ("Solana wallet inspection needs an indexer key "
+                           "(Helius/Solscan) — not wired up yet. Try an Ethereum "
+                           "`0x…` address, or ask for the token's holder graph."),
+            }
+        return None
+
+    addr = m.group(0)
+    info = await cryptolib.eth_address_info(addr)
+    if not info:
+        return None
+    eth_bal = float(((info.get("ETH") or {}).get("balance")) or 0.0)
+    eth_price = (((info.get("ETH") or {}).get("price")) or {})
+    eth_usd = eth_bal * float(eth_price.get("rate") or 0.0) if isinstance(eth_price, dict) else 0.0
+
+    tokens = info.get("tokens") or []
+    rows = []
+    total_token_usd = 0.0
+    ranked = []
+    for t in tokens:
+        ti = t.get("tokenInfo") or {}
+        dec = int(float(ti.get("decimals") or 0) or 0)
+        raw = float(t.get("rawBalance") or t.get("balance") or 0)
+        bal = raw / (10 ** dec) if dec else raw
+        rate = 0.0
+        pr = ti.get("price")
+        if isinstance(pr, dict):
+            rate = float(pr.get("rate") or 0.0)
+        usd = bal * rate
+        total_token_usd += usd
+        ranked.append((usd, ti.get("symbol") or "?", bal, usd))
+    ranked.sort(reverse=True)
+    for usd, sym, bal, _u in ranked[:15]:
+        rows.append({"title": sym, "meta": f"{bal:,.4f}".rstrip("0").rstrip("."),
+                     "badge": _fmt_usd(usd) if usd else ""})
+
+    tx_count = info.get("countTxs")
+    is_contract = bool(info.get("contractInfo"))
+    total_usd = eth_usd + total_token_usd
+    subtitle = f"{_fmt_usd(total_usd)} across ETH + {len(tokens)} tokens"
+    header = (f"**{_fmt_usd(total_usd)}** total  ·  **{eth_bal:,.4f} ETH** "
+              f"({_fmt_usd(eth_usd)})  ·  **{len(tokens)}** tokens"
+              + (f"  ·  **{tx_count:,}** txs" if isinstance(tx_count, int) else "")
+              + ("  ·  ⚠️ this address is a **contract**" if is_contract else ""))
+    return {
+        "title": f"Wallet {cryptolib._short(addr)}",
+        "icon": "account_balance_wallet",
+        "subtitle": subtitle[:140],
+        "answer": header + "\n\n**Top holdings by value:**",
+        "items": rows,
+        "source_url": f"https://etherscan.io/address/{addr}",
+    }
+
+
+async def build_crypto_report_config(message: str) -> dict:
+    """A written brief on ONE token: price + market context, holder-distribution
+    read (the on-chain angle stocks don't have), recent news — synthesized by one
+    local-LLM pass, grounded strictly in the pulled material. Degrades to the
+    price card if the coin can't be resolved, and to a numbers-only brief if the
+    LLM pass fails. Rendered as a data_card."""
+    ident = await cryptolib.resolve_crypto(message)
+    if not ident or not ident.get("coin_id"):
+        # Can't pin a coin — hand back a generic answer card via the news path.
+        return await build_answer_config(message)
+
+    coin_id = ident["coin_id"]
+    snap, coin = await asyncio.gather(
+        _crypto_snapshot(coin_id), cryptolib.cg_coin(coin_id))
+    snap = snap if isinstance(snap, dict) and not snap.get("is_error") else {}
+    coin = coin if isinstance(coin, dict) else {}
+
+    # On-chain distribution, when the token lives on a chain we can read.
+    graph = None
+    try:
+        graph = await build_wallet_graph_config(ident.get("address") or coin_id
+                                                or message)
+    except Exception as e:
+        logger.info(f"[CRYPTO-REPORT] holder graph failed: {e}")
+
+    # A little news, read for real (reuse the web search + read pipeline).
+    news_blocks = []
+    try:
+        results = await web_search(f"{ident.get('name') or coin_id} crypto news", limit=5)
+        for r in (results or [])[:4]:
+            news_blocks.append(f"- {r.get('title','')}: {(r.get('snippet') or '')[:200]}")
+    except Exception:
+        pass
+
+    desc = ""
+    d = coin.get("description") or {}
+    if isinstance(d, dict):
+        desc = re.sub(r"<[^>]+>", "", (d.get("en") or ""))[:800]
+
+    dist = ""
+    if graph and graph.get("metrics"):
+        mtr = graph["metrics"]
+        dist = (f"On-chain distribution ({graph.get('chain')}): top-10 real "
+                f"holders {mtr.get('top10_share_real')}% of supply; exchange "
+                f"custody {mtr.get('cex_share')}%; burned {mtr.get('burn_share')}%; "
+                f"{mtr.get('whale_count')} whale wallets; Gini {mtr.get('gini')}; "
+                f"total holders {mtr.get('holder_count')}. Verdict: "
+                f"{mtr.get('verdict')}")
+
+    material = (
+        f"TOKEN: {snap.get('name') or ident.get('name')} "
+        f"({snap.get('symbol') or ident.get('symbol')})\n"
+        f"Price: {snap.get('price_str')}  24h: {snap.get('change_pct')}%  "
+        f"MktCap: {snap.get('market_cap')} (rank {snap.get('market_cap_rank')})  "
+        f"Vol: {snap.get('volume')}  ATH: {snap.get('ath')} "
+        f"({snap.get('ath_change_pct')}% from ATH)\n\n"
+        f"CONTRACTS: {snap.get('platforms')}\n\n"
+        f"ABOUT: {desc or '(none)'}\n\n"
+        f"{dist or 'On-chain distribution: unavailable for this token/chain.'}\n\n"
+        f"RECENT NEWS:\n" + ("\n".join(news_blocks) if news_blocks else "(none found)")
+    )
+
+    data = await fast_llm_json(
+        "You are a crypto analyst writing a BALANCED, factual briefing for a "
+        "retail investor who is worried about scams and whale manipulation. "
+        "Return ONLY a JSON object (no prose, no code fence):\n"
+        '{"title": "<Name (SYMBOL) — Report>", '
+        '"overview": "<one-sentence bottom line>", '
+        '"answer": "<full report in GitHub-flavored Markdown>"}\n\n'
+        "Write `answer` with these ## sections, using ONLY the material below — "
+        "never invent numbers, prices or events:\n"
+        "## Snapshot — price, market cap rank, 24h move, distance from ATH.\n"
+        "## What it is — one honest paragraph on the project.\n"
+        "## Holder Distribution — READ the on-chain concentration: is supply "
+        "held by a few whales (dump risk) or spread out? Call out exchange "
+        "custody vs real holders. This is the most important section — be "
+        "direct about rug/manipulation risk if concentration is high. If "
+        "distribution data is unavailable, say so.\n"
+        "## Recent News — concrete stories and why they matter.\n"
+        "## Risks — the key risks a holder should watch.\n"
+        "End with a one-line **Not financial advice.** disclaimer.\n\n"
+        f"MATERIAL:\n{material}",
+        max_tokens=1600,
+    )
+
+    if not data or not (data.get("answer") or "").strip():
+        logger.info(f"[DEGRADED] crypto report synthesis empty for {coin_id}")
+        md = (f"## {snap.get('name')} ({snap.get('symbol')})\n\n"
+              f"- **Price:** {snap.get('price_str')} ({snap.get('change_pct')}% 24h)\n"
+              f"- **Market cap:** {snap.get('market_cap')} (rank "
+              f"{snap.get('market_cap_rank')})\n"
+              f"- **Volume:** {snap.get('volume')}\n\n"
+              + (dist or "") + "\n\n_News synthesis unavailable right now._")
+        return {"title": f"{snap.get('name')} ({snap.get('symbol')}) — Report"[:70],
+                "icon": "currency_bitcoin", "subtitle": "Snapshot",
+                "image": snap.get("image", ""), "answer": md}
+
+    return {
+        "title": (data.get("title")
+                  or f"{snap.get('name')} ({snap.get('symbol')}) — Report")[:70],
+        "subtitle": (data.get("overview") or "")[:140],
+        "icon": "currency_bitcoin",
+        "image": snap.get("image", ""),
+        "answer": _strip_citation_markers((data.get("answer") or "").strip()),
+    }
+
+
 # Map the LLM-chosen answer `format` to a header icon. The model picks the format;
 # this is just the visual affordance for it. Unknown formats fall back to "article".
 _ANSWER_ICONS = {
@@ -6579,6 +6945,10 @@ ROUTER_WIDGETS = {
     "stock":      ("stock",     'a ticker\'s price + chart + technicals. query = company or symbol ("Apple", "TSLA")'),
     "stock_trending": ("stock-trending", 'the top TRENDING / most-active / biggest-gainer or -loser stocks — a DISCOVERY ask naming NO specific company ("top trending stocks this month", "biggest gainers today", "compare the top 5 hot stocks"). Renders one multi-series comparison chart from live market feeds. query = the whole request'),
     "stock_report": ("stock-report", 'a COMPREHENSIVE research report on ONE stock — synthesizes price, fundamentals, technicals, recent news AND analyst commentary into a written brief. Use for "full report on X", "deep dive / due diligence on X", "analyze X stock". query = company or symbol'),
+    "crypto":     ("crypto",    'a CRYPTOCURRENCY / token\'s price + chart + stats + contract address. query = the coin name, symbol or contract address ("Bitcoin", "PEPE", "$SOL", "0x6982…"). Use for any "price of X coin/token", "X crypto chart" ask. NOT for stocks.'),
+    "crypto_report": ("crypto-report", 'a COMPREHENSIVE written report on ONE crypto token — price, market context, ON-CHAIN holder distribution (whale concentration / rug risk) and news. Use for "full report / deep dive / due diligence / is X a scam / analyze X token". query = coin name, symbol or address'),
+    "wallet_graph": ("wallet-graph", 'a HOLDER-NETWORK graph for a token: draws the top wallets holding it as nodes (sized by %) with transfer edges between them, and reports concentration — whether a few whales control supply (pump-and-dump / rug risk) or it is fairly distributed. Use for "who holds X", "X token holders / whales / distribution", "is X a fair launch", "wallet graph for X", "show me the whales in X". query = coin name, symbol or contract address'),
+    "wallet":     ("wallet",    'inspect ONE wallet ADDRESS — its holdings, portfolio value and token list. Use when the message contains an on-chain address (0x… or a Solana base58 address) and asks what it holds / its balance. query = the whole message (the address is extracted from it)'),
     "sports":     ("scores",    'scores / fixtures / standings. query = the league or team ("nba", "arsenal")'),
     "map":        ("map",       'where something IS / a map of places. query = the subject ("fires in California")'),
     "traffic":    ("traffic",   'live traffic or directions. query = the place, or "from A to B"'),
@@ -7026,6 +7396,27 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
 
         if wtype == "stock_report":
             return ("data_card", "stock-report", await build_stock_report_config(query or message))
+
+        if wtype == "crypto":
+            c_cfg = await build_crypto_card_config(query or message)
+            return ("crypto_card", "crypto", c_cfg) if c_cfg else None
+
+        if wtype == "crypto_report":
+            return ("data_card", "crypto-report",
+                    await build_crypto_report_config(query or message))
+
+        if wtype == "wallet_graph":
+            g_cfg = await build_wallet_graph_config(query or message)
+            if g_cfg:
+                return ("wallet_graph", "wallet-graph", g_cfg)
+            # No graph for this token/chain — still show the price card so the
+            # ask lands something real instead of nothing.
+            c_cfg = await build_crypto_card_config(query or message)
+            return ("crypto_card", "crypto", c_cfg) if c_cfg else None
+
+        if wtype == "wallet":
+            w_cfg = await build_wallet_config(query or message)
+            return ("data_card", "wallet", w_cfg) if w_cfg else None
 
         if wtype == "stock_trending":
             t_cfg = await build_trending_compare_config(query or message)
@@ -7902,6 +8293,54 @@ async def send_message(req: MessageRequest):
             #    ticker token) so "analyze this photo" or "full breakdown of the plot"
             #    don't hijack it. Checked BEFORE the news/price branches so "report"
             #    wins over "news"/"stock".
+            # ── CRYPTO / ON-CHAIN ────────────────────────────────────────────
+            # Placed BEFORE the stock branches on purpose: STOCK_WORD_RE matches
+            # "crypto", so without this a crypto ask would be stolen by the
+            # stock-news / stock-report branches below. Conservative gating: a
+            # strong crypto signal (a named coin / crypto word, a $CASHTAG or a
+            # 0x contract). Softer asks fall through to the LLM router, which now
+            # knows the crypto widget types.
+            # Builds are fast (1-4s, cached), so unlike the slow stock report we
+            # PRE-RESOLVE here and only spawn on success — an unresolvable "crypto"
+            # mention then falls through to the LLM router / agent instead of
+            # rendering an empty shell.
+            _has_addr = bool(EVM_ADDR_RE_MAIN.search(req.message))
+            _crypto_ctx = bool(CRYPTO_WORD_RE.search(text_clean)
+                               or CASHTAG_RE.search(req.message) or _has_addr)
+            if _crypto_ctx and not wants_removal and not is_video_ask and not wants_music:
+                # 1. HOLDER GRAPH — "who holds PEPE", "$BONK whales", "is X a fair
+                #    launch", "pump and dump wallets". The headline feature.
+                if WALLET_GRAPH_RE.search(text_clean):
+                    g_cfg = await build_wallet_graph_config(req.message)
+                    if g_cfg:
+                        return spawn_widget_stream("wallet_graph", "wallet-graph", config=g_cfg)
+                    # Token resolved to a chain we can't graph → price card; else
+                    # fall through.
+                    c_cfg = await build_crypto_card_config(req.message)
+                    if c_cfg:
+                        return spawn_widget_stream("crypto_card", "crypto", config=c_cfg)
+                # 2. WALLET INSPECTOR — an address + holdings framing ("what does
+                #    0x… hold", "balance of this wallet"). Address alone without
+                #    holder-graph framing defaults here.
+                elif _has_addr and WALLET_INSPECT_RE.search(text_clean):
+                    w_cfg = await build_wallet_config(req.message)
+                    if w_cfg:
+                        return spawn_widget_stream("data_card", "wallet", config=w_cfg)
+                # 3. CRYPTO REPORT — deep-dive / scam-check framing. This one is
+                #    slow (LLM synthesis), so keep the streamed status line.
+                elif CRYPTO_REPORT_RE.search(text_clean):
+                    return spawn_widget_stream(
+                        "data_card", "crypto-report",
+                        config_builder=lambda: build_crypto_report_config(req.message),
+                        status="researching the token — price, on-chain distribution and news...")
+                # 4. CRYPTO PRICE CARD — the default for a strong crypto signal
+                #    that isn't a graph/wallet/report ask. Skip if it's clearly a
+                #    news ask (let the news branch handle framing).
+                elif not NEWS_ASK_RE.search(text_clean):
+                    c_cfg = await build_crypto_card_config(req.message)
+                    if c_cfg:
+                        return spawn_widget_stream("crypto_card", "crypto", config=c_cfg)
+
             # 4-pre. DEEP MARKET RESEARCH — "research the market", "deep dive on the
             #   stock market", "in-depth market analysis". Drives the shared
             #   DEEP_RESEARCH agent (lazy-tool-service) to fan out across sources and
@@ -9639,6 +10078,13 @@ async def api_fx(base: str):
     """Backs the converter's currency tab — latest rates for `base` (keyless,
     cached). Empty {} degrades to 'Rates unavailable' client-side."""
     return await fetch_fx_rates(base)
+
+
+@app.get("/api/crypto/{coin_id}")
+async def api_crypto(coin_id: str, range: str = "30d"):
+    """Backs the crypto card's range tabs — switching 1D/7D/30D/1Y/MAX refetches
+    the price series here instead of going through the agent again."""
+    return await _crypto_snapshot(coin_id, range)
 
 
 # ── Obsidian vault: notes saved from the canvas become .md files ─────────────

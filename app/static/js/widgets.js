@@ -211,6 +211,111 @@ document.addEventListener('alpine:init', () => {
         },
     }));
 
+    // Crypto token card. Same shape as the stock card: snapshot baked in server-
+    // side, range tabs re-fetch /api/crypto/<coin_id> directly (no agent turn).
+    Alpine.data('cryptoCardWidget', (initial) => ({
+        snapshot: initial || {},
+        ranges: ['1d', '7d', '30d', '90d', '1y', 'max'],
+        loading: false,
+        chart: null,
+
+        init() {
+            this.$nextTick(() => this.drawChart());
+            this._onTheme = () => this.$nextTick(() => this.drawChart());
+            window.addEventListener('hn:theme', this._onTheme);
+        },
+
+        destroy() {
+            if (this._onTheme) window.removeEventListener('hn:theme', this._onTheme);
+            if (this.chart) { this.chart.destroy(); this.chart = null; }
+        },
+
+        async setRange(range) {
+            if (this.loading || range === this.snapshot.range || !this.snapshot.coin_id) return;
+            this.loading = true;
+            try {
+                const res = await fetch(
+                    `/api/crypto/${encodeURIComponent(this.snapshot.coin_id)}?range=${encodeURIComponent(range)}`);
+                const data = await res.json();
+                if (!data.is_error) {
+                    this.snapshot = data;
+                    this.$nextTick(() => this.drawChart());
+                }
+            } catch (e) {
+                console.warn('[CryptoCard] range fetch failed', e);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        drawChart() {
+            const canvas = this.$refs.canvas;
+            if (!canvas || !window.Chart) return;
+            if (this.chart) this.chart.destroy();
+            const values = this.snapshot.values || [];
+            const up = (this.snapshot.change_pct ?? 0) >= 0;
+            const line = up ? '#34d399' : '#fb7185';
+            const tc = (window.HN && window.HN.chartColors)
+                ? window.HN.chartColors()
+                : { tick: 'rgba(255,255,255,0.35)', grid: 'rgba(255,255,255,0.06)' };
+            const gradient = canvas.getContext('2d').createLinearGradient(0, 0, 0, 150);
+            gradient.addColorStop(0, up ? 'rgba(52,211,153,0.28)' : 'rgba(251,113,133,0.28)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            this.chart = new Chart(canvas, {
+                type: 'line',
+                data: {
+                    labels: this.snapshot.labels || [],
+                    datasets: [{
+                        data: values, borderColor: line, backgroundColor: gradient,
+                        borderWidth: 2, fill: true, tension: 0.25,
+                        pointRadius: 0, pointHoverRadius: 4,
+                    }],
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: { label: (ctx) => this.fmtPrice(ctx.parsed.y) } },
+                    },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: tc.tick, font: { size: 9 }, maxTicksLimit: 8, maxRotation: 0 } },
+                        y: { position: 'right', grid: { color: tc.grid }, ticks: { color: tc.tick, font: { size: 9 }, maxTicksLimit: 5 } },
+                    },
+                },
+            });
+        },
+
+        // Prices span 9 orders of magnitude ($60k BTC vs $0.000002 PEPE), so pick
+        // precision by size rather than a fixed 2 dp.
+        fmtPrice(v) {
+            if (v === null || v === undefined) return '—';
+            const a = Math.abs(v);
+            let dp = 2;
+            if (a > 0 && a < 1) dp = Math.min(10, Math.max(2, Math.ceil(-Math.log10(a)) + 3));
+            try {
+                return new Intl.NumberFormat('en-US', {
+                    style: 'currency', currency: 'USD', maximumFractionDigits: dp,
+                }).format(v);
+            } catch { return `$${v}`; }
+        },
+
+        statRows() {
+            const s = this.snapshot;
+            const rows = [
+                { label: 'Market Cap', value: s.market_cap || '—' },
+                { label: 'Volume 24h', value: s.volume || '—' },
+                { label: '24h High', value: s.high_24h || '—' },
+                { label: '24h Low', value: s.low_24h || '—' },
+                { label: 'ATH', value: s.ath || '—' },
+            ];
+            if (s.ath_change_pct !== null && s.ath_change_pct !== undefined) {
+                rows.push({ label: 'From ATH', value: `${s.ath_change_pct}%` });
+            }
+            return rows;
+        },
+    }));
+
     // Resolve the persistence key from the WIDGET ROOT, not $el. Inside an
     // x-for template (checklist rows) — and in any nested-element handler —
     // Alpine evaluates $el as the element the expression ran on (a checkbox,

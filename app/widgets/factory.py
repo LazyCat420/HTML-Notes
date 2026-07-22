@@ -1348,6 +1348,234 @@ def render_stock_card(widget_id: str, config: dict) -> str:
     """
 
 
+def render_crypto_card(widget_id: str, config: dict) -> str:
+    """A cryptocurrency's price header + chart + key stats + contract addresses.
+
+    Mirrors the stock card: the CoinGecko snapshot is baked in server-side so it
+    paints immediately; the range tabs re-fetch /api/crypto/<coin_id> directly
+    (no agent turn). Degrades to a readable 'couldn't load' card if the snapshot
+    is missing its price (a rare unresolved coin that slipped through)."""
+    if not config.get("price") and not config.get("values"):
+        return render_data_card(widget_id, {
+            "title": config.get("name") or config.get("symbol") or "Token",
+            "icon": "currency_bitcoin",
+            "content": "Couldn't load live data for this token right now."})
+
+    snapshot = {
+        "coin_id": config.get("coin_id", ""),
+        "symbol": config.get("symbol") or "—",
+        "name": config.get("name") or config.get("symbol") or "",
+        "image": config.get("image", ""),
+        "price_str": config.get("price_str", "—"),
+        "change_pct": config.get("change_pct"),
+        "range": config.get("range", "30d"),
+        "labels": config.get("labels") or [],
+        "values": config.get("values") or [],
+        "market_cap": config.get("market_cap", "—"),
+        "market_cap_rank": config.get("market_cap_rank"),
+        "volume": config.get("volume", "—"),
+        "high_24h": config.get("high_24h", "—"),
+        "low_24h": config.get("low_24h", "—"),
+        "ath": config.get("ath", "—"),
+        "ath_change_pct": config.get("ath_change_pct"),
+        "platforms": config.get("platforms") or {},
+    }
+    # Contract-address chips: each chain's address, copy-to-clipboard on click.
+    chip_rows = ""
+    for chain, addr in list(snapshot["platforms"].items())[:6]:
+        short = (addr[:8] + "…" + addr[-6:]) if len(addr) > 18 else addr
+        chip_rows += (
+            f'<button onclick="navigator.clipboard.writeText(\'{esc(addr)}\');'
+            f'this.querySelector(\'.copy-lbl\').textContent=\'copied!\';'
+            f'setTimeout(()=>this.querySelector(\'.copy-lbl\')&&'
+            f'(this.querySelector(\'.copy-lbl\').textContent=\'{esc(short)}\'),1200)" '
+            f'class="flex items-center justify-between gap-2 w-full px-2.5 py-1.5 '
+            f'rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-left">'
+            f'<span class="text-[0.62rem] uppercase tracking-wider text-slate-400 shrink-0">{esc(chain)}</span>'
+            f'<span class="copy-lbl text-[0.68rem] font-mono text-slate-200 truncate">{esc(short)}</span>'
+            f'<span class="material-symbols-outlined text-[0.85rem] text-slate-500 shrink-0">content_copy</span>'
+            f'</button>')
+
+    logo = (f'<img src="{esc(snapshot["image"])}" class="w-8 h-8 rounded-full shrink-0" '
+            f'onerror="this.style.display=\'none\'">' if snapshot["image"] else "")
+
+    return f"""
+    <div id="{widget_id}" class="widget-container crypto-card col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[560px] group"
+         x-data="cryptoCardWidget({json_escape(snapshot)})">
+        <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+            <span class="material-symbols-outlined text-[1.2rem]">close</span>
+        </button>
+
+        <!-- Header -->
+        <div class="flex items-center gap-3 pr-8 shrink-0">
+            {logo}
+            <div class="min-w-0 flex-grow">
+                <div class="flex items-baseline gap-2">
+                    <h3 class="text-xl font-bold tracking-tight" x-text="snapshot.symbol"></h3>
+                    <span class="text-xs text-slate-400 truncate" x-text="snapshot.name"></span>
+                    <span x-show="snapshot.market_cap_rank" class="text-[0.6rem] px-1.5 py-0.5 rounded bg-white/10 text-slate-300 shrink-0" x-text="'#' + snapshot.market_cap_rank"></span>
+                </div>
+                <div class="flex items-baseline gap-2 mt-1">
+                    <span class="text-3xl font-semibold tabular-nums" x-text="snapshot.price_str"></span>
+                    <span class="text-sm font-semibold tabular-nums"
+                          :class="(snapshot.change_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'"
+                          x-show="snapshot.change_pct !== null"
+                          x-text="((snapshot.change_pct ?? 0) >= 0 ? '+' : '') + snapshot.change_pct + '% 24h'"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Range tabs -->
+        <div class="flex gap-1 mt-3 shrink-0">
+            <template x-for="r in ranges" :key="r">
+                <button @click="setRange(r)"
+                        class="px-2.5 py-1 rounded-lg text-[0.7rem] font-semibold uppercase tracking-wide transition-colors"
+                        :class="r === snapshot.range ? 'bg-white/15 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'"
+                        x-text="r"></button>
+            </template>
+            <span x-show="loading" class="ml-2 self-center text-[0.7rem] text-slate-400">loading…</span>
+        </div>
+
+        <!-- Chart -->
+        <div class="relative mt-2 h-[150px] shrink-0">
+            <canvas x-ref="canvas"></canvas>
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-3 gap-x-4 gap-y-2 mt-4 text-[0.72rem] shrink-0">
+            <template x-for="row in statRows()" :key="row.label">
+                <div>
+                    <div class="text-[0.6rem] uppercase tracking-wider text-slate-500" x-text="row.label"></div>
+                    <div class="tabular-nums font-medium" x-text="row.value"></div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Contract addresses -->
+        <div class="mt-4 flex-grow overflow-y-auto min-h-0" x-show="Object.keys(snapshot.platforms||{{}}).length">
+            <div class="text-[0.6rem] uppercase tracking-wider text-slate-500 mb-1.5">Contracts — tap to copy</div>
+            <div class="flex flex-col gap-1.5">
+                {chip_rows}
+            </div>
+        </div>
+    </div>
+    """
+
+
+# Node-kind → color. One palette shared by the server legend and the client
+# cytoscape stylesheet (kept in sync by eye — small + stable).
+_GRAPH_KIND_COLORS = {
+    "whale": "#f97316",      # orange — a big unlabeled holder (the ones to watch)
+    "holder": "#38bdf8",     # cyan — ordinary holder
+    "cex": "#a78bfa",        # purple — exchange custody (not one person)
+    "dex": "#22d3ee",        # teal — DEX router / LP / market maker
+    "burn": "#64748b",       # slate — burned / dead
+    "contract": "#fbbf24",   # amber — the token contract itself
+}
+_GRAPH_KIND_LABEL = {
+    "whale": "Whale (>1%)", "holder": "Holder", "cex": "Exchange",
+    "dex": "DEX / LP", "burn": "Burn / dead", "contract": "Token contract",
+}
+
+
+def render_wallet_graph(widget_id: str, config: dict) -> str:
+    """Holder-network graph: top wallets as nodes (sized by % of supply) with
+    transfer edges between them, plus a concentration read.
+
+    Contract: the output of crypto.build_holder_graph — {title, chain, token,
+    elements, metrics, note}. The cytoscape `elements` are baked as a hidden
+    language-graph code block that index.js hydrates into an interactive graph
+    (same pattern as language-chart → Chart.js), so the config survives the
+    client-serialize → server-adopt round trip. Degrades to a data_card if there
+    are no elements."""
+    elements = config.get("elements") or []
+    metrics = config.get("metrics") or {}
+    token = config.get("token") or {}
+    if not elements:
+        return render_data_card(widget_id, {
+            "title": config.get("title") or "Holder graph",
+            "icon": "hub",
+            "content": config.get("note") or "No holder data available for this token."})
+
+    sym = token.get("symbol") or "Token"
+    chain = config.get("chain", "")
+    title = config.get("title") or f"{sym} — Holder Network"
+
+    tone = metrics.get("tone", "warn")
+    tone_bg = {"bad": "bg-rose-500/20 text-rose-300 border-rose-500/40",
+               "warn": "bg-amber-500/15 text-amber-300 border-amber-500/40",
+               "ok": "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+               }.get(tone, "bg-white/10 text-slate-300 border-white/20")
+
+    def chip(label, value):
+        return (f'<div class="flex flex-col px-2.5 py-1.5 rounded-lg bg-white/5 shrink-0">'
+                f'<span class="text-[0.55rem] uppercase tracking-wider text-slate-500">{esc(label)}</span>'
+                f'<span class="text-sm font-semibold tabular-nums text-white">{esc(value)}</span></div>')
+
+    chips = "".join([
+        chip("Top-10 real", f'{metrics.get("top10_share_real", 0)}%'),
+        chip("Exchanges", f'{metrics.get("cex_share", 0)}%'),
+        chip("Burned", f'{metrics.get("burn_share", 0)}%'),
+        chip("Whales", str(metrics.get("whale_count", 0))),
+        chip("Holders", f'{metrics.get("holder_count", 0):,}' if metrics.get("holder_count") else "—"),
+        chip("Gini", str(metrics.get("gini", "—"))),
+    ])
+
+    # Legend from the kinds actually present.
+    present = []
+    seen = set()
+    for el in elements:
+        k = (el.get("data") or {}).get("kind")
+        if k and k not in seen and "source" not in (el.get("data") or {}):
+            seen.add(k)
+            present.append(k)
+    legend = "".join(
+        f'<span class="inline-flex items-center gap-1 text-[0.62rem] text-slate-400">'
+        f'<span style="width:9px;height:9px;border-radius:50%;background:{_GRAPH_KIND_COLORS.get(k,"#888")}"></span>'
+        f'{esc(_GRAPH_KIND_LABEL.get(k, k))}</span>'
+        for k in present)
+
+    graph_payload = {
+        "elements": elements,
+        "colors": _GRAPH_KIND_COLORS,
+        "chain": chain,
+    }
+    note = config.get("note") or ""
+    note_html = (f'<div class="text-[0.62rem] text-slate-400 italic mt-1.5 shrink-0">{esc(note)}</div>'
+                 if note else "")
+    token_addr = token.get("address", "")
+    explorer = ""
+    if token_addr:
+        base = ("https://solscan.io/token/" if chain == "solana"
+                else "https://etherscan.io/token/")
+        explorer = (f'<a href="{esc(base)}{esc(token_addr)}" target="_blank" '
+                    f'class="text-[0.62rem] text-sky-400 hover:underline shrink-0">explorer ↗</a>')
+
+    return f"""
+    <div id="{widget_id}" x-data="{{}}" class="widget-container wallet-graph-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[600px] group">
+        {widget_header(title, "hub", subtitle=chain.upper())}
+        <div class="p-3 flex flex-col gap-2 min-h-0 flex-grow">
+            <!-- Verdict banner -->
+            <div class="rounded-xl border px-3 py-2 text-[0.78rem] leading-snug shrink-0 {tone_bg}">
+                {esc(metrics.get("verdict", ""))}
+            </div>
+            <!-- Metric chips -->
+            <div class="flex flex-wrap gap-1.5 shrink-0">{chips}</div>
+            <!-- The graph. index.js finds the hidden config block and mounts an
+                 interactive cytoscape canvas as its sibling. -->
+            <div class="graph-mount relative flex-grow min-h-0 rounded-xl bg-black/20 border border-white/5 overflow-hidden">
+                <pre class="graph-config-block" style="display:none"><code class="language-graph">{esc(json.dumps(graph_payload))}</code></pre>
+            </div>
+            <div class="flex items-center justify-between gap-2 shrink-0">
+                <div class="flex flex-wrap gap-x-3 gap-y-1">{legend}</div>
+                {explorer}
+            </div>
+            {note_html}
+        </div>
+    </div>
+    """
+
+
 def render_scoreboard(widget_id: str, config: dict) -> str:
     """Fixtures/scores widget. Contract: the full result of html_notes_sports_scores
     — {league, title, season, events:[{home, away, state, detail, note}]}.
@@ -2077,6 +2305,8 @@ WIDGET_RENDERERS = {
     "products": render_products,
     "chart": render_chart,
     "stock_card": render_stock_card,
+    "crypto_card": render_crypto_card,
+    "wallet_graph": render_wallet_graph,
     "weather": render_weather,
     "map": render_map,
     "settings": render_settings,

@@ -1,3 +1,89 @@
+# Handoff — 2026-07-21 (crypto + wallet-graph feature: tokens, holders, whales)
+
+**New capability:** the canvas now answers crypto asks — a token's price/chart,
+a written token report, a single wallet's holdings, and the headline feature: a
+**holder-network graph** that shows the top wallets holding a token as nodes
+(sized by % of supply) with transfer edges between them, plus a concentration
+read that calls out whether a few whales control supply (pump-and-dump / rug
+risk) or it's fairly distributed.
+
+**New module `app/crypto.py`** (self-contained, no main.py deps, unit-testable):
+keyless-first data sources, each degrading to `{}`/`[]` on failure —
+- **CoinGecko** (no key): token search/lookup by name/symbol/**contract address**,
+  price, market cap, price chart. All chains. `resolve_crypto()` is the identity
+  resolver — note→symbol→contract, with a scam-guard (search for "bitcoin"
+  returns a memecoin whose *symbol* is literally "BITCOIN" at rank ~5000
+  alongside real BTC at rank 1; we match name-exact then symbol-exact, each
+  sorted by market-cap rank, so impostors lose).
+- **Ethplorer `freekey`** (no signup, rate-limited): ETH ERC-20 top holders
+  (with `share` = % of supply, exactly what the graph needs), transfers between
+  them (graph edges), and single-address holdings.
+- **Solana RPC** `getTokenLargestAccounts` + owner resolution (nodes +
+  concentration only — no edges on Solana v1; RPC too heavy keyless). Public
+  endpoint 429s constantly → uses a **`HELIUS_API_KEY`** from the vault when
+  present, else degrades honestly.
+- `build_holder_graph()` is **pure** (holders+transfers → cytoscape elements +
+  metrics), so it tests without the network. Classifies the biggest holders from
+  a curated `KNOWN_EVM` label map (Binance/Coinbase/Kraken/OKX hot wallets, burn
+  addrs, DEX routers, Wintermute) — a token whose top 3 "holders" are exchange
+  custody is custodial, not whale-controlled. Metrics: top-10 **real-holder**
+  concentration (ex-CEX/burn/LP), CEX/burn/LP share, whale count, HHI, Gini,
+  edge count, and a plain-English verdict + tone (bad/warn/ok).
+
+**Four new widgets** (builders in `main.py` right after `build_stock_report_config`;
+the stock builders are the template throughout):
+- `crypto_card` — price header + Chart.js chart + range tabs + key stats +
+  tap-to-copy contract-address chips. Range tabs refetch `/api/crypto/<coin_id>`
+  directly (no agent turn), exactly like the stock card. Alpine
+  `cryptoCardWidget` in `widgets.js`.
+- `wallet_graph` — verdict banner + metric chips + **cytoscape** graph +
+  legend + explorer link. `render_wallet_graph` bakes a hidden
+  `<pre><code class="language-graph">` block that `index.js` hydrates into an
+  interactive concentric graph (node color by kind, size by √share, tap a node →
+  copies its address + toasts its %), **mirroring the language-chart→Chart.js
+  hydration**. Cytoscape was already bundled at `static/lib/cytoscape.min.js` and
+  is now loaded in `index.html`.
+- `crypto_report` / `wallet` — render via the existing `render_data_card`
+  (markdown brief / holdings list), no new renderer.
+
+**Routing.** `ROUTER_WIDGETS` gains `crypto`/`crypto_report`/`wallet_graph`/
+`wallet` (LLM-router specs) + dispatch in `build_router_widget`. A **conservative
+fast lane** (regexes near `STOCK_WORD_RE`) fires only on strong signals — a named
+coin/`CRYPTO_WORD_RE`, a `$CASHTAG`, or a `0x…` address — and is placed **BEFORE
+the stock branches on purpose**: `STOCK_WORD_RE` matches "crypto", so without
+ordering a crypto ask would be stolen by stock-news/stock-report. Softer asks
+fall through to the LLM router (which now knows the crypto types). Fast-lane
+builds are pre-resolved (fast + cached) so an unresolvable mention falls through
+instead of rendering an empty shell. 14/14 routing test cases correct, no
+collision with stock/weather/products asks.
+
+**Verified locally (python3.11 compile clean, app boots, route registered):**
+- Resolution: bitcoin/btc/ethereum/eth/solana/sol/pepe/dogecoin all → correct id.
+- BTC card: $66.3K, $1.33T mcap, rank 1, 121 chart points.
+- PEPE holder graph: 50 nodes (4 CEX / 14 whales / 1 burn / 31 holders), 18.2%
+  exchange custody flagged, top-10 real ~25% → "moderately distributed". Renders
+  with the language-graph block + verdict.
+- Empty/unresolved configs degrade to a readable data_card (no blank shells).
+
+**NOT click-tested in a live browser** — the cytoscape hydration, node-tap toast,
+graph persistence round-trip (serialize strips `.graph-canvas`, keeps the config
+block — same contract as charts) and the range-tab refetch are built to the
+existing chart pattern but were verified by construction + unit render, not by
+driving the UI. First live check: ask "who holds pepe" and confirm the graph
+paints + a node tap copies the address.
+
+**Known limits / next:** Ethplorer `freekey` is shared and 429s under rapid
+repeat (softened by a 60s TTL cache in `crypto.py`; a paid Etherscan/Ethplorer
+key would remove it). Solana needs a `HELIUS_API_KEY` in the vault for reliable
+holder data — without it the public RPC usually rate-limits and the graph
+degrades to the price card. Transfer **edges** only appear when top holders have
+moved supply to *each other* in the recent 100-tx window — sparse for large-cap
+tokens (correct: fair large-caps show few whale-to-whale edges; manipulated
+microcaps show a dense cluster). Blockscout (multi-chain EVM holders) was coded
+around but is unreachable from the dev sandbox; Ethplorer is the ETH path.
+
+---
+
 # Handoff — 2026-07-21 (video-by-time wave 2: "newest" made idempotent)
 
 **Deployed:** synology `:8035` (`7096dab`) — 561 pytest green (21 in
