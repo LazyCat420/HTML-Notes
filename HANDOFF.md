@@ -1,3 +1,29 @@
+# Handoff — 2026-07-21 (crypto wave 3: real holder FLOW graph — who sent what to whom)
+
+**Deployed :8035 `4292257`.** User asked whether "top holders" gives a graph of
+what's connected / who transferred what to where. It didn't — the graph drew
+nodes but the edge logic (two already-top-50 holders transferring in the token's
+last 100 txs) ≈never fired (PEPE/MOG both 0 edges). Rewrote it to trace real
+flows.
+
+For the top 15 holders (ETH, bounded), `eth_holder_flows` fetches each holder's
+own transfers of the token (`getAddressHistory`, semaphore=4 + TTL cache so the
+freekey survives) and connects them. Edges carry summed **amount + count +
+direction**; tap an edge → "X → Y, N tokens over K transfers". A counterparty
+that isn't a top holder but links **≥2 whales** is promoted to a red **"shared
+source"** node (the coordinated-seeding / pump-and-dump tell) and escalates the
+verdict at ≥3 clustered whales. New metrics edge_count/source_count/
+clustered_whales; a red "Linked ⚠" chip shows only when coordination exists.
+Node/edge tap handlers + hot-edge styling added in index.js.
+
+**Verified live on the NAS:** "top holders of pepe" → 57 nodes, **23 edges**, 1
+shared source (e.g. Binance 0xf977 → 0x5a52, 55.98T tokens ×3). Edges populate
+even under partial freekey rate-limiting; a single user won't burst like the test
+did. Solana stays nodes-only (per-wallet history isn't keyless). Still not
+browser-click-tested (cytoscape paint / edge-tap toast).
+
+---
+
 # Handoff — 2026-07-21 (crypto wave 2: keyless charts for ANY token — DexScreener + GeckoTerminal)
 
 **Deployed :8035 `d5d5a49`.** Follow-up to the crypto feature below. User's test:
