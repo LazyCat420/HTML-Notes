@@ -20,6 +20,7 @@ from app.youtube_search import (
     clean_query as _yt_clean_query,
     Intent as _YtIntent,
     _unescape as _yt_unescape,
+    _token_overlap as _yt_token_overlap,
 )
 
 # Crypto/on-chain layer: CoinGecko (price/chart/identity), Ethplorer (ETH holders
@@ -165,6 +166,13 @@ async def _youtube_results_via_scraper(query: str, limit: int = 5,
                 seen.add(d["video_id"])
                 out.append(d)
         if strict_recency:
+            # Same title-relevance floor as the primary tier — the strict
+            # guarantee AND the junk guard must both survive the fallback.
+            strong = [h for h in out
+                      if _yt_token_overlap(query, h.get("title") or "") >= 0.45]
+            weak = [h for h in out
+                    if _yt_token_overlap(query, h.get("title") or "") > 0]
+            out = strong or weak or out
             out.sort(key=lambda h: h["age_days"] if h.get("age_days") is not None else 1e9)
             return out[:max(limit, 1)]
         return _diversify_by_channel(out, per_channel=2)[:max(limit, 1)]
@@ -230,7 +238,21 @@ async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relev
         # An unknown age sorts last so a hit missing publishedTimeText can't jump
         # ahead of a real fresh upload.
         if strict_recency:
-            ordered = sorted(deduped,
+            # Title-relevance floor BEFORE the date sort. Pure date order is
+            # blind to subject: one fresh-but-unrelated upload used to win
+            # "newest X" outright (live failure: a 40-view off-topic clip beat
+            # every real match). Keep hits sharing ~half the query's content
+            # words; relax to any-overlap, then to all, so the floor can only
+            # steer toward relevance, never empty the pool.
+            strong = [v for v in deduped
+                      if _yt_token_overlap(cleaned, v.title or "") >= 0.45]
+            weak = [v for v in deduped
+                    if _yt_token_overlap(cleaned, v.title or "") > 0]
+            pool2 = strong or weak or deduped
+            if len(pool2) < len(deduped):
+                logger.info(f"[YOUTUBE] strict-recency floor kept "
+                            f"{len(pool2)}/{len(deduped)} hits for {cleaned!r}")
+            ordered = sorted(pool2,
                              key=lambda v: v.age_days if v.age_days is not None else 1e9)
             return [v.to_dict() for v in ordered][:max(limit, 1)]
         scored = _yt_score_videos(deduped, intent)
@@ -4158,6 +4180,148 @@ def _remember_current_video(session_id: str, hit_or_cfg: dict, query: str) -> No
 _load_blocklists()
 
 
+# ── Channel- and date-verified recency video selection ──────────────────────
+# "fox news video newest about the stock market" once returned a 40-view clip
+# from an unrelated channel: RECENCY_RE stripped "news" out of the channel-name
+# guess (so FOX News could never resolve to its uploads feed), and the fallback
+# date-sorted a polluted query and picked at random — no channel check, no
+# relevance floor. Verify BEFORE pulling: bind the named channel and read its
+# strictly newest-first uploads feed (channel-correct by construction); only
+# fall back to search when no channel binds, and even then hold a strict
+# "newest" ask to a title-relevance floor (see _search_youtube_scrape).
+
+_VIDEO_TOPIC_SPLIT_RE = re.compile(
+    r'\b(?:about|regarding|covering|on the topic of|talking about)\b', re.I)
+# Soft recency words safe to strip from a channel-subject guess. Deliberately
+# EXCLUDES "news" and "new" — they are part of real channel names (FOX News,
+# Sky News, New Rockstars); stripping them is exactly the bug this fixes.
+_SUBJECT_RECENCY_RE = re.compile(
+    r'\b(latest|newest|recent|recently|today|tonight|breaking|current|'
+    r'update|updates)\b', re.I)
+
+
+def _split_video_subject_topic(message: str) -> tuple:
+    """"fox news video newest about the stock market" → ("fox news",
+    "stock market"). The subject is the channel-name guess (recency and medium
+    words stripped, channel-name words KEPT); the topic is the about-clause,
+    used to filter that channel's uploads. No about-clause → topic ""."""
+    text = NEWEST_RE.sub(" ", message or "")
+    parts = _VIDEO_TOPIC_SPLIT_RE.split(text, maxsplit=1)
+    subject = clean_video_query(_SUBJECT_RECENCY_RE.sub(" ", parts[0]))
+    # clean_video_query falls back to its raw input when every word was filler
+    # ("newest video about X" → subject "video"). A channel GUESS made of pure
+    # filler must be empty — otherwise we scrape a channel search for "video".
+    if all(w in VIDEO_FILLER or _SUBJECT_RECENCY_RE.fullmatch(w)
+           for w in re.findall(r"\w+", subject.lower())):
+        subject = ""
+    topic = clean_video_query(parts[1]) if len(parts) > 1 else ""
+    return subject, topic
+
+
+def _topic_in_title(topic: str, title: str) -> bool:
+    """At least half the topic's content words appear in the title (substring
+    containment, so "stock" also matches "stocks"). Empty topic matches all."""
+    toks = [w for w in re.findall(r"\w+", (topic or "").lower()) if len(w) > 2]
+    if not toks:
+        return True
+    t = (title or "").lower()
+    return sum(1 for w in toks if w in t) >= (len(toks) + 1) // 2
+
+
+async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
+    """Channel- and date-verified pick for a recency video ask ("news video",
+    "newest X video"). Returns a youtube_player config, or None so the caller
+    falls back to its generic path.
+
+    Order of trust:
+      1. The named channel binds → its uploads RSS, strictly reverse-
+         chronological and channel-verified by construction, topic-filtered
+         when the ask has an about-clause. A topic with no recent upload falls
+         back to the channel's newest (right channel > exact topic).
+      2. No channel binds → date-ordered search; a strict "newest" ask runs
+         with the title-relevance floor so pure date sort can't surface a
+         fresh-but-unrelated upload.
+    """
+    want_newest = bool(NEWEST_RE.search((message or "").lower()))
+    subject, topic = _split_video_subject_topic(message)
+    search_q = " ".join(x for x in (subject, topic) if x) or clean_video_query(message)
+
+    chan = None
+    if subject:
+        try:
+            chan = await _resolve_youtube_channel(subject)
+        except Exception as e:
+            logger.warning(f"[YOUTUBE] channel resolve failed for {subject!r}: {e}")
+    if chan:
+        feed = filter_blocked_videos(
+            await _youtube_channel_uploads(chan["channel_id"], limit=15))
+        pool = [h for h in feed if _topic_in_title(topic, h.get("title"))]
+        if topic and feed and not pool:
+            # The feed's newest uploads don't cover the topic. Before settling
+            # for the channel's newest-overall, date-search the topic and keep
+            # ONLY hits whose channel matches the one we verified — this finds
+            # an on-topic upload that slipped past the feed window without ever
+            # reopening the door to junk channels.
+            searched = filter_blocked_videos(await search_youtube_videos(
+                search_q, limit=12, order="date"))
+            verified = [h for h in searched
+                        if _yt_channel_name_match(chan["title"], h.get("channel") or "")]
+            if verified:
+                verified.sort(key=lambda h: h["age_days"]
+                              if h.get("age_days") is not None else 1e9)
+                pool = verified
+                logger.info(f"[YOUTUBE] topic {topic!r} found via channel-"
+                            f"verified search ({len(verified)} hits from "
+                            f"{chan['title']!r})")
+            else:
+                logger.info(f"[YOUTUBE] {chan['title']!r} has no recent upload "
+                            f"matching {topic!r} — serving its newest instead")
+        pool = pool or feed
+        if pool:
+            if want_newest:
+                # "newest" is a factual ask with one right answer — no variety,
+                # no seen-exclusion; the feed head IS the latest.
+                top = pool[0]
+                cands = [v["video_id"] for v in pool[1:] if v.get("video_id")][:5]
+            else:
+                top, cands = pick_varied_video(
+                    pool, k=3, exclude_ids=_shown_video_ids(session_id))
+                cands = cands[:5]
+            if top:
+                age_min = (top.get("age_days") or 0) * 1440
+                logger.info(f"[YOUTUBE] recency pick via channel feed: "
+                            f"{top['video_id']} from {chan['title']!r} "
+                            f"(~{age_min:.0f} min old, topic={topic!r})")
+                _remember_current_video(session_id, top, search_q)
+                return {"video_id": top["video_id"],
+                        "title": top.get("title") or search_q,
+                        "query": search_q,
+                        "published": top.get("published"),
+                        "channel": chan["title"],
+                        "candidates": cands}
+
+    hits = filter_blocked_videos(await search_youtube_videos(
+        search_q, limit=10, order="date", strict_recency=want_newest))
+    if not hits:
+        hits = filter_blocked_videos(
+            await search_youtube_videos(search_q, limit=10))
+    if not hits:
+        return None
+    if want_newest:
+        hits = sorted(hits, key=lambda h: h["age_days"]
+                      if h.get("age_days") is not None else 1e9)
+        top = hits[0]
+        cands = [v["video_id"] for v in hits[1:] if v.get("video_id")][:5]
+    else:
+        top, cands = pick_varied_video(hits, k=3,
+                                       exclude_ids=_shown_video_ids(session_id))
+    if not top:
+        return None
+    _remember_current_video(session_id, top, search_q)
+    return {"video_id": top["video_id"], "title": top.get("title") or search_q,
+            "query": search_q, "candidates": cands}
+
+
 # Sports fixtures/scores. Without a tool these fell to the agent, which
 # web-searched (20-60s) and tried to squeeze a scoreboard into a text card.
 SCORE_ASK_RE = re.compile(
@@ -7626,74 +7790,27 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
                         "candidates": [v["video_id"] for v in live_hits[1:]
                                        if v.get("video_id")]})
 
+            # Recency asks go through the channel- and date-VERIFIED picker,
+            # checked against the ORIGINAL message (ground_query's LLM rewrite
+            # can drop the recency word and silently kill the bias). It binds a
+            # named channel to its uploads feed ("fox news video newest…" must
+            # come from FOX News, not whatever date-sort surfaces) and holds
+            # strict "newest" searches to a title-relevance floor.
+            want_dated = bool(NEWEST_RE.search((message or "").lower())
+                              or RECENCY_RE.search((message or "").lower()))
+            if want_dated:
+                rcfg = await _recency_video_pick(message, session_id)
+                if rcfg:
+                    return ("youtube_player", "video", rcfg)
+
             # Ground first so a brand/place collision ("sandals" the RESORT, "jaguar"
             # the CAR) searches the disambiguated subject, not the bare word that
             # returns promo/off-topic clips.
             g = await ground_query(query or message)
             vq = clean_video_query(g.get("retrieval_query") or query or message)
-            # Recency guards, checked against the ORIGINAL message (ground_query's
-            # LLM rewrite can drop the recency word and silently kill the bias).
-            # want_newest = "give me THE latest" — a strict, pure-date ask.
-            # want_dated = a softer freshness nudge ('news video searched by
-            # relevance returns a years-old recap').
-            want_newest = bool(NEWEST_RE.search((message or "").lower()))
-            want_dated = want_newest or bool(RECENCY_RE.search((message or "").lower()))
-
-            # NAMED CHANNEL + newest → resolve the channel and read its uploads
-            # feed (strictly reverse-chronological), so "newest Paul Barron Network
-            # video" returns the actual latest upload, not the most-watched clip.
-            # The subject is the message minus recency/medium words; the resolver's
-            # strict name-match gate makes a non-channel subject a no-op fall-through.
-            if want_newest:
-                subject = clean_video_query(
-                    NEWEST_RE.sub(" ", RECENCY_RE.sub(" ", message or "")))
-                try:
-                    chan = await _resolve_youtube_channel(subject)
-                    if chan:
-                        feed = filter_blocked_videos(
-                            await _youtube_channel_uploads(chan["channel_id"], limit=6))
-                        # NO already-shown exclusion here: "newest" is a factual
-                        # ask with exactly one right answer, so a repeat must
-                        # return the SAME latest upload, not rotate the feed.
-                        # (Live bug: the unseen-first filter served a different
-                        # video on every identical ask.)
-                        if feed:
-                            top = feed[0]
-                            age_min = ((top.get("age_days") or 0) * 1440)
-                            logger.info(
-                                f"[YOUTUBE] newest via channel feed: "
-                                f"{top['video_id']} published {top.get('published')}"
-                                f" (~{age_min:.0f} min ago) from {chan['title']!r}")
-                            _remember_current_video(session_id, top, vq)
-                            return ("youtube_player", "video", {
-                                "video_id": top["video_id"],
-                                "title": top.get("title") or vq, "query": vq,
-                                "published": top.get("published"),
-                                "candidates": [v["video_id"] for v in feed[1:]
-                                               if v.get("video_id")]})
-                except Exception as e:
-                    logger.warning(f"[YOUTUBE] channel-feed path failed for "
-                                   f"{subject!r}: {e}")
-
-            hits = []
-            if want_dated:
-                hits = filter_blocked_videos(
-                    await search_youtube_videos(vq, limit=10, order="date",
-                                                strict_recency=want_newest))
-            if not hits:
-                hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
-            # A strict "newest" ask wants THE latest, not a varied pick from top-k.
-            # Sort by age even here: if the date-ordered search came back empty and
-            # the relevance fallback filled `hits`, its order is popularity — the
-            # parsed age_days is what actually honors "newest".
-            if want_newest and hits:
-                hits = sorted(hits, key=lambda h: h["age_days"]
-                              if h.get("age_days") is not None else 1e9)
-                top = hits[0]
-                cands = [v["video_id"] for v in hits[1:] if v.get("video_id")][:5]
-            else:
-                top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id),
-                                               wide=is_query_vague(vq))
+            hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
+            top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id),
+                                           wide=is_query_vague(vq))
             if not top:
                 return None
             _remember_current_video(session_id, top, vq)
@@ -8369,22 +8486,16 @@ async def send_message(req: MessageRequest):
             #    NEWEST upload, so sort by date and drop the medium words from the query.
             if (is_video_ask and RECENCY_RE.search(text_clean)
                     and not wants_removal and not LIVE_ASK_RE.search(text_clean)):
-                query = clean_video_query(req.message)
-                hits = await search_youtube_videos(query, limit=6, order="date")
-                if not hits:
-                    hits = await search_youtube_videos(query, limit=6)
-                hits = filter_blocked_videos(hits)
-                # Vary among the top few NEWEST clips: still recent (that's what "news"
-                # means), but not the identical video on every repeat ask.
-                top, cands = pick_varied_video(hits, k=3, exclude_ids=_shown_video_ids(req.session_id))
-                if top:
-                    _remember_current_video(req.session_id, top, query)
-                    return spawn_widget_stream("youtube_player", "news-video", {
-                        "video_id": top["video_id"],
-                        "title": top.get("title") or query,
-                        "query": query,
-                        "candidates": cands,
-                    }, status=f"finding the latest '{query}' video...")
+                # Channel- and date-verified: "fox news video newest about the
+                # stock market" must come from the FOX News uploads feed, not
+                # whatever a date-sorted keyword search surfaces (live failure:
+                # a 40-view unrelated clip). Falls through to the generic video
+                # branch below when the picker finds nothing.
+                rcfg = await _recency_video_pick(req.message, req.session_id)
+                if rcfg:
+                    return spawn_widget_stream(
+                        "youtube_player", "news-video", rcfg,
+                        status=f"finding the latest '{rcfg.get('query') or clean_video_query(req.message)}' video...")
 
             # 3. LIVE STREAMS — checked before the data guard, because "cnn live news"
             #    contains "news" and was being sent down the data_card path (a text

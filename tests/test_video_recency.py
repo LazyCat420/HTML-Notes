@@ -228,3 +228,96 @@ def test_newest_fallback_sorts_relevance_hits_by_age(monkeypatch):
         {"type": "video", "query": "newest paul barron video"},
         "sess-fb", "newest paul barron video"))
     assert out[2]["video_id"] == "FRESH", "age must beat relevance order on a newest ask"
+
+
+# ── Channel + date VERIFICATION (the "fox news" junk-video fix) ──────────────
+# LIVE BUG: "fox news video newest about the stock market" returned a 40-view
+# clip from an unrelated channel. Two defects: RECENCY_RE stripped "news" out of
+# the channel-name guess (FOX News could never bind), and the date-sorted search
+# fallback had no channel check and no relevance floor.
+
+@pytest.mark.parametrize("message,subject,topic", [
+    ("fox news video newest about the stock market", "fox news", "stock market"),
+    ("latest sky news update about ukraine", "sky news", "ukraine"),
+    ("newest paul barron network video", "paul barron network", ""),
+    ("fifa news video", "fifa news", ""),
+    # all-filler subject must be EMPTY, not "video" (clean_video_query's raw
+    # fallback), or we scrape a channel search for the word "video".
+    ("newest video about the federal reserve", "", "federal reserve"),
+])
+def test_split_video_subject_topic(message, subject, topic):
+    assert m._split_video_subject_topic(message) == (subject, topic)
+
+
+def test_topic_gate_matches_half_the_content_words():
+    assert m._topic_in_title("stock market", "Stock markets rally as Dow hits record")
+    assert not m._topic_in_title("stock market", "Modi speech highlights today")
+    assert m._topic_in_title("", "anything at all")
+
+
+def test_recency_pick_binds_channel_with_news_in_name(monkeypatch):
+    """The channel-name guess must KEEP the word 'news' so FOX News can bind,
+    and the pick must come from the verified channel's feed, topic-filtered."""
+    resolved = {}
+    async def fake_resolve(name):
+        resolved["name"] = name
+        return {"channel_id": "UCFOX", "title": "Fox News"}
+    async def fake_uploads(cid, limit=8):
+        return [{"video_id": "OFF1", "id": "OFF1", "title": "Watters monologue",
+                 "channel": "Fox News", "age_days": 0.01},
+                {"video_id": "MKT1", "id": "MKT1",
+                 "title": "Stock market surges on rate news",
+                 "channel": "Fox News", "age_days": 0.2}]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
+
+    cfg = asyncio.run(m._recency_video_pick(
+        "fox news video newest about the stock market", "sess-fox"))
+    assert resolved["name"] == "fox news", "RECENCY_RE must not eat the channel name"
+    assert cfg["video_id"] == "MKT1", "must serve the newest ON-TOPIC upload"
+    assert cfg["channel"] == "Fox News"
+
+
+def test_recency_pick_topic_miss_uses_channel_verified_search(monkeypatch):
+    """Feed has nothing on-topic → date-search the topic but keep ONLY hits from
+    the verified channel; junk channels never get through."""
+    async def fake_resolve(name):
+        return {"channel_id": "UCFOX", "title": "Fox News"}
+    async def fake_uploads(cid, limit=8):
+        return [{"video_id": "OFF1", "id": "OFF1", "title": "Watters monologue",
+                 "channel": "Fox News", "age_days": 0.01}]
+    async def fake_search(q, limit=10, order="relevance", rerank=False,
+                          strict_recency=False):
+        return [
+            {"video_id": "JUNK", "id": "JUNK", "title": "stock market tips hindi",
+             "channel": "Random Trading Guru", "age_days": 0.005},
+            {"video_id": "FOXMKT", "id": "FOXMKT",
+             "title": "Stock market rally continues", "channel": "Fox News",
+             "age_days": 0.5},
+        ]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "search_youtube_videos", fake_search)
+    monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
+
+    cfg = asyncio.run(m._recency_video_pick(
+        "fox news video newest about the stock market", "sess-fox2"))
+    assert cfg["video_id"] == "FOXMKT", "fresher junk from the wrong channel must lose"
+
+
+def test_strict_recency_floor_drops_offtopic_fresh_hit():
+    """Date sort is blind to subject: a fresh unrelated upload must not win
+    'newest X' when on-topic hits exist."""
+    from app.youtube_search import Video as V
+    vids = [
+        V(video_id="JUNK1234567", id="JUNK1234567",
+          title="wedding dance compilation", age_days=0.001),
+        V(video_id="ONTOPIC1234", id="ONTOPIC1234",
+          title="federal reserve rate decision explained", age_days=0.4),
+    ]
+    q = "federal reserve rate decision"
+    strong = [v for v in vids if m._yt_token_overlap(q, v.title or "") >= 0.45]
+    assert [v.video_id for v in strong] == ["ONTOPIC1234"]
