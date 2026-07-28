@@ -616,3 +616,57 @@ def test_new_prefix_peeled_from_channel_subject():
     assert m._split_video_subject_topic("fox news video newest")[0] == "fox news"
     assert "news" in m._split_video_subject_topic("news video")[0] or \
         m._split_video_subject_topic("news video")[0] == ""
+
+
+async def _no_secret(_name):
+    return ""
+
+
+def test_mcp_recency_uses_channel_feed_not_keyword_search(monkeypatch):
+    """The MCP tool (the AGENT's path) called search_youtube_videos directly, so
+    the channel logic never ran there: 'primeagen' + freshness returned a
+    5-day-old keyword hit while the creator's 3-hour-old upload existed. The
+    chat path being fixed did not fix the agent path."""
+    async def fake_resolve_many(name, limit=3, evidence="plain"):
+        return [{"channel_id": "UC_MAIN", "title": "ThePrimeagen", "handle": "@ThePrimeagen",
+                 "match": 0.9, "rank_score": 1.2, "rank": 0, "verified": True}]
+
+    async def fake_uploads(cid, limit=8):
+        return [{"video_id": "FRESH3HRS", "id": "FRESH3HRS", "title": "Dont Smile",
+                 "channel": "ThePrimeagen", "age_days": 0.13}]
+
+    async def fake_search(*a, **k):
+        return [{"video_id": "STALE5DAY", "id": "STALE5DAY", "title": "Worst Advice Ever",
+                 "channel": "The PrimeTime", "age_days": 5.0}]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", fake_resolve_many)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "search_youtube_videos", fake_search)
+
+    monkeypatch.setattr(m, "_fetch_secret", _no_secret)
+    out = asyncio.run(m.internal_tool_execute(m.InternalToolRequest(
+        tool="html_notes_youtube_search",
+        args={"query": "primeagen", "freshness": "newest", "limit": 4})))
+    assert out["results"][0]["video_id"] == "FRESH3HRS", \
+        "the agent path must use the creator's feed, not keyword search"
+
+
+def test_mcp_non_creator_query_still_uses_search(monkeypatch):
+    """A topic ask must NOT be hijacked into some channel's feed."""
+    async def boom(*a, **k):
+        raise AssertionError("channel path must not run for a topic query")
+
+    async def fake_search(*a, **k):
+        return [{"video_id": "TOPIC12345", "id": "TOPIC12345",
+                 "title": "cookie recipe", "age_days": 1.0}]
+
+    monkeypatch.setattr(m, "_youtube_channel_uploads", boom)
+    monkeypatch.setattr(m, "search_youtube_videos", fake_search)
+    async def no_chan(name, limit=3, evidence="plain"):
+        return []
+    monkeypatch.setattr(m, "_resolve_youtube_channels", no_chan)
+    monkeypatch.setattr(m, "_fetch_secret", _no_secret)
+    out = asyncio.run(m.internal_tool_execute(m.InternalToolRequest(
+        tool="html_notes_youtube_search",
+        args={"query": "cookie recipe", "freshness": "new", "limit": 3})))
+    assert out["results"][0]["video_id"] == "TOPIC12345"

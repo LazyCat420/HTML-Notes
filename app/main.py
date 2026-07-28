@@ -11627,9 +11627,51 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
             if fresh:
                 logger.info(f"[YOUTUBE MCP] freshness={fresh.matched!r} "
                             f"window={fresh.window_days} for {query!r}")
-            results = await search_youtube_videos(query, limit=limit, order=order,
-                                                  strict_recency=strict,
-                                                  rerank=True, freshness=fresh)
+            results = []
+            # A recency ask that NAMES a creator is answered from that creator's
+            # uploads feed, exactly like the chat fast-path. Without this the
+            # agent path fell to keyword search, which ranks by relevance over a
+            # polluted pool: "primeagen newest" returned a 5-day-old clip while
+            # the creator's 3-hour-old upload existed. Search stays the fallback.
+            if fresh and order != "live":
+                subject, _topic = _split_video_subject_topic(query)
+                if subject:
+                    try:
+                        chans = await _resolve_youtube_channels(
+                            subject, limit=4,
+                            evidence=_creator_evidence(subject, query))
+                        if chans:
+                            best = chans[0]["rank_score"]
+                            chans = [c for c in chans
+                                     if c["rank_score"] >= best - 0.3][:3]
+                            feeds = await asyncio.gather(
+                                *[_youtube_channel_uploads(c["channel_id"], limit=12)
+                                  for c in chans], return_exceptions=True)
+                            merged, seen_v = [], set()
+                            for c, f in zip(chans, feeds):
+                                if isinstance(f, Exception) or not f:
+                                    continue
+                                for h in f:
+                                    if h.get("video_id") and h["video_id"] not in seen_v:
+                                        seen_v.add(h["video_id"])
+                                        merged.append({**h, "channel": h.get("channel") or c["title"]})
+                            merged.sort(key=lambda h: h["age_days"]
+                                        if h.get("age_days") is not None else 1e9)
+                            if fresh.window_days:
+                                merged = filter_by_age(merged, fresh.window_days) or merged
+                            results = filter_blocked_videos(merged)[:max(limit, 1)]
+                            if results:
+                                logger.info(
+                                    f"[YOUTUBE MCP] {subject!r} -> channel feed "
+                                    f"({len(chans)} channel(s)), newest "
+                                    f"{results[0].get('age_days', -1):.2f}d")
+                    except Exception as e:
+                        logger.warning(f"[YOUTUBE MCP] channel path failed for "
+                                       f"{query!r}: {e}")
+            if not results:
+                results = await search_youtube_videos(query, limit=limit, order=order,
+                                                      strict_recency=strict,
+                                                      rerank=True, freshness=fresh)
             out = {"results": results, "count": len(results)}
             if fresh and results and all(r.get("stale_fallback") for r in results):
                 out["note"] = ("No uploads found inside the requested time "
