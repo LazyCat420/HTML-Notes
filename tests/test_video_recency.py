@@ -78,7 +78,7 @@ def test_resolve_channel_single_word_exact_top_result_only(monkeypatch):
         return html
     monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
     out = asyncio.run(m._resolve_youtube_channel("fireship"))
-    assert out == {"channel_id": "UCF", "title": "Fireship"}
+    assert out["channel_id"] == "UCF" and out["title"] == "Fireship"
 
     html2 = ('{"channelRenderer":{"channelId":"UCM",'
              '"title":{"simpleText":"Bitcoin Magazine"}}')
@@ -159,6 +159,11 @@ def test_video_builder_uses_channel_feed_for_newest(monkeypatch):
 
     monkeypatch.setattr(m, "ground_query", fake_ground)
     monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    async def _fake_resolve_many(name, limit=3, evidence="plain"):
+        c = await fake_resolve(name)
+        return [{**c, "match": 1.0, "rank_score": 1.0, "rank": 0,
+                 "handle": "", "verified": True}] if c else []
+    monkeypatch.setattr(m, "_resolve_youtube_channels", _fake_resolve_many)
     monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
     monkeypatch.setattr(m, "pick_varied_video", boom_varied)
     monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
@@ -190,6 +195,11 @@ def test_newest_is_idempotent_even_when_already_shown(monkeypatch):
 
     monkeypatch.setattr(m, "ground_query", fake_ground)
     monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    async def _fake_resolve_many(name, limit=3, evidence="plain"):
+        c = await fake_resolve(name)
+        return [{**c, "match": 1.0, "rank_score": 1.0, "rank": 0,
+                 "handle": "", "verified": True}] if c else []
+    monkeypatch.setattr(m, "_resolve_youtube_channels", _fake_resolve_many)
     monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
     monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
     # NEW1 was already shown this session — the old code rotated to OLD1 here.
@@ -220,6 +230,11 @@ def test_newest_fallback_sorts_relevance_hits_by_age(monkeypatch):
 
     monkeypatch.setattr(m, "ground_query", fake_ground)
     monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    async def _fake_resolve_many(name, limit=3, evidence="plain"):
+        c = await fake_resolve(name)
+        return [{**c, "match": 1.0, "rank_score": 1.0, "rank": 0,
+                 "handle": "", "verified": True}] if c else []
+    monkeypatch.setattr(m, "_resolve_youtube_channels", _fake_resolve_many)
     monkeypatch.setattr(m, "search_youtube_videos", fake_search)
     monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
     monkeypatch.setattr(m, "_shown_video_ids", lambda sid: set())
@@ -270,6 +285,11 @@ def test_recency_pick_binds_channel_with_news_in_name(monkeypatch):
                  "channel": "Fox News", "age_days": 0.2}]
 
     monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    async def _fake_resolve_many(name, limit=3, evidence="plain"):
+        c = await fake_resolve(name)
+        return [{**c, "match": 1.0, "rank_score": 1.0, "rank": 0,
+                 "handle": "", "verified": True}] if c else []
+    monkeypatch.setattr(m, "_resolve_youtube_channels", _fake_resolve_many)
     monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
     monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
 
@@ -299,6 +319,11 @@ def test_recency_pick_topic_miss_uses_channel_verified_search(monkeypatch):
         ]
 
     monkeypatch.setattr(m, "_resolve_youtube_channel", fake_resolve)
+    async def _fake_resolve_many(name, limit=3, evidence="plain"):
+        c = await fake_resolve(name)
+        return [{**c, "match": 1.0, "rank_score": 1.0, "rank": 0,
+                 "handle": "", "verified": True}] if c else []
+    monkeypatch.setattr(m, "_resolve_youtube_channels", _fake_resolve_many)
     monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
     monkeypatch.setattr(m, "search_youtube_videos", fake_search)
     monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
@@ -476,3 +501,118 @@ def test_bare_new_is_strict_newest_first(monkeypatch):
     out = asyncio.run(m._search_youtube_scrape("new spacex launch coverage", limit=5))
     assert out[0]["video_id"] == "NEWEST12345", \
         "a 'new' ask must lead with the newest on-topic upload, not the popular one"
+
+
+# ── Channel IDENTITY (the primeagen rebuild) ────────────────────────────────
+# LIVE FAILURE these lock down: "newest primeagen video" served a 5-day-old clip
+# from the unrelated 'The PrimeTime' while ThePrimeagen's own upload sat unseen,
+# and asking for primeagen once returned a Fox News video ("prime time").
+# Root causes: token-set matching gave 'primeagen' vs 'ThePrimeagen' an
+# intersection of ZERO (unreachable at ANY threshold), and a single-word subject
+# only ever examined the TOP candidate.
+@pytest.mark.parametrize("subject,title,handle", [
+    ("primeagen", "ThePrimeagen", "@ThePrimeagen"),          # the exact live failure
+    ("primeagen", "ThePrimeagenHighlights", "@ThePrimeagenHighlights"),
+    ("primeagen", "The PrimeTime", "@ThePrimeTimeagen"),     # sibling: handle is the ONLY link
+    ("mkbhd", "Marques Brownlee", "@mkbhd"),                 # handle ≠ display name
+    ("fox news", "FOX News", "@FoxNews"),
+    ("paul barron", "Paul Barron Network", "@PaulBarronNetwork"),
+    ("fireship", "Fireship", "@Fireship"),
+])
+def test_channel_match_binds_real_creator(subject, title, handle):
+    assert m._yt_channel_match_score(subject, title, handle) >= m._YT_CHANNEL_MATCH_FLOOR
+
+
+@pytest.mark.parametrize("subject,title,handle", [
+    ("bitcoin", "Bitcoin Magazine", "@BitcoinMagazine"),     # topic word, not a creator
+    ("bitcoin", "Bitcoin News Today", "@BitcoinNewsToday"),
+    ("linus", "Linus Tech Tips", "@LinusTechTips"),          # prefix ≠ identity
+    ("top gun maverick", "Top Gun", "@TopGunFan"),
+    ("theo", "Theo - t3.gg", "@t3dotgg"),
+    ("primeagen", "TheStandupPod", "@TheStandupPod"),
+    ("paul barron", "Paul Barron Fan Clips Daily Show", "@PBFanClips"),  # impersonator
+])
+def test_channel_match_rejects_impostors_and_topics(subject, title, handle):
+    assert m._yt_channel_match_score(subject, title, handle) < m._YT_CHANNEL_MATCH_FLOOR
+
+
+def test_handle_outranks_a_title_squatter():
+    """A squatter can title itself 'primeagen' exactly; only the handle is
+    unique. The real channel must still win, or 'newest X' serves the squatter."""
+    real = m._yt_channel_match_score("primeagen", "ThePrimeagen", "@ThePrimeagen")
+    squat = m._yt_channel_match_score("primeagen", "primeagen", "@AgenW.")
+    assert real > squat
+
+
+def test_parse_channel_candidates_keeps_fields_together():
+    """A flat regex across the document paired one channel's id with a LATER
+    channel's title. Blocks must be split on the renderer boundary first."""
+    html = ('{"channelRenderer":{"channelId":"UC_A","title":{"simpleText":"Alpha"},'
+            '"canonicalBaseUrl":"/@alpha","ownerBadges":["BADGE_STYLE_TYPE_VERIFIED"]}'
+            '{"channelRenderer":{"channelId":"UC_B","title":{"simpleText":"Beta"},'
+            '"canonicalBaseUrl":"/@beta"}')
+    cands = m._parse_channel_candidates(html)
+    assert [(c["channel_id"], c["title"], c["handle"]) for c in cands] == [
+        ("UC_A", "Alpha", "@alpha"), ("UC_B", "Beta", "@beta")]
+    assert cands[0]["verified"] and not cands[1]["verified"]
+    assert [c["rank"] for c in cands] == [0, 1]
+
+
+def test_resolver_scores_every_candidate_not_just_the_first(monkeypatch):
+    """The [:1] slice for single-word subjects made the correct channel
+    unreachable: YouTube ranks 'The PrimeTime' ABOVE 'ThePrimeagen' for
+    'primeagen', so the real one was never even considered."""
+    html = ('{"channelRenderer":{"channelId":"UC_WRONG","title":{"simpleText":"The PrimeTime"},'
+            '"canonicalBaseUrl":"/@SomethingElse"}'
+            '{"channelRenderer":{"channelId":"UC_REAL","title":{"simpleText":"ThePrimeagen"},'
+            '"canonicalBaseUrl":"/@ThePrimeagen","ownerBadges":["BADGE_STYLE_TYPE_VERIFIED"]}')
+
+    async def fake_html(url, timeout=12.0):
+        return html
+    monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
+    out = asyncio.run(m._resolve_youtube_channels("primeagen"))
+    assert out and out[0]["channel_id"] == "UC_REAL", \
+        "the real channel must win even when YouTube ranks an impostor above it"
+
+
+def test_creator_evidence_separates_topics_from_names():
+    assert m._creator_evidence("cookie recipe", "a new cookie recipe video") == "weak"
+    assert m._creator_evidence("stock market", "new stock market video") == "weak"
+    assert m._creator_evidence("primeagen", "newest primeagen video") == "plain"
+    assert m._creator_evidence("primeagen", "a video from primeagen") == "explicit"
+    assert m._creator_evidence("mkbhd", "mkbhd's latest") == "explicit"
+
+
+def test_multi_channel_merge_picks_newest_across_siblings(monkeypatch):
+    """THE bug: the creator's newest upload was on a SIBLING channel. Binding one
+    channel served an 11-day-old video while a 3-hour-old one existed."""
+    async def fake_resolve_many(name, limit=3, evidence="plain"):
+        return [{"channel_id": "UC_MAIN", "title": "ThePrimeagen", "handle": "@ThePrimeagen",
+                 "match": 0.9, "rank_score": 1.2, "rank": 0, "verified": True},
+                {"channel_id": "UC_SIB", "title": "The PrimeTime", "handle": "@ThePrimeTimeagen",
+                 "match": 0.65, "rank_score": 0.98, "rank": 1, "verified": True}]
+
+    async def fake_uploads(cid, limit=8):
+        if cid == "UC_MAIN":
+            return [{"video_id": "OLD11DAYS", "id": "OLD11DAYS", "title": "I like Game Programming",
+                     "channel": "ThePrimeagen", "age_days": 11.2}]
+        return [{"video_id": "FRESH3HRS", "id": "FRESH3HRS", "title": "Dont Smile",
+                 "channel": "The PrimeTime", "age_days": 0.13}]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", fake_resolve_many)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_shown_video_ids", lambda sid: set())
+
+    cfg = asyncio.run(m._recency_video_pick("newest primeagen video", "sess-multi"))
+    assert cfg["video_id"] == "FRESH3HRS", \
+        "newest must span ALL of the creator's channels, not just the best-matching one"
+
+
+def test_new_prefix_peeled_from_channel_subject():
+    """'a new primeagen video' left subject 'new primeagen', which bound nothing.
+    'fox news' and a bare 'news' must KEEP the word (it is the channel name)."""
+    assert m._split_video_subject_topic("a new primeagen video")[0] == "primeagen"
+    assert m._split_video_subject_topic("fox news video newest")[0] == "fox news"
+    assert "news" in m._split_video_subject_topic("news video")[0] or \
+        m._split_video_subject_topic("news video")[0] == ""

@@ -1,4 +1,5 @@
 import base64
+import difflib
 import html as html_lib
 import httpx
 import logging
@@ -372,23 +373,131 @@ def _yt_name_tokens(s: str) -> set:
     return {w for w in re.findall(r"\w+", (s or "").lower()) if len(w) > 1}
 
 
-def _yt_channel_name_match(subject: str, title: str) -> bool:
-    """A channel is the right one when the subject is (nearly) fully contained in
-    the channel title — 'paul barron' MUST bind to 'Paul Barron Network' (users
-    drop the trailing word), while 'top gun maverick' (a movie, fwd 0.67) does
-    NOT bind to a fan channel called 'Top Gun'. The backward direction is only a
-    loose sanity check: a strict bidirectional gate was live-tested and rejected
-    the real channel the user asked for. Single-word subjects bind on EXACT
-    title equality only ('fireship' → 'Fireship', never 'bitcoin' → 'Bitcoin
-    Magazine')."""
+def _yt_squash(s: str) -> str:
+    """Lowercase alphanumerics only: 'The PrimeTime' -> 'theprimetime'. Channel
+    names glue and unglue words freely ('ThePrimeagen' vs 'the primeagen'), so
+    every identity comparison happens in this space, never on tokens alone."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+# Words that carry no identity — a channel called "<X> TV" or "The <X> Show" is
+# still X. Stripped from BOTH sides before the containment test so "primeagen"
+# reaches "ThePrimeagen" and "paul barron" reaches "Paul Barron Network".
+_YT_CHANNEL_AFFIXES = ("the", "official", "channel", "tv", "network", "show",
+                       "media", "news", "live", "clips", "highlights", "shorts",
+                       "vods", "vod", "podcast", "archive", "fan", "daily")
+
+
+def _yt_core_name(s: str) -> str:
+    """Squashed name with leading/trailing affixes peeled: 'ThePrimeagen' ->
+    'primeagen', 'Paul Barron Network' -> 'paulbarron'.
+
+    Peels at most TWO affixes. Unlimited peeling turns a fan channel into the
+    creator it imitates — 'Paul Barron Fan Clips Daily Show' would reduce all
+    the way to 'paulbarron' and bind, which is exactly the impersonation the
+    caller must reject. Real channels append one qualifier ('Network',
+    'Clips'), not four."""
+    core = _yt_squash(s)
+    for _ in range(2):
+        for aff in _YT_CHANNEL_AFFIXES:
+            if len(core) > len(aff) + 2:
+                if core.startswith(aff):
+                    core = core[len(aff):]
+                    break
+                if core.endswith(aff):
+                    core = core[:-len(aff)]
+                    break
+        else:
+            break
+    return core or _yt_squash(s)
+
+
+def _yt_channel_match_score(subject: str, title: str, handle: str = "") -> float:
+    """How strongly a channel IS the creator the user named, in [0, 1].
+
+    Replaces a boolean token-overlap gate that could not see the answer at all:
+    'primeagen' vs 'ThePrimeagen' tokenizes to {primeagen} vs {theprimeagen},
+    an intersection of ZERO, so the real channel was unreachable at ANY
+    threshold while a coincidental two-word title ('prime time') sailed through
+    the loose path. Identity is therefore scored on the SQUASHED string, and the
+    @handle — which is unique on YouTube, unlike a display name — is the
+    strongest evidence available.
+
+    Scores: 1.0 exact handle/name, 0.9 handle core, 0.8 name core, 0.6-0.7
+    containment, 0.5 strong token overlap. Callers apply the threshold.
+    """
+    subj_sq, subj_core = _yt_squash(subject), _yt_core_name(subject)
+    if not subj_sq:
+        return 0.0
+    title_sq, title_core = _yt_squash(title), _yt_core_name(title)
+    hand_sq = _yt_squash((handle or "").lstrip("@"))
+    hand_core = _yt_core_name(handle.lstrip("@")) if handle else ""
+
+    # 1. The handle is an identity, not a label — exact or core-exact wins.
+    #    A TITLE match is always scored below its handle equivalent: anyone can
+    #    title a channel 'primeagen' (a squatter handled '@AgenW.' does exactly
+    #    that and would otherwise outrank the real creator's sibling channels),
+    #    while a handle is globally unique and cannot be duplicated.
+    if hand_sq and subj_sq == hand_sq:
+        return 1.0
+    if hand_core and subj_core == hand_core:
+        return 0.9
+    if title_sq and subj_sq == title_sq:
+        return 0.85 if not hand_sq else 0.8
+    if title_core and subj_core == title_core:
+        return 0.75
+
+    # 2. Containment on the core name, both directions — gated on how much of
+    #    the longer string the match covers. A subject that is merely a prefix
+    #    of a longer name is a topic word, not an identity: 'bitcoin' must not
+    #    bind to 'Bitcoin Magazine', 'top gun maverick' not to 'Top Gun'.
+    #
+    #    The @handle gets more latitude (0.65) than the display title (0.8): a
+    #    handle is a deliberate, globally-unique identity claim, and creators
+    #    build second channels by EXTENDING it — ThePrimeagen's other channel is
+    #    titled 'The PrimeTime' (no title match at all) but handles itself
+    #    '@ThePrimeTimeagen', which is the only evidence connecting the two.
+    #    Titles stay strict because they collide by coincidence far more often.
+    if len(subj_core) >= 4:
+        for other in (title_core, hand_core):
+            if not other:
+                continue
+            if subj_core in other or other in subj_core:
+                ratio = min(len(subj_core), len(other)) / max(len(subj_core), len(other))
+                if ratio >= 0.8:
+                    return 0.7
+
+    # 3. Handle SIMILARITY — the sibling-channel case. A creator's second
+    #    channel often INFIXES words into the handle ('@ThePrimeagen' ->
+    #    '@ThePrimeTimeagen'), which no substring test can see. Edit-distance
+    #    similarity does, and it stays selective: primeagen/primetimeagen
+    #    scores 0.82 while the topic-word traps this must keep rejecting sit far
+    #    below (bitcoin/bitcoinmagazine 0.64, linus/linustechtips 0.56). Handle
+    #    only — display titles collide by coincidence too often for fuzziness.
+    if hand_core and len(subj_core) >= 5:
+        sim = difflib.SequenceMatcher(None, subj_core, hand_core).ratio()
+        if sim >= 0.78:
+            return 0.65
+
+    # 3. Multi-word fallback: the old token gate, kept for names that genuinely
+    #    differ in wording ('paul barron' -> 'Paul Barron Network').
     a, b = _yt_name_tokens(subject), _yt_name_tokens(title)
-    if not a or not b:
-        return False
-    if len(a) == 1:
-        return a == b
-    fwd = len(a & b) / len(a)
-    bwd = len(a & b) / len(b)
-    return fwd >= 0.7 and bwd >= 0.5
+    if a and b and len(a) > 1:
+        fwd, bwd = len(a & b) / len(a), len(a & b) / len(b)
+        if fwd >= 0.7 and bwd >= 0.5:
+            return 0.5
+    return 0.0
+
+
+# Below this, a candidate is NOT the named creator. 0.6 admits containment
+# ('primeagen' in 'theprimeagen') and rejects coincidental word sharing.
+_YT_CHANNEL_MATCH_FLOOR = 0.6
+
+
+def _yt_channel_name_match(subject: str, title: str, handle: str = "") -> bool:
+    """Boolean form of _yt_channel_match_score, kept for existing call sites
+    (notably the channel-verified search filter in _recency_video_pick)."""
+    return _yt_channel_match_score(subject, title, handle) >= _YT_CHANNEL_MATCH_FLOOR
 
 
 async def _yt_fetch_html(url: str, timeout: float = 12.0) -> str:
@@ -407,35 +516,98 @@ async def _yt_fetch_html(url: str, timeout: float = 12.0) -> str:
         return ""
 
 
-async def _resolve_youtube_channel(name: str) -> Optional[dict]:
-    """Best-match YouTube channel for a creator name → {channel_id, title}, or
-    None. Uses the channel-only search filter and the name-match gate so a
-    non-channel subject falls through to a normal keyword search. First passing
-    candidate wins — YouTube's own relevance order already puts the canonical
-    channel ahead of same-name secondaries. A single-word subject is only trusted
-    when the TOP channel result matches it exactly (a topic word like 'bitcoin'
-    must not bind to whatever channel ranks first for it)."""
+def _parse_channel_candidates(html: str, limit: int = 8) -> list:
+    """[{channel_id, title, handle}] from a channels-filtered results page, in
+    YouTube's own order. Splitting on the renderer boundary first keeps each
+    block's fields together — a single flat regex across the whole document
+    pairs one channel's id with a later channel's title."""
+    out, seen = [], set()
+    for block in (html or "").split('"channelRenderer":')[1:]:
+        cid = re.search(r'"channelId":"([^"]+)"', block)
+        title = re.search(r'"title":\{"simpleText":"([^"]+)"', block)
+        if not cid or not title or cid.group(1) in seen:
+            continue
+        seen.add(cid.group(1))
+        handle = re.search(r'"canonicalBaseUrl":"/(@[^"]+)"', block)
+        out.append({"channel_id": cid.group(1),
+                    "title": _yt_unescape(title.group(1)),
+                    "handle": handle.group(1) if handle else "",
+                    # YouTube's own relevance position — the single best proxy
+                    # for "which of these same-named channels is the real one".
+                    "rank": len(out),
+                    "verified": ("BADGE_STYLE_TYPE_VERIFIED" in block
+                                 or '"label":"Verified"' in block)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _resolve_youtube_channels(name: str, limit: int = 3,
+                                    evidence: str = "plain") -> list:
+    """Every channel that IS the named creator, best match first.
+
+    Rebuilt after a live failure: "newest primeagen video" served a 5-day-old
+    clip from an unrelated channel while ThePrimeagen's own upload sat there
+    unseen. Two independent defects, both fixed here:
+      1. Matching was token-set overlap, so 'primeagen' vs 'ThePrimeagen' had
+         an intersection of ZERO — the correct channel was unreachable at any
+         threshold. Identity is now scored on squashed/affix-peeled strings and
+         on the @handle, which is unique where a display name is not.
+      2. A single-word subject only ever examined the TOP candidate ([:1]), and
+         YouTube ranks 'The PrimeTime' above 'ThePrimeagen' for that query — so
+         the real channel was never even considered. All candidates are scored
+         now and the best wins.
+    Returns a LIST because creators run several channels (main / clips / VODs);
+    the caller merges their feeds so "newest" means newest across all of them.
+    """
     name = (name or "").strip()
-    single = len(_yt_name_tokens(name)) == 1
-    if not _yt_name_tokens(name):
-        return None
+    if not _yt_name_tokens(name) and not _yt_squash(name):
+        return []
     url = (f"https://www.youtube.com/results?search_query="
            f"{urllib.parse.quote(name)}&sp={_YT_CHANNEL_SP}")
     html = await _yt_fetch_html(url)
     if not html:
-        return None
-    # channelRenderer carries channelId early and the title later in the same block.
-    candidates = re.findall(
-        r'"channelRenderer":\{"channelId":"([^"]+)".*?'
-        r'"title":\{"simpleText":"([^"]+)"', html, re.S)[:1 if single else 5]
-    for cid, title in candidates:
-        title = _yt_unescape(title)
-        if _yt_channel_name_match(name, title):
-            logger.info(f"[YOUTUBE] channel {name!r} -> {title!r} ({cid})")
-            return {"channel_id": cid, "title": title}
-    logger.info(f"[YOUTUBE] no channel bound for {name!r} "
-                f"({len(candidates)} candidate(s) checked)")
-    return None
+        return []
+    cands = _parse_channel_candidates(html)
+    # A topic-shaped subject ('cookie recipe') needs corroboration before it may
+    # hijack the whole ask into one creator's feed: a near-exact name AND the
+    # verified badge. A named creator keeps the normal floor.
+    floor = 0.85 if evidence == "weak" else _YT_CHANNEL_MATCH_FLOOR
+    scored = []
+    for c in cands:
+        s = _yt_channel_match_score(name, c["title"], c.get("handle", ""))
+        if evidence == "weak" and not c.get("verified"):
+            continue
+        if s >= floor:
+            # Name match alone cannot separate a creator from an impostor —
+            # '@F1X-MKBHD' matches 'mkbhd' as exactly as '@mkbhd' does. Break
+            # those ties on authenticity signals: YouTube's own ranking (its
+            # relevance model already knows which channel people mean) and the
+            # verified badge. Match score still dominates, so a better-named
+            # channel never loses to a worse-named verified one.
+            # Verification is weighted heavily: an impersonator can copy a name
+            # exactly (a channel titled 'primeagen', handle '@AgenW.', ranks
+            # ahead of the creator's own sibling channels on name alone), but
+            # cannot copy the badge. Position is a weaker nudge on top.
+            authority = (0.25 if c.get("verified") else 0.0) + max(0.0, 0.08 - c["rank"] * 0.02)
+            scored.append({**c, "match": s, "rank_score": s + authority})
+    if not scored:
+        logger.info(f"[YOUTUBE] no channel bound for {name!r} "
+                    f"({len(cands)} candidate(s) checked)")
+        return []
+    scored.sort(key=lambda c: (-c["rank_score"], c["rank"]))
+    logger.info(f"[YOUTUBE] channel {name!r} -> " +
+                ", ".join(f"{c['title']!r}({c['match']:.2f}"
+                          f"{'/verified' if c.get('verified') else ''})"
+                          for c in scored[:limit]))
+    return scored[:limit]
+
+
+async def _resolve_youtube_channel(name: str) -> Optional[dict]:
+    """Single best channel for a creator name, or None. Thin wrapper over
+    _resolve_youtube_channels for callers that want exactly one."""
+    chans = await _resolve_youtube_channels(name, limit=1)
+    return chans[0] if chans else None
 
 
 async def _youtube_channel_uploads(channel_id: str, limit: int = 8) -> list:
@@ -4352,6 +4524,13 @@ def _split_video_subject_topic(message: str) -> tuple:
     text = NEWEST_RE.sub(" ", message or "")
     parts = _VIDEO_TOPIC_SPLIT_RE.split(text, maxsplit=1)
     subject = clean_video_query(_SUBJECT_RECENCY_RE.sub(" ", parts[0]))
+    # "a new primeagen video" left the subject as "new primeagen", which searched
+    # channels for the literal words and bound nothing. Peel a LEADING new/news
+    # only when something else survives — "fox news" and "news" alone must keep
+    # it, since those are the channel name (the b9e42ac failure).
+    peeled = re.sub(r'^(?:new|news)\s+', '', subject.strip(), flags=re.I)
+    if peeled and peeled != subject.strip() and re.findall(r"\w+", peeled):
+        subject = peeled
     # clean_video_query falls back to its raw input when every word was filler
     # ("newest video about X" → subject "video"). A channel GUESS made of pure
     # filler must be empty — otherwise we scrape a channel search for "video".
@@ -4360,6 +4539,48 @@ def _split_video_subject_topic(message: str) -> tuple:
         subject = ""
     topic = clean_video_query(parts[1]) if len(parts) > 1 else ""
     return subject, topic
+
+
+# Words that make a subject a TOPIC, not a creator. A channel-name guess built
+# only from these must never bind a channel: "cookie recipe" resolves to a real
+# channel called "1,000 Cookie Recipes", which would then answer every cookie
+# question from one creator's feed instead of searching YouTube properly.
+# Deliberately generic/instructional vocabulary only — never proper nouns.
+_YT_TOPIC_WORDS = {
+    "recipe", "recipes", "tutorial", "tutorials", "guide", "guides", "review",
+    "reviews", "highlights", "explained", "how", "what", "why", "best", "top",
+    "vs", "versus", "comparison", "cooking", "workout", "exercise", "music",
+    "song", "songs", "movie", "movies", "trailer", "game", "games", "gameplay",
+    "documentary", "lecture", "course", "tips", "tricks", "hacks", "diy",
+    "unboxing", "reaction", "compilation", "meditation", "podcast", "interview",
+    "market", "stock", "stocks", "crypto", "weather", "score", "scores",
+    "price", "prices", "history", "science", "math", "coding", "programming",
+}
+
+
+def _creator_evidence(subject: str, message: str = "") -> str:
+    """How strongly this subject is a CREATOR rather than a topic:
+    'explicit' (a possessive/from-phrase names them outright), 'weak' (contains
+    generic topic vocabulary, so a bind needs corroboration), or 'plain'.
+
+    A channel bind answers from ONE feed and skips search entirely, so a topic
+    ask must not trigger it: 'cookie recipe' resolves to a real channel called
+    '1,000 Cookie Recipes', which would answer every cookie question from that
+    creator forever. Rather than curate a word list (brittle, and endless), the
+    caller pairs 'weak' with a higher match+verified bar — evidence, not
+    vocabulary."""
+    subj = (subject or "").strip().lower()
+    if not subj:
+        return "weak"
+    msg = (message or "").lower()
+    if re.search(r"\b(?:from|by)\s+" + re.escape(subj[:40]), msg) \
+       or re.search(re.escape(subj[:40]) + r"\s*'s\b", msg) \
+       or re.search(r"\bchannel\b", msg):
+        return "explicit"
+    words = [w for w in re.findall(r"\w+", subj) if len(w) > 1]
+    if words and any(w in _YT_TOPIC_WORDS for w in words):
+        return "weak"
+    return "plain"
 
 
 def _topic_in_title(topic: str, title: str) -> bool:
@@ -4396,15 +4617,46 @@ async def _recency_video_pick(message: str, session_id: str,
     subject, topic = _split_video_subject_topic(message)
     search_q = " ".join(x for x in (subject, topic) if x) or clean_video_query(message)
 
-    chan = None
+    chans = []
     if subject:
         try:
-            chan = await _resolve_youtube_channel(subject)
+            # Creators run several channels (ThePrimeagen / The PrimeTime /
+            # ...Highlights). Binding only ONE meant "newest primeagen video"
+            # answered from a feed whose head was 11 days old while the same
+            # creator had posted 3 hours earlier on a sibling channel. Read the
+            # top matches and merge, so "newest" means newest across all of them.
+            chans = await _resolve_youtube_channels(
+                subject, limit=4, evidence=_creator_evidence(subject, message))
+            # Merge only SIBLINGS of the best match — channels within 0.3 of the
+            # winner's score. Taking a fixed top-N pulls in whatever search noise
+            # fills the slots (a channel coincidentally titled like the query),
+            # and a stranger's uploads must never be served as this creator's
+            # "newest".
+            if chans:
+                best = chans[0]["rank_score"]
+                chans = [c for c in chans if c["rank_score"] >= best - 0.3][:3]
         except Exception as e:
             logger.warning(f"[YOUTUBE] channel resolve failed for {subject!r}: {e}")
+    chan = chans[0] if chans else None
     if chan:
-        feed = filter_blocked_videos(
-            await _youtube_channel_uploads(chan["channel_id"], limit=15))
+        feeds = await asyncio.gather(
+            *[_youtube_channel_uploads(c["channel_id"], limit=12) for c in chans],
+            return_exceptions=True)
+        merged, seen_ids = [], set()
+        for c, f in zip(chans, feeds):
+            if isinstance(f, Exception) or not f:
+                continue
+            for h in f:
+                if h.get("video_id") and h["video_id"] not in seen_ids:
+                    seen_ids.add(h["video_id"])
+                    merged.append({**h, "channel": h.get("channel") or c["title"]})
+        merged.sort(key=lambda h: h["age_days"] if h.get("age_days") is not None else 1e9)
+        if len(chans) > 1:
+            logger.info(f"[YOUTUBE] merged {len(merged)} uploads across "
+                        f"{len(chans)} channel(s) for {subject!r}; newest is "
+                        f"{(merged[0]['age_days'] if merged else 0):.2f}d "
+                        f"from {(merged[0].get('channel') if merged else '?')!r}")
+        feed = filter_blocked_videos(merged)
         if window:
             # An explicit window ("this week") bounds even the trusted channel
             # feed; empty-after-filter falls back to the feed head (right
