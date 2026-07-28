@@ -13,3 +13,8 @@
 {"message": "как поменять масло в машине", "want_fresh": false, "want_live": false, "want_short": false, "intent_notes": "RUSSIAN content expected; a car oil-change how-to in Russian"}
 {"message": "quick 1 minute meditation", "want_fresh": false, "want_live": false, "want_short": true, "intent_notes": "explicitly SHORT; a ~1 minute clip / Short is ideal"}
 {"message": "nba highlights today", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "NEWS/recency: today's highlights, not a years-old game; official league channel preferred"}
+{"message": "show me a new video about spacex", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "RECENCY: 'new' means a recent upload — a months-old popular video is wrong"}
+{"message": "ai news video from this week", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "RECENCY with an explicit window: uploaded within ~7 days"}
+{"message": "video from yesterday about the fed", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "RECENCY hard window: uploaded within ~2 days, on the Federal Reserve"}
+{"message": "latest bitcoin analysis video", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "RECENCY: the most recent on-topic analysis upload"}
+{"message": "newest mkbhd video", "want_fresh": true, "want_live": false, "want_short": false, "intent_notes": "RECENCY + named channel: THE latest upload from MKBHD's own channel"}

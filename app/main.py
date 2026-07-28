@@ -21,6 +21,11 @@ from app.youtube_search import (
     Intent as _YtIntent,
     _unescape as _yt_unescape,
     _token_overlap as _yt_token_overlap,
+    Freshness,
+    parse_freshness,
+    filter_by_age,
+    NEWEST_PATTERN as _YT_NEWEST_PATTERN,
+    RECENCY_PATTERN as _YT_RECENCY_PATTERN,
 )
 
 # Crypto/on-chain layer: CoinGecko (price/chart/identity), Ethplorer (ETH holders
@@ -57,9 +62,11 @@ _HARD_VIDEO_RE = re.compile(
     r'recap|explained|comparison|ranked)\b', re.IGNORECASE)
 
 
-async def _llm_rerank_videos(query: str, videos: list) -> list:
-    """One-shot LLM rerank of the top candidates for a 'hard' query. Returns them
-    reordered best-first; on ANY failure returns the input unchanged, so the
+async def _llm_rerank_videos(query: str, videos: list,
+                             freshness: Optional["Freshness"] = None) -> list:
+    """One-shot LLM rerank of the top candidates. Returns them reordered
+    best-first with clearly-irrelevant candidates dropped; on ANY failure (or a
+    drop-list that would empty the set) returns the input unchanged, so the
     heuristic order always stands as a floor."""
     top = videos[:8]
     if len(top) < 2:
@@ -76,28 +83,50 @@ async def _llm_rerank_videos(query: str, videos: list) -> list:
         if v.get("is_live"):
             meta.append("LIVE")
         lines.append(f'[{i}] {v.get("title","")} ({", ".join(meta)})')
+    today = datetime.date.today()
+    fresh_line = ""
+    if freshness:
+        want = (f"content from the last ~{freshness.window_days:g} days"
+                if freshness.window_days else "the most RECENT on-topic upload")
+        fresh_line = (f"The request asks for {want} — candidate ages are listed; "
+                      "weigh recency accordingly.\n")
     data = await fast_llm_json(
         'You pick the best YouTube results for a request. Return ONLY JSON:\n'
-        '{"order": [<candidate indices, best first>]}\n'
+        '{"order": [<candidate indices, best first>], '
+        '"drop": [<indices clearly NOT answering the request>]}\n'
+        f'TODAY: {today.isoformat()} ({today:%A}).\n'
         f'REQUEST: "{query}"\n\nCANDIDATES:\n' + "\n".join(lines) + '\n\n'
+        + fresh_line +
         "Judge by how well each title matches the REQUEST's real intent (a "
         '"highlights" ask wants game highlights not an awards show; a language '
         "request wants that language; a review wants a review). Prefer real, "
-        "watchable videos over clickbait. List every index once, best first.",
-        max_tokens=200,
+        "watchable videos over clickbait. List every index once across the two "
+        "lists, order best first; drop ONLY candidates that plainly do not "
+        "answer the request.",
+        max_tokens=250,
     )
     order = (data or {}).get("order")
     if isinstance(order, list):
         idxs = [i for i in order if isinstance(i, int) and 0 <= i < len(top)]
+        drops = {i for i in ((data or {}).get("drop") or [])
+                 if isinstance(i, int) and 0 <= i < len(top)}
+        kept_idxs = [i for i in idxs if i not in drops]
+        # Fail-open floor: a drop-list that empties the ranking is ignored.
+        idxs = kept_idxs or idxs
         if idxs:
             picked = [top[i] for i in idxs]
-            rest = [v for j, v in enumerate(top) if j not in idxs] + videos[8:]
+            rest = [v for j, v in enumerate(top)
+                    if j not in idxs and j not in drops] + videos[8:]
+            if drops and kept_idxs:
+                logger.info(f"[YOUTUBE] rerank dropped {len(drops)} off-intent "
+                            f"candidate(s) for {query!r}")
             return picked + rest
     return videos
 
 
 async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance",
-                                rerank: bool = False, strict_recency: bool = False) -> list:
+                                rerank: bool = False, strict_recency: bool = False,
+                                freshness: Optional[Freshness] = None) -> list:
     """Enriched, scored YouTube search. Returns dicts with the SAME keys the old
     scraper did (video_id, id, title, channel) PLUS the parsed signals (views,
     duration_sec, age_days, verified, is_live, is_short, score), best-first.
@@ -120,7 +149,8 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     q = (query or "").strip()
     if not q:
         return []
-    ranked = await _search_youtube_scrape(q, limit, order, rerank, strict_recency)
+    ranked = await _search_youtube_scrape(q, limit, order, rerank, strict_recency,
+                                          freshness=freshness)
     if ranked:
         return ranked
     # The direct httpx scrape came back empty (markup shift, a consent wall on this
@@ -128,7 +158,8 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     # scraper-service's real-browser 'auto' engine — it gets past the consent
     # interstitial that blocks plain httpx and returns the full results HTML, which
     # parses into a real POOL (so variety/dedup work, not a single repeated video).
-    pool = await _youtube_results_via_scraper(q, limit, strict_recency=strict_recency)
+    pool = await _youtube_results_via_scraper(q, limit, strict_recency=strict_recency,
+                                              freshness=freshness)
     if pool:
         logger.info(f"[YOUTUBE] direct scrape empty for {q!r}; served scraper-service pool ({len(pool)})")
         return pool
@@ -141,18 +172,23 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
 
 
 async def _youtube_results_via_scraper(query: str, limit: int = 5,
-                                       strict_recency: bool = False) -> list:
+                                       strict_recency: bool = False,
+                                       freshness: Optional[Freshness] = None) -> list:
     """Fallback pool: scrape youtube.com/results via scraper-service (real browser,
     gets past the consent wall) and parse it with the same parser as the direct
     path. Returns a scored+diversified list (a POOL, unlike the single-video proxy).
-    `strict_recency` fetches under YouTube's date sort and returns newest-first
-    with NO diversity reshuffle — the strict guarantee must survive the fallback
-    tier, or a consent-walled primary silently downgrades 'newest' to 'popular'."""
+    Freshness/strict fetches under YouTube's date sort (+ upload-date facet for a
+    bounded ask) and returns newest-first with NO diversity reshuffle — the
+    recency guarantee must survive the fallback tier, or a consent-walled primary
+    silently downgrades 'newest' to 'popular'."""
     try:
         from app.youtube_search import build_search_url, parse_search_html
+        fresh = freshness or parse_freshness(query)
+        strict = bool(strict_recency or fresh)
+        window = fresh.window_days if fresh else None
         url, _ = build_search_url((query or "").strip(),
-                                  order="date" if strict_recency else "relevance",
-                                  lang="en")
+                                  order="date" if strict else "relevance",
+                                  lang="en", window_days=window)
         html = await _scrape(url, engine="auto", timeout=20.0)
         if not html:
             return []
@@ -165,7 +201,14 @@ async def _youtube_results_via_scraper(query: str, limit: int = 5,
             if d.get("video_id") and d["video_id"] not in seen:
                 seen.add(d["video_id"])
                 out.append(d)
-        if strict_recency:
+        stale_fallback = False
+        if window:
+            kept = filter_by_age(out, window)
+            if out and not kept:
+                stale_fallback = True
+            else:
+                out = kept
+        if strict:
             # Same title-relevance floor as the primary tier — the strict
             # guarantee AND the junk guard must both survive the fallback.
             strong = [h for h in out
@@ -174,6 +217,9 @@ async def _youtube_results_via_scraper(query: str, limit: int = 5,
                     if _yt_token_overlap(query, h.get("title") or "") > 0]
             out = strong or weak or out
             out.sort(key=lambda h: h["age_days"] if h.get("age_days") is not None else 1e9)
+            if stale_fallback:
+                for h in out:
+                    h["stale_fallback"] = True
             return out[:max(limit, 1)]
         return _diversify_by_channel(out, per_channel=2)[:max(limit, 1)]
     except Exception as e:
@@ -201,6 +247,9 @@ async def _youtube_proxy_fallback(query: str) -> list:
             "channel": j.get("uploader") or "",
             "thumbnail": (thumbs[0].get("url") if thumbs and isinstance(thumbs[0], dict) else ""),
             "score": 0,
+            # The proxy returns no publish date, so a freshness ask can't be
+            # verified on this tier — flagged rather than silently trusted.
+            "age_unknown": True,
         }]
     except Exception as e:
         logger.warning(f"youtube proxy fallback failed for {query!r}: {e}")
@@ -208,36 +257,66 @@ async def _youtube_proxy_fallback(query: str) -> list:
 
 
 async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relevance",
-                                 rerank: bool = False, strict_recency: bool = False) -> list:
+                                 rerank: bool = False, strict_recency: bool = False,
+                                 freshness: Optional[Freshness] = None) -> list:
     """Direct youtube.com scrape + scoring (primary path). Returns [] on any
-    failure so search_youtube_videos can fall through to the proxy."""
+    failure so search_youtube_videos can fall through to the proxy.
+
+    `freshness` carries the user's time constraint (parsed from the ORIGINAL
+    message when the caller has it; self-parsed from the query otherwise, so
+    legacy callers stay time-aware). Any freshness ⇒ strict newest-first among
+    on-topic hits; a bounded one ("this week") additionally applies YouTube's
+    upload-date facet at the source plus a hard age post-filter — with a
+    newest-available fallback tagged `stale_fallback` so a window that turns up
+    nothing degrades visibly instead of silently serving something old."""
     q = (query or "").strip()
     if not q:
         return []
     try:
         lang, explicit = _yt_detect_language(q)
         cleaned = _yt_clean_query(q, explicit_lang=explicit) or q
-        want_fresh = bool(RECENCY_RE.search(q.lower()))
-        if strict_recency:
+        fresh = freshness or parse_freshness(q)
+        if strict_recency and not fresh:
+            fresh = Freshness(matched="strict_recency")
+        # A live ask never goes strict: the LIVE filter already means "now", and
+        # date-sorting VODs would beat the actual stream ("cnn live news").
+        strict = bool(strict_recency or fresh) and order != "live"
+        window = fresh.window_days if (fresh and order != "live") else None
+        if strict:
             order = "date"       # newest-first straight from YouTube's own sort
-        intent = _YtIntent(query=cleaned, lang=lang, want_fresh=want_fresh,
-                           want_live=(order == "live"), explicit_lang=explicit)
+        intent = _YtIntent(query=cleaned, lang=lang, want_fresh=bool(fresh),
+                           want_live=(order == "live"), explicit_lang=explicit,
+                           window_days=window)
         # Fetch a deeper pool than requested so scoring + channel-diversity have
-        # room to work; a recency ask also blends in date-sorted hits.
+        # room to work. A windowed ask also blends in a relevance-ordered batch
+        # under the same upload-date facet — date order alone starves the
+        # relevance floor of strong candidates on broad topics.
         pool = await _yt_fetch_videos(cleaned, limit=max(limit * 3, 15),
-                                      order=order, lang=lang)
-        if want_fresh and order == "relevance":
-            pool += await _yt_fetch_videos(cleaned, limit=10, order="date", lang=lang)
+                                      order=order, lang=lang, window_days=window)
+        if window and order == "date":
+            pool += await _yt_fetch_videos(cleaned, limit=10, order="relevance",
+                                           lang=lang, window_days=window)
         seen, deduped = set(), []
         for v in pool:
             if v.video_id and v.video_id not in seen:
                 seen.add(v.video_id)
                 deduped.append(v)
+        stale_fallback = False
+        if window:
+            # Hard window: the sp facet already bounded the fetch, but fallback
+            # paths and facet drift can leak old hits — enforce it ourselves.
+            kept = filter_by_age(deduped, window)
+            if deduped and not kept:
+                stale_fallback = True
+                logger.info(f"[YOUTUBE] no uploads within {window:g}d for "
+                            f"{cleaned!r}; serving newest available")
+            else:
+                deduped = kept
         # STRICT recency: sort purely by publish time (newest first) and return —
         # NO relevance re-score, NO channel-diversity reshuffle, NO variety pick.
         # An unknown age sorts last so a hit missing publishedTimeText can't jump
         # ahead of a real fresh upload.
-        if strict_recency:
+        if strict:
             # Title-relevance floor BEFORE the date sort. Pure date order is
             # blind to subject: one fresh-but-unrelated upload used to win
             # "newest X" outright (live failure: a 40-view off-topic clip beat
@@ -252,9 +331,17 @@ async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relev
             if len(pool2) < len(deduped):
                 logger.info(f"[YOUTUBE] strict-recency floor kept "
                             f"{len(pool2)}/{len(deduped)} hits for {cleaned!r}")
-            ordered = sorted(pool2,
-                             key=lambda v: v.age_days if v.age_days is not None else 1e9)
-            return [v.to_dict() for v in ordered][:max(limit, 1)]
+            ranked = [v.to_dict() for v in pool2]
+            # The LLM pass judges intent with ages+today in the prompt and can
+            # DROP off-topic hits the token floor can't see through — run it
+            # BEFORE the age sort so fresh-but-wrong can't win on date alone.
+            if rerank and len(ranked) > 1:
+                ranked = await _llm_rerank_videos(q, ranked, freshness=fresh)
+            ranked.sort(key=lambda v: v["age_days"] if v.get("age_days") is not None else 1e9)
+            if stale_fallback:
+                for v in ranked:
+                    v["stale_fallback"] = True
+            return ranked[:max(limit, 1)]
         scored = _yt_score_videos(deduped, intent)
         # Live asks keep YouTube's own order (the LIVE filter already did the work).
         ranked = [v.to_dict() for v in scored]
@@ -3516,7 +3603,13 @@ def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
     # chars, and the widget ids are the part the model cannot invent — losing
     # them to truncation while still being told "never invent a widget id"
     # guaranteed a duplicate. History is the expendable half.
-    block = "CURRENT CANVAS:\n" + inventory
+    # TODAY line FIRST: it feeds both the tier-2 classifier (which truncates
+    # this block to 1200 chars) and the tier-3 agent prompt — without it neither
+    # model knows the date, so "new"/"this week" asks and any date reasoning ran
+    # on the model's training-cutoff prior.
+    today = datetime.date.today()
+    block = (f"TODAY: {today.isoformat()} ({today:%A})\n\n"
+             "CURRENT CANVAS:\n" + inventory)
     if ledger_text:
         block += ("\n\nRECENT TURNS (oldest first — reuse these widget ids for "
                   "follow-ups):\n" + ledger_text)
@@ -4058,6 +4151,27 @@ def clean_video_query(text: str) -> str:
     return " ".join(kept).strip() or (text or "").strip()
 
 
+def pick_best_video(hits: list, exclude_ids: set = None):
+    """Deterministic pick: the top-ranked hit not yet shown this session.
+
+    Replaces pick_varied_video at selection time (user decision: no
+    random.choice — the ranking pipeline already ordered hits best-first, so
+    take its word). Variety across repeat asks comes from `exclude_ids` (the
+    session's shown-video window): the first unseen hit wins, and when EVERY
+    hit was already shown we ignore the exclusion rather than return nothing —
+    same exhaustion rule as pick_varied_video. Returns (chosen, other_ids) with
+    other_ids in rank order so the embed-error fallback hops to the next-best."""
+    if not hits:
+        return None, []
+    unseen = [h for h in hits if h.get("video_id") not in exclude_ids] if exclude_ids else list(hits)
+    chosen = (unseen or hits)[0]
+    cid = chosen.get("video_id")
+    others = [v["video_id"] for v in unseen if v.get("video_id") and v.get("video_id") != cid]
+    others += [v["video_id"] for v in hits
+               if v.get("video_id") and v["video_id"] != cid and v["video_id"] not in others]
+    return chosen, others
+
+
 def pick_varied_video(hits: list, k: int = 5, exclude_ids: set = None, wide: bool = False):
     """Choose a video from the top-`k` results at random, for VARIETY.
 
@@ -4148,6 +4262,36 @@ def filter_blocked_videos(hits: list) -> list:
 # while the block itself is what persists in the DB.
 _session_current_video: Dict[str, dict] = {}
 
+# Freshness parsed from the ORIGINAL user message of the tier-3 agent turn now
+# in flight. /internal/execute is a separate HTTP request from lazy-agent-service
+# carrying only {tool, args} — no session correlation exists — so this module
+# global is how the tool handler recovers a time constraint the agent's query
+# rewrite dropped. TTL-bounded and consulted LAST (after the agent's `freshness`
+# arg and the query's own words). Caveat: two CONCURRENT agent turns could
+# cross-apply a freshness bias; acceptable for this single-user deployment, and
+# it is only a bias — the arg/query paths win whenever they carry a signal.
+_pending_turn_freshness: Optional[tuple] = None   # (time.monotonic(), Freshness)
+_TURN_FRESHNESS_TTL = 180.0
+
+
+def _stash_turn_freshness(message: str) -> None:
+    global _pending_turn_freshness
+    f = parse_freshness(message)
+    _pending_turn_freshness = (time.monotonic(), f) if f else None
+
+
+def _clear_turn_freshness() -> None:
+    global _pending_turn_freshness
+    _pending_turn_freshness = None
+
+
+def _stashed_turn_freshness() -> Optional[Freshness]:
+    if _pending_turn_freshness:
+        ts, f = _pending_turn_freshness
+        if time.monotonic() - ts < _TURN_FRESHNESS_TTL:
+            return f
+    return None
+
 # A rolling window of video ids already shown this session, so a repeat ask lands
 # on something new instead of recycling the same top hit. Bounded so it can't grow
 # without limit; oldest ids age out and can reappear later (fine — variety, not a
@@ -4228,7 +4372,8 @@ def _topic_in_title(topic: str, title: str) -> bool:
     return sum(1 for w in toks if w in t) >= (len(toks) + 1) // 2
 
 
-async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
+async def _recency_video_pick(message: str, session_id: str,
+                              freshness: Optional[Freshness] = None) -> Optional[dict]:
     """Channel- and date-verified pick for a recency video ask ("news video",
     "newest X video"). Returns a youtube_player config, or None so the caller
     falls back to its generic path.
@@ -4242,7 +4387,12 @@ async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
          with the title-relevance floor so pure date sort can't surface a
          fresh-but-unrelated upload.
     """
+    fresh = freshness or parse_freshness(message)
+    # "THE newest X" has one right answer (no seen-exclusion rotation); softer
+    # recency ("new", "news", "this week") is still newest-first but rotates to
+    # the newest UNSEEN hit on a repeat ask.
     want_newest = bool(NEWEST_RE.search((message or "").lower()))
+    window = fresh.window_days if fresh else None
     subject, topic = _split_video_subject_topic(message)
     search_q = " ".join(x for x in (subject, topic) if x) or clean_video_query(message)
 
@@ -4255,6 +4405,11 @@ async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
     if chan:
         feed = filter_blocked_videos(
             await _youtube_channel_uploads(chan["channel_id"], limit=15))
+        if window:
+            # An explicit window ("this week") bounds even the trusted channel
+            # feed; empty-after-filter falls back to the feed head (right
+            # channel, newest available) rather than nothing.
+            feed = filter_by_age(feed, window) or feed
         pool = [h for h in feed if _topic_in_title(topic, h.get("title"))]
         if topic and feed and not pool:
             # The feed's newest uploads don't cover the topic. Before settling
@@ -4263,7 +4418,7 @@ async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
             # an on-topic upload that slipped past the feed window without ever
             # reopening the door to junk channels.
             searched = filter_blocked_videos(await search_youtube_videos(
-                search_q, limit=12, order="date"))
+                search_q, limit=12, order="date", freshness=fresh))
             verified = [h for h in searched
                         if _yt_channel_name_match(chan["title"], h.get("channel") or "")]
             if verified:
@@ -4284,8 +4439,10 @@ async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
                 top = pool[0]
                 cands = [v["video_id"] for v in pool[1:] if v.get("video_id")][:5]
             else:
-                top, cands = pick_varied_video(
-                    pool, k=3, exclude_ids=_shown_video_ids(session_id))
+                # Softer recency: newest UNSEEN upload — deterministic, rotates
+                # on repeat asks via the session's shown-video window.
+                top, cands = pick_best_video(
+                    pool, exclude_ids=_shown_video_ids(session_id))
                 cands = cands[:5]
             if top:
                 age_min = (top.get("age_days") or 0) * 1440
@@ -4301,7 +4458,8 @@ async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
                         "candidates": cands}
 
     hits = filter_blocked_videos(await search_youtube_videos(
-        search_q, limit=10, order="date", strict_recency=want_newest))
+        search_q, limit=10, order="date", strict_recency=want_newest,
+        rerank=True, freshness=fresh))
     if not hits:
         hits = filter_blocked_videos(
             await search_youtube_videos(search_q, limit=10))
@@ -4313,13 +4471,19 @@ async def _recency_video_pick(message: str, session_id: str) -> Optional[dict]:
         top = hits[0]
         cands = [v["video_id"] for v in hits[1:] if v.get("video_id")][:5]
     else:
-        top, cands = pick_varied_video(hits, k=3,
-                                       exclude_ids=_shown_video_ids(session_id))
+        # Hits arrive newest-first from the strict pipeline; take the newest
+        # unseen one deterministically.
+        top, cands = pick_best_video(hits, exclude_ids=_shown_video_ids(session_id))
+        cands = cands[:5]
     if not top:
         return None
     _remember_current_video(session_id, top, search_q)
-    return {"video_id": top["video_id"], "title": top.get("title") or search_q,
-            "query": search_q, "candidates": cands}
+    cfg = {"video_id": top["video_id"], "title": top.get("title") or search_q,
+           "query": search_q, "candidates": cands}
+    if top.get("stale_fallback"):
+        cfg["title"] = f'{cfg["title"]} (newest available)'
+        cfg["stale_fallback"] = True
+    return cfg
 
 
 # Sports fixtures/scores. Without a tool these fell to the agent, which
@@ -4843,6 +5007,7 @@ async def ground_query(message: str) -> dict:
     if key in _GROUND_CACHE:
         return _GROUND_CACHE[key]
     data = await fast_llm_json(
+        f"Today is {datetime.date.today().isoformat()}.\n"
         "You are the intent-grounding step for a live visual dashboard. Turn the "
         "user's ask into a precise retrieval spec so downstream image / video / web "
         "search fetches the RIGHT thing, not something merely on-theme. Return ONLY "
@@ -4857,6 +5022,9 @@ async def ground_query(message: str) -> dict:
         'PHOTO, e.g. \\"a product photo of open-toe leather sandals footwear\\">", '
         '"negatives": ["<up to 5 categories a WRONG match would fall in: OTHER '
         'meanings of the word, off-topic themes, ads, generic scenery>"], '
+        '"freshness": "<the time constraint COPIED VERBATIM from the ask, e.g. '
+        '\\"new\\", \\"this week\\", \\"yesterday\\" — empty string if the ask has '
+        'no time constraint>", '
         '"ambiguous": <true only if you genuinely cannot tell what they want>, '
         '"clarify": "<if ambiguous, a one-line disambiguating question, else empty>"}\n\n'
         'Example — ASK "sandals":\n'
@@ -4864,14 +5032,15 @@ async def ground_query(message: str) -> dict:
         '"retrieval_query":"best sandals to buy footwear reviews","hyde":"a product '
         'photo of sandals footwear on a plain background","negatives":["Sandals '
         'Resorts / Caribbean all-inclusive vacation","beach or ocean scenery","feet '
-        'or legs lifestyle photo","advertisement"],"ambiguous":false,"clarify":""}\n\n'
+        'or legs lifestyle photo","advertisement"],"freshness":"",'
+        '"ambiguous":false,"clarify":""}\n\n'
         f'USER: "{message}"',
         max_tokens=400,
     )
     if not isinstance(data, dict) or not str(data.get("subject") or "").strip():
         result = {"subject": (message or "").strip(), "intent": "other",
                   "retrieval_query": (message or "").strip(), "hyde": "",
-                  "negatives": [], "ambiguous": False, "clarify": ""}
+                  "negatives": [], "freshness": "", "ambiguous": False, "clarify": ""}
     else:
         negs = data.get("negatives")
         result = {
@@ -4881,6 +5050,7 @@ async def ground_query(message: str) -> dict:
             "hyde": str(data.get("hyde") or "").strip()[:300],
             "negatives": ([str(n).strip()[:80] for n in negs if str(n).strip()][:6]
                           if isinstance(negs, list) else []),
+            "freshness": str(data.get("freshness") or "").strip()[:60],
             "ambiguous": bool(data.get("ambiguous")),
             "clarify": str(data.get("clarify") or "").strip()[:200],
         }
@@ -7791,31 +7961,37 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
                                        if v.get("video_id")]})
 
             # Recency asks go through the channel- and date-VERIFIED picker,
-            # checked against the ORIGINAL message (ground_query's LLM rewrite
-            # can drop the recency word and silently kill the bias). It binds a
-            # named channel to its uploads feed ("fox news video newest…" must
-            # come from FOX News, not whatever date-sort surfaces) and holds
-            # strict "newest" searches to a title-relevance floor.
-            want_dated = bool(NEWEST_RE.search((message or "").lower())
-                              or RECENCY_RE.search((message or "").lower()))
-            if want_dated:
-                rcfg = await _recency_video_pick(message, session_id)
+            # with the time constraint parsed from the ORIGINAL message
+            # (ground_query's LLM rewrite can drop the recency word and silently
+            # kill the bias). It binds a named channel to its uploads feed
+            # ("fox news video newest…" must come from FOX News, not whatever
+            # date-sort surfaces), bounds an explicit window ("this week"), and
+            # holds strict searches to a title-relevance floor.
+            fresh = parse_freshness(message)
+            if fresh:
+                rcfg = await _recency_video_pick(message, session_id, freshness=fresh)
                 if rcfg:
                     return ("youtube_player", "video", rcfg)
 
             # Ground first so a brand/place collision ("sandals" the RESORT, "jaguar"
             # the CAR) searches the disambiguated subject, not the bare word that
-            # returns promo/off-topic clips.
+            # returns promo/off-topic clips. The grounder can also recover a time
+            # constraint the router's rewrite dropped.
             g = await ground_query(query or message)
+            if not fresh:
+                fresh = parse_freshness(str(g.get("freshness") or ""))
             vq = clean_video_query(g.get("retrieval_query") or query or message)
-            hits = filter_blocked_videos(await search_youtube_videos(vq, limit=10, rerank=True))
-            top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(session_id),
-                                           wide=is_query_vague(vq))
+            hits = filter_blocked_videos(await search_youtube_videos(
+                vq, limit=10, rerank=True, freshness=fresh))
+            top, cands = pick_best_video(hits, exclude_ids=_shown_video_ids(session_id))
             if not top:
                 return None
             _remember_current_video(session_id, top, vq)
+            title = top.get("title") or vq
+            if top.get("stale_fallback"):
+                title = f"{title} (newest available)"
             return ("youtube_player", "video", {
-                "video_id": top["video_id"], "title": top.get("title") or vq,
+                "video_id": top["video_id"], "title": title,
                 "query": vq, "candidates": cands})
 
         if wtype == "image":
@@ -8444,10 +8620,13 @@ async def send_message(req: MessageRequest):
                     logger.info(f"[VIDEO PREF] blocked video {current_vid.get('video_id')!r}")
 
                 async def _find_another():
-                    hits = await search_youtube_videos(vquery, limit=12)
+                    # The replacement inherits the ORIGINAL ask's time constraint
+                    # (it lives in the remembered query): "another one" after
+                    # "a new video about X" must stay new.
+                    hits = await search_youtube_videos(
+                        vquery, limit=12, freshness=parse_freshness(vquery))
                     hits = filter_blocked_videos(hits)
-                    top, cands = pick_varied_video(hits, k=5, exclude_ids=_shown_video_ids(req.session_id),
-                                                   wide=is_query_vague(vquery))
+                    top, cands = pick_best_video(hits, exclude_ids=_shown_video_ids(req.session_id))
                     if not top:
                         return None
                     _remember_current_video(req.session_id, top, vquery)
@@ -8484,14 +8663,17 @@ async def send_message(req: MessageRequest):
             # 2. NEWS VIDEO — "fifa news video". Searched by relevance this returns the
             #    most-watched clip for those words (a years-old recap); news means the
             #    NEWEST upload, so sort by date and drop the medium words from the query.
-            if (is_video_ask and RECENCY_RE.search(text_clean)
+            fresh_ask = parse_freshness(req.message)
+            if (is_video_ask and fresh_ask
                     and not wants_removal and not LIVE_ASK_RE.search(text_clean)):
                 # Channel- and date-verified: "fox news video newest about the
                 # stock market" must come from the FOX News uploads feed, not
                 # whatever a date-sorted keyword search surfaces (live failure:
-                # a 40-view unrelated clip). Falls through to the generic video
-                # branch below when the picker finds nothing.
-                rcfg = await _recency_video_pick(req.message, req.session_id)
+                # a 40-view unrelated clip). parse_freshness also carries an
+                # explicit window ("this week") into the search. Falls through
+                # to the generic video branch below when the picker finds nothing.
+                rcfg = await _recency_video_pick(req.message, req.session_id,
+                                                 freshness=fresh_ask)
                 if rcfg:
                     return spawn_widget_stream(
                         "youtube_player", "news-video", rcfg,
@@ -8526,7 +8708,7 @@ async def send_message(req: MessageRequest):
                 # "dunkey livestreams" when dunkey is offline → a dunkey video.
                 vod_hits = filter_blocked_videos(
                     await search_youtube_videos(lquery, limit=10))
-                top, cands = pick_varied_video(vod_hits, k=5, exclude_ids=_shown_video_ids(req.session_id))
+                top, cands = pick_best_video(vod_hits, exclude_ids=_shown_video_ids(req.session_id))
                 if top:
                     _remember_current_video(req.session_id, top, lquery)
                     return spawn_widget_stream("youtube_player", "video", {
@@ -8545,9 +8727,10 @@ async def send_message(req: MessageRequest):
             #     interesting. Music videos keep going to the player, not here.
             if is_video_ask and not wants_removal and not wants_music:
                 vquery = clean_video_query(req.message)
-                vhits = await search_youtube_videos(vquery, limit=10, rerank=True)
+                vhits = await search_youtube_videos(vquery, limit=10, rerank=True,
+                                                    freshness=fresh_ask)
                 vhits = filter_blocked_videos(vhits)
-                top, cands = pick_varied_video(vhits, k=5, exclude_ids=_shown_video_ids(req.session_id))
+                top, cands = pick_best_video(vhits, exclude_ids=_shown_video_ids(req.session_id))
                 if top:
                     _remember_current_video(req.session_id, top, vquery)
                     return spawn_widget_stream("youtube_player", "video", {
@@ -8976,7 +9159,7 @@ async def send_message(req: MessageRequest):
             "    The brief must separate FACT from EXPECTATION: what was actually reported/filed/announced (with dates and figures) vs what analysts merely predict. Name the outlet on any contested or single-sourced claim, and say plainly when the move has no clear reported cause rather than inventing one. Never present a price move as explained when the sources do not explain it.\n"
             "    Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
             "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
-            "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. 'cnn live news' is a video request, not headlines.\n"
+            "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. If the user constrains WHEN ('new', 'newest', 'this week', 'yesterday', 'latest'), copy that time phrase VERBATIM into the tool's freshness parameter and keep it in the query — never drop or paraphrase time words. 'cnn live news' is a video request, not headlines.\n"
             "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
             "- news, headlines, 'what's happening with X', 'top stories' → RESEARCH IT. Do not stop at a list of headlines:\n"
             "    1. mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories) — returns current stories, each already carrying a photo and a summary.\n"
@@ -9746,28 +9929,56 @@ async def send_message(req: MessageRequest):
                             primary = config.get("video_id", "")
                             channel = None
                             try:
-                                alts = await search_youtube_videos(search_q, limit=8) if search_q else []
-                                # Resolve the primary's channel from the search hits
-                                # (the model doesn't supply it) so a later "this
-                                # channel sucks" has something to block.
+                                # Freshness parsed from the ORIGINAL user message —
+                                # this block runs inside the chat request, so it is
+                                # the final guarantee that the agent's pick honors
+                                # the requested time window even when the tool-side
+                                # signals were all lost.
+                                fresh = parse_freshness(req.message)
+                                alts = await search_youtube_videos(
+                                    search_q, limit=8, freshness=fresh) if search_q else []
+                                # Resolve the primary's channel/age from the search
+                                # hits (the model doesn't supply them) so a later
+                                # "this channel sucks" has something to block and
+                                # the window check has an age to test.
+                                primary_age = None
                                 for v in alts:
                                     if v.get("video_id") == primary:
                                         channel = v.get("channel")
+                                        primary_age = v.get("age_days")
                                         break
-                                # Apply variety on the agent path the same way the
-                                # fast-path does — not ONLY when the pick is blocked.
-                                # Otherwise the model's deterministic #1 hit is used
-                                # verbatim, so a broad/shallow ask ("a trading video")
-                                # returns the same video every time. Re-pick when: the
-                                # pick is blocked, OR the query is broad/vague, OR this
-                                # exact video was already shown this session.
+                                # Re-pick when: the pick is blocked, OR the query is
+                                # broad/vague, OR this exact video was already shown
+                                # this session, OR the pick violates the requested
+                                # time window (an in-window alternative exists in
+                                # alts, which was fetched under the same window).
+                                # An unknown age is NOT treated as stale — only a
+                                # measured violation triggers the swap.
                                 seen = _shown_video_ids(req.session_id)
                                 is_blocked = primary in _blocked_video_ids or (channel or "").lower() in _blocked_channels
                                 vague = is_query_vague(search_q)
-                                if is_blocked or vague or (primary and primary in seen) or not primary:
+                                W = fresh.window_days if fresh else None
+                                stale = bool(W and primary_age is not None
+                                             and primary_age > W * 1.5 + 0.5
+                                             and any(not a.get("stale_fallback") for a in alts))
+                                # Never swap DOWNWARD: when the ask has a window and
+                                # the current pick is inside it, the vague/seen
+                                # variety re-pick is suppressed — a compliant pick
+                                # must not be traded for an older one.
+                                in_window = bool(W and primary_age is not None
+                                                 and primary_age <= W * 1.5 + 0.5)
+                                if stale:
+                                    logger.info(f"[WIDGET INJECTOR] agent pick {primary} is "
+                                                f"{primary_age:.1f}d old, outside the "
+                                                f"~{W:g}d ask — swapping to a fresh hit")
+                                if is_blocked or stale or not primary or (
+                                        (vague or primary in seen) and not in_window):
                                     kept = filter_blocked_videos(alts)
-                                    alt_top, alt_cands = pick_varied_video(
-                                        kept, k=5, exclude_ids=seen, wide=vague)
+                                    if fresh:
+                                        alt_top, alt_cands = pick_best_video(kept, exclude_ids=seen)
+                                    else:
+                                        alt_top, alt_cands = pick_best_video(
+                                            kept, exclude_ids=seen | {primary} if primary else seen)
                                     if alt_top:
                                         primary = alt_top["video_id"]
                                         channel = alt_top.get("channel")
@@ -10355,8 +10566,14 @@ async def send_message(req: MessageRequest):
                 content=saved_content
             )
 
+            _clear_turn_freshness()
             yield 'data: {"type": "done"}\n\n'
 
+        # Stash the ORIGINAL message's time constraint for /internal/execute —
+        # the agent's rewritten tool query regularly drops "new"/"this week".
+        # Overwritten (or cleared) by every tier-3 turn and TTL-bounded, so an
+        # aborted stream can't leak a stale bias past 180s.
+        _stash_turn_freshness(req.message)
         return StreamingResponse(
             _run_turn(req.session_id, req.current_canvas or "", proxy_prism_sse, req.canvas_version),
             media_type="text/event-stream",
@@ -11146,12 +11363,27 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
             query = a.get("query", "")
             limit = int(a.get("limit", 5))
             order = a.get("order", "relevance")
-            # A "newest X" query wants pure-date order, not the popularity blend —
-            # honor it even when the agent didn't pass order='date'.
-            strict = bool(NEWEST_RE.search((query or "").lower())) or order == "date"
+            # Freshness resolution, most-trusted first: the agent's verbatim
+            # `freshness` arg → time words surviving in the query → the turn
+            # stash (parsed from the ORIGINAL user message before the agent
+            # stream started — the LLM rewrite regularly drops "new"/"this
+            # week", which used to silently kill the recency intent here).
+            fresh = (parse_freshness(str(a.get("freshness") or ""))
+                     or parse_freshness(query)
+                     or _stashed_turn_freshness())
+            strict = bool(fresh) or order == "date"
+            if fresh:
+                logger.info(f"[YOUTUBE MCP] freshness={fresh.matched!r} "
+                            f"window={fresh.window_days} for {query!r}")
             results = await search_youtube_videos(query, limit=limit, order=order,
-                                                  strict_recency=strict)
-            return {"results": results, "count": len(results)}
+                                                  strict_recency=strict,
+                                                  rerank=True, freshness=fresh)
+            out = {"results": results, "count": len(results)}
+            if fresh and results and all(r.get("stale_fallback") for r in results):
+                out["note"] = ("No uploads found inside the requested time "
+                               "window; these are the newest available — say "
+                               "so in your summary sentence.")
+            return out
 
         elif t == "html_notes_web_search":
             query = a.get("query", "")

@@ -14,6 +14,7 @@ watchability.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import urllib.parse
@@ -30,6 +31,149 @@ _SP_BY_ORDER = {
     "date": "CAI%253D",
     "live": "EgJAAQ%253D%253D",
 }
+
+# Upload-date WINDOW filters — YouTube's own "Upload date" facet, the source-side
+# bound that post-hoc age sorting can't provide (a relevance pool that only
+# contains months-old hits stays months-old no matter how we re-sort it).
+# All ten tokens verified live 2026-07-28 against youtube.com/results (21
+# videoRenderer blocks each, every parsed age inside the window):
+#   combined date-sort+filter: CAISAggB(hour) C(day) D(week) E(month) F(year)
+#   filter-only (relevance):   EgIIAQ==(hour) Ag(day) Aw(week) BA(month) BQ(year)
+# Keys are the window ceiling in days; lookup picks the smallest window that
+# covers the ask.
+_SP_DATE_WINDOW = {
+    1 / 24: "CAISAggB", 1.0: "CAISAggC", 7.0: "CAISAggD",
+    31.0: "CAISAggE", 366.0: "CAISAggF",
+}
+_SP_RELEVANCE_WINDOW = {
+    1 / 24: "EgIIAQ%3D%3D", 1.0: "EgIIAg%3D%3D", 7.0: "EgIIAw%3D%3D",
+    31.0: "EgIIBA%3D%3D", 366.0: "EgIIBQ%3D%3D",
+}
+
+
+def sp_token(order: str = "relevance", window_days: Optional[float] = None) -> Optional[str]:
+    """The `sp` filter for a (sort order, upload window) pair. Window filters use
+    the smallest YouTube facet that covers the ask ("past 3 days" → This week);
+    windows beyond a year have no facet and rely on the caller's age post-filter."""
+    if order == "live":
+        return _SP_BY_ORDER["live"]
+    if window_days is not None:
+        table = _SP_DATE_WINDOW if order == "date" else _SP_RELEVANCE_WINDOW
+        for ceiling in sorted(table):
+            if window_days <= ceiling:
+                return table[ceiling]
+    return _SP_BY_ORDER.get(order)
+
+
+# ── Freshness intent ─────────────────────────────────────────────────────────
+# SOURCE pattern strings. main.py compiles its NEWEST_RE / RECENCY_RE from these
+# exact strings (tests assert those names), so the vocabulary can never drift
+# between the intent parser here and the legacy call sites there.
+NEWEST_PATTERN = (
+    r'\b(newest|most[\s-]?recent|latest|just (?:posted|uploaded|dropped|released|out)|'
+    r'brand[\s-]?new|freshest|last upload|latest upload)\b'
+    r'|\b(?:in|from|over|within) the (?:past|last) (?:hour|few hours|day|24\s?h(?:ours?)?)\b'
+    r'|\b\d+\s+(?:minutes?|mins?|hours?|hrs?)\s+ago\b'
+    r'|\b(?:an?|one)\s+hour\s+ago\b'
+    r'|\bthis (?:morning|afternoon|evening)\b|\bmoments ago\b|\bjust now\b')
+RECENCY_PATTERN = r'\b(news|latest|newest|recent|recently|today|tonight|breaking|update|updates|current|new)\b'
+_NEWEST_RE = re.compile(NEWEST_PATTERN, re.IGNORECASE)
+_RECENCY_RE = re.compile(RECENCY_PATTERN, re.IGNORECASE)
+
+
+@dataclass
+class Freshness:
+    """Parsed time constraint of a video ask. Any recency intent means
+    newest-first over on-topic hits (user decision: bare "new" is strict, not a
+    soft bias); an explicit phrase like "this week" additionally sets a hard
+    `window_days` the results must fall inside."""
+    window_days: Optional[float] = None  # hard window in days; None = unbounded
+    strict: bool = True                  # recency == newest-first, always
+    matched: str = ""                    # phrase that fired, for logging
+
+    @property
+    def bounded(self) -> bool:
+        return self.window_days is not None
+
+
+_FRESH_UNIT_DAYS = {
+    "minute": 1 / 1440, "min": 1 / 1440, "hour": 1 / 24, "hr": 1 / 24,
+    "day": 1.0, "week": 7.0, "month": 31.0, "year": 366.0,
+}
+_MONTH_NUM = {m: i + 1 for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july",
+     "august", "september", "october", "november", "december"])}
+
+# Explicit-window phrases, first match wins. Every lambda returns days.
+_WINDOW_PATTERNS: list = [
+    (re.compile(r'\b(?:(?:in|from|over|within)\s+)?the\s+(?:past|last)\s+(\d+)?\s*'
+                r'(minute|min|hour|hr|day|week|month|year)s?\b', re.IGNORECASE),
+     lambda m: max(1, int(m.group(1) or 1)) * _FRESH_UNIT_DAYS[m.group(2).lower()]),
+    (re.compile(r'\b(?:past|last)\s+(\d+)\s*(minute|min|hour|hr|day|week|month|year)s?\b',
+                re.IGNORECASE),
+     lambda m: max(1, int(m.group(1))) * _FRESH_UNIT_DAYS[m.group(2).lower()]),
+    (re.compile(r'\bthis\s+(week|month|year)\b', re.IGNORECASE),
+     lambda m: _FRESH_UNIT_DAYS[m.group(1).lower()]),
+    (re.compile(r'\b(?:past|last)\s+(week|month|year)\b', re.IGNORECASE),
+     lambda m: _FRESH_UNIT_DAYS[m.group(1).lower()]),
+    (re.compile(r'\b(\d+)\s+(minute|min|hour|hr|day|week|month)s?\s+ago\b', re.IGNORECASE),
+     lambda m: max(1, int(m.group(1))) * _FRESH_UNIT_DAYS[m.group(2).lower()]),
+    (re.compile(r'\byesterday\b', re.IGNORECASE), lambda m: 2.0),
+    (re.compile(r'\b(?:today|tonight|this (?:morning|afternoon|evening))\b',
+                re.IGNORECASE), lambda m: 1.0),
+]
+_SINCE_MONTH_RE = re.compile(
+    r'\bsince\s+(' + "|".join(_MONTH_NUM) + r')\b', re.IGNORECASE)
+_SINCE_DATE_RE = re.compile(r'\bsince\s+(\d{4}-\d{2}-\d{2})\b')
+
+
+def parse_freshness(text: str, now: Optional[datetime.date] = None) -> Optional[Freshness]:
+    """Distill a time constraint from a message/query. None when the ask has no
+    recency intent at all. `now` is injectable for tests ("since June")."""
+    t = (text or "").lower()
+    if not t.strip():
+        return None
+    now = now or datetime.date.today()
+
+    for pat, days in _WINDOW_PATTERNS:
+        m = pat.search(t)
+        if m:
+            return Freshness(window_days=float(days(m)), matched=m.group(0))
+    m = _SINCE_MONTH_RE.search(t)
+    if m:
+        month = _MONTH_NUM[m.group(1).lower()]
+        year = now.year if month <= now.month else now.year - 1
+        return Freshness(window_days=float(max(1, (now - datetime.date(year, month, 1)).days)),
+                         matched=m.group(0))
+    m = _SINCE_DATE_RE.search(t)
+    if m:
+        try:
+            d = datetime.date.fromisoformat(m.group(1))
+            return Freshness(window_days=float(max(1, (now - d).days)), matched=m.group(0))
+        except ValueError:
+            pass
+    m = _NEWEST_RE.search(t) or _RECENCY_RE.search(t)
+    if m:
+        return Freshness(window_days=None, matched=m.group(0))
+    return None
+
+
+def _hit_get(h, key):
+    return h.get(key) if isinstance(h, dict) else getattr(h, key, None)
+
+
+def filter_by_age(hits: list, window_days: Optional[float], slack: float = 1.5) -> list:
+    """Keep hits inside the requested upload window. Live streams always pass
+    (age is meaningless for live); unknown ages are DROPPED — a hit missing
+    publishedTimeText must not masquerade as fresh. The slack absorbs YouTube's
+    coarse ages ("1 month ago" spans 30-59 real days). Callers own the
+    empty-result fallback. Accepts dicts or Video objects."""
+    if not window_days:
+        return list(hits)
+    lim = window_days * slack + 0.5
+    return [h for h in hits
+            if _hit_get(h, "is_live")
+            or (_hit_get(h, "age_days") is not None and _hit_get(h, "age_days") <= lim)]
 
 
 def _unescape(s: str) -> str:
@@ -214,6 +358,7 @@ class Intent:
     want_live: bool = False       # live stream
     want_short: bool = False      # explicitly wants a Short / quick clip
     explicit_lang: bool = False   # user named the language ("in Hindi")
+    window_days: Optional[float] = None  # explicit upload window ("this week")
 
 
 def detect_language(text: str) -> tuple[str, bool]:
@@ -275,13 +420,15 @@ _YT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 
 
-def build_search_url(query: str, order: str = "relevance", lang: str = "en") -> tuple[str, dict]:
+def build_search_url(query: str, order: str = "relevance", lang: str = "en",
+                     window_days: Optional[float] = None) -> tuple[str, dict]:
     """(url, headers) for a language-aware search. gl/hl bias the regional catalog;
-    Accept-Language reinforces it for the HTML the scraper gets back."""
+    Accept-Language reinforces it for the HTML the scraper gets back. `window_days`
+    applies YouTube's own upload-date facet so recency is bounded at the source."""
     hl, gl = _HL_GL.get(lang, ("en", "US"))
     params = {"search_query": query, "hl": hl, "gl": gl}
     url = "https://www.youtube.com/results?" + urllib.parse.urlencode(params)
-    sp = _SP_BY_ORDER.get(order)
+    sp = sp_token(order, window_days)
     if sp:
         url += f"&sp={sp}"
     headers = {
@@ -293,9 +440,9 @@ def build_search_url(query: str, order: str = "relevance", lang: str = "en") -> 
 
 
 async def fetch_videos(query: str, limit: int = 10, order: str = "relevance",
-                       lang: str = "en") -> list[Video]:
+                       lang: str = "en", window_days: Optional[float] = None) -> list[Video]:
     """Language-aware enriched search. The workhorse the strategies call."""
-    url, headers = build_search_url(query, order=order, lang=lang)
+    url, headers = build_search_url(query, order=order, lang=lang, window_days=window_days)
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
@@ -346,11 +493,17 @@ def score_video(v: Video, intent: Intent, w: Weights = Weights()) -> Video:
     b["authority"] = 0.4 * (1.0 if v.verified else 0.0) + 0.6 * view_score
 
     # 3. FRESHNESS — only heavily rewarded when the ask wants it. Live is always
-    #    "now". Otherwise a gentle decay so stale-but-relevant still ranks.
+    #    "now". With a recency ask + explicit window the axis rescales around the
+    #    window (full credit inside it, fast decay past it) — the year-scaled
+    #    default can't separate 3 days from 3 months, which is how old-but-popular
+    #    used to win a "this week" ask back.
     if v.is_live:
         fresh = 1.0
     elif v.age_days is None:
         fresh = 0.5
+    elif intent.want_fresh and intent.window_days:
+        W = intent.window_days
+        fresh = 1.0 if v.age_days <= W else max(0.0, 1.0 - (v.age_days - W) / W)
     else:
         fresh = max(0.0, 1.0 - v.age_days / 365.0)  # 1yr old → 0
     b["freshness"] = fresh
@@ -380,9 +533,13 @@ def score_video(v: Video, intent: Intent, w: Weights = Weights()) -> Video:
     b["watchability"] = max(0.0, dur_fit - clickbait_pen)
 
     v.score_breakdown = {k: round(val, 3) for k, val in b.items()}
+    # A recency ask weights freshness like intent — the 0.4 default exists for
+    # asks that never mentioned time. (want_fresh was previously set by callers
+    # but never read here, which is why "new" asks surfaced months-old videos.)
+    fresh_w = max(w.freshness, 1.0) if intent.want_fresh else w.freshness
     v.score = round(
         w.intent * b["intent"] + w.authority * b["authority"]
-        + w.freshness * b["freshness"] + w.watchability * b["watchability"], 4)
+        + fresh_w * b["freshness"] + w.watchability * b["watchability"], 4)
     return v
 
 

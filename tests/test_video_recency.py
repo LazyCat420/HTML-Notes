@@ -100,7 +100,7 @@ def test_strict_recency_sorts_by_age_not_score(monkeypatch):
                   channel="Paul Barron Network", views=60000, duration_sec=1400,
                   age_days=3.0, verified=True, rank=0)
 
-    async def fake_fetch(query, limit=10, order="relevance", lang="en"):
+    async def fake_fetch(query, limit=10, order="relevance", lang="en", window_days=None):
         return [older, newest]  # deliberately newest-LAST
 
     monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch)
@@ -211,7 +211,7 @@ def test_newest_fallback_sorts_relevance_hits_by_age(monkeypatch):
         return None                       # no channel bound
     calls = {"n": 0}
     async def fake_search(q, limit=10, order="relevance", rerank=False,
-                          strict_recency=False):
+                          strict_recency=False, freshness=None):
         calls["n"] += 1
         if order == "date":
             return []                     # date search dead → relevance fallback
@@ -289,7 +289,7 @@ def test_recency_pick_topic_miss_uses_channel_verified_search(monkeypatch):
         return [{"video_id": "OFF1", "id": "OFF1", "title": "Watters monologue",
                  "channel": "Fox News", "age_days": 0.01}]
     async def fake_search(q, limit=10, order="relevance", rerank=False,
-                          strict_recency=False):
+                          strict_recency=False, freshness=None):
         return [
             {"video_id": "JUNK", "id": "JUNK", "title": "stock market tips hindi",
              "channel": "Random Trading Guru", "age_days": 0.005},
@@ -321,3 +321,158 @@ def test_strict_recency_floor_drops_offtopic_fresh_hit():
     q = "federal reserve rate decision"
     strong = [v for v in vids if m._yt_token_overlap(q, v.title or "") >= 0.45]
     assert [v.video_id for v in strong] == ["ONTOPIC1234"]
+
+
+# ── parse_freshness: the unified time-constraint parser ──────────────────────
+import datetime as _dt
+from app.youtube_search import (parse_freshness, filter_by_age, sp_token,
+                                Freshness)
+
+_NOW = _dt.date(2026, 7, 28)
+
+
+@pytest.mark.parametrize("text,window", [
+    ("ai news from this week", 7.0),
+    ("videos from the past week", 7.0),
+    ("anything from last month", 31.0),
+    ("video from yesterday about the fed", 2.0),
+    ("past 3 days of crypto coverage", 3.0),
+    ("a video from 2 weeks ago", 14.0),
+    ("what happened today", 1.0),
+    ("uploads from the last 48 hours", 2.0),
+])
+def test_parse_freshness_windowed(text, window):
+    f = parse_freshness(text, now=_NOW)
+    assert f is not None and f.window_days == window, (text, f)
+
+
+@pytest.mark.parametrize("text", [
+    "show me a new video about spacex",     # bare "new" — the original bug
+    "newest paul barron video",
+    "latest update on the war",
+    "recent macro analysis",
+    "fifa news video",
+])
+def test_parse_freshness_strict_unbounded(text):
+    f = parse_freshness(text, now=_NOW)
+    assert f is not None and f.window_days is None, (text, f)
+
+
+@pytest.mark.parametrize("text", [
+    "cookie recipe video",
+    "funny cat videos",
+    "how to tie a tie",
+    "something to watch",
+])
+def test_parse_freshness_none_for_evergreen(text):
+    assert parse_freshness(text, now=_NOW) is None
+
+
+def test_parse_freshness_since_month_and_date():
+    f = parse_freshness("bitcoin coverage since june", now=_NOW)
+    assert f.window_days == float((_NOW - _dt.date(2026, 6, 1)).days)  # 57
+    # A month AFTER now's month means last year's occurrence.
+    f2 = parse_freshness("since september", now=_NOW)
+    assert f2.window_days == float((_NOW - _dt.date(2025, 9, 1)).days)
+    f3 = parse_freshness("since 2026-07-20", now=_NOW)
+    assert f3.window_days == 8.0
+
+
+def test_parse_freshness_new_is_never_a_hard_window():
+    # "the new dune trailer" must stay findable even when the trailer is
+    # months old — strict newest-first among ON-TOPIC hits, no hard drop.
+    f = parse_freshness("the new dune trailer", now=_NOW)
+    assert f is not None and f.window_days is None
+
+
+# ── filter_by_age ────────────────────────────────────────────────────────────
+def test_filter_by_age_slack_live_and_unknown():
+    hits = [
+        {"video_id": "IN", "age_days": 6.0, "is_live": False},
+        {"video_id": "SLACK", "age_days": 10.9, "is_live": False},   # 7*1.5+0.5=11
+        {"video_id": "OUT", "age_days": 40.0, "is_live": False},
+        {"video_id": "LIVE", "age_days": None, "is_live": True},
+        {"video_id": "UNKNOWN", "age_days": None, "is_live": False},
+    ]
+    kept = [h["video_id"] for h in filter_by_age(hits, 7.0)]
+    assert kept == ["IN", "SLACK", "LIVE"], kept
+    # No window → passthrough.
+    assert len(filter_by_age(hits, None)) == 5
+
+
+# ── sp_token: window → YouTube upload-date facet ─────────────────────────────
+def test_sp_token_window_mapping():
+    assert sp_token("date", 0.02) == "CAISAggB"        # ≤1h
+    assert sp_token("date", 1.0) == "CAISAggC"         # ≤1d
+    assert sp_token("date", 5.0) == "CAISAggD"         # ≤1w
+    assert sp_token("date", 20.0) == "CAISAggE"        # ≤1mo
+    assert sp_token("date", 200.0) == "CAISAggF"       # ≤1y
+    assert sp_token("relevance", 5.0) == "EgIIAw%3D%3D"
+    assert sp_token("date", None) == "CAI%253D"        # legacy bare date sort
+    assert sp_token("date", 400.0) == "CAI%253D"       # beyond a year: no facet
+    assert sp_token("relevance", None) is None
+    assert sp_token("live", 5.0) == "EgJAAQ%253D%253D" # live ignores windows
+
+
+# ── pick_best_video: deterministic + exclusion rotation ──────────────────────
+def test_pick_best_video_deterministic_and_rotates():
+    hits = [{"video_id": v, "id": v, "title": v} for v in ("A", "B", "C")]
+    top, others = m.pick_best_video(hits, exclude_ids=set())
+    assert top["video_id"] == "A" and others == ["B", "C"]
+    # Same call again: deterministic, no randomness.
+    assert m.pick_best_video(hits, exclude_ids=set())[0]["video_id"] == "A"
+    # A was shown → newest unseen is B.
+    assert m.pick_best_video(hits, exclude_ids={"A"})[0]["video_id"] == "B"
+    # Everything shown → exhaustion rule: ignore exclusion, serve the best.
+    assert m.pick_best_video(hits, exclude_ids={"A", "B", "C"})[0]["video_id"] == "A"
+    assert m.pick_best_video([], exclude_ids=set()) == (None, [])
+
+
+# ── windowed search: hard filter + stale fallback tagging ────────────────────
+def test_windowed_search_filters_and_tags_stale_fallback(monkeypatch):
+    fresh_hit = Video(video_id="FRESH123456", id="FRESH123456",
+                      title="spacex starship update", age_days=2.0)
+    old_hit = Video(video_id="OLD12345678", id="OLD12345678",
+                    title="spacex starship update old", age_days=120.0)
+
+    async def fake_fetch(query, limit=10, order="relevance", lang="en",
+                         window_days=None):
+        return [old_hit, fresh_hit]
+
+    monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch)
+    out = asyncio.run(m._search_youtube_scrape(
+        "spacex starship update", limit=5,
+        freshness=Freshness(window_days=7.0, matched="this week")))
+    assert [h["video_id"] for h in out] == ["FRESH123456"], \
+        "out-of-window hit must be filtered"
+    assert not out[0].get("stale_fallback")
+
+    async def fake_fetch_all_old(query, limit=10, order="relevance", lang="en",
+                                 window_days=None):
+        return [old_hit]
+
+    monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch_all_old)
+    out2 = asyncio.run(m._search_youtube_scrape(
+        "spacex starship update", limit=5,
+        freshness=Freshness(window_days=7.0, matched="this week")))
+    assert out2 and all(h.get("stale_fallback") for h in out2), \
+        "empty window must degrade to tagged newest-available, never to nothing"
+
+
+def test_bare_new_is_strict_newest_first(monkeypatch):
+    """The original bug: 'a new video about X' surfaced a months-old popular
+    hit. Any freshness intent now means newest-first among on-topic hits."""
+    newest = Video(video_id="NEWEST12345", id="NEWEST12345",
+                   title="spacex launch coverage", views=500, age_days=0.5)
+    popular = Video(video_id="POPULAR1234", id="POPULAR1234",
+                    title="spacex launch coverage classic", views=9_000_000,
+                    verified=True, age_days=120.0)
+
+    async def fake_fetch(query, limit=10, order="relevance", lang="en",
+                         window_days=None):
+        return [popular, newest]
+
+    monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch)
+    out = asyncio.run(m._search_youtube_scrape("new spacex launch coverage", limit=5))
+    assert out[0]["video_id"] == "NEWEST12345", \
+        "a 'new' ask must lead with the newest on-topic upload, not the popular one"
