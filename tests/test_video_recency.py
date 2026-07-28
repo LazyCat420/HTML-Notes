@@ -670,3 +670,39 @@ def test_mcp_non_creator_query_still_uses_search(monkeypatch):
         tool="html_notes_youtube_search",
         args={"query": "cookie recipe", "freshness": "new", "limit": 3})))
     assert out["results"][0]["video_id"] == "TOPIC12345"
+
+
+def test_unbounded_new_probes_recent_windows(monkeypatch):
+    """LIVE BUG: 'a new cookie recipe video' returned 270- and 365-day-old
+    uploads. Date sort only REORDERS the fetched pool, and with no upload-date
+    facet that pool was entirely old. An unbounded recency ask must bound the
+    FETCH, not just sort the result."""
+    calls = []
+
+    async def fake_fetch(query, limit=10, order="relevance", lang="en", window_days=None):
+        calls.append(window_days)
+        if window_days in (7.0, 31.0):
+            return [Video(video_id="FRESH1234567", id="FRESH1234567",
+                          title="cookie recipe quick", age_days=2.0)]
+        return [Video(video_id="ANCIENT12345", id="ANCIENT12345",
+                      title="cookie recipe classic", age_days=365.0)]
+
+    monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch)
+    out = asyncio.run(m._search_youtube_scrape(
+        "cookie recipe", limit=3, freshness=Freshness(matched="new")))
+    assert 7.0 in calls and 31.0 in calls, "must probe recent upload-date facets"
+    assert out[0]["video_id"] == "FRESH1234567", "the fresh upload must lead"
+
+
+def test_no_recency_ask_does_not_probe_windows(monkeypatch):
+    """An evergreen ask keeps relevance ranking — no freshness, no probing."""
+    calls = []
+
+    async def fake_fetch(query, limit=10, order="relevance", lang="en", window_days=None):
+        calls.append(window_days)
+        return [Video(video_id="EVERGREEN123", id="EVERGREEN123",
+                      title="cookie recipe classic", views=900000, age_days=365.0)]
+
+    monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch)
+    asyncio.run(m._search_youtube_scrape("cookie recipe", limit=3))
+    assert all(w is None for w in calls), "a non-recency ask must not window the fetch"

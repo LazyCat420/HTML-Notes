@@ -297,6 +297,24 @@ async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relev
         if window and order == "date":
             pool += await _yt_fetch_videos(cleaned, limit=10, order="relevance",
                                            lang=lang, window_days=window)
+        elif strict and not window:
+            # An unbounded "new"/"newest" ask still needs a SOURCE-side bound.
+            # Date sort alone only reorders whatever the pool contains, and for
+            # an evergreen topic that pool is all old: "a new cookie recipe
+            # video" returned 270- and 365-day-old uploads because nothing
+            # constrained the fetch. Probe the month facet (and the week facet
+            # for the best candidates) and prepend — the age sort below then has
+            # genuinely fresh material to choose from. Additive: if the topic
+            # has no recent uploads, the original pool still stands.
+            fresh_pool = []
+            for probe in (7.0, 31.0):
+                try:
+                    fresh_pool += await _yt_fetch_videos(
+                        cleaned, limit=10, order="date", lang=lang, window_days=probe)
+                except Exception:
+                    pass
+            if fresh_pool:
+                pool = fresh_pool + pool
         seen, deduped = set(), []
         for v in pool:
             if v.video_id and v.video_id not in seen:
