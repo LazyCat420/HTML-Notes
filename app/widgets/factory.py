@@ -2389,4 +2389,12 @@ def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
              f' data-widget-title="{label}"')
     if subtitle:
         attrs += f' data-widget-subtitle="{subtitle}"'
+    # A provisional widget is real fetched data committed BEFORE the agent
+    # finishes composing (e.g. news articles pushed the moment the tool
+    # returns). The attribute drives a "composing…" badge client-side and is
+    # stripped when the final commit re-renders without the flag — which also
+    # changes the data-sig (the flag is part of the hashed config), so the
+    # client reconciler is guaranteed to replace provisional with final.
+    if config.get("provisional"):
+        attrs += ' data-provisional="1"'
     return html_out.replace(marker, attrs, 1)

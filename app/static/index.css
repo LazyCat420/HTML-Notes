@@ -2081,6 +2081,37 @@ body::after { display: none !important; }
     opacity: 0;
 }
 
+/* Provisional widget: real fetched data shown while the agent is still
+   composing its final version. Server strips the attribute on the final
+   commit (or promotion at turn end); the client also strips it on `done`
+   and before canvas serialization, so it can never persist.
+   Uses ::before — ::after belongs to the is-updating sweep above. */
+.widget-container[data-provisional] {
+    border-color: rgba(139, 92, 246, .45) !important;
+}
+
+.widget-container[data-provisional]::before {
+    content: "✦ composing…";
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    z-index: 4;
+    pointer-events: none;
+    font-size: 11px;
+    letter-spacing: .04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: rgba(196, 181, 253, .95);
+    background: rgba(139, 92, 246, .18);
+    border: 1px solid rgba(139, 92, 246, .4);
+    animation: provisionalPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes provisionalPulse {
+    0%, 100% { opacity: .55; }
+    50%      { opacity: 1; }
+}
+
 /* The update pulse rides on the widget itself so it works for every widget
    type, including the server-rendered ones we cannot wrap. */
 .widget-container.is-updating {

@@ -1822,6 +1822,19 @@ def get_cached_tool_result(key: str) -> Optional[dict]:
     return value if time.time() - stamp <= _TOOL_RESULT_TTL else None
 
 
+# Research tools whose finished result can be shown IMMEDIATELY as a
+# provisional widget, before the agent composes its final answer. The value is
+# (args -> tool-cache key, widget_type). Only tools whose cached result is
+# already a renderable config belong here — html_notes_news caches a full
+# data_card config; raw web-search hits do NOT qualify (wall-of-links).
+_PROVISIONAL_TOOLS = {
+    "mcp__lazy-tool-service__html_notes_news": (
+        lambda a: f"news:{str(a.get('topic') or a.get('query') or '').strip()}",
+        "data_card",
+    ),
+}
+
+
 def cached_stock_symbols() -> list:
     """Every ticker whose snapshot we fetched recently, newest first."""
     now = time.time()
@@ -3186,6 +3199,11 @@ def _stack_data_card_update(session_id: str, widget_id: str, widget_type: str,
     prev = _session_widget_configs.get(session_id, {}).get(widget_id)
     if (widget_type != "data_card" or not on_canvas or not isinstance(prev, dict)
             or not isinstance(config, dict)):
+        return config
+    # A provisional widget (early tool-result preview) is not history to
+    # preserve — the final commit is the finished version of the SAME content,
+    # so it replaces outright instead of stacking a duplicate underneath.
+    if prev.get("provisional"):
         return config
     new_ans = str(config.get("answer") or "").strip()
     old_ans = str(prev.get("answer") or "").strip()
@@ -9167,6 +9185,15 @@ async def send_message(req: MessageRequest):
             # Tool names prism handed the model that we have no canvas handler for.
             # Collected so a turn that commits nothing can say WHY in the logs.
             unhandled_tools: List[str] = []
+            # Provisional widgets: real tool results committed to the canvas the
+            # moment the tool finishes, so the user sees the articles while the
+            # agent is still composing. Deliberately INVISIBLE to all turn
+            # settlement (widgets_committed / canvas_settled / executed_mutations)
+            # — a provisional commit must never end the turn or suppress the
+            # agent's final canvas_add_widget. widget_id -> {"topic", "config"};
+            # topic -> widget_id for routing the final commit onto the same node.
+            provisional_widgets: Dict[str, dict] = {}
+            provisional_by_topic: Dict[str, str] = {}
             # Repeat ledger, keyed on (tool, args). Pure insurance: a healthy
             # research turn measures 3 tool calls with 1 repeat, so these
             # thresholds sit far above normal. They exist because a single broken
@@ -9185,6 +9212,64 @@ async def send_message(req: MessageRequest):
             # the user as success ("Added it to your canvas." over an unchanged
             # canvas). Only a real component frame counts now.
             mutation_outcome = {"committed": False}
+
+            async def _commit_provisional_from_tool(tool_name, tool_args, event):
+                """A whitelisted research tool just finished — its result is a
+                renderable config sitting in the tool cache (the tool executed
+                inside THIS process via /internal/execute and cached before
+                returning). Commit it to the canvas NOW, flagged provisional, so
+                the user reads the articles while the agent composes.
+
+                Bypasses execute_mutation on purpose: it must not register in
+                executed_mutations (would dedupe-away the agent's final commit)
+                nor count toward widgets_committed (would settle the turn)."""
+                key_fn, wtype = _PROVISIONAL_TOOLS[tool_name]
+                cache_key = key_fn(tool_args or {})
+                topic = cache_key.split(":", 1)[1]
+                if not topic:
+                    return
+                cfg = get_cached_tool_result(cache_key)
+                if not isinstance(cfg, dict):
+                    # Fallback: the result prism echoed on the wire. May be
+                    # MCP-wrapped, so only accept a plain renderable dict.
+                    wire = (event.get("tool") or {}).get("result")
+                    cfg = wire if isinstance(wire, dict) else None
+                if not (isinstance(cfg, dict) and cfg.get("items")
+                        and not cfg.get("is_error")):
+                    return  # error / empty fetch — nothing worth previewing
+                tkey = topic.lower().strip()
+                wid = provisional_by_topic.get(tkey)
+                if not wid:
+                    wid = _resolve_agent_widget_id(req.session_id, wtype, "",
+                                                   req.message,
+                                                   req.focus_widget_id or "")
+                    if wid in provisional_widgets:
+                        # Second distinct topic this turn resolved to the same
+                        # node — give it its own deterministic id instead.
+                        wid = f"news-{hashlib.md5(tkey.encode()).hexdigest()[:8]}"
+                # NEVER mutate the cached dict — _resolve_news_topic_config
+                # hands out the same object to the agent's final commit.
+                pcfg = {**cfg, "provisional": True}
+
+                def _place(soup, _wid=wid, _cfg=pcfg, _wt=wtype):
+                    html = generate_widget_html(_wt, _wid, _cfg)
+                    existing = soup.find(id=_wid)
+                    if existing is not None:
+                        existing.replace_with(BeautifulSoup(html, "html.parser"))
+                    else:
+                        grid = soup.select_one("#dashboard-grid") or soup
+                        grid.append(BeautifulSoup(html, "html.parser"))
+
+                evt = await commit_canvas(req.session_id, _place)
+                if evt:
+                    provisional_widgets[wid] = {"topic": tkey, "config": cfg}
+                    provisional_by_topic[tkey] = wid
+                    _remember_widget_config(req.session_id, wid, pcfg)
+                    logger.info(f"[PROVISIONAL] {tool_name} -> #{wid} "
+                                f"({len(cfg.get('items') or [])} items) while the "
+                                f"agent composes")
+                    yield evt
+                    yield f'data: {json.dumps({"type": "status", "message": "articles ready — composing the full story…"})}\n\n'
 
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
@@ -9303,6 +9388,22 @@ async def send_message(req: MessageRequest):
                                 config = json.loads(config)
                             except Exception:
                                 config = {}
+
+                        # If this turn put up a provisional preview for the same
+                        # topic, the final commit must land ON that node (id
+                        # resolution usually finds it topically; this makes it
+                        # deterministic). Final config carries no `provisional`
+                        # key, so the re-render clears the composing badge.
+                        if (widget_type == "data_card" and provisional_by_topic
+                                and widget_id not in provisional_widgets
+                                and isinstance(config, dict)):
+                            _ptopic = str(config.get("news_topic")
+                                          or config.get("topic") or "").lower().strip()
+                            if _ptopic and _ptopic in provisional_by_topic:
+                                widget_id = provisional_by_topic[_ptopic]
+                                logger.info(f"[PROVISIONAL] final commit snapped to "
+                                            f"preview widget #{widget_id}")
+                        nonlocal_last_committed["v"] = (widget_type, config, widget_id)
 
                         # Settings panel: a singleton appearance/prefs surface.
                         # The server owns the theme catalog and resolves the
@@ -9619,6 +9720,13 @@ async def send_message(req: MessageRequest):
 
                         event = await emit(_add)
                         if event:
+                            # The final version now owns this node — stop
+                            # tracking it as provisional (and don't re-promote
+                            # it at turn end).
+                            if provisional_widgets.pop(widget_id, None):
+                                for _t, _w in list(provisional_by_topic.items()):
+                                    if _w == widget_id:
+                                        provisional_by_topic.pop(_t, None)
                             record_turn(req.session_id, req.message, f"agent:{widget_type}",
                                         [(widget_id, widget_type,
                                           config.get("title", "") or req.message,
@@ -9916,6 +10024,19 @@ async def send_message(req: MessageRequest):
                                         error_msg = event.get("result", "Unknown tool error")
                                         yield f'data: {json.dumps({"type": "status", "message": f"tool error: {tool_name}: {str(error_msg)[:200]}"})}\n\n'
                                     elif status in ("calling", "done", "success"):
+                                        # Early preview: a whitelisted data tool just
+                                        # finished — put its articles on the canvas as
+                                        # a provisional widget before the model has
+                                        # even started composing. The runaway/budget
+                                        # accounting below still runs for this call.
+                                        if (status in ("done", "success")
+                                                and tool_name in _PROVISIONAL_TOOLS):
+                                            try:
+                                                async for evt in _commit_provisional_from_tool(
+                                                        tool_name, args, event):
+                                                    yield evt
+                                            except Exception as pe:
+                                                logger.warning(f"[PROVISIONAL] preview commit failed: {pe}")
                                         # A tool we do not handle. Prism forces its
                                         # core/system tools (create_artifact,
                                         # execute_python, search_web…) into the set
@@ -10024,6 +10145,45 @@ async def send_message(req: MessageRequest):
                     if spoken_id:
                         spoken_payload["widget_id"] = spoken_id
                     yield f'data: {json.dumps(spoken_payload)}\n\n'
+
+            # PROMOTION: the tool's preview made it to the canvas but the agent
+            # never committed a matching widget (answered in prose, picked a
+            # different widget type, or the turn was cut short). Re-commit the
+            # same content WITHOUT the provisional flag so the "composing…"
+            # badge doesn't spin forever — and when the turn produced prose but
+            # no widget at all, fold that prose in as the card's answer (which
+            # also suppresses the separate text-answer fallback card below).
+            for _pwid, _pinfo in list(provisional_widgets.items()):
+                try:
+                    final_cfg = dict(_pinfo["config"])
+                    final_cfg.pop("provisional", None)
+                    if widgets_committed == 0 and final_text.strip():
+                        final_cfg["answer"] = final_text.strip()
+
+                    def _promote(soup, _wid=_pwid, _cfg=final_cfg):
+                        html = generate_widget_html("data_card", _wid, _cfg)
+                        existing = soup.find(id=_wid)
+                        if existing is not None:
+                            existing.replace_with(BeautifulSoup(html, "html.parser"))
+                        else:
+                            grid = soup.select_one("#dashboard-grid") or soup
+                            grid.append(BeautifulSoup(html, "html.parser"))
+
+                    evt = await commit_canvas(req.session_id, _promote)
+                    if evt:
+                        widgets_committed += 1
+                        provisional_widgets.pop(_pwid, None)
+                        _remember_widget_config(req.session_id, _pwid, final_cfg)
+                        record_turn(req.session_id, req.message,
+                                    "agent:provisional-promoted",
+                                    [(_pwid, "data_card",
+                                      final_cfg.get("title", "") or req.message,
+                                      _widget_detail(final_cfg))])
+                        logger.info(f"[PROVISIONAL] promoted #{_pwid} to final "
+                                    f"(agent committed no matching widget)")
+                        yield evt
+                except Exception as pe:
+                    logger.error(f"[PROVISIONAL] promotion failed for #{_pwid}: {pe}")
 
             # SAFETY NET: the turn answered in prose but wrote nothing to the canvas.
             # Before this, that turn was invisible — the answer was spoken by TTS and

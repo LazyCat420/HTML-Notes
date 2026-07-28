@@ -1229,8 +1229,12 @@ document.addEventListener("DOMContentLoaded", () => {
             } else {
                 grid.appendChild(newWidget);
                 // Hold it back so it appears in time with the narration; shows
-                // immediately when nothing is going to be spoken.
-                if (!(revealGateActive() && holdWidgetForReveal(newWidget))) {
+                // immediately when nothing is going to be spoken. EXCEPT a
+                // provisional widget — its entire purpose is to be visible
+                // while the agent is still composing, so it never waits for
+                // narration.
+                if (newWidget.hasAttribute('data-provisional')
+                    || !(revealGateActive() && holdWidgetForReveal(newWidget))) {
                     flagCanvasChange(newWidget, 'is-entering');
                 }
             }
@@ -1383,6 +1387,10 @@ document.addEventListener("DOMContentLoaded", () => {
         revealAllPending();
         const temp = document.createElement("div");
         temp.innerHTML = elements.liveCanvas.innerHTML;
+        // Same class of hazard: a provisional "composing…" badge serialized
+        // into the canonical canvas would persist a permanently-loading card.
+        temp.querySelectorAll('[data-provisional]')
+            .forEach(el => el.removeAttribute('data-provisional'));
         
         // Remove dynamically generated iframes inside youtube player widgets
         const youtubeIframes = temp.querySelectorAll('[x-data*="youtubePlayerWidget"] iframe');
@@ -1801,6 +1809,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else if (data.type === "done") {
                     HN.log("done", "generation finished");
                     HN.groupEnd();
+                    // Belt-and-braces: no widget should still read "composing…"
+                    // after the turn ends (server promotion normally clears it;
+                    // this covers an aborted or error-shortened turn).
+                    elements.liveCanvas.querySelectorAll('[data-provisional]')
+                        .forEach(el => el.removeAttribute('data-provisional'));
                     renderDynamicComponents(elements.liveCanvas);
                     addLogStep("Finished generation.", "✨");
                     statusBar.finish("done");
