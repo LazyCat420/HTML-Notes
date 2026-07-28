@@ -4330,6 +4330,13 @@ VIDEO_FILLER = {
     "me", "a", "an", "the", "of", "some", "play", "find", "get", "please", "for", "on",
     "give", "want", "see", "put", "add", "open", "stream", "streams", "streaming",
     "live", "livestream", "livestreams",
+    # Conversational scaffolding. Without these "i want to watch primeagen"
+    # produced the channel-name guess "i to primeagen", which bound nothing and
+    # dropped the ask to keyword search.
+    # "new" is NOT here: it belongs to real channel names (New Rockstars). The
+    # leading-"new" peel in _split_video_subject_topic handles "a new X video".
+    "i", "you", "we", "to", "can", "could", "would", "let", "us", "my", "from",
+    "by", "something", "anything", "there", "is", "are", "any",
 }
 
 
@@ -4543,12 +4550,12 @@ def _split_video_subject_topic(message: str) -> tuple:
     parts = _VIDEO_TOPIC_SPLIT_RE.split(text, maxsplit=1)
     subject = clean_video_query(_SUBJECT_RECENCY_RE.sub(" ", parts[0]))
     # "a new primeagen video" left the subject as "new primeagen", which searched
-    # channels for the literal words and bound nothing. Peel a LEADING new/news
-    # only when something else survives — "fox news" and "news" alone must keep
-    # it, since those are the channel name (the b9e42ac failure).
-    peeled = re.sub(r'^(?:new|news)\s+', '', subject.strip(), flags=re.I)
-    if peeled and peeled != subject.strip() and re.findall(r"\w+", peeled):
-        subject = peeled
+    # channels for the literal words and bound nothing. The peeled form is
+    # returned as a HINT rather than applied destructively: "new" is also the
+    # first word of real channel names (New Rockstars), so the caller tries the
+    # full subject first and only falls back to the peeled one. Peeling here
+    # unconditionally turned "new rockstars video" into "rockstars".
+    subject = subject.strip()
     # clean_video_query falls back to its raw input when every word was filler
     # ("newest video about X" → subject "video"). A channel GUESS made of pure
     # filler must be empty — otherwise we scrape a channel search for "video".
@@ -4569,10 +4576,13 @@ _YT_TOPIC_WORDS = {
     "reviews", "highlights", "explained", "how", "what", "why", "best", "top",
     "vs", "versus", "comparison", "cooking", "workout", "exercise", "music",
     "song", "songs", "movie", "movies", "trailer", "game", "games", "gameplay",
-    "documentary", "lecture", "course", "tips", "tricks", "hacks", "diy",
-    "unboxing", "reaction", "compilation", "meditation", "podcast", "interview",
+    "documentary", "lecture", "course", "tricks", "hacks", "diy",
+    "unboxing", "reaction", "compilation", "meditation", "interview",
     "market", "stock", "stocks", "crypto", "weather", "score", "scores",
     "price", "prices", "history", "science", "math", "coding", "programming",
+    # NOT listed, though they look generic: "tips" (Linus Tech Tips), "news"
+    # (Fox News), "podcast", "clips", "highlights" — all appear in real channel
+    # names, and listing them made those creators unbindable.
 }
 
 
@@ -4598,6 +4608,14 @@ def _creator_evidence(subject: str, message: str = "") -> str:
     words = [w for w in re.findall(r"\w+", subj) if len(w) > 1]
     if words and any(w in _YT_TOPIC_WORDS for w in words):
         return "weak"
+    # NOTE: capitalisation was tried as a "names are proper nouns" signal and
+    # REJECTED — users type entirely in lowercase, so it marked 'fox news',
+    # 'linus tech tips' and 'paul barron' as topics. Do not reintroduce it.
+    # The plural tell below is safe because channel names are not pluralised
+    # descriptions ('funny cat videos' vs 'New Rockstars').
+    if len(words) > 1 and re.search(r"\b(?:videos|clips|compilations?)\b",
+                                    (message or "").lower()):
+        return "weak"
     return "plain"
 
 
@@ -4613,18 +4631,21 @@ def _topic_in_title(topic: str, title: str) -> bool:
 
 async def _recency_video_pick(message: str, session_id: str,
                               freshness: Optional[Freshness] = None) -> Optional[dict]:
-    """Channel- and date-verified pick for a recency video ask ("news video",
-    "newest X video"). Returns a youtube_player config, or None so the caller
-    falls back to its generic path.
+    """Channel-verified pick for a video ask that NAMES a creator, or any ask
+    carrying recency intent. Returns a youtube_player config, or None so the
+    caller falls back to its generic search path.
 
     Order of trust:
       1. The named channel binds → its uploads RSS, strictly reverse-
          chronological and channel-verified by construction, topic-filtered
          when the ask has an about-clause. A topic with no recent upload falls
          back to the channel's newest (right channel > exact topic).
-      2. No channel binds → date-ordered search; a strict "newest" ask runs
-         with the title-relevance floor so pure date sort can't surface a
-         fresh-but-unrelated upload.
+      2. No channel binds → date-ordered search when the ask wants recency;
+         otherwise None, so a plain topic ask keeps relevance ranking.
+
+    Deliberately NOT gated on a recency word by its callers: "primeagen video"
+    means his LATEST, and requiring the user to say "newest" was why keyword
+    search kept serving 5-, 11- and 14-day-old clips over a 3-hour-old upload.
     """
     fresh = freshness or parse_freshness(message)
     # "THE newest X" has one right answer (no seen-exclusion rotation); softer
@@ -4643,8 +4664,27 @@ async def _recency_video_pick(message: str, session_id: str,
             # answered from a feed whose head was 11 days old while the same
             # creator had posted 3 hours earlier on a sibling channel. Read the
             # top matches and merge, so "newest" means newest across all of them.
-            chans = await _resolve_youtube_channels(
-                subject, limit=4, evidence=_creator_evidence(subject, message))
+            # Try the subject as written FIRST ("new rockstars" is a channel),
+            # then a leading-"new" peeled variant ("new primeagen" -> the
+            # creator). Order matters: peeling first renamed New Rockstars.
+            variants = [subject]
+            peeled = re.sub(r'^new\s+', '', subject, flags=re.I).strip()
+            if peeled and peeled != subject:
+                variants.append(peeled)
+            # Score BOTH variants and keep the stronger bind. Stopping at the
+            # first that binds anything is not enough: "new primeagen" matches
+            # ThePrimeagen weakly (0.65) and misses the sibling channel holding
+            # his newest upload, while the peeled "primeagen" matches at 0.90
+            # and finds all three.
+            best_chans = []
+            for cand_subject in variants:
+                got = await _resolve_youtube_channels(
+                    cand_subject, limit=4,
+                    evidence=_creator_evidence(cand_subject, message))
+                if got and (not best_chans
+                            or got[0]["match"] > best_chans[0]["match"]):
+                    best_chans, subject = got, cand_subject
+            chans = best_chans
             # Merge only SIBLINGS of the best match — channels within 0.3 of the
             # winner's score. Taking a fixed top-N pulls in whatever search noise
             # fills the slots (a channel coincidentally titled like the query),
@@ -4726,6 +4766,12 @@ async def _recency_video_pick(message: str, session_id: str,
                         "published": top.get("published"),
                         "channel": chan["title"],
                         "candidates": cands}
+
+    # No channel bound. A plain topic ask ("a cookie recipe video") must keep
+    # RELEVANCE ranking — hand it back so the caller's normal search path runs.
+    # Only an ask that actually wants recency continues into the date search.
+    if not fresh:
+        return None
 
     hits = filter_blocked_videos(await search_youtube_videos(
         search_q, limit=10, order="date", strict_recency=want_newest,
@@ -8237,11 +8283,15 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             # ("fox news video newest…" must come from FOX News, not whatever
             # date-sort surfaces), bounds an explicit window ("this week"), and
             # holds strict searches to a title-relevance floor.
+            # NOT gated on a recency word. Naming a creator IS the request:
+            # "primeagen video" wants HIS latest, not the most-viewed clip
+            # keyword search returns (live failure: 5/11/14-day-old videos while
+            # a 3-hour-old upload existed). _recency_video_pick returns None
+            # when nothing binds, so a topic ask still falls through to search.
             fresh = parse_freshness(message)
-            if fresh:
-                rcfg = await _recency_video_pick(message, session_id, freshness=fresh)
-                if rcfg:
-                    return ("youtube_player", "video", rcfg)
+            rcfg = await _recency_video_pick(message, session_id, freshness=fresh)
+            if rcfg:
+                return ("youtube_player", "video", rcfg)
 
             # Ground first so a brand/place collision ("sandals" the RESORT, "jaguar"
             # the CAR) searches the disambiguated subject, not the bare word that
@@ -8934,7 +8984,11 @@ async def send_message(req: MessageRequest):
             #    most-watched clip for those words (a years-old recap); news means the
             #    NEWEST upload, so sort by date and drop the medium words from the query.
             fresh_ask = parse_freshness(req.message)
-            if (is_video_ask and fresh_ask
+            # Fires for ANY video ask, not just one carrying a recency word:
+            # naming a channel is itself a request for that channel's newest
+            # upload. The picker returns None when no channel binds, so topic
+            # asks ("a cookie recipe video") fall through to normal search.
+            if (is_video_ask
                     and not wants_removal and not LIVE_ASK_RE.search(text_clean)):
                 # Channel- and date-verified: "fox news video newest about the
                 # stock market" must come from the FOX News uploads feed, not

@@ -609,13 +609,31 @@ def test_multi_channel_merge_picks_newest_across_siblings(monkeypatch):
         "newest must span ALL of the creator's channels, not just the best-matching one"
 
 
-def test_new_prefix_peeled_from_channel_subject():
-    """'a new primeagen video' left subject 'new primeagen', which bound nothing.
-    'fox news' and a bare 'news' must KEEP the word (it is the channel name)."""
-    assert m._split_video_subject_topic("a new primeagen video")[0] == "primeagen"
+def test_new_prefix_kept_in_subject_and_peeled_as_a_variant():
+    """'a new primeagen video' must reach the creator, but 'new rockstars video'
+    must KEEP its 'new' — New Rockstars is the channel's actual name. So the
+    subject is no longer peeled destructively; the caller tries the full subject
+    AND a peeled variant, keeping whichever binds more strongly."""
+    assert m._split_video_subject_topic("a new primeagen video")[0] == "new primeagen"
+    assert m._split_video_subject_topic("new rockstars video")[0] == "new rockstars"
     assert m._split_video_subject_topic("fox news video newest")[0] == "fox news"
-    assert "news" in m._split_video_subject_topic("news video")[0] or \
-        m._split_video_subject_topic("news video")[0] == ""
+
+
+def test_conversational_filler_stripped_from_channel_subject():
+    """'i want to watch primeagen' produced the guess 'i to primeagen', which
+    bound nothing and dropped the ask to keyword search."""
+    assert m._split_video_subject_topic("i want to watch primeagen")[0] == "primeagen"
+    assert m._split_video_subject_topic("can you put on primeagen")[0] == "primeagen"
+
+
+def test_creator_evidence_flags_plural_topic_phrases():
+    """'funny cat videos' bound a channel literally called 'Funnycats' and
+    served a 19-day-old clip. A pluralised description is a topic."""
+    assert m._creator_evidence("funny cat", "funny cat videos") == "weak"
+    # Real creators whose names contain otherwise-generic words must survive.
+    assert m._creator_evidence("linus tech tips", "linus tech tips video") == "plain"
+    assert m._creator_evidence("fox news", "fox news video newest") == "plain"
+    assert m._creator_evidence("new rockstars", "new rockstars video") == "plain"
 
 
 async def _no_secret(_name):
@@ -706,3 +724,43 @@ def test_no_recency_ask_does_not_probe_windows(monkeypatch):
     monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch)
     asyncio.run(m._search_youtube_scrape("cookie recipe", limit=3))
     assert all(w is None for w in calls), "a non-recency ask must not window the fetch"
+
+
+def test_channel_ask_without_a_recency_word_still_serves_newest(monkeypatch):
+    """THE reported failure. 'primeagen video' carries NO recency word, so both
+    router lanes skipped the channel picker entirely and fell to keyword search,
+    which returns whatever is popular — 5, 11 and 14 days old — while a 3-hour
+    upload sat in the creator's feed. Naming a channel IS the request for its
+    latest; the picker must run regardless of recency vocabulary."""
+    async def fake_resolve_many(name, limit=3, evidence="plain"):
+        return [{"channel_id": "UC_M", "title": "ThePrimeagen", "handle": "@ThePrimeagen",
+                 "match": 0.9, "rank_score": 1.2, "rank": 0, "verified": True}]
+
+    async def fake_uploads(cid, limit=8):
+        return [{"video_id": "NEWEST12345", "id": "NEWEST12345", "title": "Dont Smile",
+                 "channel": "ThePrimeagen", "age_days": 0.15},
+                {"video_id": "OLDER1234567", "id": "OLDER1234567", "title": "old one",
+                 "channel": "ThePrimeagen", "age_days": 11.2}]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", fake_resolve_many)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_shown_video_ids", lambda sid: set())
+
+    cfg = asyncio.run(m._recency_video_pick("primeagen video", "sess-norecency"))
+    assert cfg and cfg["video_id"] == "NEWEST12345"
+
+
+def test_topic_ask_without_recency_returns_none_for_search(monkeypatch):
+    """A topic ask with no channel bound and no recency intent must hand back
+    None so the caller keeps RELEVANCE ranking — date-sorting an evergreen ask
+    returns junk."""
+    async def no_chan(name, limit=3, evidence="plain"):
+        return []
+
+    async def boom(*a, **k):
+        raise AssertionError("must not run a date search for a plain topic ask")
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", no_chan)
+    monkeypatch.setattr(m, "search_youtube_videos", boom)
+    assert asyncio.run(m._recency_video_pick("a cookie recipe video", "s-t")) is None
