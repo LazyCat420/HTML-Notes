@@ -25,6 +25,8 @@ from app.youtube_search import (
     Freshness,
     parse_freshness,
     filter_by_age,
+    parse_video_form,
+    filter_by_form,
     NEWEST_PATTERN as _YT_NEWEST_PATTERN,
     RECENCY_PATTERN as _YT_RECENCY_PATTERN,
 )
@@ -127,7 +129,8 @@ async def _llm_rerank_videos(query: str, videos: list,
 
 async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance",
                                 rerank: bool = False, strict_recency: bool = False,
-                                freshness: Optional[Freshness] = None) -> list:
+                                freshness: Optional[Freshness] = None,
+                                form: Optional[str] = None) -> list:
     """Enriched, scored YouTube search. Returns dicts with the SAME keys the old
     scraper did (video_id, id, title, channel) PLUS the parsed signals (views,
     duration_sec, age_days, verified, is_live, is_short, score), best-first.
@@ -146,12 +149,18 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     `rerank=True` adds a one-shot LLM rerank, but ONLY on 'hard' queries (ambiguous
     format words / explicit language) where the bench showed it helps — clear
     queries keep the zero-latency heuristic order.
+
+    `form` is the Short-vs-video axis: "short" returns Shorts only, "any" keeps
+    both, and the default (None, or "long") drops Shorts. Parsed from the query
+    when the caller doesn't pass one, so legacy call sites stop serving a
+    60-second clip to "a video about X".
     """
     q = (query or "").strip()
     if not q:
         return []
+    form = form or parse_video_form(q)
     ranked = await _search_youtube_scrape(q, limit, order, rerank, strict_recency,
-                                          freshness=freshness)
+                                          freshness=freshness, form=form)
     if ranked:
         return ranked
     # The direct httpx scrape came back empty (markup shift, a consent wall on this
@@ -160,7 +169,7 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
     # interstitial that blocks plain httpx and returns the full results HTML, which
     # parses into a real POOL (so variety/dedup work, not a single repeated video).
     pool = await _youtube_results_via_scraper(q, limit, strict_recency=strict_recency,
-                                              freshness=freshness)
+                                              freshness=freshness, form=form)
     if pool:
         logger.info(f"[YOUTUBE] direct scrape empty for {q!r}; served scraper-service pool ({len(pool)})")
         return pool
@@ -174,7 +183,8 @@ async def search_youtube_videos(query: str, limit: int = 5, order: str = "releva
 
 async def _youtube_results_via_scraper(query: str, limit: int = 5,
                                        strict_recency: bool = False,
-                                       freshness: Optional[Freshness] = None) -> list:
+                                       freshness: Optional[Freshness] = None,
+                                       form: Optional[str] = None) -> list:
     """Fallback pool: scrape youtube.com/results via scraper-service (real browser,
     gets past the consent wall) and parse it with the same parser as the direct
     path. Returns a scored+diversified list (a POOL, unlike the single-video proxy).
@@ -202,6 +212,9 @@ async def _youtube_results_via_scraper(query: str, limit: int = 5,
             if d.get("video_id") and d["video_id"] not in seen:
                 seen.add(d["video_id"])
                 out.append(d)
+        # Format filter must survive the fallback tier too, or a consent-walled
+        # primary silently downgrades "newest video" back to "newest Short".
+        out = filter_by_form(out, form)
         stale_fallback = False
         if window:
             kept = filter_by_age(out, window)
@@ -259,7 +272,8 @@ async def _youtube_proxy_fallback(query: str) -> list:
 
 async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relevance",
                                  rerank: bool = False, strict_recency: bool = False,
-                                 freshness: Optional[Freshness] = None) -> list:
+                                 freshness: Optional[Freshness] = None,
+                                 form: Optional[str] = None) -> list:
     """Direct youtube.com scrape + scoring (primary path). Returns [] on any
     failure so search_youtube_videos can fall through to the proxy.
 
@@ -320,6 +334,16 @@ async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relev
             if v.video_id and v.video_id not in seen:
                 seen.add(v.video_id)
                 deduped.append(v)
+        # Short vs video, BEFORE the age sort — otherwise a Short posted an hour
+        # ago wins "newest X" over the real upload from this morning. Search-side
+        # classification is the ≤60s duration tell (the channel-feed path has the
+        # exact answer); fail-open, so a topic with nothing but Shorts still
+        # returns something.
+        pre_form = len(deduped)
+        deduped = filter_by_form(deduped, form)
+        if len(deduped) < pre_form:
+            logger.info(f"[YOUTUBE] form={form or 'long'} filter kept "
+                        f"{len(deduped)}/{pre_form} hits for {cleaned!r}")
         stale_fallback = False
         if window:
             # Hard window: the sp facet already bounded the fetch, but fallback
@@ -518,16 +542,26 @@ def _yt_channel_name_match(subject: str, title: str, handle: str = "") -> bool:
     return _yt_channel_match_score(subject, title, handle) >= _YT_CHANNEL_MATCH_FLOOR
 
 
-async def _yt_fetch_html(url: str, timeout: float = 12.0) -> str:
+async def _yt_fetch_html(url: str, timeout: float = 12.0,
+                         scraper_fallback: bool = True) -> str:
     """Plain httpx GET (a realistic UA clears the results/feed pages), falling
-    back to the real-browser scraper only if httpx comes back empty."""
+    back to the real-browser scraper only if httpx comes back empty.
+
+    `scraper_fallback=False` for feeds whose absence is MEANINGFUL: the Shorts
+    playlist 404s for a channel that has never posted one, and paying a 20s
+    browser scrape to re-confirm that 404 would put the whole video ask over
+    budget."""
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": _YAHOO_UA})
             if resp.status_code == 200 and resp.text:
                 return resp.text
+            if resp.status_code == 404:
+                return ""
     except Exception as e:
         logger.warning(f"[YOUTUBE] httpx fetch failed for {url[:80]!r}: {e}")
+    if not scraper_fallback:
+        return ""
     try:
         return await _scrape(url, engine="auto", timeout=20.0) or ""
     except Exception:
@@ -628,22 +662,24 @@ async def _resolve_youtube_channel(name: str) -> Optional[dict]:
     return chans[0] if chans else None
 
 
-async def _youtube_channel_uploads(channel_id: str, limit: int = 8) -> list:
-    """Latest uploads for a channel_id from its RSS feed, newest first. Normalised
-    to the same hit shape as search_youtube_videos so callers are interchangeable."""
-    if not channel_id:
-        return []
-    xml = await _yt_fetch_html(
-        f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
+def _parse_uploads_feed(xml: str, source: str = "") -> list:
+    """Atom uploads/playlist feed → hits in the same shape search_youtube_videos
+    returns, newest first. Pure parse; the caller owns the fetch."""
     if not xml:
         return []
     try:
         root = ET.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
     except Exception as e:
-        logger.warning(f"[YOUTUBE] uploads feed parse failed for {channel_id}: {e}")
+        logger.warning(f"[YOUTUBE] uploads feed parse failed for {source}: {e}")
         return []
     now = datetime.datetime.now(datetime.timezone.utc)
     chan_title = (root.findtext("a:title", default="", namespaces=_YT_ATOM_NS) or "")
+    # A playlist feed's <title> is the PLAYLIST name ("Videos", "Shorts"), not
+    # the channel — take the author name there so hits stay attributable.
+    if chan_title.strip().lower() in ("videos", "shorts", "short videos", "live",
+                                      "live streams", "uploads", "popular videos"):
+        chan_title = (root.findtext("a:author/a:name", default="",
+                                    namespaces=_YT_ATOM_NS) or chan_title)
     out = []
     for e in root.findall("a:entry", _YT_ATOM_NS):
         vid = e.findtext("yt:videoId", default="", namespaces=_YT_ATOM_NS)
@@ -664,10 +700,74 @@ async def _youtube_channel_uploads(channel_id: str, limit: int = 8) -> list:
             "age_days": age_days,
             "published": pub[:16].replace("T", " ") if len(pub) >= 16 else None,
             "score": 0,
+            "is_short": False,
         })
     # The feed is already reverse-chronological; sort defensively anyway.
     out.sort(key=lambda h: h["age_days"] if h["age_days"] is not None else 1e9)
-    return out[:max(limit, 1)]
+    return out
+
+
+def _yt_auto_playlist(channel_id: str, kind: str) -> str:
+    """YouTube's auto-generated per-channel playlist id. UC<x> → UU<x> (every
+    upload), UUSH<x> (Shorts only), UULF<x> (long-form only), UULV<x> (live).
+    These have their own RSS feeds, which is the ONLY keyless way to tell a
+    Short from a video — the uploads feed carries no duration or type."""
+    prefix = {"all": "UU", "short": "UUSH", "long": "UULF", "live": "UULV"}[kind]
+    return prefix + (channel_id[2:] if channel_id.startswith("UC") else channel_id)
+
+
+async def _youtube_channel_uploads(channel_id: str, limit: int = 8,
+                                   form: Optional[str] = None) -> list:
+    """Latest uploads for a channel_id from its RSS feeds, newest first, each hit
+    tagged `is_short`.
+
+    `form`: "short" → Shorts only; "any" → everything, untagged (one fetch);
+    None/"long" → the uploads feed with Shorts identified and dropped.
+
+    Why two feeds: the uploads feed interleaves Shorts with real uploads and
+    creators post far more Shorts, so "newest <creator> video" was answered by a
+    30-second Short nearly every time. Classification comes from the Shorts
+    playlist feed (UUSH…) rather than duration — the uploads feed has no
+    duration, and a duration guess would also misfile a 45-second real upload.
+    Live VODs are deliberately NOT excluded: they are videos (the long-form
+    playlist UULF… drops them, which would hide NASA's newest launch stream)."""
+    if not channel_id:
+        return []
+    if form == "short":
+        # Shorts-only feed. 404s for a channel that has never posted one, which
+        # _yt_fetch_html returns as "" — an empty list, so the caller falls back.
+        xml = await _yt_fetch_html(
+            "https://www.youtube.com/feeds/videos.xml?playlist_id="
+            + _yt_auto_playlist(channel_id, "short"), scraper_fallback=False)
+        hits = _parse_uploads_feed(xml, f"{channel_id}/shorts")
+        for h in hits:
+            h["is_short"] = True
+        return hits[:max(limit, 1)]
+
+    uploads_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    if form == "any":
+        return _parse_uploads_feed(await _yt_fetch_html(uploads_url),
+                                   channel_id)[:max(limit, 1)]
+
+    uploads_xml, shorts_xml = await asyncio.gather(
+        _yt_fetch_html(uploads_url),
+        _yt_fetch_html("https://www.youtube.com/feeds/videos.xml?playlist_id="
+                       + _yt_auto_playlist(channel_id, "short"),
+                       scraper_fallback=False),
+        return_exceptions=True)
+    hits = _parse_uploads_feed(
+        uploads_xml if isinstance(uploads_xml, str) else "", channel_id)
+    short_ids = {h["video_id"] for h in _parse_uploads_feed(
+        shorts_xml if isinstance(shorts_xml, str) else "", f"{channel_id}/shorts")}
+    for h in hits:
+        h["is_short"] = h["video_id"] in short_ids
+    kept = [h for h in hits if not h["is_short"]]
+    if len(kept) < len(hits):
+        logger.info(f"[YOUTUBE] {channel_id}: dropped {len(hits) - len(kept)} "
+                    f"Short(s) from the uploads feed")
+    # Fail-open: a channel that posts ONLY Shorts still gets an answer rather
+    # than an empty feed that silently demotes the ask to keyword search.
+    return (kept or hits)[:max(limit, 1)]
 
 
 # crawl4ai renders Brave's result page as markdown with the outbound hrefs
@@ -4330,6 +4430,11 @@ VIDEO_FILLER = {
     "me", "a", "an", "the", "of", "some", "play", "find", "get", "please", "for", "on",
     "give", "want", "see", "put", "add", "open", "stream", "streams", "streaming",
     "live", "livestream", "livestreams",
+    # Format words: the FORM axis (parse_video_form) carries them, so they must
+    # not leak into the channel-name guess or the topic filter — "newest mkbhd
+    # short" was searching channels for "mkbhd short" and filtering that
+    # creator's titles for the literal word "short".
+    "short", "shorts",
     # Conversational scaffolding. Without these "i want to watch primeagen"
     # produced the channel-name guess "i to primeagen", which bound nothing and
     # dropped the ask to keyword search.
@@ -4471,15 +4576,24 @@ _pending_turn_freshness: Optional[tuple] = None   # (time.monotonic(), Freshness
 _TURN_FRESHNESS_TTL = 180.0
 
 
+# The format axis rides along in the same stash and for the same reason: the
+# agent's query rewrite drops "short" ("newest mkbhd short" → "mkbhd latest
+# video") just as readily as it drops "this week".
+_pending_turn_form: Optional[tuple] = None       # (time.monotonic(), form)
+
+
 def _stash_turn_freshness(message: str) -> None:
-    global _pending_turn_freshness
+    global _pending_turn_freshness, _pending_turn_form
     f = parse_freshness(message)
     _pending_turn_freshness = (time.monotonic(), f) if f else None
+    form = parse_video_form(message)
+    _pending_turn_form = (time.monotonic(), form) if form else None
 
 
 def _clear_turn_freshness() -> None:
-    global _pending_turn_freshness
+    global _pending_turn_freshness, _pending_turn_form
     _pending_turn_freshness = None
+    _pending_turn_form = None
 
 
 def _stashed_turn_freshness() -> Optional[Freshness]:
@@ -4487,6 +4601,14 @@ def _stashed_turn_freshness() -> Optional[Freshness]:
         ts, f = _pending_turn_freshness
         if time.monotonic() - ts < _TURN_FRESHNESS_TTL:
             return f
+    return None
+
+
+def _stashed_turn_form() -> Optional[str]:
+    if _pending_turn_form:
+        ts, form = _pending_turn_form
+        if time.monotonic() - ts < _TURN_FRESHNESS_TTL:
+            return form
     return None
 
 # A rolling window of video ids already shown this session, so a repeat ask lands
@@ -4652,6 +4774,10 @@ async def _recency_video_pick(message: str, session_id: str,
     # recency ("new", "news", "this week") is still newest-first but rotates to
     # the newest UNSEEN hit on a repeat ask.
     want_newest = bool(NEWEST_RE.search((message or "").lower()))
+    # Short vs video. The uploads feed is where this bit mattered most: Shorts
+    # dominate it by volume, so "newest <creator> video" answered with a Short
+    # until the feed learned to tell them apart. None here means long-form.
+    form = parse_video_form(message)
     window = fresh.window_days if fresh else None
     subject, topic = _split_video_subject_topic(message)
     search_q = " ".join(x for x in (subject, topic) if x) or clean_video_query(message)
@@ -4698,7 +4824,8 @@ async def _recency_video_pick(message: str, session_id: str,
     chan = chans[0] if chans else None
     if chan:
         feeds = await asyncio.gather(
-            *[_youtube_channel_uploads(c["channel_id"], limit=12) for c in chans],
+            *[_youtube_channel_uploads(c["channel_id"], limit=12, form=form)
+              for c in chans],
             return_exceptions=True)
         merged, seen_ids = [], set()
         for c, f in zip(chans, feeds):
@@ -4728,7 +4855,7 @@ async def _recency_video_pick(message: str, session_id: str,
             # an on-topic upload that slipped past the feed window without ever
             # reopening the door to junk channels.
             searched = filter_blocked_videos(await search_youtube_videos(
-                search_q, limit=12, order="date", freshness=fresh))
+                search_q, limit=12, order="date", freshness=fresh, form=form))
             verified = [h for h in searched
                         if _yt_channel_name_match(chan["title"], h.get("channel") or "")]
             if verified:
@@ -4775,10 +4902,10 @@ async def _recency_video_pick(message: str, session_id: str,
 
     hits = filter_blocked_videos(await search_youtube_videos(
         search_q, limit=10, order="date", strict_recency=want_newest,
-        rerank=True, freshness=fresh))
+        rerank=True, freshness=fresh, form=form))
     if not hits:
         hits = filter_blocked_videos(
-            await search_youtube_videos(search_q, limit=10))
+            await search_youtube_videos(search_q, limit=10, form=form))
     if not hits:
         return None
     if want_newest:
@@ -8302,7 +8429,8 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
                 fresh = parse_freshness(str(g.get("freshness") or ""))
             vq = clean_video_query(g.get("retrieval_query") or query or message)
             hits = filter_blocked_videos(await search_youtube_videos(
-                vq, limit=10, rerank=True, freshness=fresh))
+                vq, limit=10, rerank=True, freshness=fresh,
+                form=parse_video_form(message)))
             top, cands = pick_best_video(hits, exclude_ids=_shown_video_ids(session_id))
             if not top:
                 return None
@@ -8944,7 +9072,8 @@ async def send_message(req: MessageRequest):
                     # (it lives in the remembered query): "another one" after
                     # "a new video about X" must stay new.
                     hits = await search_youtube_videos(
-                        vquery, limit=12, freshness=parse_freshness(vquery))
+                        vquery, limit=12, freshness=parse_freshness(vquery),
+                        form=parse_video_form(req.message) or _stashed_turn_form())
                     hits = filter_blocked_videos(hits)
                     top, cands = pick_best_video(hits, exclude_ids=_shown_video_ids(req.session_id))
                     if not top:
@@ -9031,7 +9160,8 @@ async def send_message(req: MessageRequest):
                 # same subject rather than falling through to the agent (which broke).
                 # "dunkey livestreams" when dunkey is offline → a dunkey video.
                 vod_hits = filter_blocked_videos(
-                    await search_youtube_videos(lquery, limit=10))
+                    await search_youtube_videos(lquery, limit=10,
+                                                form=parse_video_form(req.message)))
                 top, cands = pick_best_video(vod_hits, exclude_ids=_shown_video_ids(req.session_id))
                 if top:
                     _remember_current_video(req.session_id, top, lquery)
@@ -9052,7 +9182,8 @@ async def send_message(req: MessageRequest):
             if is_video_ask and not wants_removal and not wants_music:
                 vquery = clean_video_query(req.message)
                 vhits = await search_youtube_videos(vquery, limit=10, rerank=True,
-                                                    freshness=fresh_ask)
+                                                    freshness=fresh_ask,
+                                                    form=parse_video_form(req.message))
                 vhits = filter_blocked_videos(vhits)
                 top, cands = pick_best_video(vhits, exclude_ids=_shown_video_ids(req.session_id))
                 if top:
@@ -9483,7 +9614,7 @@ async def send_message(req: MessageRequest):
             "    The brief must separate FACT from EXPECTATION: what was actually reported/filed/announced (with dates and figures) vs what analysts merely predict. Name the outlet on any contested or single-sourced claim, and say plainly when the move has no clear reported cause rather than inventing one. Never present a price move as explained when the sources do not explain it.\n"
             "    Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
             "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
-            "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. If the user constrains WHEN ('new', 'newest', 'this week', 'yesterday', 'latest'), copy that time phrase VERBATIM into the tool's freshness parameter and keep it in the query — never drop or paraphrase time words. 'cnn live news' is a video request, not headlines.\n"
+            "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. If the user constrains WHEN ('new', 'newest', 'this week', 'yesterday', 'latest'), copy that time phrase VERBATIM into the tool's freshness parameter and keep it in the query — never drop or paraphrase time words. A plain 'video' ask means a REGULAR video, never a Short: only pass format='short' when the user actually says short/shorts, and pass format='long' when they say 'full video' or 'not a short'. 'cnn live news' is a video request, not headlines.\n"
             "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
             "- news, headlines, 'what's happening with X', 'top stories' → RESEARCH IT. Do not stop at a list of headlines:\n"
             "    1. mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories) — returns current stories, each already carrying a photo and a summary.\n"
@@ -10259,18 +10390,50 @@ async def send_message(req: MessageRequest):
                                 # the requested time window even when the tool-side
                                 # signals were all lost.
                                 fresh = parse_freshness(req.message)
-                                alts = await search_youtube_videos(
-                                    search_q, limit=8, freshness=fresh) if search_q else []
-                                # Resolve the primary's channel/age from the search
-                                # hits (the model doesn't supply them) so a later
-                                # "this channel sucks" has something to block and
-                                # the window check has an age to test.
+                                form = parse_video_form(req.message)
+                                # Fetched with form="any" so the primary can be
+                                # FOUND here even when it is the wrong format —
+                                # that is exactly the case this block has to
+                                # catch. The swap candidates are filtered after.
+                                pool = await search_youtube_videos(
+                                    search_q, limit=8, freshness=fresh,
+                                    form="any") if search_q else []
+                                # Resolve the primary's channel/age/format from the
+                                # search hits (the model doesn't supply them) so a
+                                # later "this channel sucks" has something to block,
+                                # the window check has an age to test and the format
+                                # check has a Short flag to read.
                                 primary_age = None
-                                for v in alts:
+                                primary_is_short = False
+                                for v in pool:
                                     if v.get("video_id") == primary:
                                         channel = v.get("channel")
                                         primary_age = v.get("age_days")
+                                        primary_is_short = bool(v.get("is_short"))
                                         break
+                                alts = filter_by_form(pool, form)
+                                # The agent picked a Short for an ask that never
+                                # said "short" (its tool query drops the word, and
+                                # a Short is usually the freshest thing a channel
+                                # posted). Treat it like a window violation.
+                                # (and the mirror case: a Shorts ask answered with
+                                # a 20-minute upload). Only swaps when a hit of the
+                                # RIGHT format actually exists — never trade a
+                                # watchable pick for nothing.
+                                primary_found = any(v.get("video_id") == primary
+                                                    for v in pool)
+                                want_short = (form == "short")
+                                wrong_form = bool(
+                                    primary_found and primary_is_short != want_short
+                                    and any(bool(v.get("is_short")) == want_short
+                                            for v in alts))
+                                if wrong_form:
+                                    logger.info(
+                                        f"[WIDGET INJECTOR] agent pick {primary} is "
+                                        f"{'a Short' if primary_is_short else 'a full video'}"
+                                        f" but the ask wanted "
+                                        f"{'a Short' if want_short else 'a video'}"
+                                        f" — swapping")
                                 # Re-pick when: the pick is blocked, OR the query is
                                 # broad/vague, OR this exact video was already shown
                                 # this session, OR the pick violates the requested
@@ -10295,7 +10458,7 @@ async def send_message(req: MessageRequest):
                                     logger.info(f"[WIDGET INJECTOR] agent pick {primary} is "
                                                 f"{primary_age:.1f}d old, outside the "
                                                 f"~{W:g}d ask — swapping to a fresh hit")
-                                if is_blocked or stale or not primary or (
+                                if is_blocked or stale or wrong_form or not primary or (
                                         (vague or primary in seen) and not in_window):
                                     kept = filter_blocked_videos(alts)
                                     if fresh:
@@ -11143,10 +11306,12 @@ async def api_notes_load(slug: str):
 
 
 @app.get("/api/youtube/candidates")
-async def api_youtube_candidates(query: str, limit: int = 6):
+async def api_youtube_candidates(query: str, limit: int = 6,
+                                 form: Optional[str] = None):
     """Multi-result YouTube search used by the player widget to recover from
-    embed-blocked videos (it walks the list until one plays)."""
-    results = await search_youtube_videos(query, limit=min(limit, 12))
+    embed-blocked videos (it walks the list until one plays). `form` keeps the
+    replacement the same KIND as what was playing (a Short hops to a Short)."""
+    results = await search_youtube_videos(query, limit=min(limit, 12), form=form)
     return {"results": results, "count": len(results)}
 
 @app.get("/api/youtube/search")
@@ -11699,13 +11864,30 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
             if fresh:
                 logger.info(f"[YOUTUBE MCP] freshness={fresh.matched!r} "
                             f"window={fresh.window_days} for {query!r}")
+            # Format resolves the same way, most-trusted first. The explicit
+            # arg is taken verbatim ("video"/"long" both mean no Shorts) so the
+            # agent can state the axis even when its rewritten query no longer
+            # carries the word.
+            arg_form = str(a.get("format") or "").strip().lower() or None
+            if arg_form in ("video", "videos", "long-form", "longform"):
+                arg_form = "long"
+            elif arg_form in ("shorts",):
+                arg_form = "short"
+            elif arg_form not in ("short", "long", "any", None):
+                arg_form = None
+            form = arg_form or parse_video_form(query) or _stashed_turn_form()
+            if form:
+                logger.info(f"[YOUTUBE MCP] format={form!r} for {query!r}")
             results = []
             # A recency ask that NAMES a creator is answered from that creator's
             # uploads feed, exactly like the chat fast-path. Without this the
             # agent path fell to keyword search, which ranks by relevance over a
             # polluted pool: "primeagen newest" returned a 5-day-old clip while
             # the creator's 3-hour-old upload existed. Search stays the fallback.
-            if fresh and order != "live":
+            # A Shorts ask goes down the channel path too, recency word or not:
+            # the channel's Shorts feed is the only place a Short can be
+            # identified with certainty (search only has the duration tell).
+            if (fresh or form == "short") and order != "live":
                 subject, _topic = _split_video_subject_topic(query)
                 if subject:
                     try:
@@ -11717,7 +11899,8 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
                             chans = [c for c in chans
                                      if c["rank_score"] >= best - 0.3][:3]
                             feeds = await asyncio.gather(
-                                *[_youtube_channel_uploads(c["channel_id"], limit=12)
+                                *[_youtube_channel_uploads(c["channel_id"], limit=12,
+                                                           form=form)
                                   for c in chans], return_exceptions=True)
                             merged, seen_v = [], set()
                             for c, f in zip(chans, feeds):
@@ -11729,7 +11912,7 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
                                         merged.append({**h, "channel": h.get("channel") or c["title"]})
                             merged.sort(key=lambda h: h["age_days"]
                                         if h.get("age_days") is not None else 1e9)
-                            if fresh.window_days:
+                            if fresh and fresh.window_days:
                                 merged = filter_by_age(merged, fresh.window_days) or merged
                             results = filter_blocked_videos(merged)[:max(limit, 1)]
                             if results:
@@ -11743,8 +11926,14 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
             if not results:
                 results = await search_youtube_videos(query, limit=limit, order=order,
                                                       strict_recency=strict,
-                                                      rerank=True, freshness=fresh)
+                                                      rerank=True, freshness=fresh,
+                                                      form=form)
             out = {"results": results, "count": len(results)}
+            if form == "short" and results and not any(r.get("is_short") for r in results):
+                # Fail-open served regular videos for a Shorts ask — say so
+                # rather than letting the model call a 12-minute review a Short.
+                out["note"] = ("No Shorts found for that ask; these are regular "
+                               "videos — say so in your summary sentence.")
             if fresh and results and all(r.get("stale_fallback") for r in results):
                 out["note"] = ("No uploads found inside the requested time "
                                "window; these are the newest available — say "

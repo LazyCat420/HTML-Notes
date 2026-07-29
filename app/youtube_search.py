@@ -158,6 +158,107 @@ def parse_freshness(text: str, now: Optional[datetime.date] = None) -> Optional[
     return None
 
 
+# ── Format intent: Short vs long-form video ─────────────────────────────────
+# A channel's uploads feed mixes Shorts in with real uploads, and Shorts are
+# posted far more often — so "newest <creator> video" kept answering with a
+# 30-second Short. Format is therefore parsed as its OWN axis (like freshness):
+# the default is long-form ("video" means a video), and only an explicit ask
+# reaches the Shorts side.
+#
+# SOURCE pattern strings, same contract as NEWEST_PATTERN — main.py compiles its
+# own regexes from these so the vocabulary can't drift between the two files.
+#
+# "shorts" as a MEDIUM word, not the garment or a short film. Requires the word
+# to sit where a media noun sits: after a request/possessive word, before a
+# from/by/about clause, hyphenated as "short-form", or as the trailing noun of
+# the ask ("mkbhd shorts"). "short film"/"short documentary" are excluded
+# outright — those are long-form works whose name happens to start with "short".
+SHORT_FORM_PATTERN = (
+    r'\b(?:yt|youtube)\s*-?\s*shorts?\b'
+    r'|\bshort[\s-]?form\b'
+    r'|\bshorts\b(?!\s*(?:review|haul|outfit|pants|fashion))'
+    r'|\bshort\b(?=\s+(?:video|clip|from|by|about)\b)'
+    # Trailing noun: "newest mkbhd short", "pull up a short." The lookbehind
+    # keeps the ADJECTIVE out ("i'm short", "the list is short").
+    r'|(?<!\bis\s)(?<!\bam\s)(?<!\bare\s)(?<!\bwas\s)(?<!\btoo\s)(?<!\bvery\s)'
+    r'(?<!\bso\s)(?<!\brunning\s)\bshorts?\b\s*[.!?]?\s*$'
+    r'|(?:\b(?:a|the|another|some|any|his|her|their|newest|latest|new|recent|'
+    r'newest|watch|play|show\s+me)\s+)\bshort\b(?!\s+(?:film|documentary|movie|'
+    r'story|stories|hair|term|circuit|selling|notice))'
+)
+# Apparel/"short film" contexts where "shorts" is the SUBJECT, not the format.
+# Checked before SHORT_FORM_PATTERN so "cargo shorts review" stays a topic ask.
+_SHORT_NOT_FORMAT_RE = re.compile(
+    r'\b(?:gym|cargo|running|jean|denim|basketball|swim|bike|board|boxer|'
+    r'compression|yoga|sewing|sew|wearing|buy|pair\s+of)\s+shorts\b'
+    r'|\bshorts\s+(?:review|haul|outfit|try[\s-]?on|fashion|pants)\b', re.IGNORECASE)
+# An explicit long-form ask — also the way to OVERRIDE an incidental Shorts
+# match ("not a short", "full video, no shorts").
+LONG_FORM_PATTERN = (
+    r'\b(?:not|no|without|skip|avoid)\s+(?:a\s+|the\s+|any\s+)?shorts?\b'
+    r'|\b(?:full|whole|entire|regular|normal|proper|actual|long)\s+'
+    r'(?:length\s+)?(?:video|upload|episode|stream|vod)\b'
+    r'|\blong[\s-]?form\b'
+)
+_SHORT_FORM_RE = re.compile(SHORT_FORM_PATTERN, re.IGNORECASE)
+_LONG_FORM_RE = re.compile(LONG_FORM_PATTERN, re.IGNORECASE)
+
+# Longest a YouTube Short can be. Shorts were capped at 60s and are now 3
+# minutes, but duration alone can't separate a 2-minute regular upload from a
+# 2-minute Short — so the DURATION tell stays at 60s (conservative: it never
+# misclassifies a real video as a Short) and the exact answer comes from the
+# channel's Shorts playlist feed, which is authoritative.
+SHORT_MAX_SECONDS = 60
+
+
+def parse_video_form(text: str) -> Optional[str]:
+    """'short', 'long', or None (no format stated) for a video ask.
+
+    None is NOT the same as 'long': callers default to excluding Shorts, but a
+    stated 'long' additionally survives a query rewrite and can be logged."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if _LONG_FORM_RE.search(t):
+        return "long"
+    if _SHORT_NOT_FORMAT_RE.search(t):
+        return None
+    if _SHORT_FORM_RE.search(t):
+        return "short"
+    return None
+
+
+def hit_is_short(h) -> bool:
+    """Is this hit a Short? The `is_short` flag when something authoritative set
+    it (the search parser, the channel Shorts feed), else the duration tell.
+    Reading duration here too means a hit that arrived from a path which never
+    computed the flag is still classified rather than silently passing as a
+    video. Live streams are never Shorts."""
+    if _hit_get(h, "is_short"):
+        return True
+    if _hit_get(h, "is_live"):
+        return False
+    dur = _hit_get(h, "duration_sec")
+    return dur is not None and dur <= SHORT_MAX_SECONDS
+
+
+def filter_by_form(hits: list, form: Optional[str]) -> list:
+    """Keep only the hits matching the requested format. Accepts dicts or Video
+    objects, and reads the `is_short` flag the parser/feed set.
+
+    Fail-open: a filter that would empty the pool returns the pool unchanged —
+    an off-format video beats an empty player, and the caller can still tell
+    what it got from each hit's own `is_short`."""
+    if form == "any" or not hits:
+        return list(hits)
+    if form == "short":
+        kept = [h for h in hits if hit_is_short(h)]
+    else:
+        # Default (None) and explicit 'long' both mean: no Shorts.
+        kept = [h for h in hits if not hit_is_short(h)]
+    return kept or list(hits)
+
+
 def _hit_get(h, key):
     return h.get(key) if isinstance(h, dict) else getattr(h, key, None)
 

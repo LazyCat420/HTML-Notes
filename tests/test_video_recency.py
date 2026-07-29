@@ -74,7 +74,7 @@ def test_resolve_channel_single_word_exact_top_result_only(monkeypatch):
             '{"channelRenderer":{"channelId":"UCX",'
             '"title":{"simpleText":"Fireship Clips"}}')
 
-    async def fake_html(url, timeout=12.0):
+    async def fake_html(url, timeout=12.0, scraper_fallback=True):
         return html
     monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
     out = asyncio.run(m._resolve_youtube_channel("fireship"))
@@ -130,7 +130,9 @@ _SAMPLE_FEED = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def test_channel_uploads_parses_feed_newest_first(monkeypatch):
-    async def fake_html(url, timeout=12.0):
+    async def fake_html(url, timeout=12.0, scraper_fallback=True):
+        if "playlist_id=UUSH" in url:
+            return ""          # this channel has never posted a Short
         assert "feeds/videos.xml?channel_id=UC123" in url
         return _SAMPLE_FEED
     monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
@@ -148,7 +150,7 @@ def test_video_builder_uses_channel_feed_for_newest(monkeypatch):
     async def fake_resolve(name):
         assert "paul barron" in name.lower()
         return {"channel_id": "UC123", "title": "Paul Barron Network"}
-    async def fake_uploads(cid, limit=8):
+    async def fake_uploads(cid, limit=8, form=None):
         return [{"video_id": "NEW1", "id": "NEW1", "title": "Newest Upload",
                  "channel": "Paul Barron Network", "age_days": 0.02},
                 {"video_id": "OLD1", "id": "OLD1", "title": "Older",
@@ -187,7 +189,7 @@ def test_newest_is_idempotent_even_when_already_shown(monkeypatch):
         return {"retrieval_query": "paul barron"}
     async def fake_resolve(name):
         return {"channel_id": "UC123", "title": "Paul Barron Network"}
-    async def fake_uploads(cid, limit=8):
+    async def fake_uploads(cid, limit=8, form=None):
         return [{"video_id": "NEW1", "id": "NEW1", "title": "Newest",
                  "channel": "Paul Barron Network", "age_days": 0.02},
                 {"video_id": "OLD1", "id": "OLD1", "title": "Older",
@@ -221,7 +223,7 @@ def test_newest_fallback_sorts_relevance_hits_by_age(monkeypatch):
         return None                       # no channel bound
     calls = {"n": 0}
     async def fake_search(q, limit=10, order="relevance", rerank=False,
-                          strict_recency=False, freshness=None):
+                          strict_recency=False, freshness=None, form=None):
         calls["n"] += 1
         if order == "date":
             return []                     # date search dead → relevance fallback
@@ -277,7 +279,7 @@ def test_recency_pick_binds_channel_with_news_in_name(monkeypatch):
     async def fake_resolve(name):
         resolved["name"] = name
         return {"channel_id": "UCFOX", "title": "Fox News"}
-    async def fake_uploads(cid, limit=8):
+    async def fake_uploads(cid, limit=8, form=None):
         return [{"video_id": "OFF1", "id": "OFF1", "title": "Watters monologue",
                  "channel": "Fox News", "age_days": 0.01},
                 {"video_id": "MKT1", "id": "MKT1",
@@ -305,11 +307,11 @@ def test_recency_pick_topic_miss_uses_channel_verified_search(monkeypatch):
     the verified channel; junk channels never get through."""
     async def fake_resolve(name):
         return {"channel_id": "UCFOX", "title": "Fox News"}
-    async def fake_uploads(cid, limit=8):
+    async def fake_uploads(cid, limit=8, form=None):
         return [{"video_id": "OFF1", "id": "OFF1", "title": "Watters monologue",
                  "channel": "Fox News", "age_days": 0.01}]
     async def fake_search(q, limit=10, order="relevance", rerank=False,
-                          strict_recency=False, freshness=None):
+                          strict_recency=False, freshness=None, form=None):
         return [
             {"video_id": "JUNK", "id": "JUNK", "title": "stock market tips hindi",
              "channel": "Random Trading Guru", "age_days": 0.005},
@@ -567,7 +569,7 @@ def test_resolver_scores_every_candidate_not_just_the_first(monkeypatch):
             '{"channelRenderer":{"channelId":"UC_REAL","title":{"simpleText":"ThePrimeagen"},'
             '"canonicalBaseUrl":"/@ThePrimeagen","ownerBadges":["BADGE_STYLE_TYPE_VERIFIED"]}')
 
-    async def fake_html(url, timeout=12.0):
+    async def fake_html(url, timeout=12.0, scraper_fallback=True):
         return html
     monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
     out = asyncio.run(m._resolve_youtube_channels("primeagen"))
@@ -592,7 +594,7 @@ def test_multi_channel_merge_picks_newest_across_siblings(monkeypatch):
                 {"channel_id": "UC_SIB", "title": "The PrimeTime", "handle": "@ThePrimeTimeagen",
                  "match": 0.65, "rank_score": 0.98, "rank": 1, "verified": True}]
 
-    async def fake_uploads(cid, limit=8):
+    async def fake_uploads(cid, limit=8, form=None):
         if cid == "UC_MAIN":
             return [{"video_id": "OLD11DAYS", "id": "OLD11DAYS", "title": "I like Game Programming",
                      "channel": "ThePrimeagen", "age_days": 11.2}]
@@ -649,7 +651,7 @@ def test_mcp_recency_uses_channel_feed_not_keyword_search(monkeypatch):
         return [{"channel_id": "UC_MAIN", "title": "ThePrimeagen", "handle": "@ThePrimeagen",
                  "match": 0.9, "rank_score": 1.2, "rank": 0, "verified": True}]
 
-    async def fake_uploads(cid, limit=8):
+    async def fake_uploads(cid, limit=8, form=None):
         return [{"video_id": "FRESH3HRS", "id": "FRESH3HRS", "title": "Dont Smile",
                  "channel": "ThePrimeagen", "age_days": 0.13}]
 
@@ -736,7 +738,7 @@ def test_channel_ask_without_a_recency_word_still_serves_newest(monkeypatch):
         return [{"channel_id": "UC_M", "title": "ThePrimeagen", "handle": "@ThePrimeagen",
                  "match": 0.9, "rank_score": 1.2, "rank": 0, "verified": True}]
 
-    async def fake_uploads(cid, limit=8):
+    async def fake_uploads(cid, limit=8, form=None):
         return [{"video_id": "NEWEST12345", "id": "NEWEST12345", "title": "Dont Smile",
                  "channel": "ThePrimeagen", "age_days": 0.15},
                 {"video_id": "OLDER1234567", "id": "OLDER1234567", "title": "old one",
@@ -764,3 +766,251 @@ def test_topic_ask_without_recency_returns_none_for_search(monkeypatch):
     monkeypatch.setattr(m, "_resolve_youtube_channels", no_chan)
     monkeypatch.setattr(m, "search_youtube_videos", boom)
     assert asyncio.run(m._recency_video_pick("a cookie recipe video", "s-t")) is None
+
+
+# ── Shorts vs videos ────────────────────────────────────────────────────────
+# LIVE BUG: "newest <channel> video" served the channel's newest SHORT. The
+# uploads feed interleaves both and creators post Shorts far more often, so the
+# feed head was almost always a 30-second clip. Format is now its own axis:
+# default = no Shorts, explicit ask = Shorts only.
+from app.youtube_search import parse_video_form, filter_by_form
+
+
+@pytest.mark.parametrize("text", [
+    "newest mkbhd short",
+    "show me a short from mkbhd",
+    "mkbhd shorts",
+    "play some youtube shorts",
+    "a short about cats",
+    "short-form content from veritasium",
+])
+def test_parse_video_form_detects_a_shorts_ask(text):
+    assert parse_video_form(text) == "short"
+
+
+@pytest.mark.parametrize("text", [
+    "newest mkbhd video",
+    "pull up a video about spacex",
+    "a cookie recipe video",
+    # "short" as an adjective or as somebody else's noun — NOT the format.
+    "best short films of 2026",
+    "how to sew shorts",
+    "cargo shorts review",
+    "i am short on time",
+])
+def test_parse_video_form_ignores_non_format_uses(text):
+    assert parse_video_form(text) != "short"
+
+
+@pytest.mark.parametrize("text", [
+    "newest linus video, not a short",
+    "give me the full video",
+    "long-form primeagen",
+])
+def test_parse_video_form_explicit_long(text):
+    assert parse_video_form(text) == "long"
+
+
+def test_filter_by_form_fails_open_rather_than_returning_nothing():
+    shorts = [{"video_id": "S1", "is_short": True}]
+    assert filter_by_form(shorts, None) == shorts, \
+        "a channel that posts only Shorts must still return something"
+    assert filter_by_form(shorts, "any") == shorts
+
+
+_SHORTS_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"
+      xmlns:media="http://search.yahoo.com/mrss/"
+      xmlns="http://www.w3.org/2005/Atom">
+  <title>Shorts</title>
+  <author><name>Paul Barron Network</name></author>
+  <entry>
+    <yt:videoId>SHORT1</yt:videoId>
+    <title>60 Second Take</title>
+    <published>2999-06-01T00:00:00+00:00</published>
+    <media:group><media:thumbnail url="http://t/s.jpg"/></media:group>
+  </entry>
+</feed>"""
+
+_MIXED_FEED = _SAMPLE_FEED.replace("""  <entry>
+    <yt:videoId>NEW1</yt:videoId>""", """  <entry>
+    <yt:videoId>SHORT1</yt:videoId>
+    <title>60 Second Take</title>
+    <published>2999-06-01T00:00:00+00:00</published>
+    <media:group><media:thumbnail url="http://t/s.jpg"/></media:group>
+  </entry>
+  <entry>
+    <yt:videoId>NEW1</yt:videoId>""")
+
+
+def _feed_server(monkeypatch):
+    """The uploads feed leads with a Short; the Shorts playlist feed names it."""
+    seen = []
+
+    async def fake_html(url, timeout=12.0, scraper_fallback=True):
+        seen.append(url)
+        if "playlist_id=UUSH" in url:
+            return _SHORTS_FEED
+        return _MIXED_FEED
+
+    monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
+    return seen
+
+
+def test_channel_feed_drops_shorts_by_default(monkeypatch):
+    """The head of the uploads feed is a Short posted AFTER the real upload —
+    the exact shape of the live failure. Newest VIDEO is NEW1, not SHORT1."""
+    _feed_server(monkeypatch)
+    feed = asyncio.run(m._youtube_channel_uploads("UC123", limit=6))
+    assert [h["video_id"] for h in feed] == ["NEW1", "OLD1"]
+    assert all(h["is_short"] is False for h in feed)
+
+
+def test_channel_feed_serves_shorts_when_asked(monkeypatch):
+    seen = _feed_server(monkeypatch)
+    feed = asyncio.run(m._youtube_channel_uploads("UC123", limit=6, form="short"))
+    assert [h["video_id"] for h in feed] == ["SHORT1"]
+    assert feed[0]["is_short"] is True
+    # Attribution survives: the playlist feed's <title> is "Shorts", so the
+    # channel name has to come from the author element.
+    assert feed[0]["channel"] == "Paul Barron Network"
+    # A Shorts ask reads ONE feed — no point paying for the uploads feed too.
+    assert all("playlist_id=UUSH" in u for u in seen)
+
+
+def test_shorts_playlist_id_derives_from_the_channel_id():
+    assert m._yt_auto_playlist("UCtI0Hodo5o5dUb67FeUjDeA", "short") == \
+        "UUSHtI0Hodo5o5dUb67FeUjDeA"
+    assert m._yt_auto_playlist("UCtI0Hodo5o5dUb67FeUjDeA", "all") == \
+        "UUtI0Hodo5o5dUb67FeUjDeA"
+
+
+def test_channel_feed_falls_open_when_the_channel_posts_only_shorts(monkeypatch):
+    async def fake_html(url, timeout=12.0, scraper_fallback=True):
+        return _SHORTS_FEED       # every upload is also in the Shorts feed
+    monkeypatch.setattr(m, "_yt_fetch_html", fake_html)
+    feed = asyncio.run(m._youtube_channel_uploads("UC123", limit=6))
+    assert [h["video_id"] for h in feed] == ["SHORT1"], \
+        "an empty player is worse than a Short from the right channel"
+
+
+def test_search_drops_shorts_before_the_age_sort(monkeypatch):
+    """A Short uploaded an hour ago must not beat this morning's real upload on
+    a strict-recency ask — the format filter runs BEFORE the date sort."""
+    fresh_short = Video(video_id="S1", id="S1", title="paul barron network take",
+                        channel="Paul Barron Network", duration_sec=45,
+                        age_days=0.04, rank=0)
+    real = Video(video_id="V1", id="V1", title="paul barron network market update",
+                 channel="Paul Barron Network", duration_sec=1400,
+                 age_days=0.3, rank=1)
+
+    async def fake_fetch(query, limit=10, order="relevance", lang="en", window_days=None):
+        return [fresh_short, real]
+
+    monkeypatch.setattr(m, "_yt_fetch_videos", fake_fetch)
+    out = asyncio.run(m._search_youtube_scrape("paul barron network", limit=5,
+                                               strict_recency=True))
+    assert [h["video_id"] for h in out] == ["V1"]
+    # ...and the same query asking for a Short gets the Short.
+    out = asyncio.run(m._search_youtube_scrape("paul barron network", limit=5,
+                                               strict_recency=True, form="short"))
+    assert [h["video_id"] for h in out] == ["S1"]
+
+
+def test_recency_pick_asks_the_feed_for_shorts(monkeypatch):
+    """'newest mkbhd short' must reach the feed with form='short' — and the word
+    must not leak into the channel guess or the topic filter."""
+    got = {}
+
+    async def fake_resolve_many(name, limit=3, evidence="plain"):
+        got["subject"] = name
+        return [{"channel_id": "UC_MKBHD", "title": "Marques Brownlee", "handle": "@mkbhd",
+                 "match": 0.95, "rank_score": 1.2, "rank": 0, "verified": True}]
+
+    async def fake_uploads(cid, limit=8, form=None):
+        got["form"] = form
+        return [{"video_id": "SHORT9", "id": "SHORT9", "title": "quick take",
+                 "channel": "Marques Brownlee", "age_days": 0.05, "is_short": True}]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", fake_resolve_many)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "_remember_current_video", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_shown_video_ids", lambda sid: set())
+
+    cfg = asyncio.run(m._recency_video_pick("newest mkbhd short", "sess-short"))
+    assert cfg and cfg["video_id"] == "SHORT9"
+    assert got["form"] == "short"
+    assert "short" not in got["subject"].lower(), \
+        "the format word must not become part of the channel-name guess"
+
+
+def test_mcp_format_arg_reaches_the_channel_feed(monkeypatch):
+    """The agent's rewrite drops the word 'short' as readily as it drops time
+    words, so the tool takes an explicit format arg."""
+    got = {}
+
+    async def fake_resolve_many(name, limit=3, evidence="plain"):
+        return [{"channel_id": "UC_MKBHD", "title": "Marques Brownlee", "handle": "@mkbhd",
+                 "match": 0.95, "rank_score": 1.2, "rank": 0, "verified": True}]
+
+    async def fake_uploads(cid, limit=8, form=None):
+        got["form"] = form
+        return [{"video_id": "SHORT9", "id": "SHORT9", "title": "quick take",
+                 "channel": "Marques Brownlee", "age_days": 0.05, "is_short": True}]
+
+    async def fake_search(*a, **k):
+        raise AssertionError("a Shorts ask with a bound channel must use the feed")
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", fake_resolve_many)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "search_youtube_videos", fake_search)
+    monkeypatch.setattr(m, "_fetch_secret", _no_secret)
+
+    out = asyncio.run(m.internal_tool_execute(m.InternalToolRequest(
+        tool="html_notes_youtube_search",
+        args={"query": "mkbhd", "format": "short", "limit": 4})))
+    assert got["form"] == "short"
+    assert out["results"][0]["video_id"] == "SHORT9"
+
+
+def test_mcp_format_video_means_no_shorts(monkeypatch):
+    """format='video' is the schema's word for long-form; the server speaks
+    'long'. A silent mismatch here would re-open the bug."""
+    got = {}
+
+    async def fake_resolve_many(name, limit=3, evidence="plain"):
+        return [{"channel_id": "UC1", "title": "Marques Brownlee", "handle": "@mkbhd",
+                 "match": 0.95, "rank_score": 1.2, "rank": 0, "verified": True}]
+
+    async def fake_uploads(cid, limit=8, form=None):
+        got["form"] = form
+        return [{"video_id": "VID1", "id": "VID1", "title": "review",
+                 "channel": "Marques Brownlee", "age_days": 0.4, "is_short": False}]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", fake_resolve_many)
+    monkeypatch.setattr(m, "_youtube_channel_uploads", fake_uploads)
+    monkeypatch.setattr(m, "_fetch_secret", _no_secret)
+    out = asyncio.run(m.internal_tool_execute(m.InternalToolRequest(
+        tool="html_notes_youtube_search",
+        args={"query": "mkbhd", "freshness": "newest", "format": "video"})))
+    assert got["form"] == "long"
+    assert out["results"][0]["video_id"] == "VID1"
+
+
+def test_mcp_flags_a_shorts_ask_that_fell_back_to_videos(monkeypatch):
+    """Fail-open must be VISIBLE — the model may not call a 20-minute review a
+    Short just because the tool had nothing better."""
+    async def no_chan(name, limit=3, evidence="plain"):
+        return []
+
+    async def fake_search(*a, **k):
+        return [{"video_id": "LONG1", "id": "LONG1", "title": "full review",
+                 "age_days": 1.0, "is_short": False}]
+
+    monkeypatch.setattr(m, "_resolve_youtube_channels", no_chan)
+    monkeypatch.setattr(m, "search_youtube_videos", fake_search)
+    monkeypatch.setattr(m, "_fetch_secret", _no_secret)
+    out = asyncio.run(m.internal_tool_execute(m.InternalToolRequest(
+        tool="html_notes_youtube_search",
+        args={"query": "cat compilation", "format": "short"})))
+    assert "note" in out and "Shorts" in out["note"]
