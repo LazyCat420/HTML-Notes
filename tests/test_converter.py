@@ -33,20 +33,79 @@ def test_seed_is_carried_and_capped():
     assert len(m.build_converter_config("x" * 500)["seed"]) <= 120
 
 
-@pytest.mark.parametrize("q", [
-    "40% of 1250", "5 miles in km", "20 usd to eur", "(3+4)*2", "convert 10 kg to lb",
-])
-def test_fastpath_fires_on_conversions(q):
-    fires = bool(m.CONVERT_INTENT_RE.search(q)) and not re.search(
-        r"\b[A-Za-z]{1,5}\s+vs\.?\s+[A-Za-z]{1,5}\b", q)
-    assert fires
+# The ask that started this: a cooking-time QUESTION, dense with numbers and
+# units, rendered a unit/currency calculator on 2026-07-31.
+CHICKEN = ("145F chicken breast with the carcass how long to get to 165 its been "
+           "cooking for about 25 minutes in the oven at 400F. I think 10 minutes "
+           "should work?")
+
+CONVERSION_TABLE = [
+    # the ask IS the arithmetic -> converter
+    ("20 usd to eur", True),
+    ("5 miles in km", True),
+    ("350 f to c", True),
+    ("40% of 1250", True),
+    ("(3+4)*2", True),
+    ("convert 5 miles to km", True),
+    ("convert 10 kg to lb", True),
+    ("what is 15*23", True),
+    ("calculate 12% of 340", True),
+    # a QUESTION that merely CONTAINS numbers and units -> research
+    (CHICKEN, False),
+    ("how long should I cook 5 lb in the oven", False),
+    ("how long to drive to SF", False),
+    ("is 145 f safe for chicken", False),
+    ("what temp should I pull a brisket at", False),
+    ("should I give it 10 more minutes", False),
+    # not conversion-shaped at all
+    ("NVDA vs SPY", False),
+    ("tell me about dogs", False),
+    ("weather in tokyo", False),
+    ("set a 5 minute timer", False),
+    ("remind me in 20 minutes", False),
+]
 
 
-@pytest.mark.parametrize("q", ["NVDA vs SPY", "tell me about dogs", "weather in tokyo"])
-def test_fastpath_skips_non_conversions(q):
-    fires = bool(m.CONVERT_INTENT_RE.search(q)) and not re.search(
-        r"\b[A-Za-z]{1,5}\s+vs\.?\s+[A-Za-z]{1,5}\b", q)
-    assert not fires
+@pytest.mark.parametrize("q,expect", CONVERSION_TABLE)
+def test_is_conversion_ask(q, expect):
+    assert m.is_conversion_ask(q) is expect
+
+
+def test_the_chicken_question_is_not_a_conversion():
+    """The live 2026-07-31 misroute, asserted on its own so a regression names
+    the actual bug rather than one row of a table."""
+    assert not m.is_conversion_ask(CHICKEN), (
+        "a cooking-time question routed to the unit converter — the whole point "
+        "of is_conversion_ask")
+
+
+def test_explicit_convert_verb_beats_the_question_veto():
+    """CALC_IMPERATIVE_RE short-circuits: 'recipe', 'cups' and 'baking' are all
+    NUMERIC_QUESTION_RE tokens, but the user literally said convert."""
+    assert m.is_conversion_ask("convert my recipe from cups to grams for baking")
+
+
+def test_bare_expression_asks_reach_the_fast_path():
+    """"what is 15*23" matches nothing in CONVERT_INTENT_RE (its arithmetic arm
+    is anchored ^...$), so before CALC_IMPERATIVE_RE it paid a full agent turn."""
+    assert not m.CONVERT_INTENT_RE.search("what is 15*23")
+    assert m.is_conversion_ask("what is 15*23")
+
+
+@pytest.mark.parametrize("q,expect", CONVERSION_TABLE)
+def test_fastpath_uses_the_shared_predicate(q, expect):
+    """These used to re-implement the predicate inline, so they would have gone
+    on passing while production diverged from them."""
+    assert m.is_conversion_ask(q) is expect
+
+
+def test_fastpath_calls_the_shared_predicate_in_source():
+    import inspect
+    src = inspect.getsource(m)
+    assert "if is_conversion_ask(text_clean):" in src
+    assert "CONVERT_INTENT_RE.search(text_clean)" not in src, (
+        "the always-on fast path must go through is_conversion_ask so all three "
+        "converter entry points share one definition")
 
 
 def test_converter_is_registered_and_renders():

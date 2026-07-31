@@ -222,3 +222,74 @@ def test_agent_prompt_and_injector_route_comparisons():
     assert "compare_symbols" in SRC
     assert "COMPARE tickers" in SRC, "SYSTEM_PROMPT must teach the compare route"
     assert "Built stock compare" in SRC, "injector must build server-side"
+
+
+# ── a numeric QUESTION is not a conversion (live misroute 2026-07-31) ────────
+#
+# "145F chicken breast ... how long to get to 165 ... 25 minutes in the oven at
+# 400F" rendered a unit/currency calculator. The console proved it was the AGENT
+# path (path=='agent' plus a streamed tool_call), not the router and not the
+# deterministic intercept — CONVERT_INTENT_RE does not match that text. So the
+# agent picked converter off the prompt alone, and the code-level coercion below
+# is what makes the fix hold regardless of what the model decides.
+
+def _converter_coercion_branch():
+    """The injector's converter->data_card branch source."""
+    start = SRC.index('if widget_type == "converter" and not (')
+    end = SRC.index('if widget_type == "chart" and config.get("compare_symbols")', start)
+    return SRC[start:end]
+
+
+def test_system_prompt_converter_requires_an_explicit_calculation():
+    assert "CONVERT or CALCULATE — only when the ask IS the arithmetic" in SRC
+    assert "NEVER pick converter because the message merely CONTAINS numbers" in SRC
+
+
+def test_system_prompt_routes_numeric_questions_to_research():
+    assert "A QUESTION THAT HAPPENS TO CONTAIN NUMBERS IS NOT A CALCULATION" in SRC
+    idx = SRC.index("A QUESTION THAT HAPPENS TO CONTAIN NUMBERS IS NOT A CALCULATION")
+    branch = SRC[idx:idx + 700]
+    assert "search_query" in branch and "html_notes_web_search" in branch
+
+
+def test_numeric_question_rule_precedes_the_converter_route():
+    """The ROUTING list is scanned top-down and the model takes the first match,
+    so an exclusion placed AFTER the converter line arrives too late."""
+    assert (SRC.index("A QUESTION THAT HAPPENS TO CONTAIN NUMBERS")
+            < SRC.index("widget_type='converter'"))
+
+
+def test_injector_coerces_a_non_conversion_converter_to_a_research_card():
+    branch = _converter_coercion_branch()
+    assert "is_conversion_ask" in branch
+    assert '"data_card"' in branch and '"search_query"' in branch
+    # Without this the widget is right and the SPOKEN line still says converter.
+    assert "nonlocal_last_committed" in branch
+    # _resolve_agent_widget_id resolved the id AS a converter; reusing it would
+    # let the answer card overwrite a real calculator already on the canvas.
+    assert "uuid.uuid4()" in branch
+
+
+def test_converter_coercion_runs_before_the_rehydration_chain():
+    """Landing before the chain head is the whole mechanism: the coerced config
+    then falls through to the existing data_card+search_query branch, which
+    already calls build_answer_config."""
+    assert (SRC.index('if widget_type == "converter" and not (')
+            < SRC.index('if widget_type == "chart" and config.get("compare_symbols")'))
+
+
+def test_router_builder_guards_the_converter_type():
+    """build_converter_config is pure regex — it never returns None, so it never
+    reaches the 'all builds empty -> answer card' degrade, and
+    _drop_offsubject_widgets no-ops on a single widget. Nothing catches a wrong
+    converter downstream, so the builder has to guard itself."""
+    start = SRC.index('if wtype == "converter":')
+    branch = SRC[start:SRC.index('if wtype == "reminder":', start)]
+    assert "is_conversion_ask" in branch
+    assert "build_answer_config" in branch
+
+
+def test_converter_is_not_deferred_to_the_agent():
+    """Pins WHY the builder guard above must exist: a router converter pick is
+    built locally and shipped, so the agent never sees it."""
+    assert "converter" not in m._AGENT_RESEARCH_TYPES

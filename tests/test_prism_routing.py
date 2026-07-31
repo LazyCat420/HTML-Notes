@@ -367,3 +367,64 @@ def test_shared_news_search_degrades_instead_of_raising():
     remaining chain still works, so this returns [] rather than propagating."""
     import asyncio
     assert asyncio.run(m._shared_news_search("", 6)) == []
+
+
+# ── a numeric QUESTION must not classify as a conversion (2026-07-31) ────────
+
+CHICKEN = ("145F chicken breast with the carcass how long to get to 165 its been "
+           "cooking for about 25 minutes in the oven at 400F. I think 10 minutes "
+           "should work?")
+
+
+def test_router_converter_spec_excludes_numeric_questions():
+    spec = m.ROUTER_WIDGETS["converter"][1]
+    assert "the ask IS the arithmetic" in spec
+    assert "NEVER a question that merely contains numbers" in spec
+
+
+def test_router_answer_spec_claims_numeric_judgement_questions():
+    assert "wants a JUDGEMENT" in m.ROUTER_WIDGETS["answer"][1]
+
+
+def test_router_prompt_asks_the_preflight_questions():
+    """The classifier already has the message and the canvas; asking it the
+    basic self-checks costs no extra call and no extra latency, and its output
+    on the deferral path was otherwise thrown away entirely."""
+    assert '"checks"' in MAIN_SRC
+    assert '"is_arithmetic"' in MAIN_SRC
+    assert '"needs_fresh_data"' in MAIN_SRC
+
+
+@pytest.mark.asyncio
+async def test_converter_pick_is_demoted_when_checks_say_not_arithmetic(monkeypatch):
+    async def fake(_instruction, max_tokens=400):
+        return {"widgets": [{"type": "converter", "query": CHICKEN}],
+                "reason": "unit conversion",
+                "checks": {"is_arithmetic": False, "needs_fresh_data": True,
+                           "wants": "answer", "subject": "chicken doneness"}}
+    monkeypatch.setattr(m, "fast_llm_json", fake)
+    plan = await m.route_with_llm(CHICKEN, "")
+    assert [w["type"] for w in plan["widgets"]] == ["answer"]
+    assert plan["widgets"][0]["query"]
+
+
+@pytest.mark.asyncio
+async def test_a_real_conversion_survives_the_demotion(monkeypatch):
+    async def fake(_instruction, max_tokens=400):
+        return {"widgets": [{"type": "converter", "query": "20 usd to eur"}],
+                "reason": "currency", "checks": {"is_arithmetic": True}}
+    monkeypatch.setattr(m, "fast_llm_json", fake)
+    plan = await m.route_with_llm("20 usd to eur", "")
+    assert [w["type"] for w in plan["widgets"]] == ["converter"]
+
+
+@pytest.mark.asyncio
+async def test_missing_checks_leave_the_plan_alone(monkeypatch):
+    """Fail open: a model that omits `checks` must not change routing."""
+    async def fake(_instruction, max_tokens=400):
+        return {"widgets": [{"type": "converter", "query": "20 usd to eur"}],
+                "reason": "currency"}
+    monkeypatch.setattr(m, "fast_llm_json", fake)
+    plan = await m.route_with_llm("20 usd to eur", "")
+    assert [w["type"] for w in plan["widgets"]] == ["converter"]
+    assert plan["checks"] == {}

@@ -36,7 +36,29 @@ window.HN = (function () {
         route(data) {
             if (!on()) return;
             if (data.path === 'agent') {
-                console.log('%c[html-notes] 🧭 route: AGENT (no fast-path matched)', 'color:#f59e0b;font-weight:bold', data);
+                // `status` says WHY the agent got this turn (deferred / defer /
+                // none / skipped-removal), `classified` + `queries` say what the
+                // tier-2 classifier thought the ask was, and `hint` says whether
+                // the agent was actually told. Before this the line carried none
+                // of it, so a misroute could only be diagnosed from server logs.
+                const r = data.router || {};
+                console.log('%c[html-notes] 🧭 route: AGENT (' + (r.status || 'unknown') + ')',
+                    'color:#f59e0b;font-weight:bold', {
+                        classified: r.widgets, queries: r.queries, targets: r.targets,
+                        checks: r.checks, reason: r.reason, hint: r.hint,
+                        followup: data.followup_target, focus: data.focus_id,
+                        query: data.query,
+                    });
+            } else if (data.path === 'router') {
+                // Without this branch a tier-2 build fell through to the fast-path
+                // line below and printed "fast-path → undefined" — spawn_router_stream
+                // sends `widgets`, not `widget_type`. The one event that names a
+                // tier-2 misroute was unreadable.
+                console.log('%c[html-notes] 🧭 route: ROUTER → ' + (data.widgets || []).join(', '),
+                    'color:#22c55e;font-weight:bold', {
+                        queries: data.queries, targets: data.targets,
+                        reason: data.reason, query: data.query,
+                    });
             } else {
                 console.log('%c[html-notes] 🧭 route: fast-path → ' + data.widget_type, 'color:#22c55e;font-weight:bold', data);
             }

@@ -5127,6 +5127,71 @@ CONVERT_INTENT_RE = re.compile(
     r'|\b\d[\d,.]*\s*(?:%|percent)\s+(?:of|off)\b'
     r'|\b\d[\d,.]*\s*(?:[a-z°]{1,5}2?|\$|€|£|¥|₹)\s+(?:to|in|into|=)\s+[a-z°$€£¥₹]{1,5}\b'
     r'|^[\s\d.,()+\-*/^%×÷]+$', re.I)
+# An UNAMBIGUOUS request for arithmetic: an explicit verb, a percentage, the
+# message IS an expression, or "what is <expression>". These short-circuit the
+# question-veto below, so "convert my recipe from cups to grams" stays a
+# conversion even though it says "recipe".
+#
+# The trailing "what is <expr>" arm matters on its own: CONVERT_INTENT_RE's
+# arithmetic arm is anchored ^...$, so "what is 15*23" matches NOTHING there and
+# a naive `CONVERT_INTENT_RE and not veto` predicate would have pushed a plain
+# calculator ask into research.
+CALC_IMPERATIVE_RE = re.compile(
+    r'\b(convert|calculate|calculator)\b'
+    r'|\b\d[\d,.]*\s*(?:%|percent)\s+(?:of|off)\b'
+    r'|^[\s\d.,()+\-*/^%×÷]+$'
+    r'|^\s*(?:what(?:\'?s| is)|how much is|whats)\s+[\d.,()+\-*/^%×÷\s]+\??$', re.I)
+# A QUESTION that merely CONTAINS numbers and units is not a conversion. It
+# wants a judgement that needs real-world knowledge — cooking times, doneness,
+# food safety, dosages, travel time — and a calculator cannot answer any of
+# them. This vetoes CONVERT_INTENT_RE's loose "<n> <unit> to/in <word>" arm,
+# which matches on SHAPE alone: "how long should I cook 5 lb in the oven"
+# satisfies it ("5" + "lb" + " in " + "the").
+NUMERIC_QUESTION_RE = re.compile(
+    r'\b(how long|how much longer|how many more|how do i|how does|how can|'
+    r'should i|do i need|does it need|will it|would it|is it|is that|are they|'
+    r'safe|safely|why is|why does|what temp\w*|what happens|recommend\w*|'
+    r'recipe|cook|cooking|bake|baking|roast|grill|smoke|oven|thaw|defrost|'
+    r'internal temp\w*|doneness|done yet|drive|driving|commute|flight)\b', re.I)
+
+
+def is_conversion_ask(text: str) -> bool:
+    """True only when the user is ASKING FOR arithmetic — not merely using
+    numbers and units inside a question.
+
+    The single predicate behind all three converter entry points (the always-on
+    fast path, the tier-2 router builder and the agent's widget injector), so
+    they cannot drift apart.
+
+    Live failure 2026-07-31: "145F chicken breast with the carcass how long to
+    get to 165 its been cooking for about 25 minutes in the oven at 400F"
+    rendered a unit/currency CALCULATOR. Nothing in the stack distinguished
+    "contains numbers and units" from "is a question about what those numbers
+    mean", and build_converter_config's _UNIT_WORDS maps f/c/cup/tsp straight
+    onto tabs, so cooking language reads as units.
+
+    CONVERT_INTENT_RE itself is deliberately NOT tightened: it is load-bearing
+    for build_converter_config's tab picker, it is already tuned, and it
+    correctly rejected that message. The veto is layered on top instead.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    # A stock comparison ("NVDA vs SPY") is a chart, never a conversion. Folded
+    # in from the fast-path call site so every entry point inherits the guard.
+    if re.search(r'\b[A-Za-z]{1,5}\s+vs\.?\s+[A-Za-z]{1,5}\b', t):
+        return False
+    if CALC_IMPERATIVE_RE.search(t):
+        return True
+    if not CONVERT_INTENT_RE.search(t):
+        return False
+    if NUMERIC_QUESTION_RE.search(t):
+        return False
+    # A real conversion is terse — "20 usd to eur", "5 miles in km". Prose long
+    # enough to be a paragraph is a question that happens to contain a unit.
+    return len(t.split()) <= 12
+
+
 # Reminder / alarm at a time. "timer/stopwatch/countdown" stay with the clock
 # widget; a reminder carries a THING to be reminded of, or an alarm time.
 REMINDER_INTENT_RE = re.compile(
@@ -7854,14 +7919,14 @@ ROUTER_WIDGETS = {
     "video":      ("video",     'something to WATCH. query = the subject ("cookie recipe")'),
     "image":      ("image",     'a PICTURE of something. query = the subject ("golden retriever puppy")'),
     "music":      ("music",     'background music / radio. query = the genre OR artist/band name. Add modifiers {"kind": "genre"} for a style/mood ("jungle", "smooth jazz", "study") or {"kind": "artist"} for a named act ("Oasis", "the band Jungle"); omit kind if unsure'),
-    "answer":     ("answer",    'a fact / recipe / how-to / definition / comparison / explanation. query = the question'),
+    "answer":     ("answer",    'a fact / recipe / how-to / definition / comparison / explanation — INCLUDING any question that contains numbers or units but wants a JUDGEMENT ("how long to get a 145F chicken to 165", "is 10 more minutes enough", "what temp is safe"). query = the question'),
     "products":   ("products",  'shopping / product recommendations to BUY or compare ("good outdoor shoes", "best budget laptop", "gift for a hiker"). query = the product ask. Renders a grid of picture cards linking to sources'),
     "trip":       ("trip",      'plan a TRIP / vacation / multi-day itinerary to a place ("plan a trip to Japan", "3 days in Rome"). query = the destination + any duration. Renders an itinerary card + a map of the spots'),
     "wikipedia":  ("wikipedia", 'an explicit Wikipedia-article request. query = the subject'),
     "list":       ("checklist", 'a checklist / to-do / shopping list to CREATE. query = the whole request'),
     "notes":      ("notes",     'a notepad, optionally pre-filled. query = the whole request'),
     "clock":      ("clock",     'a clock / world clock / timer / countdown / stopwatch. query = the whole request'),
-    "converter":  ("converter", 'a calculation OR a unit/currency conversion ("40% of 1250", "5 miles in km", "20 usd to eur"). query = the whole request'),
+    "converter":  ("converter", 'ONLY a bare calculation or unit/currency conversion — the ask IS the arithmetic ("40% of 1250", "what is 15*23", "5 miles in km", "20 usd to eur", "convert 10 kg to lb"). NEVER a question that merely contains numbers, temperatures or units ("how long until my 145F chicken hits 165", "is 10 more minutes enough", "how long to drive to SF") — those are "answer". query = the whole request'),
     "reminder":   ("reminder",  'a reminder / alarm at a time ("remind me in 20 minutes", "remind me at 3pm to call mom"). query = the whole request'),
 }
 
@@ -7886,6 +7951,119 @@ _AGENT_RESEARCH_TYPES = {"answer", "image", "wikipedia",
                          # no through-line and no cross-checking.
                          "news", "stock_news"}
 
+# The tool a research verdict actually resolves to, and the call that finishes
+# it. Every string here is copied from the ROUTING section of SYSTEM_PROMPT, so
+# the pre-flight block can never name a tool or a config key the prompt does not
+# already teach — and every tool name is pinned by a test against the
+# enabled_tools list. A hint naming a tool the agent does not have is worse than
+# no hint: it burns iterations failing against a phantom (the same failure the
+# enabled_tools comment describes for the tools-api data tools).
+_PREFLIGHT_RECIPE = {
+    "answer":     ("mcp__lazy-tool-service__html_notes_web_search",
+                   "canvas_add_widget(widget_type='data_card', config={'search_query': <query>})"),
+    "wikipedia":  ("mcp__lazy-tool-service__html_notes_web_search",
+                   "canvas_add_widget(widget_type='data_card', config={'search_query': <query>})"),
+    "news":       ("mcp__lazy-tool-service__html_notes_news",
+                   "canvas_add_widget(widget_type='data_card', config={'news_topic': <query>})"),
+    "stock_news": ("mcp__lazy-tool-service__html_notes_stock_news",
+                   "canvas_add_widget(widget_type='data_card', config={'stock_news_query': <query>})"),
+    # No tool: the agent has no image tool at all — the server searches and
+    # vision-checks from image_query.
+    "image":      ("",
+                   "canvas_add_widget(widget_type='image', config={'image_query': <query>})"),
+}
+
+_PREFLIGHT_WANTS = {"answer", "watch", "listen", "see", "track", "compute",
+                    "remember", "ui-control"}
+
+
+def _clean_preflight_checks(raw) -> dict:
+    """Validate the classifier's pre-flight answers. Best-effort by design: a
+    missing, malformed or half-filled `checks` yields {} (or drops just the bad
+    fields), so a model hiccup degrades to today's behaviour rather than putting
+    a garbage assertion in front of the agent."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for key in ("is_arithmetic", "needs_fresh_data"):
+        if isinstance(raw.get(key), bool):
+            out[key] = raw[key]
+    wants = str(raw.get("wants", "") or "").strip().lower()
+    if wants in _PREFLIGHT_WANTS:
+        out["wants"] = wants
+    subject = str(raw.get("subject", "") or "").strip()
+    if subject:
+        out["subject"] = subject[:160]
+    unknowns = raw.get("unknowns")
+    if isinstance(unknowns, list):
+        clean = [str(u).strip()[:80] for u in unknowns[:3] if str(u).strip()]
+        if clean:
+            out["unknowns"] = clean
+    return out
+
+
+def _preflight_block(specs: list, checks: dict) -> str:
+    """Tier 2's read of the ask, rendered as a prompt block for tier 3.
+
+    The classifier already read the message AND the canvas and produced both a
+    widget plan and the basic self-check answers. On the research-deferral path
+    all of that was logged and thrown away, so the agent re-derived intent from
+    raw text with no hint — the same caller-knows-the-answer-and-discards-it
+    seam that made the traffic builder re-grep for a keyword the router had
+    already consumed (fixed there with an explicit force_traffic flag).
+
+    Deliberately a PRIOR, not a mandate. The classifier that gets this right
+    most of the time is also what read a cooking-time question as a unit
+    conversion on 2026-07-31; a mandate would make a wrong classification
+    unrecoverable, and the agent still needs freedom to pick tools. So: state
+    the checks, name the type, the cleaned query and the documented recipe, then
+    explicitly yield to the user's own words and to the FOLLOW-UP directive that
+    comes after this block.
+
+    Returns "" for an empty plan so the caller can concatenate unconditionally —
+    on defer/None the prompt stays byte-identical to before this existed.
+    """
+    if not specs:
+        return ""
+    lines = []
+    if checks.get("is_arithmetic") is not None:
+        lines.append("- Is this ask itself a calculation a converter can finish? "
+                     + ("YES" if checks["is_arithmetic"] else "NO"))
+    if checks.get("needs_fresh_data") is not None:
+        lines.append("- Does answering need data you must look up? "
+                     + ("YES — call a tool before you render" if checks["needs_fresh_data"]
+                        else "NO — it is already in this conversation"))
+    if checks.get("wants"):
+        lines.append(f"- What the user wants out of this: {checks['wants']}")
+    if checks.get("subject"):
+        lines.append(f"- Subject: \"{checks['subject']}\"")
+    if checks.get("unknowns"):
+        lines.append("- Still unknown: " + "; ".join(checks["unknowns"]))
+
+    plan = []
+    for s in specs[:4]:
+        wtype = str(s.get("type", ""))
+        query = str(s.get("query") or "").strip()
+        tool, render = _PREFLIGHT_RECIPE.get(wtype, ("", ""))
+        step = (f"call {tool}, then {render}" if tool
+                else render or f"use the {wtype} route in ROUTING above")
+        tgt = s.get("target")
+        plan.append(f'- {wtype} — query: "{query}" → {step}'
+                    + (f", writing into the EXISTING widget #{tgt}" if tgt else ""))
+
+    return (
+        "\n\nBEFORE YOU PICK A TOOL\n"
+        "A fast classifier read this ask and the canvas above before you did.\n"
+        + ("\n".join(lines) + "\n" if lines else "")
+        + "It concluded:\n" + "\n".join(plan) + "\n"
+        "Start there and reuse that query verbatim — it is the cleaned subject, "
+        "already stripped of filler. This is a strong prior, NOT an order: if it "
+        "plainly contradicts what the user actually wrote, ignore it and use the "
+        "tool that fits. Do not re-plan past it and do not add widgets it did not "
+        "name unless the ask clearly needs them. If a directive below names a "
+        "widget id, that id wins over anything here.\n"
+    )
+
 
 async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
     """Classify an ask the fast lane missed into one or more server-buildable
@@ -7897,14 +8075,25 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
       {"defer": true} to hand off to the full agent (removals, edits, note
       dictation, custom widgets, small talk), or
       None on any model failure — the caller then falls back to the agent, so the
-    router is a pure latency/quality optimization and never a hard gate."""
+    router is a pure latency/quality optimization and never a hard gate.
+
+    The returned dict also carries `checks` — the PRE-FLIGHT answers (see
+    _preflight_block). This pass already has the message AND the canvas context,
+    and on the research-deferral path its whole output used to be logged and
+    thrown away, so asking it a handful of yes/no questions costs no extra call
+    and no extra latency. `checks` is best-effort: a missing or malformed object
+    yields {} and every downstream consumer degrades to today's behaviour."""
     catalog = "\n".join(f"- {name}: {spec}" for name, (_p, spec) in ROUTER_WIDGETS.items())
     data = await fast_llm_json(
         "You are the router for a live dashboard. Choose the widget(s) that best "
         "serve the user and the search query for each. Return ONLY a JSON object, "
         "no prose, no code fence:\n"
         '{"widgets": [{"type": "<type>", "query": "<query>", "modifiers": {}, '
-        '"target": "<canvas widget id or omit>"}], "reason": "<=8 words"}\n'
+        '"target": "<canvas widget id or omit>"}], "reason": "<=8 words", '
+        '"checks": {"is_arithmetic": <bool>, "needs_fresh_data": <bool>, '
+        '"wants": "<answer|watch|listen|see|track|compute|remember|ui-control>", '
+        '"subject": "<the real subject, disambiguated>", '
+        '"unknowns": ["<what you would still have to look up>"]}}\n'
         "Rules:\n"
         "- Match the widgets to the ask. A NARROW single-intent ask (a forecast, a "
         "ticker, a timer) is ONE widget. A BROAD or rich ask should COMPOSE the "
@@ -7926,16 +8115,38 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         "the THEME / appearance / settings, or is small "
         'talk with no widget need, return {"defer": true} instead of widgets.\n'
         "- Never invent a type or a widget id. Use only the types listed and the "
-        "ids shown below.\n\n"
+        "ids shown below.\n"
+        # PRE-FLIGHT. Kept LAST so the tuned widget rules above are untouched.
+        # These are the basic questions the agent should have asked itself before
+        # reaching for a tool; answering them here means the agent is handed the
+        # answers instead of re-deriving intent from raw text.
+        '- Then fill in "checks", about the ask as a whole:\n'
+        '  "is_arithmetic": true ONLY if the ask IS a calculation or unit/currency '
+        "conversion that a calculator alone can finish. A question that merely "
+        "MENTIONS numbers, temperatures, weights, times or money is false — "
+        '"how long until my 145F chicken hits 165 in a 400F oven" needs cooking '
+        "knowledge, so it is false.\n"
+        '  "needs_fresh_data": true if answering requires looking something up '
+        "rather than reading it off this conversation.\n"
+        '  "wants": what the user actually wants OUT of this — an answer, to watch, '
+        "to listen, to see, to track, to compute, to remember, or to control the UI.\n"
+        '  "subject": the real subject in plain words, disambiguated against the '
+        "conversation above.\n"
+        '  "unknowns": up to 3 things you would still have to look up. [] if none.\n\n'
         "WIDGET TYPES:\n" + catalog +
         (f"\n\n{context_block[:1200]}" if context_block else "") +
         f'\n\nUSER: "{message}"',
-        max_tokens=400,
+        # Raised from 400: the response now also carries the `checks` object.
+        # Too small a ceiling truncates the JSON mid-object and fast_llm_json's
+        # brace match then fails, which would silently turn every route into a
+        # None -> agent fallback.
+        max_tokens=550,
     )
     if not isinstance(data, dict):
         return None
+    checks = _clean_preflight_checks(data.get("checks"))
     if data.get("defer"):
-        return {"defer": True, "reason": data.get("reason", "")}
+        return {"defer": True, "reason": data.get("reason", ""), "checks": checks}
     widgets = data.get("widgets")
     if not isinstance(widgets, list):
         return None
@@ -7965,7 +8176,18 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         clean = [w for w in clean if w["type"] != "stock" or w is stock_specs[0]]
         logger.info(f"[ROUTER] collapsed {len(stock_specs)} stock specs into "
                     f"one compare: {joined!r}")
-    return {"widgets": clean, "reason": str(data.get("reason", ""))[:80]}
+    # A converter pick is the one classification with no net underneath it (see
+    # build_router_widget), and `checks.is_arithmetic` is the model's own answer
+    # to "is this actually a calculation?" — when it says no, believe it.
+    if checks.get("is_arithmetic") is False:
+        for w in clean:
+            if w["type"] == "converter":
+                logger.info(f"[ROUTER] demoted converter -> answer "
+                            f"(checks.is_arithmetic=false): {message[:70]!r}")
+                w["type"] = "answer"
+                w["query"] = w["query"] or message
+    return {"widgets": clean, "reason": str(data.get("reason", ""))[:80],
+            "checks": checks}
 
 
 # Modalities the composition planner is allowed to combine (a subset of
@@ -8476,7 +8698,20 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             return ("notes", "notes", await build_notes_config(query or message))
 
         if wtype == "converter":
-            return ("converter", "converter", build_converter_config(query or message))
+            # The classifier picks converter off surface shape, and "converter" is
+            # deliberately NOT in _AGENT_RESEARCH_TYPES — so in prism mode this spec
+            # is built and shipped without the agent ever seeing it. There is also
+            # no net underneath: build_converter_config is pure regex, so it never
+            # returns None and never reaches the "all builds empty -> answer card"
+            # degrade, and _drop_offsubject_widgets no-ops on a single widget. A
+            # numeric QUESTION reaching here renders a calculator with no second
+            # chance, so gate it on the same predicate the fast path uses.
+            conv_ask = query or message
+            if not is_conversion_ask(conv_ask):
+                logger.info(f"[ROUTER] converter -> answer (not a conversion): "
+                            f"{conv_ask[:80]!r}")
+                return ("data_card", "answer", await build_answer_config(conv_ask))
+            return ("converter", "converter", build_converter_config(conv_ask))
 
         if wtype == "reminder":
             return ("reminder", "reminder", build_reminder_config(query or message))
@@ -8779,6 +9014,11 @@ async def send_message(req: MessageRequest):
             async def stream():
                 yield ('data: ' + json.dumps({
                     "type": "debug", "path": "router", "widgets": [s.get("type") for s in specs],
+                    # The QUERY is the field that names a misroute — the type alone
+                    # says "converter" without saying it was handed a cooking
+                    # question. Emit what each spec was actually built from.
+                    "queries": [s.get("query") for s in specs],
+                    "targets": [s.get("target") for s in specs],
                     "reason": reason or "", "query": req.message}) + '\n\n')
                 label = (", ".join(s.get("type", "") for s in specs)
                          if len(specs) > 1 else (specs[0].get("type", "widget") if specs else "widget"))
@@ -8969,10 +9209,12 @@ async def send_message(req: MessageRequest):
                 status="setting a reminder...",
                 widget_id=find_existing_widget(req.session_id, "reminder"))
 
-        # CALC / CONVERT — instant interactive widget, no agent. Guarded off a
-        # stock compare ("NVDA vs SPY"), which is a chart, not a conversion.
-        if (CONVERT_INTENT_RE.search(text_clean)
-                and not re.search(r'\b[A-Za-z]{1,5}\s+vs\.?\s+[A-Za-z]{1,5}\b', text_clean)):
+        # CALC / CONVERT — instant interactive widget, no agent. The stock-compare
+        # guard ("NVDA vs SPY" is a chart, not a conversion) now lives inside
+        # is_conversion_ask, along with the veto that keeps a numeric QUESTION
+        # ("how long should I cook 5 lb in the oven" — which satisfies the loose
+        # "<n> <unit> in <word>" arm) out of the calculator.
+        if is_conversion_ask(text_clean):
             return spawn_widget_stream(
                 "converter", "converter",
                 config=build_converter_config(req.message),
@@ -9562,20 +9804,60 @@ async def send_message(req: MessageRequest):
         # captures. A refining follow-up is left to the agent (or to the router's
         # own in-place reuse) so it still updates the open widget rather than
         # spawning a duplicate.
+        # Tier 2's verdict has to SURVIVE into tier 3. Bound at FUNCTION scope,
+        # not inside the branch below: the SYSTEM_PROMPT build reads these, and
+        # the debug event inside the agent proxy closes over them — on the
+        # wants_removal path the classifier never runs, so a name bound only
+        # inside `if not wants_removal:` would NameError at stream time, i.e. on
+        # every "remove the clock".
+        router_plan: Optional[dict] = None
+        router_specs: list = []          # the plan handed to the agent as a prior
+        router_checks: dict = {}         # the pre-flight self-check answers
+        router_status = "skipped-removal"   # local | deferred | defer | none
         if not wants_removal:
             router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
+            router_checks = (router_plan or {}).get("checks") or {}
             if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
                 widgets = router_plan["widgets"]
                 research = [w["type"] for w in widgets if w["type"] in _AGENT_RESEARCH_TYPES]
                 if req.use_lazy_agent or not research:
+                    router_status = "local"
                     logger.info(f"[ROUTER] tier2-local {[w['type'] for w in widgets]} "
+                                f"q={[w['query'][:40] for w in widgets]} "
                                 f"— {router_plan.get('reason','')}")
                     return spawn_router_stream(widgets, router_plan.get("reason"))
+                # The classification is USABLE and we are about to hand the ask to
+                # the agent, which re-derives intent from the raw message with no
+                # hint. Carry it. The WHOLE plan, not just the research half: a
+                # composite ("weather + answer") defers entirely, so the
+                # non-research specs were being dropped here silently too.
+                router_specs = widgets
+                router_status = "deferred"
                 logger.info(f"[ROUTER] tier3-agent: deferring research {research} "
-                            f"(of {[w['type'] for w in widgets]}) to the prism agent")
+                            f"(of {[w['type'] for w in widgets]}) to the prism agent "
+                            f"— hint={[(w['type'], w['query'][:40]) for w in widgets]} "
+                            f"checks={router_checks or '{}'}")
+            elif router_plan and router_plan.get("defer"):
+                router_status = "defer"
+                logger.info(f"[ROUTER] tier3-agent: classifier deferred "
+                            f"({router_plan.get('reason','')})")
             else:
-                logger.info(f"[ROUTER] tier3-agent: no plan "
-                            f"({(router_plan or {}).get('reason','none')})")
+                router_status = "none"
+                logger.info("[ROUTER] tier3-agent: no plan (classifier returned nothing)")
+
+        # ONE dict feeding both the log line and the browser debug event, so the
+        # console and the server can never tell different stories about the same
+        # turn. Assigned unconditionally here — before every `return` that reaches
+        # the agent — because the proxy closes over it.
+        router_debug = {
+            "status": router_status,
+            "widgets": [w["type"] for w in (router_plan or {}).get("widgets") or []],
+            "queries": [w["query"] for w in (router_plan or {}).get("widgets") or []],
+            "targets": [w.get("target") for w in (router_plan or {}).get("widgets") or []],
+            "reason": (router_plan or {}).get("reason", ""),
+            "checks": router_checks,
+            "hint": bool(router_specs),
+        }
 
         # Start loading history
         history = database.get_session_messages(req.session_id)
@@ -9602,6 +9884,8 @@ async def send_message(req: MessageRequest):
             "5. Then write ONE sentence (max 25 words) that ANSWERS the question — the single most useful thing you found, with the specific number, name or verdict in it. That sentence is the only prose you write all turn, and it is READ ALOUD, so it must stand on its own to someone not looking at the screen.\n"
             "   Say the finding, never the filing. 'Traffic to San Jose is clear, about 35 minutes via 880.' NOT 'Added a traffic map.' 'The Seattle Rain Hat wins on waterproofing; the Sunday Afternoons is cheaper.' NOT 'Here is a card comparing hats.'\n"
             "   Never mention widgets, cards, canvas, or that you added anything — the user can see the screen. If you genuinely found nothing, say what you couldn't find and why, in one sentence.\n"
+            "   When the ask was a JUDGEMENT with numbers in it, that sentence carries the verdict AND the number: 'About 6 more minutes — pull it at 165F.' NOT 'Cooking times depend on thickness.' Answer the question that was asked.\n"
+            "   Everything you write BEFORE your first tool call is discarded, so do your deciding there freely — but the user only ever sees the sentence you write AFTER the widget is up. Make that one count.\n"
             "6. EVERY turn ends in a canvas mutation. You have NOT finished until canvas_add_widget (or canvas_modify_dom) has succeeded. Never end a turn having only searched, read or reasoned — if a tool fails, render what you already have rather than retrying forever or giving up silently.\n"
             "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
@@ -9634,7 +9918,8 @@ async def send_message(req: MessageRequest):
             "- 'who is X' / 'tell me about <person/company/place>' → canvas_add_widget(widget_type='profile_card', config={'profile_query':'<the subject>'}). The server builds the portrait + facts infobox — never type an image url.\n"
             "- goals / tracking / percentage breakdowns ('savings goals', 'EV market share by maker') → canvas_add_widget(widget_type='progress', config={'title':…, 'items':[{'label':…, 'value':8200, 'target':10000, 'unit':'$'} or {'label':…, 'pct':48}]}).\n"
             "- clock, checklist, notes → canvas_add_widget with that widget_type; music/radio → widget_type='mini_music_player' (config={'genre':…}); embed a site/app → widget_type='iframe_app' (config={'url':…})\n"
-            "- CALCULATE or CONVERT ('40% of 1250', '5 miles in km', '20 usd to eur', 'what is 15*23') → canvas_add_widget(widget_type='converter', config={'seed':'<the whole ask>'}). The widget does the math client-side and stays interactive — never compute it yourself in prose.\n"
+            "- A QUESTION THAT HAPPENS TO CONTAIN NUMBERS IS NOT A CALCULATION. 'how long until my 145F chicken hits 165 in a 400F oven', 'is 10 more minutes enough', 'what temp should I pull the brisket at', 'how long to drive to SF', 'is 3 drinks over the limit' — the user wants a JUDGEMENT that needs real-world knowledge, not arithmetic. Cooking times, doneness and food safety, dosages, travel times and legal limits are ALL research asks → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). A converter cannot answer any of them.\n"
+            "- CONVERT or CALCULATE — only when the ask IS the arithmetic and nothing else: an explicit 'convert'/'calculate' ('convert 10 kg to lb'), a bare expression ('what is 15*23', '(3+4)*2'), a percentage ('40% of 1250'), or a bare '<amount> <unit> to <unit>' ('5 miles in km', '20 usd to eur') → canvas_add_widget(widget_type='converter', config={'seed':'<the whole ask>'}). The widget does the math client-side and stays interactive — never compute it yourself in prose. NEVER pick converter because the message merely CONTAINS numbers, temperatures, weights, times or currency; if the ask is a question about what those numbers MEAN or what to DO, use the research route on the line above.\n"
             "- REMIND / alarm ('remind me in 20 min', 'remind me at 3pm to call mom', 'set an alarm for 7am') → canvas_add_widget(widget_type='reminder', config={'label':'<what to remind>', 'offset_seconds':<N for a relative time, else 0>, 'at_time':'<HH:MM 24h for an absolute time, else empty>'}). The widget counts down and alerts.\n"
             "- APPEARANCE / theme / colors ('dark mode', 'forest theme', 'make it pastel', 'egg colors'), OR settings/preferences → canvas_add_widget(widget_type='settings', config={'theme':'<what the user asked — e.g. dark, forest, pastel, egg, sunset, purple>'}). The server picks the CLOSEST palette from what you pass and applies it; omit 'theme' to just open settings without changing the look. This is the ONLY way to change the theme — never hand-edit colors. It's a singleton, so it updates in place.\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
@@ -9659,6 +9944,17 @@ async def send_message(req: MessageRequest):
             "meaning apply.\n\n"
             + _user_facts_prompt()
             + f"{turn_ctx['context_block']}"
+            # TIER-2's VERDICT, placed in the recency window. The note above
+            # (instruction-following decays with instruction count and what gets
+            # dropped is the MIDDLE) is exactly why this is not spliced into the
+            # ROUTING list ~60 lines up. It sits AFTER the canvas and history the
+            # classifier itself read — context, then verdict, then target — and
+            # BEFORE the follow-up directive, which keeps last position: that
+            # directive is the more brittle of the two (a weaker, non-last
+            # version measurably produced prose and zero tool calls), and the two
+            # do not compete — this block says WHAT to fetch, the directive says
+            # WHERE to write it.
+            + _preflight_block(router_specs, router_checks)
             # A CONCRETE, last-position directive naming the actual widget id.
             # The generic "FOLLOW-UPS UPDATE THE OPEN WIDGET" paragraph above was
             # not enough: on a terse ask ("what about cheaper ones") the model
@@ -10171,6 +10467,44 @@ async def send_message(req: MessageRequest):
                             }
                             if apply:
                                 logger.info(f"[WIDGET INJECTOR] Settings: applying theme {apply!r}")
+
+                        # THE CONVERTER IS FOR ARITHMETIC, NOT FOR QUESTIONS THAT
+                        # CONTAIN NUMBERS. Live failure 2026-07-31: "145F chicken
+                        # breast ... how long to get to 165 ... 25 minutes in the
+                        # oven at 400F" rendered a unit calculator. Three things
+                        # pushed it there and no single one is fixable in prose:
+                        # rule 6 forces a canvas mutation every turn, converter's
+                        # `seed` invites "the whole ask", and build_converter_config's
+                        # _UNIT_WORDS maps f/c/cup/tsp straight onto tabs, so cooking
+                        # language reads as units. Decide it in CODE, the same way
+                        # chart -> stock_card is decided.
+                        #
+                        # Conservative in both directions: the converter survives if
+                        # EITHER the seed or the raw message reads as a conversion,
+                        # so "20 usd to eur" is safe twice over. req.message is the
+                        # backstop because build_converter_config truncates the seed
+                        # to 120 chars and the model may abbreviate it.
+                        _seed = str((config or {}).get("seed") or "").strip()
+                        if widget_type == "converter" and not (
+                                is_conversion_ask(_seed)
+                                or is_conversion_ask(req.message)):
+                            _ask = _seed or req.message
+                            logger.info(f"[WIDGET INJECTOR] converter -> data_card "
+                                        f"(not a conversion): {_ask[:80]!r}")
+                            widget_type = "data_card"
+                            # Re-mint the id: _resolve_agent_widget_id resolved it AS
+                            # a converter and may have matched a real calculator
+                            # already on the canvas, which the answer card would then
+                            # overwrite.
+                            widget_id = f"answer-{uuid.uuid4().hex[:8]}"
+                            # Falls through to the data_card + search_query branch
+                            # below, which already calls build_answer_config.
+                            config = {"search_query": _ask}
+                            # The fast loop cuts the model off before it speaks, so
+                            # _spoken_summary reads from here — without this re-set
+                            # the widget is right and the spoken line still describes
+                            # a converter.
+                            nonlocal_last_committed["v"] = (widget_type, config, widget_id)
 
                         # Rehydrate data-heavy widgets from the tool result the
                         # model just fetched. It only has to name the subject —
@@ -10710,6 +11044,14 @@ async def send_message(req: MessageRequest):
                 yield ('data: ' + json.dumps({
                     "type": "debug", "path": "agent",
                     "note": "no fast-path matched — falling back to the LLM agent",
+                    # The classifier's verdict travels WITH the deferral now, so a
+                    # misroute is diagnosable from DevTools alone. Before this the
+                    # console said only "path: agent" and the one field that names
+                    # the cause — what tier 2 thought the ask WAS — lived in a
+                    # server log the browser cannot see.
+                    "router": router_debug,
+                    "followup_target": followup_target,
+                    "focus_id": turn_ctx.get("focus_id"),
                     "query": req.message}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": "connecting to agent..."})}\n\n'
 
@@ -10737,6 +11079,19 @@ async def send_message(req: MessageRequest):
                         buffer = ""
                         active_tool_name = None
                         active_tool_args = {}
+                        # PRE-TOOL PROSE IS DELIBERATION, NOT AN ANSWER. The model
+                        # has to think in tokens to decide which tool fits, but
+                        # rule 1 forbids preamble and rule 5 says the ONE sentence
+                        # comes AFTER the widget is up — so anything arriving
+                        # before the first tool call is working-out, and it was
+                        # being streamed straight into the chat pane and read
+                        # aloud by TTS. Hold it instead, and only release it if
+                        # the turn ends having called no tool at all (genuine
+                        # small talk). final_text still accumulates every token,
+                        # so the DB record and the prose->data_card fallback are
+                        # unaffected.
+                        pretool_buffer = ""
+                        saw_tool_call = False
 
                         async for chunk in resp.aiter_text():
                             buffer += chunk
@@ -10787,16 +11142,36 @@ async def send_message(req: MessageRequest):
                                 if event_type == "chunk":
                                     # Text token from LLM
                                     token = event.get("content", "")
-                                    final_text += token
-                                    yield f'data: {json.dumps({"type": "chunk", "content": token})}\n\n'
+                                    if saw_tool_call:
+                                        final_text += token
+                                        yield f'data: {json.dumps({"type": "chunk", "content": token})}\n\n'
+                                    else:
+                                        # Deliberation — hold it (see pretool_buffer).
+                                        # Deliberately NOT added to final_text: that
+                                        # variable is "what the user was told", and
+                                        # everything downstream reads it that way —
+                                        # the empty-bubble check below fires on it,
+                                        # and the prose->data_card safety net turns
+                                        # it into a card. Letting working-out in
+                                        # there would suppress the spoken summary
+                                        # AND render the working-out as the answer.
+                                        pretool_buffer += token
 
                                 elif event_type == "tool_execution":
                                     status = event.get("status", "")
                                     tool_info = event.get("tool", {})
                                     tool_name = tool_info.get("name", "unknown")
                                     args = tool_info.get("args", {})
-                                    
+
                                     if active_tool_name != tool_name:
+                                        # The turn is acting, so everything said
+                                        # before this was working-out. Drop it.
+                                        if not saw_tool_call and pretool_buffer.strip():
+                                            logger.info(
+                                                f"[AGENT] suppressed {len(pretool_buffer)} chars of "
+                                                f"pre-tool narration: {pretool_buffer.strip()[:80]!r}")
+                                        saw_tool_call = True
+                                        pretool_buffer = ""
                                         active_tool_name = tool_name
                                         active_tool_args = {}
                                         executed_active_tool = False
@@ -10928,6 +11303,14 @@ async def send_message(req: MessageRequest):
                 logger.error(f"Prism SSE proxy error: {e}")
                 yield f'data: {json.dumps({"type": "error", "message": f"Connection error: {str(e)}"})}\n\n'
 
+            # The turn called NO tool at all — so what we held back was never
+            # deliberation, it was the whole reply (small talk, a clarification,
+            # a refusal). Release it, or the user gets silence.
+            if not saw_tool_call and pretool_buffer.strip():
+                final_text += pretool_buffer
+                yield f'data: {json.dumps({"type": "chunk", "content": pretool_buffer})}\n\n'
+                pretool_buffer = ""
+
             if canvas_settled:
                 logger.info("[FAST LOOP] Closed agent stream after canvas commit")
                 # We cut the model off before it wrote its closing line, so the chat
@@ -11006,9 +11389,19 @@ async def send_message(req: MessageRequest):
             # Render the answer we DO have as a data_card. A text card is a far better
             # outcome than a blank canvas, and it keeps the invariant the whole UI is
             # built on: every turn that produces an answer puts it on the canvas.
-            if not canvas_settled and widgets_committed == 0 and final_text.strip():
+            #
+            # LAST RESORT: the turn called a tool, said nothing after it, and
+            # committed nothing — so final_text is empty and the only text we
+            # hold is the pre-tool working-out we suppressed. A blank canvas is
+            # worse than a card built from that, and _text_answer_card_config
+            # runs it through _strip_agent_narration first.
+            _fallback_text = final_text.strip() or pretool_buffer.strip()
+            if not canvas_settled and widgets_committed == 0 and _fallback_text:
                 try:
-                    cfg = _text_answer_card_config(req.message, final_text)
+                    if not final_text.strip():
+                        logger.info("[AGENT] no post-tool prose — falling back to the "
+                                    "suppressed pre-tool text for the answer card")
+                    cfg = _text_answer_card_config(req.message, _fallback_text)
                     rid = (_resolve_agent_widget_id(req.session_id, "data_card", "",
                                                     req.message, req.focus_widget_id or "")
                            or f"answer-{uuid.uuid4().hex[:8]}")
