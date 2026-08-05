@@ -6,7 +6,7 @@
     <title>Canvas</title>
     <meta name="description" content="LLM-driven HTML canvas.">
     <meta name="theme-color" content="#0b0b0f">
-    <link rel="stylesheet" href="index.css?v=3.0">
+    <link rel="stylesheet" href="index.css?v=3.1">
     <script src="lib/dompurify.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -24,7 +24,7 @@
     <!-- HUD overlay theme. MUST load after index.css: it is a final override layer
          that re-skins the calm-neutral block at the tail of index.css into the
          restrained sci-fi HUD look. Class-safe / CSS-only. -->
-    <link rel="stylesheet" href="hud-theme.css?v=1.0">
+    <link rel="stylesheet" href="hud-theme.css?v=1.1">
     <!-- Apply the saved palette BEFORE first paint so a reload never flashes the
          default cyan theme. The full engine (persist, chart recolor) is in index.js. -->
     <script>
@@ -108,12 +108,19 @@
 
     <!-- Bump this on every index.js change or browsers keep running the cached
          copy (v3.0 was frozen while index.js changed underneath it). v3.1: stop
-         sending use_lazy_agent so the server's PRISM MODE default governs. -->
-    <script src="index.js?v=3.1"></script>
+         sending use_lazy_agent so the server's PRISM MODE default governs.
+         v3.2: in-flight envelope card + live-streaming chat bubble. -->
+    <script src="index.js?v=3.2"></script>
     <!-- Masonry layout: pairs with the .dashboard-grid CSS (1px row track). Gives
          each widget a grid-row span equal to its height so varying-height widgets
          pack tightly with no whitespace, and reflows as widgets are added, removed
-         or resized. Deliberately standalone (no index.js edits). -->
+         or resized. Deliberately standalone (no index.js edits).
+         `.turn-envelope` is the in-flight card for a running agent turn. It is
+         listed HERE rather than being given `.widget-container` so that it stays
+         invisible to every other sweep keyed on the widget classes — the saved
+         layout order, the snapshot seeder, the close-button injector and the
+         random-id assigner would all otherwise treat a transient card as a real
+         widget (and persist it). Spanning is the ONE widget behaviour it needs. -->
     <script>
     (function () {
         var GAP = 20; // px vertical gap between stacked widgets
@@ -124,7 +131,7 @@
         function layout() {
             var grid = document.querySelector('#dashboard-grid');
             if (!grid) return;
-            grid.querySelectorAll('.widget-container, .glass-card').forEach(spanFor);
+            grid.querySelectorAll('.widget-container, .glass-card, .turn-envelope').forEach(spanFor);
         }
         window.__masonryLayout = layout;
         var ro = (typeof ResizeObserver !== 'undefined')

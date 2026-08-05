@@ -392,6 +392,29 @@ body::after {
     animation-duration: 2.6s !important;
 }
 
+/* ─── In-flight envelope ────────────────────────────────────────
+   The card a slow agent turn holds on the canvas. Cut like a panel so it reads
+   as part of the HUD, but keep the dashed edge: it is standing in a widget's
+   place and must never be mistaken for a finished one. */
+.turn-envelope {
+    background: linear-gradient(168deg, var(--hud-panel), var(--hud-panel-2)) !important;
+    border: 1px dashed var(--hud-line) !important;
+    border-radius: 0 !important;
+    clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+}
+.turn-envelope-query,
+.turn-envelope-elapsed,
+.turn-envelope-detail { font-family: var(--hud-mono); letter-spacing: 0.04em; }
+.turn-envelope-phase {
+    font-family: var(--hud-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 0.86rem;
+    color: var(--hud-cyan);
+}
+.turn-envelope-track { background: rgba(var(--hud-line-rgb), 0.12) !important; }
+.turn-envelope-fill { background: linear-gradient(90deg, var(--hud-cyan), var(--hud-bright)) !important; }
+
 /* ─── Activity log ──────────────────────────────────────────────
    Floating overlay panel (already position:fixed, display:none by default).
    Re-cut to match the panels; it never claims canvas width. */

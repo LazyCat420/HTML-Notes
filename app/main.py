@@ -2667,6 +2667,68 @@ def _tool_repeat_key(tool_name: str, args) -> str:
         blob = str(args)[:400]
     return f"{tool_name}|{blob}"
 
+
+# The in-flight progress vocabulary the browser renders while a turn runs. The
+# client keys off `phase`, never off the prose in `message` — so a status line
+# can be reworded without silently changing what the canvas shows, and a status
+# we forget to tag simply leaves the phase where it was rather than misreporting.
+_PHASE_ROUTING     = "routing"
+_PHASE_RESEARCHING = "researching"
+_PHASE_READING     = "reading"
+_PHASE_COMPOSING   = "composing"
+
+# Which phase a tool call puts the turn in, keyed on the BARE tool name (the
+# mcp__lazy-tool-service__ prefix is stripped first). Unlisted means research:
+# the only tools that aren't research are the canvas/notes mutators, and every
+# one of those is named here, so the default is safe rather than merely likely.
+_TOOL_PHASES = {
+    "html_notes_read_page":  _PHASE_READING,
+    "canvas_read_dom":       _PHASE_READING,
+    "canvas_add_widget":     _PHASE_COMPOSING,
+    "canvas_modify_dom":     _PHASE_COMPOSING,
+    "create_widget":         _PHASE_COMPOSING,
+    "update_widget":         _PHASE_COMPOSING,
+    "validate_widget_html":  _PHASE_COMPOSING,
+    "plan_widget":           _PHASE_COMPOSING,
+    "list_widget_types":     _PHASE_COMPOSING,
+}
+
+# The argument values that say what a call is DOING. Everything else in an args
+# dict is plumbing (widget ids, html bodies, limits) and would only bloat a
+# frame that now rides on EVERY tool call — a canvas_add_widget `config` alone
+# runs to several KB, and this travels the same SSE stream as the canvas HTML.
+_TOOL_DETAIL_KEYS = ("query", "q", "url", "topic", "ticker", "symbol",
+                     "location", "league", "title")
+_MAX_DETAIL_CHARS = 80
+
+
+def _summarize_tool_args(args) -> dict:
+    """The one or two argument values worth showing a human, small enough to
+    send with every tool_call.
+
+    The browser has always read `data.args` on this event — it was the server
+    that never sent it, so a research turn printed the bare MCP tool name and
+    nothing about what was actually being searched for."""
+    if not isinstance(args, dict):
+        return {}
+    out = {}
+    for key in _TOOL_DETAIL_KEYS:
+        val = args.get(key)
+        if not isinstance(val, str) or not val.strip():
+            continue
+        out[key] = val.strip()[:_MAX_DETAIL_CHARS]
+        if len(out) >= 2:
+            break
+    return out
+
+
+def _phase_for_tool(tool_name: str) -> str:
+    """Phase implied by a tool call. Split on the MCP prefix rather than a
+    prefix-strip so a bare name (the fork serves some tools unprefixed) keys the
+    same as its mcp__lazy-tool-service__ form."""
+    return _TOOL_PHASES.get((tool_name or "").rsplit("__", 1)[-1], _PHASE_RESEARCHING)
+
+
 # The model narrating its plan instead of answering. Observed verbatim on a live
 # research turn: it ran 18 research calls, then said "Now I have comprehensive
 # data from three major review sources. Let me build a data_card with the best
@@ -10314,7 +10376,7 @@ async def send_message(req: MessageRequest):
                                 f"({len(cfg.get('items') or [])} items) while the "
                                 f"agent composes")
                     yield evt
-                    yield f'data: {json.dumps({"type": "status", "message": "articles ready — composing the full story…"})}\n\n'
+                    yield f'data: {json.dumps({"type": "status", "message": "articles ready — composing the full story…", "phase": _PHASE_COMPOSING})}\n\n'
 
             async def execute_mutation(tool_name, tool_args):
                 nonlocal all_rendered_html
@@ -11053,7 +11115,7 @@ async def send_message(req: MessageRequest):
                     "followup_target": followup_target,
                     "focus_id": turn_ctx.get("focus_id"),
                     "query": req.message}) + '\n\n')
-                yield f'data: {json.dumps({"type": "status", "message": "connecting to agent..."})}\n\n'
+                yield f'data: {json.dumps({"type": "status", "message": "connecting to agent...", "phase": _PHASE_ROUTING})}\n\n'
 
                 async with httpx.AsyncClient(timeout=600.0) as client:
                     async with client.stream(
@@ -11175,8 +11237,14 @@ async def send_message(req: MessageRequest):
                                         active_tool_name = tool_name
                                         active_tool_args = {}
                                         executed_active_tool = False
-                                        yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name})}\n\n'
-                                        yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}..."})}\n\n'
+                                        # Args ride along: the name alone says
+                                        # "html_notes_web_search", which tells a
+                                        # watching user nothing about WHAT is
+                                        # being searched — and the browser has
+                                        # always read this field.
+                                        tool_phase = _phase_for_tool(tool_name)
+                                        yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name, "args": _summarize_tool_args(args), "phase": tool_phase})}\n\n'
+                                        yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}...", "phase": tool_phase})}\n\n'
                                     
                                     active_tool_args = args
 
@@ -11264,6 +11332,15 @@ async def send_message(req: MessageRequest):
                                         # with whatever the turn produced. Better a
                                         # card in 60s than a spinner for 5 minutes.
                                         research_calls += 1
+                                        # The research budget is the one denominator
+                                        # this proxy always knows. Prism's own
+                                        # iteration_progress is better (it counts the
+                                        # agentic loop, not just research) and wins
+                                        # below when it arrives — but it does not
+                                        # arrive on every turn, and a bar with no
+                                        # denominator is the fake creep we are trying
+                                        # to stop showing.
+                                        yield f'data: {json.dumps({"type": "progress", "step": research_calls, "of": _MAX_RESEARCH_CALLS, "source": "research"})}\n\n'
                                         key = _tool_repeat_key(tool_name, args)
                                         tool_repeats[key] = tool_repeats.get(key, 0) + 1
                                         if tool_repeats[key] >= _MAX_IDENTICAL_TOOL_CALLS:
@@ -11273,17 +11350,36 @@ async def send_message(req: MessageRequest):
                                                 f"cutting the turn short. A tool is almost "
                                                 f"certainly failing while telling the model "
                                                 f"to retry; check /health/app search status.")
-                                            yield f'data: {json.dumps({"type": "status", "message": "search is repeating itself — building from what I have"})}\n\n'
+                                            yield f'data: {json.dumps({"type": "status", "message": "search is repeating itself — building from what I have", "phase": _PHASE_COMPOSING})}\n\n'
                                             break
                                         if research_calls >= _MAX_RESEARCH_CALLS:
                                             logger.warning(
                                                 f"[AGENT] research budget spent "
                                                 f"({research_calls} calls) — cutting the turn "
                                                 f"short and rendering what we have")
-                                            yield f'data: {json.dumps({"type": "status", "message": "enough research — building the card"})}\n\n'
+                                            yield f'data: {json.dumps({"type": "status", "message": "enough research — building the card", "phase": _PHASE_COMPOSING})}\n\n'
                                             break
 
+                                elif event_type == "status":
+                                    # Prism's own telemetry. There was no branch
+                                    # here at all, so the ONE event carrying a real
+                                    # completion fraction was dropped on the floor
+                                    # and the browser drew a fake asymptotic creep
+                                    # instead. Forward that fraction and ignore the
+                                    # rest of the vocabulary (generation_progress,
+                                    # compaction, tool_set_changed, …) — this is a
+                                    # curated progress channel, not a firehose.
+                                    if event.get("message") == "iteration_progress":
+                                        step = event.get("iteration")
+                                        of = event.get("maxIterations")
+                                        if isinstance(step, int) and isinstance(of, int) and of > 0:
+                                            yield f'data: {json.dumps({"type": "progress", "step": step, "of": of, "source": "iteration"})}\n\n'
+
                                 elif event_type == "thinking":
+                                    # Deliberately NOT tagged with a phase: thinking
+                                    # happens *within* whatever phase the turn is in,
+                                    # and claiming a phase here would bounce the card
+                                    # backwards between "reading" and "researching".
                                     yield f'data: {json.dumps({"type": "status", "message": "reasoning..."})}\n\n'
 
                                 elif event_type == "done":

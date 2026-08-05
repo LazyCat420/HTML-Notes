@@ -1186,6 +1186,14 @@ document.addEventListener("DOMContentLoaded", () => {
         Array.from(grid.querySelectorAll('.widget-container, .glass-card, .canvas-widget'))
             .filter(w => !w.parentElement || !w.parentElement.closest('.widget-container, .glass-card, .canvas-widget'))
             .forEach(existing => {
+                // Turn envelopes are CLIENT-ONLY, so every id they could carry is
+                // "not in the server's set" by construction and this loop would
+                // delete the card that is narrating the very turn painting here.
+                // They deliberately carry NO widget class (see the masonry note in
+                // index.html), so today they never reach this selector — this stays
+                // as a guard because the failure is silent and a later styling
+                // tweak that adds .glass-card would resurrect it.
+                if (existing.hasAttribute('data-turn-envelope')) return;
                 if (existing.id && !newIds.has(existing.id)) {
                     widgetSourceSnapshots.delete(existing.id);
                     existing.remove();
@@ -1413,6 +1421,12 @@ document.addEventListener("DOMContentLoaded", () => {
         // into the canonical canvas would persist a permanently-loading card.
         temp.querySelectorAll('[data-provisional]')
             .forEach(el => el.removeAttribute('data-provisional'));
+        // The same hazard in its worst form. An envelope is the UI for a turn
+        // that is still running; the server ADOPTS this HTML as the canonical
+        // canvas, so leaking one in would persist a card that loads forever and
+        // survives every reload. Remove the NODE, not just an attribute — unlike
+        // a provisional widget there is no real content underneath to keep.
+        temp.querySelectorAll('[data-turn-envelope]').forEach(el => el.remove());
         
         // Remove dynamically generated iframes inside youtube player widgets
         const youtubeIframes = temp.querySelectorAll('[x-data*="youtubePlayerWidget"] iframe');
@@ -1632,6 +1646,270 @@ document.addEventListener("DOMContentLoaded", () => {
         };
     }
 
+    // ─── IN-FLIGHT ENVELOPE ────────────────────────────────
+    // A fast-lane query (clock, weather, a video) lands in a second or two and
+    // needs no ceremony. An agent research turn takes 30-120s, and for that whole
+    // window the only feedback used to be a 4px bar creeping on a fake timer at
+    // the bottom of the screen — which reads as stuck, not as working.
+    //
+    // So a turn now leaves the command bar as a piece of mail and lands on the
+    // canvas as a card that says what the agent is actually doing, in the place
+    // the answer will appear. THREE lanes, and the split is the whole anti-flood
+    // rule: a PHASE that changes about five times a turn, ONE detail line that is
+    // replaced rather than appended, and a progress bar with a real denominator.
+    // Everything raw — MCP tool names, args, errors — stays in the Activity log,
+    // which is unchanged and already expandable.
+    //
+    // The card never grows. If you are tempted to append a second line, put it in
+    // the Activity log instead.
+
+    // How long a turn may stay quiet before it earns a card, when the server has
+    // not (yet) told us which path it took. The fast lane's slowest members —
+    // weather, a video search — settle inside this, so they never spawn one.
+    const ENVELOPE_EXPAND_AFTER_MS = 2500;
+    // Floor between two visible detail-line updates. Prism can fire tool events
+    // in bursts; without this the line flickers unreadably and reads as noise
+    // rather than progress.
+    const ENVELOPE_DETAIL_MIN_MS = 600;
+
+    const ENVELOPE_PHASES = {
+        sent:        "Sent to the agent",
+        routing:     "Reading your question",
+        researching: "Researching",
+        reading:     "Reading sources",
+        composing:   "Composing"
+    };
+
+    // Bare tool name -> how to say it out loud. Keys are matched AFTER the
+    // mcp__lazy-tool-service__ prefix is stripped. `arg` names the args field
+    // worth showing; the server only ever sends a summarized handful.
+    const TOOL_LABELS = {
+        html_notes_web_search:    { verb: "searching",      arg: "query" },
+        html_notes_news:          { verb: "pulling news",   arg: "topic" },
+        html_notes_stock_news:    { verb: "stock news",     arg: "ticker" },
+        html_notes_stock_history: { verb: "checking",       arg: "ticker" },
+        html_notes_sports_scores: { verb: "checking scores", arg: "league" },
+        html_notes_get_weather:   { verb: "checking weather", arg: "location" },
+        html_notes_youtube_search: { verb: "finding video", arg: "query" },
+        html_notes_read_page:     { verb: "reading",        arg: "url", host: true },
+        html_notes_search_notes:  { verb: "searching notes", arg: "query" },
+        canvas_read_dom:          { verb: "reading the canvas" },
+        canvas_add_widget:        { verb: "building the card" },
+        canvas_modify_dom:        { verb: "updating the canvas" },
+        create_widget:            { verb: "building the card" },
+        update_widget:            { verb: "updating the card" },
+        plan_widget:              { verb: "planning the card" },
+        validate_widget_html:     { verb: "checking the card" }
+    };
+
+    // "mcp__lazy-tool-service__html_notes_web_search" + {query:"nvidia q3"}
+    //   -> "searching: nvidia q3"
+    // The raw name is never shown here — it is already in the Activity log, and
+    // an MCP-prefixed identifier is not a progress report.
+    function humanizeTool(tool, args) {
+        const bare = String(tool || "").split("__").pop();
+        const spec = TOOL_LABELS[bare];
+        const verb = spec ? spec.verb
+                          : bare.replace(/^html_notes_/, "").replace(/_/g, " ");
+        if (!spec || !spec.arg || !args) return verb;
+        let val = args[spec.arg];
+        if (typeof val !== "string" || !val.trim()) return verb;
+        val = val.trim();
+        if (spec.host) {
+            // A full URL is mostly noise; the site is the informative part.
+            try { val = new URL(val).hostname.replace(/^www\./, ""); } catch (e) { /* keep raw */ }
+        }
+        return `${verb}: ${val.length > 48 ? val.slice(0, 48) + "…" : val}`;
+    }
+
+    // One envelope per turn. Starts as a pip in the status bar's own row and only
+    // becomes a canvas card once the turn is known to be slow — see `maybeExpand`.
+    function createTurnEnvelope(text) {
+        const grid = () => elements.liveCanvas && elements.liveCanvas.querySelector("#dashboard-grid");
+
+        let node = null;              // the canvas card, once expanded
+        let phaseEl, detailEl, elapsedEl, fillEl;
+        let expanded = false, finished = false, sawComponent = false;
+        let currentPhase = "sent";
+        const startedAt = performance.now();
+
+        // Detail-line throttle. `queued` holds the newest text seen during a
+        // cooldown so a burst shows its LAST state rather than its first.
+        let lastDetailAt = 0, queued = null, queuedTimer = null;
+        let lastDetailText = "", repeatCount = 1;
+
+        const expandTimer = setTimeout(() => maybeExpand("slow"), ENVELOPE_EXPAND_AFTER_MS);
+
+        function fmtElapsed() {
+            const secs = (performance.now() - startedAt) / 1000;
+            return secs < 60 ? `${Math.floor(secs)}s`
+                             : `${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
+        }
+
+        const ticker = setInterval(() => {
+            if (elapsedEl) elapsedEl.textContent = fmtElapsed();
+        }, 500);
+
+        function build() {
+            const g = grid();
+            if (!g) return false;
+            node = document.createElement("div");
+            // No id, and none of the widget classes. Both are deliberate: an id
+            // would be captured into the saved layout order, and a widget class
+            // would put a transient card in front of every sweep that assumes a
+            // real widget. See the masonry note in index.html.
+            node.className = "turn-envelope";
+            node.setAttribute("data-turn-envelope", "");
+            node.innerHTML =
+                '<div class="turn-envelope-head">' +
+                  '<span class="turn-envelope-stamp" aria-hidden="true">✉</span>' +
+                  '<span class="turn-envelope-query"></span>' +
+                  '<span class="turn-envelope-elapsed">0s</span>' +
+                '</div>' +
+                '<div class="turn-envelope-phase"></div>' +
+                '<div class="turn-envelope-detail"></div>' +
+                '<div class="turn-envelope-track"><div class="turn-envelope-fill"></div></div>';
+            node.querySelector(".turn-envelope-query").textContent =
+                text.length > 64 ? `${text.slice(0, 64)}…` : text;
+            phaseEl = node.querySelector(".turn-envelope-phase");
+            detailEl = node.querySelector(".turn-envelope-detail");
+            elapsedEl = node.querySelector(".turn-envelope-elapsed");
+            fillEl = node.querySelector(".turn-envelope-fill");
+            phaseEl.textContent = ENVELOPE_PHASES[currentPhase] || ENVELOPE_PHASES.sent;
+            elapsedEl.textContent = fmtElapsed();
+            // Appended last so the widget that reconcileCanvas appends next lands
+            // adjacent to it — the card is replaced by its own answer, in place.
+            g.appendChild(node);
+            // Flight: the card is drawn at the command bar and travels to its
+            // slot. Measured, not hardcoded, so it survives a layout change.
+            const bar = elements.chatInput;
+            if (bar && node.getBoundingClientRect) {
+                const from = bar.getBoundingClientRect();
+                const to = node.getBoundingClientRect();
+                if (to.width) {
+                    node.style.setProperty("--fly-x", `${(from.left + from.width / 2) - (to.left + to.width / 2)}px`);
+                    node.style.setProperty("--fly-y", `${(from.top + from.height / 2) - (to.top + to.height / 2)}px`);
+                }
+            }
+            node.classList.add("is-arriving");
+            node.addEventListener("animationend", function once() {
+                node.classList.remove("is-arriving");
+                node.removeEventListener("animationend", once);
+            }, { once: true });
+            if (window.__masonryLayout) requestAnimationFrame(window.__masonryLayout);
+            return true;
+        }
+
+        // Expand on the SERVER saying this is an agent turn, or on the turn simply
+        // taking too long. The server's word arrives after routing, which is
+        // exactly the window that feels stuck — so the timer is not a fallback,
+        // it is what covers the gap the `debug` event cannot.
+        function maybeExpand(why) {
+            if (expanded || finished || sawComponent) return;
+            expanded = true;
+            clearTimeout(expandTimer);
+            if (!build()) { expanded = false; return; }
+            HN.log("envelope", `expanded (${why})`);
+        }
+
+        function paintDetail(msg) {
+            if (!detailEl) return;
+            detailEl.textContent = repeatCount > 1 ? `${msg} · ${repeatCount}` : msg;
+            detailEl.classList.remove("is-fresh");
+            void detailEl.offsetWidth;   // restart the fade
+            detailEl.classList.add("is-fresh");
+        }
+
+        return {
+            node: () => node,
+            expand: () => maybeExpand("server"),
+
+            phase(name) {
+                // An untagged status leaves the phase alone rather than guessing.
+                // That is why `thinking` carries no phase server-side: it happens
+                // *within* a phase, and letting it set one bounced the card
+                // backwards between "reading" and "researching".
+                if (!name || finished || !ENVELOPE_PHASES[name]) return;
+                currentPhase = name;
+                if (phaseEl) phaseEl.textContent = ENVELOPE_PHASES[name];
+            },
+
+            detail(msg) {
+                if (!msg || finished) return;
+                // A repeat is a count, not a new line. Four searches in a row are
+                // four searches, not four identical lines flickering past.
+                if (msg === lastDetailText) repeatCount += 1;
+                else { lastDetailText = msg; repeatCount = 1; }
+
+                const now = performance.now();
+                const wait = ENVELOPE_DETAIL_MIN_MS - (now - lastDetailAt);
+                if (wait <= 0) {
+                    lastDetailAt = now;
+                    paintDetail(msg);
+                    return;
+                }
+                queued = msg;
+                if (queuedTimer) return;      // a flush is already scheduled
+                queuedTimer = setTimeout(() => {
+                    queuedTimer = null;
+                    if (finished || queued === null) return;
+                    lastDetailAt = performance.now();
+                    paintDetail(queued);
+                    queued = null;
+                }, wait);
+            },
+
+            // A REAL fraction from the server. The bar only ever moves forward:
+            // prism's iteration counter and the research budget both report here
+            // and they run at different rates, so a raw assignment would visibly
+            // rewind mid-turn.
+            progress(step, of) {
+                if (!fillEl || finished || !of) return;
+                const pct = Math.max(6, Math.min(94, (step / of) * 100));
+                const cur = parseFloat(fillEl.style.width) || 0;
+                if (pct > cur) fillEl.style.width = `${pct}%`;
+            },
+
+            // The answer has landed. Fold the card away and let the real widget
+            // take the slot it was holding.
+            handoff() {
+                sawComponent = true;
+                clearTimeout(expandTimer);
+                if (!node || finished) return;
+                finished = true;
+                clearInterval(ticker);
+                if (queuedTimer) clearTimeout(queuedTimer);
+                node.classList.add("is-delivered");
+                const drop = () => { if (node && node.parentElement) node.remove();
+                                     if (window.__masonryLayout) requestAnimationFrame(window.__masonryLayout); };
+                node.addEventListener("animationend", drop, { once: true });
+                // Never leave a card on the canvas because an animation did not
+                // fire (reduced-motion, a backgrounded tab).
+                setTimeout(drop, 900);
+            },
+
+            // Stop / error / a turn that ended without ever painting a widget.
+            finish(kind) {
+                clearTimeout(expandTimer);
+                if (finished) return;
+                // A turn can end cleanly having only spoken (no widget), so `done`
+                // still has to retire the card — hand it off before latching
+                // `finished`, which handoff() itself checks.
+                if (kind === "done") { this.handoff(); return; }
+                finished = true;
+                clearInterval(ticker);
+                if (queuedTimer) clearTimeout(queuedTimer);
+                if (!node) return;
+                node.classList.add(kind === "error" ? "is-error" : "is-stopped");
+                if (phaseEl) phaseEl.textContent = kind === "error" ? "Failed" : "Stopped";
+                // Failures carry information — leave them up a beat longer, the
+                // same bargain the status bar already makes.
+                setTimeout(() => { if (node && node.parentElement) node.remove();
+                                   if (window.__masonryLayout) requestAnimationFrame(window.__masonryLayout); }, 4000);
+            }
+        };
+    }
+
     function sendChatMessage() {
         const text = elements.chatInput.value.trim();
         if (!text) return;
@@ -1739,6 +2017,9 @@ document.addEventListener("DOMContentLoaded", () => {
         HN.turn(text);
         addLogStep("Connecting to agent...", "🔗");
         const statusBar = createTurnStatus(text);
+        // Created for EVERY turn but silent until the turn proves slow — a clock
+        // query never draws one. See ENVELOPE_EXPAND_AFTER_MS.
+        const envelope = createTurnEnvelope(text);
 
         if (elements.btnSendMessage) elements.btnSendMessage.style.display = "none";
         if (elements.btnStopMessage) elements.btnStopMessage.style.display = "flex";
@@ -1788,6 +2069,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.error("Error from API:", await res.text());
                 renderError("Failed to process request. See console.");
                 statusBar.finish("error", `Request failed (${res.status})`);
+                envelope.finish("error");
                 return;
             }
 
@@ -1796,6 +2078,7 @@ document.addEventListener("DOMContentLoaded", () => {
             let done = false;
             let fullText = "";
             let fullComponentHtml = "";
+            const liveBubble = createLiveAssistantBubble();
 
             // SSE lines can be split across reader.read() boundaries — and the
             // `component` event's payload IS the whole canvas (often many KB), so
@@ -1820,14 +2103,25 @@ document.addEventListener("DOMContentLoaded", () => {
                     // turn's snapshot may already be older than what a
                     // sibling turn committed. Only `component` paints.
                     handleIncomingChunk(token);
+                    liveBubble.append(fullText);
                 } else if (data.type === "status") {
                     HN.log("status", data.message);
                     addLogStep(data.message || "Thinking...", "🧠");
                     statusBar.stage(data.message || "Thinking…", 40);
+                    // `phase` is authoritative and optional — an untagged status
+                    // (a `thinking` event, a tool error) leaves the phase alone.
+                    envelope.phase(data.phase);
+                } else if (data.type === "progress") {
+                    // A real fraction from the server, replacing the fake creep.
+                    envelope.progress(data.step, data.of);
                 } else if (data.type === "debug") {
                     // Server routing breadcrumb — which path/widget the query hit.
                     // Surfaced in DevTools so a misroute is visible without server logs.
                     HN.route(data);
+                    // The one field that says "this turn will be slow". It arrives
+                    // as the first frame of the agent path, which is the earliest
+                    // anything can honestly say so.
+                    if (data.path === "agent") envelope.expand();
                 } else if (data.type === "done") {
                     HN.log("done", "generation finished");
                     HN.groupEnd();
@@ -1839,12 +2133,21 @@ document.addEventListener("DOMContentLoaded", () => {
                     renderDynamicComponents(elements.liveCanvas);
                     addLogStep("Finished generation.", "✨");
                     statusBar.finish("done");
+                    envelope.finish("done");
                     flushSentenceBuffer();
-                    appendChatMessageToHistory("assistant", fullText, Boolean(fullComponentHtml));
+                    // Finalize the bubble already on screen; only append a fresh
+                    // one when nothing ever streamed (so an empty turn still
+                    // records its "canvas updated" marker, as it always did).
+                    if (!liveBubble.finalize(fullText, Boolean(fullComponentHtml))) {
+                        appendChatMessageToHistory("assistant", fullText, Boolean(fullComponentHtml));
+                    }
                 } else if (data.type === "component") {
                     HN.component(data.content || "");
                     addLogStep("Rendered visual component", "🎨");
                     statusBar.stage("Rendering widget…", 85);
+                    // Fold the card away and let the answer take its slot. Done
+                    // BEFORE the paint so the two animations read as one handoff.
+                    envelope.handoff();
                     fullComponentHtml = data.content || "";
                     if (renderContent(fullText, fullComponentHtml, data.version)) {
                         // Initialize the moment the widget lands, not on
@@ -1858,13 +2161,18 @@ document.addEventListener("DOMContentLoaded", () => {
                     scrollToBottom();
                 } else if (data.type === "tool_call") {
                     HN.log("tool", data.tool, data.args || data.input || "");
+                    // The Activity log keeps the RAW name and args — full fidelity
+                    // lives there. The envelope gets the readable version.
                     addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
                     statusBar.stage(`Tool: ${data.tool}`, 55);
+                    envelope.phase(data.phase);
+                    envelope.detail(humanizeTool(data.tool, data.args || data.input));
                 } else if (data.type === "error") {
                     HN.error(data.message);
                     addLogStep(`Error: ${data.message}`, "❌");
                     renderError(data.message || "An error occurred.");
                     statusBar.finish("error", data.message || "An error occurred");
+                    envelope.finish("error");
                 }
             };
 
@@ -1904,6 +2212,7 @@ document.addEventListener("DOMContentLoaded", () => {
             // Streams that end without a `done` event (dropped connection mid-
             // stream) would otherwise leave the bar spinning forever.
             statusBar.finish("done");
+            envelope.finish("done");
             hideLogWhenIdle();
 
         } catch (err) {
@@ -1911,10 +2220,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.log("Request was aborted by user.");
                 addLogStep("Generation stopped by user.", "🛑");
                 statusBar.finish("stopped");
+                envelope.finish("stopped");
             } else {
                 console.error("Network error:", err);
                 renderError("Network error. Is the server running?");
                 statusBar.finish("error", "Network error");
+                envelope.finish("error");
             }
             hideLogWhenIdle();
         } finally {
@@ -2838,6 +3149,56 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         
         elements.chatHistoryMessages.scrollTop = elements.chatHistoryMessages.scrollHeight;
+    }
+
+    // A bubble that grows as the tokens arrive, instead of appearing whole when
+    // the turn ends. The chat pane used to accumulate every chunk into `fullText`
+    // and render NOTHING until `done`, while the activity log ticked on every
+    // event — so a conversational turn looked frozen for its whole duration and a
+    // 4-second one looked identical to a 90-second one.
+    //
+    // Ceiling worth knowing: on widget turns the server cuts the agent stream once
+    // the canvas settles and sends ONE synthesized sentence, so those legitimately
+    // still arrive in a single piece. This is for the turns that genuinely stream.
+    function createLiveAssistantBubble() {
+        let div = null, pending = false, latest = "";
+
+        // Re-formatting runs the text through DOMPurify, so it is coalesced to one
+        // repaint per frame rather than one per token.
+        function repaint(canvasUpdated) {
+            if (!div) return;
+            div.innerHTML = formatAssistantChatBubble(latest, canvasUpdated);
+            elements.chatHistoryMessages.scrollTop = elements.chatHistoryMessages.scrollHeight;
+        }
+
+        return {
+            started: () => Boolean(div),
+            append(text) {
+                latest = text;
+                if (!elements.chatHistoryMessages) return;
+                if (!div) {
+                    div = document.createElement("div");
+                    div.className = "chat-message assistant is-streaming";
+                    elements.chatHistoryMessages.appendChild(div);
+                    if (elements.chatHistoryMessages.style.display === "none") {
+                        elements.chatHistoryMessages.style.display = "flex";
+                        if (elements.btnToggleHistory) elements.btnToggleHistory.innerText = "▼";
+                    }
+                }
+                if (pending) return;
+                pending = true;
+                requestAnimationFrame(() => { pending = false; repaint(false); });
+            },
+            // Finalize the bubble already on screen rather than appending a second
+            // one — `canvasUpdated` is only known at the end of the turn.
+            finalize(text, canvasUpdated) {
+                if (!div) return false;
+                latest = text;
+                div.classList.remove("is-streaming");
+                repaint(canvasUpdated);
+                return true;
+            }
+        };
     }
 
     function formatAssistantChatBubble(content, canvasUpdated = false) {

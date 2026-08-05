@@ -2203,3 +2203,175 @@ body::after { display: none !important; }
 }
 .notes-preview th { background: rgba(127,127,127,0.14); font-weight: 600; }
 .notes-preview hr { border: none; border-top: 1px solid var(--hud-line, rgba(255,255,255,0.12)); margin: 0.7em 0; }
+
+/* --- IN-FLIGHT ENVELOPE --------------------------------------------------
+   The card a slow agent turn occupies while it works. It lives in the grid so
+   the answer appears where the waiting happened, rather than making the eye
+   track from a 4px bar at the bottom of the screen up to a card that pops in
+   somewhere else.
+
+   Deliberately NOT styled off .widget-container: it carries no widget class
+   (see the masonry note in index.html), so the surface is restated here. Keep
+   it a visual near-sibling — it is standing in a widget's place — but flatter
+   and dashed, so it never reads as a finished result. */
+
+.turn-envelope {
+    background-color: rgba(8, 18, 32, 0.34);
+    background-image: linear-gradient(165deg, rgba(22, 46, 74, 0.34), rgba(5, 12, 24, 0.24));
+    border: 1px dashed var(--edge);
+    border-radius: 14px;
+    color: var(--ice);
+    padding: 14px 16px 16px;
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+}
+
+.turn-envelope-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 0.74rem;
+    opacity: 0.72;
+}
+
+.turn-envelope-stamp {
+    font-size: 0.95rem;
+    /* One deliberately calm loop. The card has to look ALIVE without looking
+       frantic — a spinner at this size reads as "hung process". */
+    animation: envelope-breathe 2.8s ease-in-out infinite;
+}
+
+.turn-envelope-query {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.turn-envelope-elapsed {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
+}
+
+.turn-envelope-phase {
+    margin-top: 10px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+/* ONE line, replaced never appended. Fixed height so a shorter message cannot
+   resize the card — and therefore the whole masonry column — on every update.
+   That reflow was more distracting than the text was informative. */
+.turn-envelope-detail {
+    margin-top: 3px;
+    height: 1.15rem;
+    line-height: 1.15rem;
+    font-size: 0.78rem;
+    opacity: 0.66;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.turn-envelope-detail.is-fresh {
+    animation: envelope-detail-in 0.28s ease both;
+}
+
+.turn-envelope-track {
+    margin-top: 12px;
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(127, 212, 255, 0.12);
+    overflow: hidden;
+}
+
+.turn-envelope-fill {
+    height: 100%;
+    width: 6%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent-color), var(--accent-hover));
+    /* Slow, because the fraction behind it is coarse (a step out of 9). A snappy
+       transition on a chunky denominator reads as a jump. */
+    transition: width 0.8s cubic-bezier(.22, 1, .36, 1);
+}
+
+/* Flight: drawn at the command bar and travelling to its grid slot. --fly-x/y
+   are measured in JS at append time, so this survives a layout change. */
+@keyframes envelope-arrive {
+    from { opacity: 0; transform: translate(var(--fly-x, 0px), var(--fly-y, 40px)) scale(0.6); }
+    60%  { opacity: 1; }
+    to   { opacity: 1; transform: none; }
+}
+
+@keyframes envelope-breathe {
+    0%, 100% { opacity: 0.45; }
+    50%      { opacity: 1; }
+}
+
+@keyframes envelope-detail-in {
+    from { opacity: 0; transform: translateY(3px); }
+    to   { opacity: 0.66; transform: none; }
+}
+
+/* Delivered: the answer has arrived and is taking this slot. */
+@keyframes envelope-deliver {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: translateY(-8px) scale(0.97); }
+}
+
+.turn-envelope.is-arriving {
+    animation: envelope-arrive 0.5s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.turn-envelope.is-delivered {
+    animation: envelope-deliver 0.32s ease-in both;
+    pointer-events: none;
+}
+
+.turn-envelope.is-error {
+    border-color: rgba(248, 113, 113, 0.5);
+}
+
+.turn-envelope.is-error .turn-envelope-fill {
+    background: rgba(248, 113, 113, 0.7);
+}
+
+.turn-envelope.is-stopped {
+    border-color: rgba(148, 163, 184, 0.45);
+    opacity: 0.7;
+}
+
+.turn-envelope.is-error .turn-envelope-stamp,
+.turn-envelope.is-stopped .turn-envelope-stamp {
+    animation: none;
+    opacity: 0.85;
+}
+
+/* Live-streaming chat bubble: the assistant's prose now grows token by token
+   instead of appearing whole at `done`. The caret is what makes "still writing"
+   distinguishable from "finished, and that was the whole answer". */
+.chat-message.assistant.is-streaming::after {
+    content: "▌";
+    margin-left: 2px;
+    opacity: 0.55;
+    animation: envelope-breathe 1.1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .turn-envelope.is-arriving,
+    .turn-envelope.is-delivered,
+    .turn-envelope-detail.is-fresh,
+    .turn-envelope-stamp,
+    .chat-message.assistant.is-streaming::after {
+        animation: none !important;
+    }
+    .turn-envelope-fill { transition: none; }
+    /* With the fold-away no longer animating, animationend never fires and the
+       JS backstop timeout is what removes the node. Hide it immediately so the
+       answer cannot appear below a card that is still on screen. */
+    .turn-envelope.is-delivered { opacity: 0; }
+}
