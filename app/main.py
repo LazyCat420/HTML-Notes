@@ -150,8 +150,6 @@ _yahoo_crumb: dict = {"crumb": None, "cookies": None}
 
 
 
-# Kept under the old name: it's what the registered tool schema calls.
-stock_history = stock_snapshot
 
 
 # ── Themes ───────────────────────────────────────────────────────────────────
@@ -2935,6 +2933,9 @@ from app.services.sports import *
 from app.services.youtube_helpers import *
 from app.llm import *
 from app.utils import *
+
+# Kept under the old name: it's what the registered tool schema calls.
+stock_history = stock_snapshot
 
 __all__ = list(globals().keys())
 
