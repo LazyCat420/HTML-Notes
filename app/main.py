@@ -2920,8 +2920,6 @@ def read_root():
     return Response(content=html, media_type="text/html",
                     headers={"Cache-Control": "no-store, must-revalidate"})
 
-from app.config_builders import *
-from app.canvas_manager import *
 from app.utils import *
 from app.llm import *
 from app.services.search import *
@@ -2929,6 +2927,8 @@ from app.services.finance import *
 from app.services.location import *
 from app.services.sports import *
 from app.services.youtube_helpers import *
+from app.config_builders import *
+from app.canvas_manager import *
 
 # Kept under the old name: it's what the registered tool schema calls.
 stock_history = stock_snapshot
