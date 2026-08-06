@@ -472,10 +472,16 @@ def render_image(widget_id: str, config: dict) -> str:
 
     if normalized:
         shown = normalized[:4]
-        # One image → a single square hero; several → a square-tile grid. Tiles are
-        # object-contain, not cover: a square box still crops a portrait/landscape
-        # source hard, and in a gallery the whole frame IS the content.
-        grid_cls = "grid-cols-1" if len(shown) == 1 else "grid-cols-2"
+        # One image → a single hero filling the body; several → a tile grid with an
+        # EXPLICIT row height. `aspect-square` on a track-width tile does not
+        # contribute to the auto row's intrinsic height, so rows measured 145px
+        # while the tiles laid out at 176px and overlapped into each other's gap —
+        # two stacked rows of pictures reading as one smushed band. A fixed row
+        # track is the whole fix. Tiles stay object-contain, not cover: a square box
+        # crops a portrait/landscape source hard, and in a gallery the frame IS the
+        # content.
+        grid_cls = ("grid-cols-1 auto-rows-[1fr]" if len(shown) == 1
+                    else "grid-cols-2 auto-rows-[150px]")
         figures = []
         for img in shown:
             caption_html = (
@@ -483,7 +489,7 @@ def render_image(widget_id: str, config: dict) -> str:
                 if img.get("caption") else ""
             )
             figures.append(f"""
-                <figure class="relative aspect-square overflow-hidden rounded-xl bg-slate-950 ring-1 ring-white/10">
+                <figure class="relative h-full w-full overflow-hidden rounded-xl bg-slate-950 ring-1 ring-white/10">
                     <img src="{esc(img['url'])}" alt="{esc(img.get('caption') or title)}" loading="lazy" class="absolute inset-0 w-full h-full object-contain">
                     {caption_html}
                 </figure>
@@ -505,14 +511,16 @@ def render_image(widget_id: str, config: dict) -> str:
     """
 
 def render_products(widget_id: str, config: dict) -> str:
-    """Product / shopping-recommendation grid. Each item is a big REFERENCE PHOTO
-    that is itself a link to the source page, so the user sees what the thing looks
-    like and clicks the picture to buy/read more — the shape asked for by "help me
-    find good outdoor shoes": pictures as reference, click-through to the source.
+    """Product / shopping-recommendation LIST. One row per pick: a 96px reference
+    photo on the left, the name + why-it-is-a-good-pick + source beside it, the whole
+    row a link to the source page — so the user sees what the thing looks like, reads
+    why it is here, and clicks through to buy. This replaced a 2-column grid of
+    full-width square photos, which stacked the description under a picture that ate
+    the entire card and, worse, collapsed (see the row-sizing note on the grid below).
 
     Contract: {title, subtitle?, icon?, items:[{title|name, description?, image?,
         url?, price?, badge?, meta?}]}. An item with no image degrades to a
-    monogram tile so the grid never shows a broken frame.
+    monogram tile so the list never shows a broken frame.
     """
     title = config.get("title", "Recommendations")
     subtitle = config.get("subtitle", "")
@@ -545,37 +553,66 @@ def render_products(widget_id: str, config: dict) -> str:
         # so clicking the picture opens the source, exactly as requested.
         tag, href = ("a", f'href="{esc(i_url)}" target="_blank" rel="noopener"') if i_url else ("div", "")
 
+        # The thumbnail is a FIXED 96x96 px box, never `w-full aspect-square`.
+        # An aspect-ratio box whose width comes from the track contributes NOTHING
+        # to its row's intrinsic height, so the auto-sized row collapsed to the
+        # text height (66px measured) while the media still laid out at the full
+        # column width (378px) — the card clipped it to a smushed strip and the
+        # name/description were pushed out of sight. Two fixed pixel dimensions
+        # make the row height deterministic.
         if i_image:
             media = f"""
-                <div class="product-media relative w-full aspect-square overflow-hidden bg-slate-950 shrink-0">
+                <div class="product-media relative w-24 h-24 shrink-0 overflow-hidden rounded-xl bg-slate-950 ring-1 ring-white/10">
                     <img src="{esc(i_image)}" alt="{esc(i_title)}" loading="lazy"
-                         class="absolute inset-0 w-full h-full object-contain p-2 group-hover/card:scale-105 transition-transform duration-300">
-                    {f'<span class="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/70 text-emerald-300 backdrop-blur-sm">{esc(i_price)}</span>' if i_price else ''}
-                    {f'<span class="absolute top-2 left-2 text-[0.6rem] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/70 text-white backdrop-blur-sm">{esc(i_badge)}</span>' if i_badge else ''}
+                         class="absolute inset-0 w-full h-full object-contain p-1 group-hover/card:scale-105 transition-transform duration-300">
                 </div>
             """
         else:
             media = f"""
-                <div class="product-media relative w-full aspect-square overflow-hidden bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center shrink-0">
-                    <span class="text-5xl font-bold text-white/40">{esc((i_title or '?')[:1].upper())}</span>
-                    {f'<span class="absolute top-2 right-2 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/70 text-emerald-300">{esc(i_price)}</span>' if i_price else ''}
+                <div class="product-media relative w-24 h-24 shrink-0 overflow-hidden rounded-xl bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center ring-1 ring-white/10">
+                    <span class="text-3xl font-bold text-white/40">{esc((i_title or '?')[:1].upper())}</span>
                 </div>
             """
 
+        # Price and badge move OUT of the image and onto the text column: over a
+        # 96px thumbnail an overlay chip covers the product it is labelling.
+        price_html = (f'<span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded-lg bg-black/50 text-emerald-300">{esc(i_price)}</span>'
+                      if i_price else '')
+        badge_html = (f'<span class="shrink-0 text-[0.6rem] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/70 text-white">{esc(i_badge)}</span>'
+                      if i_badge else '')
+        meta_html = (f'<span class="text-[0.65rem] text-purple-300/70 truncate">{esc(i_meta)} ↗</span>'
+                     if i_meta else '')
+        foot_html = (f'<div class="pt-0.5 flex items-center gap-2 min-w-0">{badge_html}{meta_html}</div>'
+                     if (badge_html or meta_html) else '')
+
         cards.append(f"""
-            <{tag} {href} class="product-card group/card flex flex-col rounded-2xl overflow-hidden bg-white/5 hover:bg-white/10 ring-1 ring-white/10 hover:ring-purple-400/40 transition-all no-underline">
+            <{tag} {href} class="product-card group/card flex items-start gap-3 p-2.5 rounded-2xl overflow-hidden bg-white/5 hover:bg-white/10 ring-1 ring-white/10 hover:ring-purple-400/40 transition-all no-underline hover:!no-underline">
                 {media}
-                <div class="p-2.5 flex flex-col gap-1 flex-grow">
-                    <span class="text-sm font-semibold text-white leading-snug line-clamp-2">{esc(i_title)}</span>
-                    {f'<p class="text-xs text-slate-300 leading-relaxed line-clamp-3">{esc(i_desc)}</p>' if i_desc else ''}
-                    {f'<span class="mt-auto pt-1 text-[0.65rem] text-purple-300/70 truncate">{esc(i_meta)} ↗</span>' if i_meta else ''}
+                <div class="flex flex-col gap-1 min-w-0 flex-grow">
+                    <div class="flex items-start justify-between gap-2">
+                        <span class="text-sm font-semibold text-white leading-snug line-clamp-2">{esc(i_title)}</span>
+                        {price_html}
+                    </div>
+                    {f'<div class="text-xs text-slate-300 leading-relaxed line-clamp-3">{esc(i_desc)}</div>' if i_desc else ''}
+                    {foot_html}
                 </div>
             </{tag}>
         """)
 
     if cards:
+        # One card per row: the picture reads at a glance and its description sits
+        # NEXT to it instead of under a square that ate the whole card.
+        #
+        # `auto-rows-max` is LOAD-BEARING, not cosmetic. In a scroll body of definite
+        # height (flex-grow inside the widget's fixed height) `auto` row tracks are
+        # flexible DOWNWARD: when the cards total more than the body, Chromium shrinks
+        # every track toward its minimum instead of overflowing into the scroller —
+        # measured 8 rows of 35px around 116px cards, which is what clipped the
+        # pictures into strips and hid the descriptions. max-content tracks cannot
+        # shrink, so the rows keep the card's real height and the body scrolls.
+        # `content-start` then keeps a short list stacked at the top.
         body = f"""
-            <div class="products-grid grid grid-cols-2 gap-3 p-3 overflow-y-auto flex-grow custom-scrollbar">
+            <div class="products-grid grid grid-cols-1 auto-rows-max gap-2 p-3 overflow-y-auto flex-grow custom-scrollbar content-start">
                 {''.join(cards)}
             </div>
         """
@@ -588,7 +625,7 @@ def render_products(widget_id: str, config: dict) -> str:
         """
 
     return f"""
-    <div id="{widget_id}" x-data="{{}}" class="widget-container products-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
+    <div id="{widget_id}" x-data="{{}}" class="widget-container products-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[420px] group">
         {widget_header(title, icon, subtitle)}
         {body}
     </div>

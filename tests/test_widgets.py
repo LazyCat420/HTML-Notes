@@ -180,6 +180,31 @@ def test_products_widget_image_links_to_source():
     assert "data-sig=" in html_output
 
 
+def test_products_rows_cannot_collapse():
+    """Layout contract for the products list, measured in Chromium 2026-08-05.
+
+    The old markup put a `w-full aspect-square` photo above the text in a 2-column
+    grid whose rows were `auto`. Both halves of that fail in a scroll body of
+    definite height: an aspect-ratio box sized off the track contributes nothing to
+    the row's intrinsic height, and `auto` tracks are shrunk to fit the body instead
+    of overflowing into the scroller. Rows measured 35px around 116px cards — every
+    photo clipped to a strip, every name and description hidden. Guard both.
+    """
+    config = {"title": "Lighters", "items": [
+        {"title": f"Pick {i}", "description": "why it is a good pick",
+         "image": f"https://ex.com/{i}.jpg", "url": f"https://ex.com/{i}"} for i in range(8)]}
+    html_output = generate_widget_html("products", "products-3", config)
+    # Rows must be max-content: shrinkable `auto` tracks are what collapsed them.
+    assert "auto-rows-max" in html_output
+    # The thumbnail carries two FIXED pixel dimensions, never a track-derived aspect.
+    assert "w-24 h-24" in html_output
+    assert "aspect-square" not in html_output
+    # Description sits beside the photo: one row per item, media and text as siblings
+    # in a horizontal flex card.
+    assert "grid-cols-1" in html_output
+    assert "product-card group/card flex items-start" in html_output
+
+
 def test_products_widget_never_blank():
     """Empty items degrade to a friendly empty state, never a broken frame."""
     html_output = generate_widget_html("products", "products-2", {"title": "X", "items": []})
