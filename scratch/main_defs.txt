@@ -1,0 +1,256 @@
+def _diversify_by_channel(videos: list, per_channel: int = 2) -> list:
+async def _llm_rerank_videos(query: str, videos: list,
+async def search_youtube_videos(query: str, limit: int = 5, order: str = "relevance",
+async def _youtube_results_via_scraper(query: str, limit: int = 5,
+async def _youtube_proxy_fallback(query: str) -> list:
+async def _search_youtube_scrape(query: str, limit: int = 5, order: str = "relevance",
+def _yt_name_tokens(s: str) -> set:
+def _yt_squash(s: str) -> str:
+def _yt_core_name(s: str) -> str:
+def _yt_channel_match_score(subject: str, title: str, handle: str = "") -> float:
+def _yt_channel_name_match(subject: str, title: str, handle: str = "") -> bool:
+async def _yt_fetch_html(url: str, timeout: float = 12.0,
+def _parse_channel_candidates(html: str, limit: int = 8) -> list:
+async def _resolve_youtube_channels(name: str, limit: int = 3,
+async def _resolve_youtube_channel(name: str) -> Optional[dict]:
+def _parse_uploads_feed(xml: str, source: str = "") -> list:
+def _yt_auto_playlist(channel_id: str, kind: str) -> str:
+async def _youtube_channel_uploads(channel_id: str, limit: int = 8,
+async def _scrape(url: str, engine: str = "crawl4ai", timeout: float = 90.0) -> str:
+async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -> None:
+async def _search_brave_api(query: str, limit: int) -> list:
+async def _search_duckduckgo(query: str, limit: int) -> list:
+async def _search_scraper_ddg(query: str, limit: int) -> list:
+async def web_search_ex(query: str, limit: int = 6) -> tuple:
+async def web_search(query: str, limit: int = 6) -> list:
+def _norm_title_key(title: str) -> str:
+async def _gdelt_news(topic: str, limit: int) -> list:
+async def _google_news_rss(topic: str, limit: int) -> list:
+def _is_generic_news_thumb(url: str) -> bool:
+async def _enrich_news(items: list, timeout: float = 5.0) -> None:
+async def _shared_news_search(topic: str, limit: int) -> list:
+async def news_search(topic: str, limit: int = 6) -> list:
+def _sma(values: list, window: int) -> Optional[float]:
+def _rsi(values: list, period: int = 14) -> Optional[float]:
+def _annualized_volatility(values: list) -> Optional[float]:
+async def _yahoo_fundamentals(client: httpx.AsyncClient, symbol: str) -> dict:
+async def _yahoo_chart(client: httpx.AsyncClient, symbol: str, range_: str) -> Optional[dict]:
+async def stock_snapshot(symbol: str, range_: str = "1mo") -> dict:
+def pick_theme(text: str) -> Optional[str]:
+def _extract_compare_tickers(text: str) -> list:
+async def build_stock_compare_config(symbols: list, range_: str = "6mo") -> Optional[dict]:
+def _trend_kind(text: str) -> str:
+def _range_from_message(text: str, default: str = "1mo") -> str:
+async def _trending_symbols(kind: str = "trending", limit: int = 10) -> list:
+def _universe_from_message(text: str) -> str:
+async def _index_constituents(name: str) -> frozenset:
+async def build_trending_compare_config(message: str) -> Optional[dict]:
+async def stock_news(query: str, limit: int = 8) -> dict:
+async def _finnews_articles(query: str = "", tickers: Optional[list] = None,
+def _merge_news(*lists: list) -> list:
+def resolve_league(text: str) -> Optional[str]:
+def _competitor(side: dict) -> dict:
+async def sports_scores(league: str) -> dict:
+def cache_tool_result(key: str, value: dict) -> None:
+def get_cached_tool_result(key: str) -> Optional[dict]:
+def cached_stock_symbols() -> list:
+def coerce_widget_type(widget_type: str, widget_id: str, config: dict) -> tuple:
+def _widget_is_degenerate(widget_type: str, config: dict) -> bool:
+def _graceful_fallback_config(config: dict) -> dict:
+def _data_card_quality_gap(config: dict) -> str:
+def _linky_items(config: dict) -> list:
+def _bare_items(items: list) -> list:
+async def _synthesize_answer_from_items(config: dict, query_hint: str = "") -> str:
+def _favicon_for(url: str) -> str:
+def _items_of(config: dict) -> list:
+def _items_missing_images(config: dict) -> list:
+async def _backfill_item_images(items: list, timeout: float = 6.0) -> int:
+async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
+def render_widget(widget_type: str, widget_id: str, config: dict) -> str:
+def _tool_repeat_key(tool_name: str, args) -> str:
+def _summarize_tool_args(args) -> dict:
+def _phase_for_tool(tool_name: str) -> str:
+def _strip_agent_narration(text: str) -> str:
+def _text_answer_card_config(question: str, answer: str) -> dict:
+def find_singleton_media_widget(soup, widget_type: str):
+def _looks_like_junk_page(text: str) -> bool:
+def _is_public_http_url(url: str) -> bool:
+async def read_web_page(url: str, max_chars: int = 6000) -> dict:
+def _wmo(code) -> tuple:
+async def geocode_location(name: str) -> Optional[dict]:
+async def get_weather(location: str, units: str = "fahrenheit") -> dict:
+def _stamp_media_seq(node, widget_type: str, req_seq: int) -> None:
+def _place_media_widget(soup, widget_type: str, widget_id: str, config: dict, req_seq: int) -> bool:
+def _canvas_lock(session_id: str) -> asyncio.Lock:
+def get_session_canvas(session_id: str) -> str:
+def set_session_canvas(session_id: str, html: str, bump_version: bool = True) -> int:
+async def commit_canvas(session_id: str, mutate) -> Optional[str]:
+async def _run_turn(session_id: str, current_canvas: str, generator_factory,
+def _classify_canvas_widget(card) -> str:
+def _iter_canvas_widgets(html: str):
+def find_existing_widget_by_id_prefix(session_id: str, prefix: str) -> Optional[str]:
+def find_existing_widget(session_id: str, widget_type: str) -> Optional[str]:
+def _is_refining_followup(message: str) -> bool:
+def _subject_tokens(text: str) -> set:
+def _tok_edit_within(a: str, b: str, cap: int) -> bool:
+def _fuzzy_hit(tok: str, toks: set) -> bool:
+def _subject_overlap(a: str, b: str) -> float:
+def _score_widget_for_query(query: str, title: str, detail: str = "") -> float:
+def _ledger_details(session_id: str) -> Dict[str, str]:
+def find_reuse_target(session_id: str, widget_type: str,
+def _remember_widget_config(session_id: str, widget_id: str, config: dict) -> None:
+def _word_count(text: str) -> int:
+def _stack_data_card_update(session_id: str, widget_id: str, widget_type: str,
+def _spoken_summary(widget_type: str, config: dict, question: str = "") -> str:
+def _widget_detail(config: dict) -> str:
+def _widget_content_gist(config: dict) -> str:
+def record_turn(session_id: str, message: str, route: str, widgets: list) -> None:
+def _summarize_canvas_for_history(canvas_html: str) -> str:
+def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
+def _followup_target_id(session_id: str, focus_id: Optional[str],
+def _widget_showing(session_id: str, wid: Optional[str], message: str = "") -> str:
+def _widget_on_canvas(session_id: str, wid: str, widget_type: str) -> Optional[str]:
+def _resolve_widget_target(session_id: str, widget_type: str, model_target: str,
+def _resolve_agent_widget_id(session_id: str, widget_type: str,
+def get_canvas_summary(html: str) -> str:
+async def _lifespan(_app: FastAPI):
+async def _try_reconnect_mcp() -> bool:
+async def _mcp_watchdog() -> None:
+async def _warn_if_research_is_down() -> None:
+class MessageRequest(BaseModel):
+class CreateNoteRequest(BaseModel):
+class UpdateNoteRequest(BaseModel):
+class LinkNotesRequest(BaseModel):
+class TranscribeRequest(BaseModel):
+class TTSSynthesizeRequest(BaseModel):
+async def get_models():
+def extract_youtube_query(text: str) -> str:
+def is_query_vague(query_text: str) -> bool:
+def extract_music_genre(query_text: str) -> str:
+def clean_video_query(text: str) -> str:
+def pick_best_video(hits: list, exclude_ids: set = None):
+def pick_varied_video(hits: list, k: int = 5, exclude_ids: set = None, wide: bool = False):
+def _load_blocklists() -> None:
+def block_video(video_id: str, reason: str = "") -> None:
+def block_channel(channel: str, reason: str = "") -> None:
+def filter_blocked_videos(hits: list) -> list:
+def _stash_turn_freshness(message: str) -> None:
+def _clear_turn_freshness() -> None:
+def _stashed_turn_freshness() -> Optional[Freshness]:
+def _stashed_turn_form() -> Optional[str]:
+def _shown_video_ids(session_id: str) -> set:
+def _remember_current_video(session_id: str, hit_or_cfg: dict, query: str) -> None:
+def _split_video_subject_topic(message: str) -> tuple:
+def _creator_evidence(subject: str, message: str = "") -> str:
+def _topic_in_title(topic: str, title: str) -> bool:
+async def _recency_video_pick(message: str, session_id: str,
+def is_conversion_ask(text: str) -> bool:
+def extract_topic(text: str) -> str:
+async def build_wikipedia_config(message: str) -> dict:
+async def _wiki_summary(topic: str) -> dict:
+async def build_profile_config(query: str) -> dict:
+async def build_timeline_config(query: str) -> dict:
+async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dict]:
+async def ground_query(message: str) -> dict:
+async def _fast_multimodal_json(content: list, max_tokens: int = 300,
+async def _fetch_image_data_url(client: httpx.AsyncClient, url: str,
+async def filter_images_by_relevance(subject: str, negatives: list, items: list,
+def _resolve_timezone(text: str) -> str:
+def _parse_duration_seconds(text: str) -> int:
+async def build_list_config(message: str) -> dict:
+def _extract_existing_checklist(session_id: str):
+async def build_list_add_config(message: str, existing_title: str,
+async def build_list_remove_config(message: str, existing_title: str,
+def _list_slug(title: str) -> str:
+def _persist_list_state(config: dict) -> None:
+def _resolve_restorable_list(message: str) -> Optional[dict]:
+def build_converter_config(message: str) -> dict:
+def build_reminder_config(message: str) -> dict:
+async def fetch_fx_rates(base: str) -> dict:
+async def build_notes_config(message: str) -> dict:
+def _clean_fact(s: str) -> str:
+def capture_user_facts(message: str) -> dict:
+def _user_facts_prompt() -> str:
+def extract_location(message: str) -> str:
+def _strip_citation_markers(text: str) -> str:
+def extract_trip_destination(message: str) -> str:
+async def build_news_config(message: str) -> dict:
+async def build_stock_news_config(message: str) -> dict:
+async def _stock_video_commentary(symbol: str, company: str = "", limit: int = 2) -> list:
+def _fundamentals_lines(snap: dict) -> str:
+async def build_market_research_config(message: str) -> dict:
+async def build_news_brief_config(message: str, finance: bool = False) -> dict:
+async def build_stock_report_config(message: str) -> dict:
+async def _noop_dict() -> dict:
+def _fmt_usd(v) -> str:
+async def _dexs_snapshot(ref: str, range_: str = "30d") -> dict:
+async def _crypto_snapshot(coin_id: str, range_: str = "30d") -> dict:
+async def _gt_chart_for_contract(platforms: dict, range_: str) -> tuple:
+async def build_crypto_card_config(message: str) -> Optional[dict]:
+async def build_wallet_graph_config(message: str) -> Optional[dict]:
+async def build_wallet_config(message: str) -> Optional[dict]:
+async def build_crypto_report_config(message: str) -> dict:
+async def _image_url_loads(url: str) -> bool:
+async def _resolve_news_topic_config(config: dict) -> dict:
+async def build_answer_config(query: str, results: Optional[list] = None,
+async def geocode_place(name: str) -> Optional[dict]:
+async def geocode_nominatim(query: str) -> Optional[dict]:
+def poi_query_has_location(query: str) -> bool:
+def anchor_places_query(query: str) -> str:
+def build_location_prompt_config(query: str) -> dict:
+def is_deictic_place(text: str) -> bool:
+def _extract_directions_place(message: str) -> str:
+async def build_traffic_widget(message: str, force_traffic: bool = False) -> tuple[str, Optional[dict]]:
+async def _fetch_secret(name: str) -> str:
+def _emoji_for_place_type(primary_type: str, types: list) -> str:
+async def google_places_search(query: str, limit: int = 12) -> list:
+async def build_map_config(query: str) -> dict:
+def is_valid_tool_args(tool_name: str, args: dict) -> bool:
+def _clean_preflight_checks(raw) -> dict:
+def _preflight_block(specs: list, checks: dict) -> str:
+async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
+async def build_composition_plan(message: str) -> list:
+async def build_image_config(query: str, ground: dict = None) -> Optional[dict]:
+async def build_products_config(query: str, ground: dict = None) -> dict:
+async def build_trip_widgets(query: str) -> list:
+async def _resolve_ticker(query: str) -> str:
+async def build_router_widget(spec: dict, session_id: str, message: str) -> Optional[tuple]:
+async def _drop_offsubject_widgets(message: str, good: list) -> list:
+async def send_message(req: MessageRequest):
+async def api_create_note(req: CreateNoteRequest):
+async def api_update_note(req: UpdateNoteRequest):
+async def api_link_notes(req: LinkNotesRequest):
+async def get_note(id: str):
+async def api_stock(symbol: str, range: str = "1mo"):
+async def api_fx(base: str):
+async def api_crypto(coin_id: str, range: str = "30d"):
+def _note_slug(title: str) -> str:
+def _note_path(slug: str) -> Optional[pathlib.Path]:
+def _yaml_frontmatter(meta: dict) -> str:
+def _parse_frontmatter(text: str) -> dict:
+class SaveNoteRequest(BaseModel):
+async def api_notes_save(req: SaveNoteRequest):
+async def api_notes_list():
+async def api_notes_load(slug: str):
+async def api_youtube_candidates(query: str, limit: int = 6,
+async def api_youtube_search(query: str):
+async def api_search(q: str):
+async def get_graph():
+async def transcribe_audio(req: TranscribeRequest):
+async def tts_synthesize(req: TTSSynthesizeRequest):
+async def health_model():
+async def _mcp_scopes_serving_us(client: httpx.AsyncClient) -> list:
+async def _agent_dependency_status() -> dict:
+async def health_app():
+async def health_agent(response: Response):
+class InternalToolRequest(BaseModel):
+async def internal_tool_execute(req: InternalToolRequest, request: Request = None):
+async def get_session_history(session_id: str):
+def _redirect_stale_ui_entrypoint():
+async def widget_map(d: str = ""):
+async def widget_traffic_tile(z: int, x: int, y: int):
+async def widget_embed(u: str = ""):
+async def get_user_memory():
+async def forget_user():
+def _asset_version() -> str:
+def read_root():
