@@ -1436,8 +1436,6 @@ _SHOWN_HISTORY = 24
 
 
 
-_load_blocklists()
-
 
 # ── Channel- and date-verified recency video selection ──────────────────────
 # "fox news video newest about the stock market" once returned a 40-view clip
@@ -2936,6 +2934,7 @@ from app.utils import *
 
 # Kept under the old name: it's what the registered tool schema calls.
 stock_history = stock_snapshot
+_load_blocklists()
 
 __all__ = list(globals().keys())
 
