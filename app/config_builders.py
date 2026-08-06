@@ -2058,3 +2058,4 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
     return None
 
 
+__all__ = [k for k in globals().keys() if not k.startswith('__')]

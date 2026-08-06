@@ -833,3 +833,4 @@ async def _drop_offsubject_widgets(message: str, good: list) -> list:
     return kept
 
 
+__all__ = [k for k in globals().keys() if not k.startswith('__')]
