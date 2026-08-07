@@ -488,7 +488,15 @@ async def build_news_config(message: str) -> dict:
         max_tokens=1000,
     )
     if not data or not isinstance(data.get("items"), list) or not data["items"]:
-        return {"title": f"News: {display}".title()[:60], "icon": "newspaper", "items": raw_items()}
+        raw_list = raw_items()
+        fallback_summary = " ".join(r["description"] for r in raw_list[:3] if r.get("description"))
+        return {
+            "title": f"News: {display}".title()[:60],
+            "answer": fallback_summary,
+            "subtitle": fallback_summary[:120],
+            "icon": "newspaper",
+            "items": raw_list
+        }
 
     items = []
     for it in data["items"][:6]:
@@ -503,9 +511,15 @@ async def build_news_config(message: str) -> dict:
             "meta": src.get("meta") or (_host_of(src.get("url", "")) if src.get("url") else ""),
             "badge": "News",
         })
+
+    overview = (data.get("overview") or "").strip()
+    if not overview and items:
+        overview = " ".join(it["description"] for it in items[:3] if it.get("description"))
+
     return {
         "title": f"News: {display}".title()[:60],
-        "subtitle": (data.get("overview") or "")[:120],
+        "answer": overview,
+        "subtitle": overview[:120],
         "icon": "newspaper",
         "items": items or raw_items(),
     }

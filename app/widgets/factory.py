@@ -279,7 +279,13 @@ def render_data_card(widget_id: str, config: dict) -> str:
     # added a summary", and the card showed only headlines. Nothing repaired it
     # either: _data_card_quality_gap only inspects `answer` and `items`, so
     # `content` was invisible to the quality floor too.
-    answer = (config.get("answer", "") or "") or content
+    answer = (
+        (config.get("answer") or "").strip() or
+        (config.get("content") or "").strip() or
+        (config.get("summary") or "").strip() or
+        (config.get("overview") or "").strip() or
+        (config.get("subtitle") or "").strip()
+    )
     # `sources` is the semantic alias for `items` once an answer carries the content;
     # accept either so the synthesiser and the older news/search callers both work.
     items = config.get("items") or config.get("sources") or []
