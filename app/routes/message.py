@@ -445,6 +445,10 @@ async def send_message(req: MessageRequest):
                            or LIST_EDIT_RE.search(text_clean)
                            or LIST_ITEM_REMOVE_RE.search(text_clean))
 
+        has_conjunction = bool(re.search(r'\b(and|also|plus|along with|both|as well as)\b', text_clean))
+        has_data_noun = bool(re.search(r'\b(article|articles|news|list|boots|trails|guide|summary|info|review|reviews|buying|buy)\b', text_clean))
+        is_compound_ask = bool(has_conjunction and ((is_video_ask and (is_data_ask or is_list_ask or has_data_noun)) or (is_data_ask and is_list_ask)))
+
         wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         league = resolve_league(text_clean)
 
@@ -668,7 +672,7 @@ async def send_message(req: MessageRequest):
             # naming a channel is itself a request for that channel's newest
             # upload. The picker returns None when no channel binds, so topic
             # asks ("a cookie recipe video") fall through to normal search.
-            if (is_video_ask
+            if (is_video_ask and not is_compound_ask
                     and not wants_removal and not LIVE_ASK_RE.search(text_clean)):
                 # Channel- and date-verified: "fox news video newest about the
                 # stock market" must come from the FOX News uploads feed, not
@@ -730,7 +734,7 @@ async def send_message(req: MessageRequest):
             #     picked the #1 hit every time, so a repeat ask replayed the identical
             #     video. Fast-path it AND vary among the top handful so it stays
             #     interesting. Music videos keep going to the player, not here.
-            if is_video_ask and not wants_removal and not wants_music:
+            if is_video_ask and not is_compound_ask and not wants_removal and not wants_music:
                 vquery = clean_video_query(req.message)
                 vhits = await search_youtube_videos(vquery, limit=10, rerank=True,
                                                     freshness=fresh_ask,
@@ -1025,8 +1029,8 @@ async def send_message(req: MessageRequest):
                 #     modalities and fan them out as ONE atomic multi-widget commit.
                 #     Falls through to the single-widget answer/router when planning
                 #     yields <2 modalities (i.e. it's really a narrow ask).
-                if (req.use_lazy_agent and COMPOSE_ASK_RE.search(text_clean)
-                        and not wants_removal and not is_video_ask):
+                if (req.use_lazy_agent and (COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
+                        and not wants_removal):
                     plan = await build_composition_plan(req.message)
                     if len(plan) >= 2:
                         logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
