@@ -215,6 +215,49 @@ async def send_message(req: MessageRequest):
                 media_type="text/event-stream",
             )
 
+        def _stream_remove_widget():
+            """Deterministically remove matching widget(s) from the canvas in ~50ms
+            without invoking the LLM agent."""
+            target_text = re.sub(
+                r'\b(remove|delete|close|hide|clear|dismiss|drop|kill|stop|widget|card|window|the|it|my|a|an|get rid of)\b',
+                '', text_clean, flags=re.I).strip()
+            target_tokens = [t.lower() for t in re.findall(r'\w+', target_text) if len(t) > 1]
+
+            async def stream():
+                yield f'data: {json.dumps({"type": "status", "message": "closing widget..."})}\n\n'
+
+                def _remove_matching(soup):
+                    widgets = soup.select('.canvas-widget, .glass-card, .widget-container, [id^="widget-"], [data-widget-type]')
+                    removed = False
+                    for w in widgets:
+                        w_id = (w.get("id") or "").lower()
+                        w_type = (w.get("data-widget-type") or "").lower()
+                        w_title = (w.get("data-title") or "").lower()
+                        w_text = w.get_text().lower()
+
+                        combined = f"{w_id} {w_type} {w_title} {w_text}"
+                        
+                        if not target_tokens or any(t in combined for t in target_tokens):
+                            w.decompose()
+                            removed = True
+                    return removed
+
+                event = await commit_canvas(req.session_id, _remove_matching)
+                if event:
+                    database.save_chat_message(
+                        message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                        session_id=req.session_id,
+                        role="assistant",
+                        content=f"\n\n<!--CANVAS_HTML_START-->\n{get_session_canvas(req.session_id)}\n<!--CANVAS_HTML_END-->"
+                    )
+                    yield event
+                yield 'data: {"type": "done"}\n\n'
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
+                media_type="text/event-stream",
+            )
+
         def _stream_settings():
             """Pop (or update) the singleton settings panel and, when the ask
             named a look, apply the closest palette. A UI-control action, so it
@@ -432,6 +475,11 @@ async def send_message(req: MessageRequest):
         # edit (which can contain "all") never triggers a full wipe.
         if CLEAR_ALL_RE.search(text_clean) and not LIST_ITEM_REMOVE_RE.search(text_clean):
             return _stream_clear_canvas()
+
+        # FAST WIDGET REMOVAL — "close cnn live news", "close video", "remove clock"
+        # Deterministically decomposes matching widget(s) in ~50ms without an agent turn.
+        if wants_removal and not LIST_ITEM_REMOVE_RE.search(text_clean):
+            return _stream_remove_widget()
 
         # THEME / SETTINGS — a UI-control action (like CLEAR_ALL). A pure look
         # change or a settings request flips instantly via the singleton panel,
