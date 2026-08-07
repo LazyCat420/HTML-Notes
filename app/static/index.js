@@ -2297,7 +2297,19 @@ document.addEventListener("DOMContentLoaded", () => {
     function applyImageFallbacks(container) {
         // Any widget image that fails to load degrades to a monogram tile
         // instead of a broken-image icon.
-        container.querySelectorAll('.widget-container img, .glass-card img, .canvas-widget img').forEach(img => {
+        container.querySelectorAll('.widget-container img, .glass-card img, .canvas-widget img, img').forEach(img => {
+            // CRT Turn-On image reveal animation
+            if (!img._hasCrt) {
+                img._hasCrt = true;
+                if (img.complete && img.naturalWidth > 0) {
+                    img.classList.add('crt-reveal');
+                } else {
+                    img.addEventListener('load', () => {
+                        img.classList.add('crt-reveal');
+                    });
+                }
+            }
+
             if (img._hasFallback) return;
             img._hasFallback = true;
             img.addEventListener('error', () => {
@@ -2317,9 +2329,44 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    function animateWidgetText(container) {
+        const textElements = container.querySelectorAll(
+            '.widget-container p, .glass-card p, .canvas-widget p, ' +
+            '.widget-container li, .glass-card li, .canvas-widget li'
+        );
+
+        textElements.forEach(el => {
+            if (el.dataset.typewriterDone === '1') return;
+            const fullText = el.textContent || '';
+            if (fullText.trim().length < 8) return;
+            
+            el.dataset.typewriterDone = '1';
+            const originalHTML = el.innerHTML;
+            
+            const words = fullText.split(/(\s+)/);
+            el.textContent = '';
+            el.classList.add('typewriter-cursor');
+            
+            let i = 0;
+            const speed = 16;
+            function step() {
+                if (i < words.length) {
+                    el.textContent += words[i];
+                    i++;
+                    setTimeout(step, speed);
+                } else {
+                    el.innerHTML = originalHTML;
+                    el.classList.remove('typewriter-cursor');
+                }
+            }
+            step();
+        });
+    }
+
     function renderDynamicComponents(container) {
         reviveScripts(container);
         applyImageFallbacks(container);
+        animateWidgetText(container);
 
         // The welcome message only belongs on an empty canvas.
         const welcome = container.querySelector('#welcome-message');

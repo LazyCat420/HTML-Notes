@@ -2375,3 +2375,55 @@ body::after { display: none !important; }
        answer cannot appear below a card that is still on screen. */
     .turn-envelope.is-delivered { opacity: 0; }
 }
+
+/* ── Anti-stretching placeholder & loading constraints ───────────────────── */
+.dashboard-grid > .turn-envelope,
+.dashboard-grid > .loading-card,
+.dashboard-grid > .glass-card.loading,
+.turn-envelope {
+    grid-row-end: span 180 !important;
+    max-height: 220px !important;
+    overflow: hidden !important;
+}
+
+/* ── CRT Turn-On Animation Effect for Images ─────────────────────────────── */
+@keyframes crtTurnOn {
+    0% {
+        opacity: 0.1;
+        transform: scaleY(0.02) scaleX(0.85);
+        filter: brightness(2.5) contrast(2) saturate(0.2);
+        box-shadow: 0 0 25px rgba(79, 195, 247, 0.9);
+    }
+    40% {
+        opacity: 0.85;
+        transform: scaleY(1.04) scaleX(1.02);
+        filter: brightness(1.4) contrast(1.2) saturate(0.8);
+        box-shadow: 0 0 10px rgba(79, 195, 247, 0.4);
+    }
+    100% {
+        opacity: 1;
+        transform: scaleY(1) scaleX(1);
+        filter: brightness(1) contrast(1) saturate(1);
+        box-shadow: none;
+    }
+}
+
+img.crt-reveal {
+    animation: crtTurnOn 0.45s cubic-bezier(0.1, 0.9, 0.2, 1) forwards !important;
+    transform-origin: center center;
+    backface-visibility: hidden;
+}
+
+/* ── Real-Time Typewriter Cursor ───────────────────────────────────────── */
+.typewriter-cursor::after {
+    content: '▋';
+    display: inline-block;
+    margin-left: 2px;
+    color: var(--cyan, #4fc3f7);
+    animation: blinkCursor 0.7s infinite;
+}
+
+@keyframes blinkCursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
