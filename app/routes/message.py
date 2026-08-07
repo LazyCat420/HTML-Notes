@@ -445,9 +445,20 @@ async def send_message(req: MessageRequest):
                            or LIST_EDIT_RE.search(text_clean)
                            or LIST_ITEM_REMOVE_RE.search(text_clean))
 
-        has_conjunction = bool(re.search(r'\b(and|also|plus|along with|both|as well as)\b', text_clean))
+        is_stock_ask = bool(STOCK_REPORT_RE.search(text_clean) or STOCK_WORD_RE.search(text_clean) or re.search(r'\b(chart|charts|stock|stocks|ticker|share|shares|price|nvda|tsla|aapl|msft|googl|amzn)\b', text_clean))
+        has_conjunction = bool(re.search(r'\b(and|also|plus|along with|both|as well as|with)\b', text_clean))
         has_data_noun = bool(re.search(r'\b(article|articles|news|list|boots|trails|guide|summary|info|review|reviews|buying|buy)\b', text_clean))
-        is_compound_ask = bool(has_conjunction and ((is_video_ask and (is_data_ask or is_list_ask or has_data_noun)) or (is_data_ask and is_list_ask)))
+        
+        intents_list = [
+            is_video_ask,
+            (is_data_ask or has_data_noun),
+            is_stock_ask,
+            is_list_ask,
+            bool(MAP_ASK_RE.search(text_clean)),
+            bool(WEATHER_ASK_RE.search(text_clean))
+        ]
+        active_intents_count = sum(1 for x in intents_list if x)
+        is_compound_ask = bool(has_conjunction and active_intents_count >= 2)
 
         wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         league = resolve_league(text_clean)

@@ -2642,7 +2642,7 @@ def _preflight_block(specs: list, checks: dict) -> str:
 
 # Modalities the composition planner is allowed to combine (a subset of
 # ROUTER_WIDGETS — the ones that make sense as parts of one rich answer).
-_COMPOSE_MODALITIES = ("answer", "image", "video", "news", "map")
+_COMPOSE_MODALITIES = ("answer", "image", "video", "news", "map", "stock", "weather")
 
 
 
