@@ -2216,6 +2216,9 @@ body::after { display: none !important; }
    and dashed, so it never reads as a finished result. */
 
 .turn-envelope {
+    align-self: start !important;
+    grid-row-end: span 140 !important;
+    max-height: 160px !important;
     background-color: rgba(8, 18, 32, 0.34);
     background-image: linear-gradient(165deg, rgba(22, 46, 74, 0.34), rgba(5, 12, 24, 0.24));
     border: 1px dashed var(--edge);
@@ -2377,12 +2380,15 @@ body::after { display: none !important; }
 }
 
 /* ── Anti-stretching placeholder & loading constraints ───────────────────── */
+.dashboard-grid > [data-turn-envelope],
 .dashboard-grid > .turn-envelope,
 .dashboard-grid > .loading-card,
 .dashboard-grid > .glass-card.loading,
+.dashboard-grid > div:empty,
 .turn-envelope {
-    grid-row-end: span 180 !important;
-    max-height: 220px !important;
+    grid-row-end: span 120 !important;
+    height: auto !important;
+    max-height: 160px !important;
     overflow: hidden !important;
 }
 
