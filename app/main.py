@@ -2503,6 +2503,62 @@ APP_HUB_INTENT_RE = re.compile(
     r'(?:hub|launcher|app grid|apps? (?:hub|grid|launcher))|'
     r'what(?:\'s| is) (?:currently )?running)\b', re.IGNORECASE)
 
+# OPEN-APP fast lane: "open the trading client" used to cost a full agent
+# turn (~15-40s of LLM) to fire a ~15ms tool. When a short open-imperative
+# names EXACTLY one catalog app, the handler emits open_url directly with no
+# LLM at all; anything ambiguous or widget-flavoured falls through unchanged.
+OPEN_APP_VERB_RE = re.compile(
+    r'^(?:open|launch|start|pull up|bring up)\s+(?:the\s+|my\s+)?(.+)$',
+    re.IGNORECASE)
+
+# Trailing markers that say "the APP, not a widget". Their presence overrides
+# the widget-noun guard below ("open the music player app" → the app in a
+# tab; "open the music player" → the mini player widget, as always).
+_OPEN_APP_MARKER_RE = re.compile(
+    r'\s+(?:app|application|website|site|page|(?:in\s+a\s+)?new\s+tab|tab|window)s?\s*[.!]?$',
+    re.IGNORECASE)
+
+# Words that mean a WIDGET ask in this app. A name containing one never
+# fast-opens without an explicit marker — "open my notes" is the notepad
+# widget even though the html-notes app's NAME contains "notes".
+_OPEN_APP_WIDGET_NOUNS = frozenset({
+    "music", "song", "radio", "playlist", "video", "clip", "stream",
+    "note", "notes", "notepad", "list", "checklist", "todo",
+    "clock", "timer", "stopwatch", "countdown", "reminder", "alarm",
+    "map", "directions", "traffic", "weather", "forecast",
+    "image", "picture", "photo", "chart", "graph", "table",
+    "settings", "theme", "converter", "calculator",
+    "scoreboard", "score", "scores", "news", "headlines",
+    "wikipedia", "wiki", "widget", "card", "canvas", "dashboard",
+})
+
+
+def extract_open_app_target(text: str) -> Optional[tuple]:
+    """(name, explicit_app_intent) when `text` is a short open-imperative,
+    else None. Pure text analysis — the caller still has to resolve `name`
+    against the live catalog (strict) before acting; this function only
+    decides that the SHAPE is an app-open ask."""
+    text = (text or "").strip()
+    if len(text) > 70:          # long sentences are never a bare open-command
+        return None
+    m = OPEN_APP_VERB_RE.match(text)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    explicit = False
+    while True:                 # "music player app in a new tab" → strip both
+        stripped = _OPEN_APP_MARKER_RE.sub("", name)
+        if stripped == name:
+            break
+        name, explicit = stripped.strip(), True
+    if not name:
+        return None
+    words = set(re.findall(r"[a-z0-9]+", name.lower()))
+    if not explicit and words & _OPEN_APP_WIDGET_NOUNS:
+        return None
+    return name, explicit
+
+
 # type → (id_prefix, one-line spec for the classify prompt). The prompt text is
 # what the model sees; the id_prefix is the widget id stem we spawn with.
 ROUTER_WIDGETS = {

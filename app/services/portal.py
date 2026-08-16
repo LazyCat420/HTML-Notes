@@ -191,12 +191,18 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
             "count": len(result)}
 
 
-def resolve_portal_app(query: str, apps: List[dict]) -> tuple:
+def resolve_portal_app(query: str, apps: List[dict], strict: bool = False) -> tuple:
     """Resolve a user phrase ('the music thing', 'trading client') to ONE app.
     Returns (app, candidates): app set iff exactly one confident match;
     otherwise candidates carries the plausible ones for the model to offer.
     Never guesses between near-ties — opening the wrong app in a tab is worse
-    than asking."""
+    than asking.
+
+    strict=True is the no-LLM fast lane's contract: match against id+name
+    ONLY (a description mentioning 'notes' must never claim 'open my notes'),
+    and require EVERY query word to hit — a partial overlap that the agent
+    could reasonably disambiguate is a miss here, because the fast lane has
+    no way to ask."""
     q = (query or "").strip().lower()
     if not q:
         return None, []
@@ -204,12 +210,19 @@ def resolve_portal_app(query: str, apps: List[dict]) -> tuple:
     if len(exact) == 1:
         return exact[0], []
     words = [w for w in re.split(r"[^a-z0-9]+", q) if len(w) > 2]
+    if strict and not words:
+        return None, []
     scored = []
     for a in apps:
-        hay = f"{a['id']} {a['name']} {a['description']}".lower()
+        hay = (f"{a['id']} {a['name']}".lower() if strict
+               else f"{a['id']} {a['name']} {a['description']}".lower())
         score = sum(1 for w in words if w in hay)
+        if strict and score < len(words):
+            continue
         if score:
             scored.append((score, a))
+    if strict:
+        return (scored[0][1], []) if len(scored) == 1 else (None, [a for _, a in scored[:4]])
     scored.sort(key=lambda s: -s[0])
     if len(scored) == 1 or (len(scored) > 1 and scored[0][0] > scored[1][0]):
         return scored[0][1], [a for _, a in scored[1:4]]

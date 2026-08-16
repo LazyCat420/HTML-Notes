@@ -258,6 +258,35 @@ async def send_message(req: MessageRequest):
                 media_type="text/event-stream",
             )
 
+        def _stream_open_app(app: dict):
+            """Open one resolved catalog app in a new tab with zero LLM: emit
+            the same open_url frame the agent interceptor uses (window.open +
+            clickable-toast fallback client-side), say so in one sentence, and
+            end the turn. No canvas mutation."""
+            app_name, app_url = app["name"], app["launch_url"]
+
+            async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path",
+                    "widget_type": "open_app", "id_prefix": app["id"],
+                    "query": req.message}) + '\n\n')
+                yield f'data: {json.dumps({"type": "status", "message": f"opening {app_name}…"})}\n\n'
+                logger.info(f"[APP HUB] fast-path open_url → {app['id']}")
+                yield f'data: {json.dumps({"type": "open_url", "url": app_url, "name": app_name})}\n\n'
+                text = f"Opening {app_name} in a new tab."
+                yield f'data: {json.dumps({"type": "chunk", "content": text})}\n\n'
+                database.save_chat_message(
+                    message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                    session_id=req.session_id,
+                    role="assistant",
+                    content=text)
+                yield 'data: {"type": "done"}\n\n'
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
+                media_type="text/event-stream",
+            )
+
         def _stream_settings():
             """Pop (or update) the singleton settings panel and, when the ask
             named a look, apply the closest palette. A UI-control action, so it
@@ -523,13 +552,29 @@ async def send_message(req: MessageRequest):
 
         # APP HUB — the launcher grid of the user's own services, from the live
         # portal-service inventory. A UI ask like settings: deterministic, zero
-        # agent latency. Opening ONE named app still goes through the agent
-        # (html_notes_open_app), which can disambiguate.
+        # agent latency.
         if APP_HUB_INTENT_RE.search(text_clean) and not is_video_ask:
             return spawn_widget_stream(
                 "app_grid", "app-hub",
                 config_builder=lambda: build_app_grid_config(req.message),
                 status="fetching your apps from portal…")
+
+        # OPEN AN APP — deterministic fast lane. The catalog fetch is ~15ms
+        # (measured 2026-08-16); routing "open the trading client" through the
+        # agent spent 15-40s of LLM time to fire it. When the ask is a short
+        # open-imperative whose name resolves (STRICT: id+name, every word)
+        # to exactly ONE catalog app, emit open_url directly — no LLM at all.
+        # Ambiguous ("open trading"), widget-flavoured ("open my notes",
+        # "open the music player" — sans "app" marker) or unknown names fall
+        # through to the widget lanes / agent exactly as before.
+        if not wants_removal:
+            _open_target = extract_open_app_target(text_clean)
+            if _open_target:
+                _open_name, _ = _open_target
+                _hub = await get_portal_apps()
+                _open_app, _ = resolve_portal_app(_open_name, _hub["apps"], strict=True)
+                if _open_app and _open_app.get("launch_url"):
+                    return _stream_open_app(_open_app)
 
         # REMINDER / alarm — checked before the converter (a reminder can carry
         # a time that looks numeric) and before the clock timer branch.

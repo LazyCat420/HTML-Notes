@@ -89,6 +89,24 @@ DB overlay and survives restarts without a redeploy.
    called **persona-less** for now; `enabledTools` + SYSTEM_PROMPT still
    scope the run. Open item filed in lazy-agent-service HANDOFF.md.
 
+## Open fast lane (added same day)
+
+Measured layers: portal `GET /services` ~13ms, `/api/services` ~12ms, tool
+call via gateway ~17ms — the fetch was never the cost; the AGENT LOOP around
+it was (15-40s of LLM). So a short open-imperative ("open the trading
+client", "launch drift king") now resolves against the catalog **strictly**
+(id+name only, every word must hit, exactly one match) and emits `open_url`
+with zero LLM: **0.08s measured**, `path:"fast-path", widget_type:"open_app"`.
+
+Guards, in order (`extract_open_app_target` in `app/main.py`):
+- ≤70 chars, anchored `open|launch|start|pull up|bring up` imperative;
+- widget-noun words (music/notes/map/timer/…) fall through UNLESS an explicit
+  app marker was said and stripped ("…app", "…in a new tab", "…site") —
+  "open the music player" stays the mini-player widget, "open the music
+  player app" opens the tab;
+- ambiguous ("open portal" → portal-client/portal-service) or unknown names
+  fall through to the widget lanes/agent unchanged, which can ask.
+
 ## Traps for the next reader
 
 - `app/services/*` modules adopt main's namespace

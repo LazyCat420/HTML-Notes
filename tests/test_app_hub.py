@@ -185,3 +185,46 @@ def test_render_app_grid_smoke():
     assert "appGridWidget(" in html
     # The baked config must round-trip through the x-data attribute escaping.
     assert "&quot;launch_url&quot;" in html
+
+
+# ── open-app fast lane ───────────────────────────────────────────────────────
+
+def test_extract_open_app_target_positive():
+    assert m.extract_open_app_target("open the trading client") == ("trading client", False)
+    assert m.extract_open_app_target("launch drift king") == ("drift king", False)
+    # Explicit app marker overrides the widget-noun guard and is stripped.
+    assert m.extract_open_app_target("open the music player app") == ("music player", True)
+    assert m.extract_open_app_target("open music player in a new tab") == ("music player", True)
+
+
+def test_extract_open_app_target_widget_asks_fall_through():
+    # Widget-flavoured names without an explicit marker are NOT app-opens:
+    # "open my notes" is the notepad even though html-notes' NAME has "notes".
+    for text in ("open my notes", "open the music player", "open a map of seattle",
+                 "start a timer", "open the weather", "open my grocery list"):
+        assert m.extract_open_app_target(text) is None, text
+
+
+def test_extract_open_app_target_shape_guards():
+    assert m.extract_open_app_target("what is the trading client") is None
+    assert m.extract_open_app_target(
+        "open the door to a discussion about how trading clients work in general and why") is None
+    assert m.extract_open_app_target("open") is None
+
+
+def test_strict_resolver_id_name_only_and_all_words():
+    apps = _APPS + [{"id": "html-notes", "name": "HTML Notes",
+                     "description": "AI canvas dashboard — widgets, notes, App Hub"}]
+    # Full-word match on name → unique hit.
+    app, _ = portal.resolve_portal_app("trading client", apps, strict=True)
+    assert app["id"] == "trading-client"
+    # Partial overlap that the agent could disambiguate is a MISS here.
+    app, cands = portal.resolve_portal_app("trading", apps, strict=True)
+    assert app is None and len(cands) == 2
+    # Description must NOT be matchable in strict mode ("canvas" only appears
+    # in html-notes' description).
+    app, _ = portal.resolve_portal_app("canvas", apps, strict=True)
+    assert app is None
+    # Non-strict keeps the old behaviour (description helps fuzzy asks).
+    app, _ = portal.resolve_portal_app("the music thing", apps, strict=False)
+    assert app["id"] == "music-player"
