@@ -1557,6 +1557,11 @@ async def send_message(req: MessageRequest):
             all_rendered_html = get_session_canvas(req.session_id) or req.current_canvas or ""
             executed_active_tool = False
             executed_mutations: set = set()
+            # Apps already opened this turn. The model routinely re-emits the
+            # same html_notes_open_app after its ack (same behaviour as the
+            # canvas_add_widget re-emit) — without this, one intent opened TWO
+            # tabs (observed live 2026-08-16: two open_url frames for one ask).
+            emitted_open_apps: set = set()
 
             # Once the widget is on screen the turn is, from the user's point of
             # view, over. Measured: the widget landed at ~8s and the model then
@@ -2561,7 +2566,9 @@ async def send_message(req: MessageRequest):
                                             executed_active_tool = True
                                             hub_data = await get_portal_apps()
                                             open_app, _ = resolve_portal_app(open_q, hub_data["apps"])
-                                            if open_app and open_app.get("launch_url"):
+                                            if (open_app and open_app.get("launch_url")
+                                                    and open_app["id"] not in emitted_open_apps):
+                                                emitted_open_apps.add(open_app["id"])
                                                 logger.info(f"[APP HUB] open_url → {open_app['id']}")
                                                 yield f'data: {json.dumps({"type": "open_url", "url": open_app["launch_url"], "name": open_app["name"]})}\n\n'
 
