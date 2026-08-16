@@ -1530,7 +1530,18 @@ async def send_message(req: MessageRequest):
         # target prism we run persona-less: the explicit SYSTEM_PROMPT + enabledTools
         # already scope the turn, and the connected lazy-tool-service MCP server
         # supplies the same mcp__lazy-tool-service__* research tools (verified live).
-        payload["agent"] = FORK_AGENT_ID if req.use_lazy_agent else PRISM_AGENT_ID
+        #
+        # 2026-08-16: the gateway is ALSO persona-less for now. The newly ported
+        # agentic-loop harness returns an EMPTY stream on iteration 1 whenever
+        # `agent` names a persona (bisected live: identical payload with the
+        # field dropped works and completes the open_app flow; with
+        # agent='HTML_NOTES' → 0 input tokens, no shim POST, "Empty model
+        # output"). Persona-less loses nothing here: enabledTools still scopes
+        # the run (AgenticToolResolver honours it) and SYSTEM_PROMPT carries
+        # the routing rules. Re-add FORK_AGENT_ID once the harness persona
+        # path is fixed (open item in lazy-agent-service docs).
+        if not req.use_lazy_agent:
+            payload["agent"] = PRISM_AGENT_ID
 
         async def proxy_prism_sse():
             """

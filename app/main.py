@@ -1226,7 +1226,14 @@ class MessageRequest(BaseModel):
     # (products, general answers, images) are routed to that agent instead of being
     # short-circuited by local search-scrape builders. True = legacy: the :5591 fork
     # gateway + local fast-path builders (faster, but no real research).
-    use_lazy_agent: bool = False
+    # Default flipped to the gateway (:5591) on 2026-08-16: prism mode is
+    # currently unusable for the full-agent path — prism's /config-local
+    # returns ZERO local providers, so model discovery falls into the
+    # VLLM_URL fallback and prism rejects the turn with 'Unknown provider
+    # "vllm-2"'. The gateway has all three vLLM instances registered and
+    # verified working end-to-end (open_app flow, 2026-08-16). Flip back
+    # only after prism's local instance registry is populated again.
+    use_lazy_agent: bool = True
 
 class CreateNoteRequest(BaseModel):
     title: str
