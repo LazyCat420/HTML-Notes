@@ -89,6 +89,38 @@ DB overlay and survives restarts without a redeploy.
    called **persona-less** for now; `enabledTools` + SYSTEM_PROMPT still
    scope the run. Open item filed in lazy-agent-service HANDOFF.md.
 
+## A BARE app name is an open ask (and a dead launch URL)
+
+Two more live-reported defects, same session:
+
+**"music player" (no verb) opened the mini-player WIDGET; "trading bot" took
+17 seconds.** The open fast lane only fired on an imperative
+(`open|launch|start|pull up|bring up`), so a bare app name skipped it: the
+music widget lane claimed "music player" outright, and everything else fell
+to the agent (measured 13-18s for "trading bot", "braindeadbot", "portal",
+"prism" — they DID open, thanks to the YOUR APPS block, just slowly).
+`extract_bare_app_name` + `resolve_portal_app(exact_only=True)` now treat a
+short verb-less message as an open ask, but **only on a WHOLE-name match** —
+the safety property that keeps prose from launching tabs. Guards: ≤40 chars,
+≤4 words, no `?`, and no verb/interrogative (`play|show|add|what|is|how|…`).
+Measured after: "music player" 0.06s, "trading bot" 0.02s, "portal" 0.01s;
+"music" still the widget, "play some lofi hip hop" still the widget, "notes"
+still the notepad, "is trading down?" still no tab.
+
+**music-player's launch URL was dead.** Vault gives it
+`domain: music.braindeadbot.com`, portal's convention prefers `domain` over
+`url` — and that domain **has no DNS record** (verified: `getent` finds
+nothing, `curl` exits 6, while `:3232` answers 200). So every correct open
+still landed on a broken tab. Pinned to `http://10.0.0.16:3232` via a
+`launch_url` override in `portal_registry.json`; drop the override if the
+domain ever exists. A sweep of all 18 apps found this was the ONLY genuinely
+unreachable URL (`braindeadbot.com` resolves and answers 200; the other
+non-200s are backends with no root route, which nothing should open).
+
+**Invariant worth keeping:** portal's `domain` field is an ASPIRATION, not a
+guarantee — it is registry data nobody validates. When an open "does
+nothing", check DNS before touching routing code.
+
 ## Open ROUTING rules (2026-08-16, after live use)
 
 Three rules decide what an "open X" ask does. They exist because the first

@@ -260,7 +260,8 @@ def prefer_clients(matches: List[dict]) -> List[dict]:
     return non_backend if non_backend else matches
 
 
-def resolve_portal_app(query: str, apps: List[dict], strict: bool = False) -> tuple:
+def resolve_portal_app(query: str, apps: List[dict], strict: bool = False,
+                       exact_only: bool = False) -> tuple:
     """Resolve a user phrase ('the music thing', 'trading client') to ONE app.
     Returns (app, candidates): app set iff exactly one confident match;
     otherwise candidates carries the plausible ones for the caller to offer.
@@ -293,6 +294,13 @@ def resolve_portal_app(query: str, apps: List[dict], strict: bool = False) -> tu
             return exact[0], []
         if len(exact) > 1:
             return None, exact[:4]
+
+    # exact_only is the BARE-NAME contract: a message with no open-verb ("music
+    # player") may only ever match a whole app name/alias. Partial matching
+    # without a verb would let ordinary prose ("trading is down today") launch
+    # a tab.
+    if exact_only:
+        return None, []
 
     # ── Tier 2: all-words partial ───────────────────────────────────────
     words = [w for w in re.split(r"[^a-z0-9]+", q) if len(w) > 2]

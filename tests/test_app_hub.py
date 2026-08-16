@@ -325,3 +325,48 @@ def test_registry_aliases_are_not_bare_widget_words():
     for app_id, entry in (reg.get("apps") or {}).items():
         for alias in entry.get("aliases") or []:
             assert alias.lower() not in m._OPEN_APP_WIDGET_NOUNS, f"{app_id}: {alias}"
+
+
+# ── bare app names (no verb) ─────────────────────────────────────────────────
+
+def test_extract_bare_app_name_accepts_plain_names():
+    assert m.extract_bare_app_name("music player") == "music player"
+    assert m.extract_bare_app_name("trading bot") == "trading bot"
+    assert m.extract_bare_app_name("the portal") == "portal"
+    assert m.extract_bare_app_name("my trading client") == "trading client"
+
+
+def test_extract_bare_app_name_rejects_prose_and_questions():
+    """The shape guard. A bare phrase can launch a browser tab, so anything
+    that reads like conversation, a question or another intent must not
+    reach the catalog at all."""
+    for text in ("play some lofi hip hop", "is trading down?",
+                 "what is the trading client", "show my apps",
+                 "add milk to the list", "how does the music player work",
+                 "tell me about prism", "close the music player",
+                 "the trading client keeps dropping connections mid cycle"):
+        assert m.extract_bare_app_name(text) is None, text
+
+
+def test_bare_name_requires_a_whole_name_match():
+    """exact_only: a bare phrase may only match a FULL app name/alias.
+    'trading' alone must not open a tab when no verb was typed — otherwise
+    prose containing a partial name would launch things."""
+    app, _ = portal.resolve_portal_app("trading", _CATALOG, strict=True, exact_only=True)
+    assert app is None
+    app, _ = portal.resolve_portal_app("music player", _CATALOG, strict=True, exact_only=True)
+    assert app["id"] == "music-player"
+    app, _ = portal.resolve_portal_app("trading bot", _CATALOG, strict=True, exact_only=True)
+    assert app["id"] == "trading-client"
+
+
+def test_registry_overrides_the_dead_music_domain():
+    """Regression guard for a REAL outage: portal hands out
+    https://music.braindeadbot.com for music-player (vault sets that domain
+    and portal prefers domain over url), but the domain has no DNS record —
+    every open landed on a dead tab. The curation layer pins the reachable
+    :3232 instead."""
+    reg = portal._load_portal_registry()
+    mp = (reg.get("apps") or {}).get("music-player") or {}
+    assert mp.get("launch_url") == "http://10.0.0.16:3232"
+    assert "braindeadbot" not in mp.get("launch_url", "")

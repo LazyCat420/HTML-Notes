@@ -609,6 +609,19 @@ async def send_message(req: MessageRequest):
         #   4. no match → fall through untouched to the widget lanes/agent.
         if not wants_removal:
             _open_target = extract_open_app_target(text_clean)
+            # A BARE app name counts as an open ask. Without this, "music
+            # player" fell to the music widget lane (never opened the app at
+            # all) and "trading bot" fell to the agent — 17s, measured — even
+            # though both name an app exactly. Whole-name match only, so
+            # ordinary prose can never launch a tab.
+            if not _open_target:
+                _bare = extract_bare_app_name(text_clean)
+                if _bare:
+                    _bare_hub = await get_portal_apps()
+                    _bare_app, _ = resolve_portal_app(
+                        _bare, _bare_hub["apps"], strict=True, exact_only=True)
+                    if _bare_app and _bare_app.get("launch_url"):
+                        return _stream_open_app(_bare_app)
             if _open_target:
                 _open_name, _explicit, _has_widget_noun = _open_target
                 _hub = await get_portal_apps()

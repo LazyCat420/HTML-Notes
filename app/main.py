@@ -2564,6 +2564,37 @@ def extract_open_app_target(text: str) -> Optional[tuple]:
     return name, explicit, bool(words & _OPEN_APP_WIDGET_NOUNS)
 
 
+# A BARE app name typed on its own — "music player", "trading bot". No verb,
+# so extract_open_app_target never sees it, and the widget lanes downstream
+# claimed it: "music player" spawned the mini player and "trading bot" spent
+# 17s in the agent. Everything here is a shape guard; the caller still
+# requires a WHOLE-NAME (exact_only) catalog match, so a phrase only ever
+# opens a tab when the user typed an app's actual name or alias.
+_BARE_NAME_STOP_RE = re.compile(
+    r'\?|\b(play|show|add|make|create|remove|delete|close|find|search|'
+    r'what|who|when|where|why|how|is|are|was|does|did|can|should|tell|'
+    r'give|get|set|update|change|help|about|vs|versus)\b', re.IGNORECASE)
+
+
+def extract_bare_app_name(text: str) -> Optional[str]:
+    """The candidate app name in a bare, verb-less message, else None.
+
+    Deliberately permissive about WHICH name (the catalog decides that) and
+    strict about SHAPE: short, no question mark, no verb or interrogative.
+    'music player' passes; 'play some lofi', 'is trading down?' and
+    'what is the trading client' do not."""
+    t = (text or "").strip().rstrip(".!")
+    if not t or len(t) > 40:
+        return None
+    if _BARE_NAME_STOP_RE.search(t):
+        return None
+    t = re.sub(r'^(?:my|the|our)\s+', '', t, flags=re.IGNORECASE).strip()
+    # Needs a letter, and at most four words — an app name, not a sentence.
+    if not re.search(r'[a-z]', t, re.IGNORECASE) or len(t.split()) > 4:
+        return None
+    return t
+
+
 # type → (id_prefix, one-line spec for the classify prompt). The prompt text is
 # what the model sees; the id_prefix is the widget id stem we spawn with.
 ROUTER_WIDGETS = {

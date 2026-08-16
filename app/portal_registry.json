@@ -10,7 +10,9 @@
     "music-player": {
       "icon": "🎵",
       "pinned": true,
-      "aliases": ["music app", "music site", "music player app", "music library"]
+      "aliases": ["music app", "music site", "music player app", "music library"],
+      "_launch_url_why": "OVERRIDE. The vault registry gives music-player domain 'music.braindeadbot.com', so portal's domain-beats-url convention hands out https://music.braindeadbot.com — which has NO DNS RECORD (verified 2026-08-16: getent finds nothing, curl exits 6, while :3232 answers 200). Every open of this app landed on a dead tab. Remove this override once the domain actually exists.",
+      "launch_url": "http://10.0.0.16:3232"
     },
     "html-notes": {
       "icon": "🗒️",
