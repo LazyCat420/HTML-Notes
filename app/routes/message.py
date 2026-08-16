@@ -287,6 +287,39 @@ async def send_message(req: MessageRequest):
                 media_type="text/event-stream",
             )
 
+        def _stream_open_candidates(cands: list):
+            """Two or more apps match — ask, with ZERO LLM. The old behaviour
+            was to fall into a 15-40s agent turn that could spawn something
+            random; a list of clickable links answers in ~0.1s and never
+            guesses. Markdown links are rendered by the chat bubble and get
+            target=_blank in index.js."""
+            lines = "\n".join(
+                f"- {c.get('icon') or '🌐'} [{c['name']}]({c['launch_url']})"
+                + (f" — {c['description'][:60]}" if c.get("description") else "")
+                for c in cands[:4] if c.get("launch_url"))
+            text = f"Which one did you mean?\n\n{lines}"
+
+            async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path",
+                    "widget_type": "open_app_candidates",
+                    "id_prefix": ",".join(c["id"] for c in cands[:4]),
+                    "query": req.message}) + '\n\n')
+                logger.info("[APP HUB] fast-path candidates → "
+                            + ", ".join(c["id"] for c in cands[:4]))
+                yield f'data: {json.dumps({"type": "chunk", "content": text})}\n\n'
+                database.save_chat_message(
+                    message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                    session_id=req.session_id,
+                    role="assistant",
+                    content=text)
+                yield 'data: {"type": "done"}\n\n'
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
+                media_type="text/event-stream",
+            )
+
         def _stream_settings():
             """Pop (or update) the singleton settings panel and, when the ask
             named a look, apply the closest palette. A UI-control action, so it
@@ -559,22 +592,41 @@ async def send_message(req: MessageRequest):
                 config_builder=lambda: build_app_grid_config(req.message),
                 status="fetching your apps from portal…")
 
-        # OPEN AN APP — deterministic fast lane. The catalog fetch is ~15ms
-        # (measured 2026-08-16); routing "open the trading client" through the
-        # agent spent 15-40s of LLM time to fire it. When the ask is a short
-        # open-imperative whose name resolves (STRICT: id+name, every word)
-        # to exactly ONE catalog app, emit open_url directly — no LLM at all.
-        # Ambiguous ("open trading"), widget-flavoured ("open my notes",
-        # "open the music player" — sans "app" marker) or unknown names fall
-        # through to the widget lanes / agent exactly as before.
+        # OPEN AN APP — deterministic fast lane, and the FIRST thing an
+        # open-imperative is checked against. The catalog fetch is ~15ms
+        # (measured 2026-08-16); routing this through the agent spent 15-40s
+        # of LLM to fire it, and the agent has no catalog of its own.
+        #
+        # Precedence (the fix for "open the music player" spawning the
+        # mini-player widget instead of the music-player SITE):
+        #   1. EXACT id/name/alias match → open it. An app's own name always
+        #      beats a widget that happens to share those words.
+        #   2. all-words PARTIAL → open only when the ask carries an explicit
+        #      app marker ("…app", "…in a new tab") or names no widget noun,
+        #      so "open my notes" still reaches the notepad widget.
+        #   3. still ambiguous (client-vs-client) → instant candidate reply,
+        #      no LLM. Backends never compete: prefer_clients() drops them.
+        #   4. no match → fall through untouched to the widget lanes/agent.
         if not wants_removal:
             _open_target = extract_open_app_target(text_clean)
             if _open_target:
-                _open_name, _ = _open_target
+                _open_name, _explicit, _has_widget_noun = _open_target
                 _hub = await get_portal_apps()
-                _open_app, _ = resolve_portal_app(_open_name, _hub["apps"], strict=True)
-                if _open_app and _open_app.get("launch_url"):
+                _open_app, _open_cands = resolve_portal_app(
+                    _open_name, _hub["apps"], strict=True)
+                # An exact hit is unconditional; a partial defers to widgets
+                # when the phrasing was widget-flavoured.
+                _exact = bool(_open_app) and _norm_key(_open_name) in (
+                    {_norm_key(_open_app["id"]), _norm_key(_open_app["name"])}
+                    | {_norm_key(x) for x in (_open_app.get("aliases") or [])})
+                if _open_app and _open_app.get("launch_url") and (
+                        _exact or _explicit or not _has_widget_noun):
                     return _stream_open_app(_open_app)
+                # Ambiguity is only worth a prompt when the ask was clearly
+                # about an app — otherwise let the widget lanes have it.
+                if (_open_cands and len(_open_cands) > 1
+                        and (_explicit or not _has_widget_noun)):
+                    return _stream_open_candidates(_open_cands)
 
         # REMINDER / alarm — checked before the converter (a reminder can carry
         # a time that looks numeric) and before the clock timer branch.
@@ -1241,6 +1293,10 @@ async def send_message(req: MessageRequest):
         # Start loading history
         history = database.get_session_messages(req.session_id)
 
+        # The user's live app inventory for the prompt (cached ~15ms; "" on a
+        # portal outage so a turn is never blocked by it).
+        apps_block = await build_apps_prompt_block()
+
         # Build system prompt with canvas context.
         #
         # Kept deliberately short and free of internal contradictions. The previous
@@ -1297,7 +1353,8 @@ async def send_message(req: MessageRequest):
             "- 'who is X' / 'tell me about <person/company/place>' → canvas_add_widget(widget_type='profile_card', config={'profile_query':'<the subject>'}). The server builds the portrait + facts infobox — never type an image url.\n"
             "- goals / tracking / percentage breakdowns ('savings goals', 'EV market share by maker') → canvas_add_widget(widget_type='progress', config={'title':…, 'items':[{'label':…, 'value':8200, 'target':10000, 'unit':'$'} or {'label':…, 'pct':48}]}).\n"
             "- clock, checklist, notes → canvas_add_widget with that widget_type; music/radio → widget_type='mini_music_player' (config={'genre':…}); embed a site/app → widget_type='iframe_app' (config={'url':…})\n"
-            "- the user's OWN apps/services ('show my apps', 'app hub', 'what's running') → canvas_add_widget(widget_type='app_grid', config={}) — the server fills the live app list from portal-service; never hand-build it. To OPEN one app in a new browser tab ('open the trading client', 'launch the music player') → mcp__lazy-tool-service__html_notes_open_app(app_id='<id or name>') — it opens automatically; if it returns candidates, ask the user which one, NEVER guess and never open URLs any other way. mcp__lazy-tool-service__html_notes_list_services shows what exists; html_notes_curate_app(app_id, hidden=…/pinned=…) hides or pins a tile on the hub.\n"
+            "- the user's OWN apps/services ('show my apps', 'app hub', 'what's running') → canvas_add_widget(widget_type='app_grid', config={}) — the server fills the live app list from portal-service; never hand-build it. mcp__lazy-tool-service__html_notes_list_services shows what exists; html_notes_curate_app(app_id, hidden=…/pinned=…) hides or pins a tile on the hub.\n"
+            "- OPEN / LAUNCH / 'pull up' / 'go to' SOMETHING THAT NAMES OR RESEMBLES AN APP IN 'YOUR APPS' BELOW → mcp__lazy-tool-service__html_notes_open_app(app_id='<id or the name they said>') and NOTHING ELSE. Check YOUR APPS FIRST, before you consider any widget: those names are the user's own containers. 'open the trading bot', 'pull up the music player app', 'go to braindeadbot' are all app opens. NEVER spawn a widget for an app name, never web-search it, never hand-build a data_card about it, and never paste a URL expecting it to open — this tool is the only way. Prefer the CLIENT (`*-client`, or a standalone repo like music-player): a `*-service` backend is only ever opened when the user names it in full ('open trading service'). The tab opens by itself, so just confirm in ONE short sentence. If the result carries 'candidates', list them as markdown links and ask which — never guess.\n"
             "- A QUESTION THAT HAPPENS TO CONTAIN NUMBERS IS NOT A CALCULATION. 'how long until my 145F chicken hits 165 in a 400F oven', 'is 10 more minutes enough', 'what temp should I pull the brisket at', 'how long to drive to SF', 'is 3 drinks over the limit' — the user wants a JUDGEMENT that needs real-world knowledge, not arithmetic. Cooking times, doneness and food safety, dosages, travel times and legal limits are ALL research asks → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). A converter cannot answer any of them.\n"
             "- CONVERT or CALCULATE — only when the ask IS the arithmetic and nothing else: an explicit 'convert'/'calculate' ('convert 10 kg to lb'), a bare expression ('what is 15*23', '(3+4)*2'), a percentage ('40% of 1250'), or a bare '<amount> <unit> to <unit>' ('5 miles in km', '20 usd to eur') → canvas_add_widget(widget_type='converter', config={'seed':'<the whole ask>'}). The widget does the math client-side and stays interactive — never compute it yourself in prose. NEVER pick converter because the message merely CONTAINS numbers, temperatures, weights, times or currency; if the ask is a question about what those numbers MEAN or what to DO, use the research route on the line above.\n"
             "- REMIND / alarm ('remind me in 20 min', 'remind me at 3pm to call mom', 'set an alarm for 7am') → canvas_add_widget(widget_type='reminder', config={'label':'<what to remind>', 'offset_seconds':<N for a relative time, else 0>, 'at_time':'<HH:MM 24h for an absolute time, else empty>'}). The widget counts down and alerts.\n"
@@ -1323,6 +1380,13 @@ async def send_message(req: MessageRequest):
             "Only when the name appears nowhere in the context does its common "
             "meaning apply.\n\n"
             + _user_facts_prompt()
+            # The user's OWN app inventory, live from portal-service. Sits in
+            # the recency window (not the ROUTING list) for the same reason
+            # the pre-flight block does: instruction-following decays with
+            # count and the MIDDLE is what gets dropped. Without it the agent
+            # had no way to know "trading bot" names a container of theirs —
+            # it web-searched and rendered a junk card.
+            + apps_block
             + f"{turn_ctx['context_block']}"
             # TIER-2's VERDICT, placed in the recency window. The note above
             # (instruction-following decays with instruction count and what gets

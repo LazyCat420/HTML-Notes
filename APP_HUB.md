@@ -89,6 +89,54 @@ DB overlay and survives restarts without a redeploy.
    called **persona-less** for now; `enabledTools` + SYSTEM_PROMPT still
    scope the run. Open item filed in lazy-agent-service HANDOFF.md.
 
+## Open ROUTING rules (2026-08-16, after live use)
+
+Three rules decide what an "open X" ask does. They exist because the first
+cut got the precedence backwards: **"open music player" spawned the
+mini-player widget instead of opening the music-player site**, and "open
+trading bot" fell through to the agent — which had no catalog in its prompt
+— and rendered a junk card.
+
+1. **An app name beats a widget.** A normalized EXACT match on an app's
+   id / name / alias (case, spaces and dashes ignored: `trading-client` ==
+   "Trading Client") opens the app, full stop. Widget nouns are irrelevant at
+   this tier. Only the fuzzy PARTIAL tier still defers to widgets, so
+   "open my notes" is the notepad while "open html notes" is the app.
+2. **Clients-first — a human open never means a backend.** `prefer_clients()`
+   drops every `*-service` from a match set that also contains a non-backend,
+   so "open trading" → Trading Client and "open portal" → Portal Client with
+   no prompt. A backend is reachable only by its full name ("open trading
+   service"). ⚠️ **This is keyed on the `-service` NAME SUFFIX, never on
+   `projectType`** — portal reports `projectType: "Service"` for
+   **music-player, html-notes and youtube-wallgarden**, all of which are
+   openable front ends. Believing that field would re-break the exact app
+   this fix was written for.
+3. **Ambiguity asks instantly, never slowly.** A surviving client-vs-client
+   tie returns a zero-LLM chat reply listing the matches as markdown links
+   (`_stream_open_candidates`); `index.js` already forces `target="_blank"`
+   on bubble links, so each is a real new-tab launcher. No widget spawns and
+   no agent turn runs.
+
+**Aliases** live in `app/portal_registry.json` (`aliases: [...]` per app,
+unioned with the DB overlay so a runtime addition never wipes the git
+defaults). They are matched at the EXACT tier, which is why they must stay
+app-specific — a bare widget word like "music" or "notes" would hijack
+"play music". A test (`test_registry_aliases_are_not_bare_widget_words`)
+enforces that against `_OPEN_APP_WIDGET_NOUNS`.
+
+**The agent gets the catalog too.** Every turn's SYSTEM_PROMPT carries a
+`YOUR APPS (live)` block (`build_apps_prompt_block`, ~15ms cached, capped at
+25 rows, "" on a portal outage) listing `id — name (aka aliases)`, plus a
+routing line telling it to check that list FIRST and prefer clients. Whatever
+the fast lane doesn't catch now reaches the agent already knowing which words
+name the user's containers.
+
+Measured after the fix (local, 2026-08-16): "open music player" → Music
+Player 0.06s · "open trading bot" → Trading Client 0.02s · "open trading" →
+Trading Client 0.02s · "open trading service" → the backend 0.02s ·
+"play some lofi hip hop" → music widget (unchanged) · "open my notes" →
+notepad (unchanged) · "show my apps" → hub grid (unchanged).
+
 ## Open fast lane (added same day)
 
 Measured layers: portal `GET /services` ~13ms, `/api/services` ~12ms, tool
@@ -131,9 +179,16 @@ Guards, in order (`extract_open_app_target` in `app/main.py`):
 1. Open http://10.0.0.16:8035, type "show my apps" → App Hub grid with your
    real services and colored dots. Bug if: mongo/postgres/redis tiles appear.
 2. Click the Trading Client tile → NEW tab on :3030. Bug if: same-tab.
-3. Ask "open the music player app" → ONE new tab (or one clickable toast if
-   popup-blocked). Bug if: two tabs, or the mini music player widget spawns
-   instead when you say "app".
+3. **"open music player"** → the music-player SITE opens in a new tab.
+   **Bug if: the mini music-player widget appears** (that was the reported
+   defect).
+4. **"open trading bot"** → Trading Client :3030 opens. Bug if: a data_card
+   or any widget appears, or it thinks for 30s.
+5. **"open trading"** → Trading Client opens directly (no prompt — clients
+   beat services). **"open trading service"** → the backend :3031.
+6. **"play some lofi hip hop"** → the mini music player widget, as always.
+   **"open my notes"** → the notepad widget, NOT the html-notes app. Bug if
+   either opens a browser tab.
 4. Hover a tile → ✕/📌; hide one, reload the page, "show my apps" again →
    still hidden. Bug if: it returns.
 5. Stop any container on the NAS, wait ~2 min → its dot goes red WITHOUT a

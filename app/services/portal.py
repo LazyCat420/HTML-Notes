@@ -128,6 +128,9 @@ def _normalize_portal_service(svc: dict) -> dict:
         "hidden": False,
         "has_container": bool(svc.get("dockerProject")),
         "repo": svc.get("repo") or "",
+        # Extra names a human might use ("trading bot"). Portal has no such
+        # field — they come from portal_registry.json curation.
+        "aliases": [],
     }
 
 
@@ -136,6 +139,13 @@ def _apply_curation(app: dict, entry: dict) -> None:
     for key in ("icon", "name", "launch_url", "description"):
         if entry.get(key):
             app[key] = entry[key]
+    if isinstance(entry.get("aliases"), list):
+        # Union, not replace: the DB overlay must be able to ADD an alias
+        # without wiping the git-versioned defaults.
+        merged = list(app.get("aliases") or [])
+        merged += [a for a in entry["aliases"]
+                   if isinstance(a, str) and a and a not in merged]
+        app["aliases"] = merged
     if "pinned" in entry:
         app["pinned"] = bool(entry["pinned"])
     if "hidden" in entry:
@@ -176,6 +186,7 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
                 "launch_url": "", "status": "unknown", "latency_ms": None,
                 "project_type": "Link", "device": "", "pinned": False,
                 "hidden": False, "has_container": False, "repo": "",
+                "aliases": [],
             }
         _apply_curation(apps[app_id], entry)
 
@@ -191,42 +202,128 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
             "count": len(result)}
 
 
+async def build_apps_prompt_block(limit: int = 25) -> str:
+    """A compact 'YOUR APPS (live)' block for SYSTEM_PROMPT, or "".
+
+    Without this the agent had NO idea which words name the user's own
+    containers — "open trading bot" fell through the fast lane, reached the
+    agent, and produced a junk research card because nothing in its context
+    said trading-client existed. Never raises and never blocks a turn: a
+    portal outage yields the last-good list, or an empty string."""
+    try:
+        data = await get_portal_apps()
+    except Exception as e:                      # pragma: no cover - defensive
+        logger.warning(f"[PORTAL] prompt block failed: {e}")
+        return ""
+    rows = []
+    for a in data.get("apps", [])[:limit]:
+        alias = ", ".join((a.get("aliases") or [])[:4])
+        rows.append(f"- {a['id']} — {a['name']}" + (f" (aka {alias})" if alias else ""))
+    if not rows:
+        return ""
+    return ("\n\nYOUR APPS (live inventory of the user's own containers; "
+            "these names are APPS, not widgets):\n" + "\n".join(rows) + "\n")
+
+
+def _norm_key(text: str) -> str:
+    """'Trading Client' / 'trading-client' / 'trading  client' → 'tradingclient'.
+    Exact matching has to survive the difference between how a service is
+    REGISTERED (id `trading-client`, label `Trading Client`) and how a human
+    types it, so compare on alphanumerics alone."""
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def is_backend_app(app: dict) -> bool:
+    """A backend/API container rather than something a human opens in a tab.
+
+    The user's rule: an open ALWAYS means the client; a repo with no `-client`
+    sibling is one container that IS the app.
+
+    Keyed on the `-service` NAME SUFFIX, deliberately NOT on `projectType`.
+    Checked against the live registry 2026-08-16: portal reports
+    `projectType: "Service"` for **music-player, html-notes and
+    youtube-wallgarden** — all three are openable front ends with no client
+    sibling. Reading projectType here would have hidden exactly the app whose
+    misrouting prompted this fix."""
+    return (app.get("id", "").lower().endswith("-service")
+            or app.get("name", "").lower().endswith(" service"))
+
+
+def prefer_clients(matches: List[dict]) -> List[dict]:
+    """Drop backends from a match set that also contains a non-backend.
+
+    'open trading' matches trading-client AND trading-service; the user only
+    ever means the client, so this collapses the tie instead of asking. When
+    EVERY match is a backend (the user typed a service name), nothing is
+    dropped — the ask really was about the backend."""
+    non_backend = [a for a in matches if not is_backend_app(a)]
+    return non_backend if non_backend else matches
+
+
 def resolve_portal_app(query: str, apps: List[dict], strict: bool = False) -> tuple:
     """Resolve a user phrase ('the music thing', 'trading client') to ONE app.
     Returns (app, candidates): app set iff exactly one confident match;
-    otherwise candidates carries the plausible ones for the model to offer.
+    otherwise candidates carries the plausible ones for the caller to offer.
     Never guesses between near-ties — opening the wrong app in a tab is worse
     than asking.
 
-    strict=True is the no-LLM fast lane's contract: match against id+name
-    ONLY (a description mentioning 'notes' must never claim 'open my notes'),
-    and require EVERY query word to hit — a partial overlap that the agent
-    could reasonably disambiguate is a miss here, because the fast lane has
-    no way to ask."""
+    Matching is three-tier:
+      1. NORMALIZED EXACT on id / name / alias — 'music player' IS the app,
+         regardless of any widget the same words might name. This tier is why
+         'open the music player' opens the site instead of spawning the
+         mini-player widget.
+      2. all-words partial (id+name+aliases; also descriptions when not strict).
+      3. clients-first collapse, then uniqueness.
+
+    strict=True is the no-LLM fast lane's contract: never match on
+    description (a description mentioning 'notes' must not claim 'open my
+    notes') and require EVERY query word to hit."""
     q = (query or "").strip().lower()
     if not q:
         return None, []
-    exact = [a for a in apps if a["id"].lower() == q or a["name"].lower() == q]
-    if len(exact) == 1:
-        return exact[0], []
+
+    # ── Tier 1: normalized exact (id / name / alias) ────────────────────
+    qk = _norm_key(q)
+    if qk:
+        exact = [a for a in apps
+                 if qk in ({_norm_key(a["id"]), _norm_key(a["name"])}
+                           | {_norm_key(x) for x in (a.get("aliases") or [])})]
+        exact = prefer_clients(exact)
+        if len(exact) == 1:
+            return exact[0], []
+        if len(exact) > 1:
+            return None, exact[:4]
+
+    # ── Tier 2: all-words partial ───────────────────────────────────────
     words = [w for w in re.split(r"[^a-z0-9]+", q) if len(w) > 2]
     if strict and not words:
         return None, []
     scored = []
     for a in apps:
-        hay = (f"{a['id']} {a['name']}".lower() if strict
-               else f"{a['id']} {a['name']} {a['description']}".lower())
+        hay = f"{a['id']} {a['name']} {' '.join(a.get('aliases') or [])}".lower()
+        if not strict:
+            hay += f" {a['description']}".lower()
         score = sum(1 for w in words if w in hay)
         if strict and score < len(words):
             continue
         if score:
             scored.append((score, a))
+
     if strict:
-        return (scored[0][1], []) if len(scored) == 1 else (None, [a for _, a in scored[:4]])
+        # Every word hit, so all survivors are equally good — collapse
+        # client-vs-service ties before judging uniqueness.
+        finalists = prefer_clients([a for _, a in scored])
+        return (finalists[0], []) if len(finalists) == 1 else (None, finalists[:4])
+
     scored.sort(key=lambda s: -s[0])
-    if len(scored) == 1 or (len(scored) > 1 and scored[0][0] > scored[1][0]):
-        return scored[0][1], [a for _, a in scored[1:4]]
-    return None, [a for _, a in scored[:4]]
+    if scored:
+        top = scored[0][0]
+        finalists = prefer_clients([a for s, a in scored if s == top])
+        if len(finalists) == 1:
+            rest = [a for s, a in scored if s != top or a not in finalists]
+            return finalists[0], rest[:3]
+        return None, finalists[:4]
+    return None, []
 
 
 __all__ = [k for k in globals().keys() if not k.startswith('__')]

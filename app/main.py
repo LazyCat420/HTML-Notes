@@ -2534,10 +2534,17 @@ _OPEN_APP_WIDGET_NOUNS = frozenset({
 
 
 def extract_open_app_target(text: str) -> Optional[tuple]:
-    """(name, explicit_app_intent) when `text` is a short open-imperative,
-    else None. Pure text analysis — the caller still has to resolve `name`
-    against the live catalog (strict) before acting; this function only
-    decides that the SHAPE is an app-open ask."""
+    """`(name, explicit_app_intent, has_widget_noun)` when `text` is a short
+    open-imperative, else None. Pure text analysis — the caller resolves
+    `name` against the live catalog; this only decides the SHAPE is an
+    app-open ask and reports the two signals the caller tiers on.
+
+    It deliberately does NOT reject widget-noun names any more. The first
+    version returned None for anything containing 'music'/'notes'/…, which
+    meant "open the music player" — an EXACT app name — never reached the
+    catalog and spawned the mini-player widget instead. Precedence now lives
+    with the caller: an exact app/alias name always wins; a widget noun only
+    blocks the fuzzy partial tier."""
     text = (text or "").strip()
     if len(text) > 70:          # long sentences are never a bare open-command
         return None
@@ -2554,9 +2561,7 @@ def extract_open_app_target(text: str) -> Optional[tuple]:
     if not name:
         return None
     words = set(re.findall(r"[a-z0-9]+", name.lower()))
-    if not explicit and words & _OPEN_APP_WIDGET_NOUNS:
-        return None
-    return name, explicit
+    return name, explicit, bool(words & _OPEN_APP_WIDGET_NOUNS)
 
 
 # type → (id_prefix, one-line spec for the classify prompt). The prompt text is

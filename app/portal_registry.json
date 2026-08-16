@@ -1,9 +1,41 @@
 {
-  "_readme": "Curation defaults for the App Hub. Keyed by the portal-service registry id (stable forever — never a container id). Per-app keys: icon (emoji), name, launch_url, pinned, hidden, description. Runtime hide/pin toggles live in the DB overlay (agent_memory widget_state 'portal:overrides') and take precedence over this file. Apps listed here with no portal match become synthetic launch targets (status 'unknown'). To make a NEW service appear everywhere, add it to vault-service/projects.json — not here.",
+  "_readme": "Curation defaults for the App Hub. Keyed by the portal-service registry id (stable forever — never a container id). Per-app keys: icon (emoji), name, launch_url, pinned, hidden, description, aliases. Runtime hide/pin toggles live in the DB overlay (agent_memory widget_state 'portal:overrides') and take precedence over this file; overlay aliases are UNIONED with these. Apps listed here with no portal match become synthetic launch targets (status 'unknown'). To make a NEW service appear everywhere, add it to vault-service/projects.json — not here.",
+  "_aliases_readme": "aliases = extra names YOU say for an app ('open the trading bot'). They are matched EXACTLY (normalized: case/spaces/dashes ignored), so they beat widget spawning — keep them app-specific. Do NOT add a bare widget word like 'music', 'notes' or 'map': that would steal 'play music'-style asks from their widgets. A '-service' backend is never opened by a vague ask; say its full name ('open trading service') to reach it.",
   "apps": {
-    "trading-client": {"icon": "📈", "pinned": true},
-    "music-player": {"icon": "🎵", "pinned": true},
-    "html-notes": {"icon": "🗒️"}
+    "trading-client": {
+      "icon": "📈",
+      "pinned": true,
+      "aliases": ["trading bot", "trading dashboard", "trading ui", "trade bot", "the trading app"]
+    },
+    "music-player": {
+      "icon": "🎵",
+      "pinned": true,
+      "aliases": ["music app", "music site", "music player app", "music library"]
+    },
+    "html-notes": {
+      "icon": "🗒️",
+      "aliases": ["html notes", "notes app", "canvas app"]
+    },
+    "braindeadbot-client": {
+      "icon": "🧟",
+      "aliases": ["braindeadbot", "braindead bot", "jungle room", "braindeadbot website", "the game site"]
+    },
+    "youtube-wallgarden": {
+      "icon": "📺",
+      "aliases": ["wallgarden", "wall garden", "youtube wall"]
+    },
+    "treesearch-client": {
+      "icon": "🌲",
+      "aliases": ["treesearch", "tree search"]
+    },
+    "portal-client": {
+      "icon": "🧭",
+      "aliases": ["portal", "portal dashboard", "the portal"]
+    },
+    "prism-client": {
+      "icon": "🔷",
+      "aliases": ["prism"]
+    }
   },
   "defaults": {
     "include_infrastructure": false,

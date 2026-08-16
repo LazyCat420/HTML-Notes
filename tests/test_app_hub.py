@@ -134,10 +134,23 @@ def test_resolve_exact_and_fuzzy():
     assert app["id"] == "music-player"
 
 
-def test_resolve_refuses_ambiguity_with_candidates():
-    app, cands = portal.resolve_portal_app("trading", _APPS)
+def test_resolve_prefers_the_client_over_its_service_sibling():
+    """Superseded the old 'trading is ambiguous' assertion (2026-08-16): a
+    human open ALWAYS means the client, so a client-vs-service tie resolves
+    instead of prompting. The backend is still reachable by full name."""
+    app, _ = portal.resolve_portal_app("trading", _APPS)
+    assert app["id"] == "trading-client"
+    app, _ = portal.resolve_portal_app("trading service", _APPS)
+    assert app["id"] == "trading-service"
+
+
+def test_resolve_refuses_ambiguity_between_two_clients():
+    apps = _APPS + [
+        {"id": "trading-lab", "name": "Trading Lab", "description": "research UI"},
+    ]
+    app, cands = portal.resolve_portal_app("trading", apps)
     assert app is None
-    assert {c["id"] for c in cands} == {"trading-client", "trading-service"}
+    assert {c["id"] for c in cands} == {"trading-client", "trading-lab"}
 
 
 def test_resolve_unknown_returns_nothing():
@@ -189,20 +202,14 @@ def test_render_app_grid_smoke():
 
 # ── open-app fast lane ───────────────────────────────────────────────────────
 
-def test_extract_open_app_target_positive():
-    assert m.extract_open_app_target("open the trading client") == ("trading client", False)
-    assert m.extract_open_app_target("launch drift king") == ("drift king", False)
-    # Explicit app marker overrides the widget-noun guard and is stripped.
-    assert m.extract_open_app_target("open the music player app") == ("music player", True)
-    assert m.extract_open_app_target("open music player in a new tab") == ("music player", True)
-
-
-def test_extract_open_app_target_widget_asks_fall_through():
-    # Widget-flavoured names without an explicit marker are NOT app-opens:
-    # "open my notes" is the notepad even though html-notes' NAME has "notes".
-    for text in ("open my notes", "open the music player", "open a map of seattle",
-                 "start a timer", "open the weather", "open my grocery list"):
-        assert m.extract_open_app_target(text) is None, text
+def test_extract_open_app_target_reports_signals_without_rejecting():
+    # Signature is (name, explicit_marker, has_widget_noun). The extractor no
+    # longer REJECTS widget-noun names — precedence is the caller's job, which
+    # is what lets an exact app name beat a widget.
+    assert m.extract_open_app_target("open the trading client") == ("trading client", False, False)
+    assert m.extract_open_app_target("open the music player app") == ("music player", True, True)
+    assert m.extract_open_app_target("open the music player") == ("music player", False, True)
+    assert m.extract_open_app_target("open my notes") == ("notes", False, True)
 
 
 def test_extract_open_app_target_shape_guards():
@@ -210,21 +217,111 @@ def test_extract_open_app_target_shape_guards():
     assert m.extract_open_app_target(
         "open the door to a discussion about how trading clients work in general and why") is None
     assert m.extract_open_app_target("open") is None
+    assert m.extract_open_app_target("play some jazz") is None
 
 
-def test_strict_resolver_id_name_only_and_all_words():
-    apps = _APPS + [{"id": "html-notes", "name": "HTML Notes",
-                     "description": "AI canvas dashboard — widgets, notes, App Hub"}]
-    # Full-word match on name → unique hit.
-    app, _ = portal.resolve_portal_app("trading client", apps, strict=True)
-    assert app["id"] == "trading-client"
-    # Partial overlap that the agent could disambiguate is a MISS here.
-    app, cands = portal.resolve_portal_app("trading", apps, strict=True)
-    assert app is None and len(cands) == 2
-    # Description must NOT be matchable in strict mode ("canvas" only appears
-    # in html-notes' description).
-    app, _ = portal.resolve_portal_app("canvas", apps, strict=True)
-    assert app is None
-    # Non-strict keeps the old behaviour (description helps fuzzy asks).
-    app, _ = portal.resolve_portal_app("the music thing", apps, strict=False)
+# ── resolution tiers ─────────────────────────────────────────────────────────
+
+_CATALOG = [
+    {"id": "trading-client", "name": "Trading Client", "description": "UI",
+     "project_type": "Client", "aliases": ["trading bot"], "launch_url": "http://x:3030"},
+    {"id": "trading-service", "name": "Trading Service", "description": "engine",
+     "project_type": "Service", "aliases": [], "launch_url": "http://x:3031"},
+    {"id": "music-player", "name": "Music Player", "description": "music frontend",
+     # NOTE: portal really does report projectType "Service" for music-player —
+     # this fixture preserves that so the clients-first filter is tested
+     # against the real shape, not a convenient one.
+     "project_type": "Service", "aliases": ["music app"], "launch_url": "http://x:3232"},
+    {"id": "portal-client", "name": "Portal Client", "description": "dashboard",
+     "project_type": "Client", "aliases": [], "launch_url": "http://x:4000"},
+    {"id": "portal-service", "name": "Portal Service", "description": "inventory",
+     "project_type": "Service", "aliases": [], "launch_url": "http://x:4001"},
+]
+
+
+def test_exact_name_beats_everything_music_player():
+    """The bug that prompted this fix: 'music player' is an APP name, so it
+    must resolve even though 'music' is also a widget word."""
+    app, _ = portal.resolve_portal_app("music player", _CATALOG, strict=True)
     assert app["id"] == "music-player"
+
+
+def test_exact_match_is_normalized():
+    for q in ("Trading Client", "trading-client", "trading  client"):
+        app, _ = portal.resolve_portal_app(q, _CATALOG, strict=True)
+        assert app["id"] == "trading-client", q
+
+
+def test_alias_resolves_trading_bot():
+    app, _ = portal.resolve_portal_app("trading bot", _CATALOG, strict=True)
+    assert app["id"] == "trading-client"
+    # and via the fuzzy path the agent tool uses
+    app, _ = portal.resolve_portal_app("the trading bot", _CATALOG, strict=False)
+    assert app["id"] == "trading-client"
+
+
+def test_clients_first_collapses_client_service_ties():
+    # "trading" matches BOTH trading-client and trading-service; the user
+    # never means the backend, so this must resolve, not ask.
+    app, _ = portal.resolve_portal_app("trading", _CATALOG, strict=True)
+    assert app["id"] == "trading-client"
+    app, _ = portal.resolve_portal_app("portal", _CATALOG, strict=True)
+    assert app["id"] == "portal-client"
+
+
+def test_backend_still_reachable_by_full_name():
+    app, _ = portal.resolve_portal_app("trading service", _CATALOG, strict=True)
+    assert app["id"] == "trading-service"
+
+
+def test_is_backend_ignores_projecttype():
+    """Negative control for the trap that would have re-broken music-player:
+    portal marks it projectType 'Service', but it is a standalone front end."""
+    music = next(a for a in _CATALOG if a["id"] == "music-player")
+    assert music["project_type"] == "Service"      # the real, misleading value
+    assert portal.is_backend_app(music) is False   # ...and we do not believe it
+    assert portal.is_backend_app(
+        next(a for a in _CATALOG if a["id"] == "trading-service")) is True
+
+
+def test_ambiguity_survives_only_for_client_vs_client():
+    catalog = _CATALOG + [
+        {"id": "prism-client", "name": "Prism Client", "description": "",
+         "project_type": "Client", "aliases": [], "launch_url": "http://x:3333"},
+        {"id": "prism-console", "name": "Prism Console", "description": "",
+         "project_type": "Client", "aliases": [], "launch_url": "http://x:3334"},
+    ]
+    app, cands = portal.resolve_portal_app("prism", catalog, strict=True)
+    assert app is None
+    assert {c["id"] for c in cands} == {"prism-client", "prism-console"}
+
+
+def test_strict_still_refuses_description_matches():
+    app, _ = portal.resolve_portal_app("engine", _CATALOG, strict=True)
+    assert app is None
+
+
+@pytest.mark.asyncio
+async def test_apps_prompt_block_lists_ids_and_aliases(monkeypatch):
+    async def fake_apps(include_hidden=False):
+        return {"apps": _CATALOG[:2], "stale": False, "count": 2}
+    monkeypatch.setattr(portal, "get_portal_apps", fake_apps)
+    block = await portal.build_apps_prompt_block()
+    assert "YOUR APPS" in block
+    assert "trading-client — Trading Client (aka trading bot)" in block
+
+
+@pytest.mark.asyncio
+async def test_apps_prompt_block_never_raises(monkeypatch):
+    async def boom(include_hidden=False):
+        raise RuntimeError("portal down")
+    monkeypatch.setattr(portal, "get_portal_apps", boom)
+    assert await portal.build_apps_prompt_block() == ""
+
+
+def test_registry_aliases_are_not_bare_widget_words():
+    """A greedy alias like 'music' or 'notes' would steal every widget ask."""
+    reg = portal._load_portal_registry()
+    for app_id, entry in (reg.get("apps") or {}).items():
+        for alias in entry.get("aliases") or []:
+            assert alias.lower() not in m._OPEN_APP_WIDGET_NOUNS, f"{app_id}: {alias}"

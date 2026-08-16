@@ -484,8 +484,13 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
                                    "url": app_match["launch_url"]},
                         "message": f"Opening {app_match['name']} in a new tab."}
             if candidates:
-                return {"error": "Ambiguous app — ask the user which one.",
-                        "candidates": [{"id": c["id"], "name": c["name"]}
+                # resolve_portal_app already dropped `*-service` backends when
+                # a client matched (prefer_clients), so anything still tied
+                # here is a genuine client-vs-client choice worth asking about.
+                return {"error": "Ambiguous app — ask the user which one, with "
+                                 "markdown links. Do NOT guess.",
+                        "candidates": [{"id": c["id"], "name": c["name"],
+                                        "url": c["launch_url"]}
                                        for c in candidates],
                         "is_error": True}
             return {"error": f"No app matches '{a.get('app_id') or a.get('query') or ''}'. "
