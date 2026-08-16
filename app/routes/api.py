@@ -5,6 +5,31 @@ sys.modules[__name__].__dict__.update(main.__dict__)
 
 router = APIRouter()
 
+@router.get("/api/services")
+async def api_services(include_hidden: bool = False):
+    """The curated PortalApp list (portal-service inventory ⊕ registry file ⊕
+    DB overlay). Backs the App Hub widget's 45s status poll, so a container
+    going down flips its dot without an agent turn or a canvas repaint."""
+    return await get_portal_apps(include_hidden=include_hidden)
+
+
+@router.post("/api/services/{app_id}/override")
+async def api_services_override(app_id: str, request: Request):
+    """Runtime hide/pin from the widget's ✕/📌 buttons. Writes the DB overlay
+    (survives restarts, no redeploy); git defaults live in portal_registry.json."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    hidden = body.get("hidden") if isinstance(body.get("hidden"), bool) else None
+    pinned = body.get("pinned") if isinstance(body.get("pinned"), bool) else None
+    if hidden is None and pinned is None:
+        raise HTTPException(status_code=400,
+                            detail="body must set boolean 'hidden' and/or 'pinned'")
+    set_portal_override(app_id, hidden=hidden, pinned=pinned)
+    return {"success": True, "app_id": app_id}
+
+
 @router.get("/api/stock/{symbol}")
 async def api_stock(symbol: str, range: str = "1mo"):
     """Backs the stock widget's range tabs — switching 1D/1M/1Y/10Y/MAX refetches

@@ -521,6 +521,16 @@ async def send_message(req: MessageRequest):
                 and not re.search(r'\b(music|radio|song|playlist|video|watch)\b', text_clean)):
             return _stream_settings()
 
+        # APP HUB — the launcher grid of the user's own services, from the live
+        # portal-service inventory. A UI ask like settings: deterministic, zero
+        # agent latency. Opening ONE named app still goes through the agent
+        # (html_notes_open_app), which can disambiguate.
+        if APP_HUB_INTENT_RE.search(text_clean) and not is_video_ask:
+            return spawn_widget_stream(
+                "app_grid", "app-hub",
+                config_builder=lambda: build_app_grid_config(req.message),
+                status="fetching your apps from portal…")
+
         # REMINDER / alarm — checked before the converter (a reminder can carry
         # a time that looks numeric) and before the clock timer branch.
         if REMINDER_INTENT_RE.search(text_clean):
@@ -1242,6 +1252,7 @@ async def send_message(req: MessageRequest):
             "- 'who is X' / 'tell me about <person/company/place>' → canvas_add_widget(widget_type='profile_card', config={'profile_query':'<the subject>'}). The server builds the portrait + facts infobox — never type an image url.\n"
             "- goals / tracking / percentage breakdowns ('savings goals', 'EV market share by maker') → canvas_add_widget(widget_type='progress', config={'title':…, 'items':[{'label':…, 'value':8200, 'target':10000, 'unit':'$'} or {'label':…, 'pct':48}]}).\n"
             "- clock, checklist, notes → canvas_add_widget with that widget_type; music/radio → widget_type='mini_music_player' (config={'genre':…}); embed a site/app → widget_type='iframe_app' (config={'url':…})\n"
+            "- the user's OWN apps/services ('show my apps', 'app hub', 'what's running') → canvas_add_widget(widget_type='app_grid', config={}) — the server fills the live app list from portal-service; never hand-build it. To OPEN one app in a new browser tab ('open the trading client', 'launch the music player') → mcp__lazy-tool-service__html_notes_open_app(app_id='<id or name>') — it opens automatically; if it returns candidates, ask the user which one, NEVER guess and never open URLs any other way. mcp__lazy-tool-service__html_notes_list_services shows what exists; html_notes_curate_app(app_id, hidden=…/pinned=…) hides or pins a tile on the hub.\n"
             "- A QUESTION THAT HAPPENS TO CONTAIN NUMBERS IS NOT A CALCULATION. 'how long until my 145F chicken hits 165 in a 400F oven', 'is 10 more minutes enough', 'what temp should I pull the brisket at', 'how long to drive to SF', 'is 3 drinks over the limit' — the user wants a JUDGEMENT that needs real-world knowledge, not arithmetic. Cooking times, doneness and food safety, dosages, travel times and legal limits are ALL research asks → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). A converter cannot answer any of them.\n"
             "- CONVERT or CALCULATE — only when the ask IS the arithmetic and nothing else: an explicit 'convert'/'calculate' ('convert 10 kg to lb'), a bare expression ('what is 15*23', '(3+4)*2'), a percentage ('40% of 1250'), or a bare '<amount> <unit> to <unit>' ('5 miles in km', '20 usd to eur') → canvas_add_widget(widget_type='converter', config={'seed':'<the whole ask>'}). The widget does the math client-side and stays interactive — never compute it yourself in prose. NEVER pick converter because the message merely CONTAINS numbers, temperatures, weights, times or currency; if the ask is a question about what those numbers MEAN or what to DO, use the research route on the line above.\n"
             "- REMIND / alarm ('remind me in 20 min', 'remind me at 3pm to call mom', 'set an alarm for 7am') → canvas_add_widget(widget_type='reminder', config={'label':'<what to remind>', 'offset_seconds':<N for a relative time, else 0>, 'at_time':'<HH:MM 24h for an absolute time, else empty>'}). The widget counts down and alerts.\n"
@@ -1344,6 +1355,11 @@ async def send_message(req: MessageRequest):
             "mcp__lazy-tool-service__html_notes_stock_news",
             "mcp__lazy-tool-service__html_notes_sports_scores",
             "mcp__lazy-tool-service__html_notes_get_weather",
+            # App Hub: list the user's own services, open one in a new browser
+            # tab (approved catalog ids only — never raw URLs), hide/pin tiles.
+            "mcp__lazy-tool-service__html_notes_list_services",
+            "mcp__lazy-tool-service__html_notes_open_app",
+            "mcp__lazy-tool-service__html_notes_curate_app",
         ]
 
         # Build messages array — use system role at index 0.
@@ -1864,6 +1880,15 @@ async def send_message(req: MessageRequest):
                                 # Cache wins: it carries the resolved place label + full forecast,
                                 # config only carried the bare location string the model typed.
                                 config = {**config, **cached}
+                        elif widget_type == "app_grid" and not config.get("apps"):
+                            # The model never types the app list — the server owns
+                            # it (live portal-service inventory ⊕ curation).
+                            hub_cfg = await build_app_grid_config()
+                            config = {**hub_cfg,
+                                      **{k: v for k, v in config.items()
+                                         if v and k not in ("apps", "stale")}}
+                            logger.info("[WIDGET INJECTOR] Rehydrated app_grid "
+                                        f"({len(hub_cfg.get('apps') or [])} apps)")
                         elif (widget_type == "data_card" and not config.get("items")
                               and ("news_topic" in config or "topic" in config)):
                             config = await _resolve_news_topic_config(config)
@@ -2509,6 +2534,25 @@ async def send_message(req: MessageRequest):
                                         yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}...", "phase": tool_phase})}\n\n'
                                     
                                     active_tool_args = args
+
+                                    # BROWSER OPEN: html_notes_open_app names an
+                                    # approved catalog app — resolve it server-side
+                                    # and hand the client its URL as a dedicated SSE
+                                    # frame (window.open + clickable-toast fallback,
+                                    # since an SSE callback has no user gesture).
+                                    # Emitted once per call; never a raw model URL.
+                                    if (active_tool_name == "mcp__lazy-tool-service__html_notes_open_app"
+                                            and not executed_active_tool
+                                            and status in ("calling", "done", "success")):
+                                        open_q = str((args or {}).get("app_id")
+                                                     or (args or {}).get("query") or "").strip()
+                                        if open_q:
+                                            executed_active_tool = True
+                                            hub_data = await get_portal_apps()
+                                            open_app, _ = resolve_portal_app(open_q, hub_data["apps"])
+                                            if open_app and open_app.get("launch_url"):
+                                                logger.info(f"[APP HUB] open_url → {open_app['id']}")
+                                                yield f'data: {json.dumps({"type": "open_url", "url": open_app["launch_url"], "name": open_app["name"]})}\n\n'
 
                                     # FAST PATH: Execute immediately when arguments are available!
                                     if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget", "mcp__lazy-tool-service__create_widget", "mcp__lazy-tool-service__update_widget"):

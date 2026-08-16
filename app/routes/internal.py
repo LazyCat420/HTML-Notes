@@ -455,6 +455,57 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
             # Here we just acknowledge success to the LLM so it doesn't think the tool failed.
             return {"success": True, "message": f"Successfully added {a.get('widget_type', 'widget')} to canvas."}
 
+        elif t == "html_notes_list_services":
+            data = await get_portal_apps(include_hidden=bool(a.get("include_hidden")))
+            apps = data["apps"]
+            q = (a.get("query") or "").strip().lower()
+            if q:
+                apps = [x for x in apps
+                        if q in f"{x['id']} {x['name']} {x['description']}".lower()]
+            status = (a.get("status") or "").strip().lower()
+            if status in ("healthy", "unhealthy", "unknown"):
+                apps = [x for x in apps if x["status"] == status]
+            slim = [{k: x[k] for k in ("id", "name", "description", "status",
+                                       "launch_url", "pinned", "project_type",
+                                       "device")}
+                    for x in apps]
+            return {"apps": slim, "count": len(slim), "stale": data["stale"]}
+
+        elif t == "html_notes_open_app":
+            # Only a known catalog app ever opens — never a raw URL from the
+            # model. The actual browser open is emitted by the SSE interceptor
+            # (an `open_url` frame); this return tells the model what resolved.
+            data = await get_portal_apps()
+            app_match, candidates = resolve_portal_app(
+                a.get("app_id") or a.get("query") or "", data["apps"])
+            if app_match:
+                return {"success": True,
+                        "opened": {"id": app_match["id"], "name": app_match["name"],
+                                   "url": app_match["launch_url"]},
+                        "message": f"Opening {app_match['name']} in a new tab."}
+            if candidates:
+                return {"error": "Ambiguous app — ask the user which one.",
+                        "candidates": [{"id": c["id"], "name": c["name"]}
+                                       for c in candidates],
+                        "is_error": True}
+            return {"error": f"No app matches '{a.get('app_id') or a.get('query') or ''}'. "
+                             "Call html_notes_list_services to see valid ids.",
+                    "is_error": True}
+
+        elif t == "html_notes_curate_app":
+            data = await get_portal_apps(include_hidden=True)
+            app_id = (a.get("app_id") or "").strip()
+            if app_id not in {x["id"] for x in data["apps"]}:
+                app_match, candidates = resolve_portal_app(app_id, data["apps"])
+                if not app_match:
+                    return {"error": f"Unknown app_id '{app_id}'",
+                            "candidates": [c["id"] for c in candidates],
+                            "is_error": True}
+                app_id = app_match["id"]
+            set_portal_override(app_id, hidden=a.get("hidden"), pinned=a.get("pinned"))
+            return {"success": True, "app_id": app_id,
+                    "hidden": a.get("hidden"), "pinned": a.get("pinned")}
+
         else:
             return {"error": f"Unknown tool: {t}", "is_error": True}
 

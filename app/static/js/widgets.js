@@ -1553,5 +1553,65 @@ document.addEventListener('alpine:init', () => {
             return (match && match[2].length === 11) ? match[2] : null;
         }
     }));
-    
+
+    // App Hub launcher grid. Initial app list is baked server-side (paints
+    // immediately); a 45s poll of /api/services refreshes status dots and picks
+    // up newly registered services IN PLACE — Alpine state only, never a canvas
+    // repaint, so live media elsewhere on the canvas is untouched.
+    Alpine.data('appGridWidget', (initial) => ({
+        apps: (initial && initial.apps) || [],
+        stale: Boolean(initial && initial.stale),
+        _timer: null,
+
+        init() {
+            this._timer = setInterval(() => this.refresh(), 45000);
+        },
+
+        destroy() {
+            if (this._timer) { clearInterval(this._timer); this._timer = null; }
+        },
+
+        visibleApps() {
+            return this.apps.filter(a => !a.hidden && a.launch_url);
+        },
+
+        async refresh() {
+            try {
+                const res = await fetch('/api/services');
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data && Array.isArray(data.apps)) {
+                    this.apps = data.apps;
+                    this.stale = Boolean(data.stale);
+                }
+            } catch (e) {
+                // Portal or html-notes hiccup — keep showing what we have.
+                this.stale = true;
+            }
+        },
+
+        async _override(app, body) {
+            try {
+                const res = await fetch(`/api/services/${encodeURIComponent(app.id)}/override`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (res.ok) this.refresh();
+            } catch (e) {
+                console.warn('[AppGrid] override failed', e);
+            }
+        },
+
+        togglePin(app) {
+            app.pinned = !app.pinned;   // optimistic; refresh() reconciles
+            this._override(app, { pinned: app.pinned });
+        },
+
+        hideApp(app) {
+            app.hidden = true;
+            this._override(app, { hidden: true });
+        },
+    }));
+
 });

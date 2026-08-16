@@ -1835,6 +1835,20 @@ async def build_trip_widgets(query: str) -> list:
     return widgets
 
 
+async def build_app_grid_config(query: str = "") -> dict:
+    """The App Hub widget's config: the curated PortalApp list from
+    portal-service. Never raises and never returns empty-dead — a portal outage
+    yields the last-good list flagged stale (the widget shows a banner)."""
+    data = await get_portal_apps()
+    return {
+        "title": "App Hub",
+        "subtitle": f"{data['count']} app{'s' if data['count'] != 1 else ''}"
+                    + (" · stale" if data["stale"] else ""),
+        "apps": data["apps"],
+        "stale": data["stale"],
+    }
+
+
 async def build_router_widget(spec: dict, session_id: str, message: str) -> Optional[tuple]:
     """One router widget spec -> (widget_type, id_prefix, config) ready to spawn,
     by calling the same builders the fast lane uses. Returns None when the spec
@@ -1848,6 +1862,9 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
         if wtype == "weather":
             w = await get_weather(extract_location(query or message))
             return None if w.get("is_error") else ("weather", "weather", w)
+
+        if wtype == "app_grid":
+            return ("app_grid", "app-hub", await build_app_grid_config(query or message))
 
         if wtype == "news":
             return ("data_card", "news", await build_news_config(query or message))

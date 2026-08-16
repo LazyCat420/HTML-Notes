@@ -2348,6 +2348,68 @@ def render_progress(widget_id: str, config: dict) -> str:
     """
 
 
+def render_app_grid(widget_id: str, config: dict) -> str:
+    """The App Hub: a launcher grid of every service portal-service knows about.
+    One singleton per canvas. Entirely Alpine-driven (like stock_card): the
+    server bakes the initial PortalApp list into x-data and appGridWidget
+    re-polls /api/services, so status dots go red/green IN PLACE — no canvas
+    re-commit, no data-sig churn, playing media never stutters.
+
+    Contract: {title?, subtitle?, apps: [PortalApp], stale?: bool}. Each tile is
+    a real <a target="_blank" rel="noopener"> — opening an app needs no JS and
+    no popup permission. Hover reveals ✕ (hide) and 📌 (pin), which POST
+    /api/services/{id}/override and update local state."""
+    title = config.get("title", "App Hub")
+    subtitle = config.get("subtitle", "")
+    initial = {"apps": config.get("apps") or [], "stale": bool(config.get("stale"))}
+
+    body = """
+        <div class="flex flex-col flex-grow min-h-0 p-3 gap-2">
+            <div x-show="stale" class="text-[0.65rem] text-amber-300/90 px-1">
+                ⚠ portal-service unreachable — showing the last known list
+            </div>
+            <div class="grid grid-cols-3 gap-2 overflow-y-auto flex-grow custom-scrollbar content-start auto-rows-max">
+                <template x-for="app in visibleApps()" :key="app.id">
+                    <div class="app-tile relative group/tile">
+                        <a :href="app.launch_url" target="_blank" rel="noopener noreferrer"
+                           class="flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/5 hover:bg-white/10 ring-1 ring-white/10 hover:ring-purple-400/40 transition-all no-underline hover:!no-underline"
+                           :title="app.description || app.name">
+                            <span class="relative text-2xl leading-none">
+                                <span x-text="app.icon"></span>
+                                <span class="absolute -bottom-0.5 -right-1.5 w-2 h-2 rounded-full ring-2 ring-slate-900"
+                                      :class="app.status === 'healthy' ? 'bg-emerald-400'
+                                              : (app.status === 'unhealthy' ? 'bg-red-400' : 'bg-slate-500')"></span>
+                            </span>
+                            <span class="text-[0.7rem] font-semibold text-white text-center leading-tight line-clamp-2"
+                                  x-text="app.name"></span>
+                            <span class="text-[0.55rem] text-slate-400" x-show="app.pinned">📌</span>
+                        </a>
+                        <div class="absolute top-1 right-1 hidden group-hover/tile:flex gap-0.5">
+                            <button @click.prevent="togglePin(app)" title="pin / unpin"
+                                    class="w-5 h-5 rounded-md bg-black/60 hover:bg-black/80 text-[0.6rem] flex items-center justify-center">📌</button>
+                            <button @click.prevent="hideApp(app)" title="hide from hub"
+                                    class="w-5 h-5 rounded-md bg-black/60 hover:bg-red-900/80 text-[0.6rem] flex items-center justify-center">✕</button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+            <div x-show="!visibleApps().length"
+                 class="flex flex-col items-center justify-center flex-grow text-slate-400 gap-2">
+                <span class="material-symbols-outlined text-4xl opacity-40">apps</span>
+                <span class="text-xs italic">No launchable apps — is portal-service up?</span>
+            </div>
+        </div>
+    """
+
+    return f"""
+    <div id="{widget_id}" x-data="appGridWidget({json_escape(initial)})"
+         class="widget-container app-grid-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[420px] group">
+        {widget_header(title, "apps", subtitle)}
+        {body}
+    </div>
+    """
+
+
 WIDGET_RENDERERS = {
     "checklist": render_checklist,
     "scoreboard": render_scoreboard,
@@ -2368,6 +2430,7 @@ WIDGET_RENDERERS = {
     "settings": render_settings,
     "converter": render_converter,
     "reminder": render_reminder,
+    "app_grid": render_app_grid,
     # Widget-pack additions (2026-07-21): dense data, comparison and composite
     # display shapes the audit found inexpressible with the original set.
     "table": render_table,

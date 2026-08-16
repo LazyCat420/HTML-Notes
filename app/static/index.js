@@ -2090,6 +2090,34 @@ document.addEventListener("DOMContentLoaded", () => {
             // reads and only ever process COMPLETE, newline-terminated lines.
             let buffer = "";
 
+            // Agent-driven app open (App Hub). window.open from an SSE callback
+            // has no user gesture, so most browsers popup-block it — the
+            // clickable toast is the guaranteed path; the direct open is a
+            // bonus when the browser allows it.
+            const showOpenLinkToast = (url, name) => {
+                const toast = document.createElement("div");
+                toast.style.cssText =
+                    "position:fixed;bottom:24px;right:24px;z-index:9999;" +
+                    "background:rgba(15,23,42,.95);color:#fff;padding:14px 18px;" +
+                    "border-radius:16px;border:1px solid rgba(168,85,247,.5);" +
+                    "box-shadow:0 8px 30px rgba(0,0,0,.5);font-size:14px;" +
+                    "display:flex;align-items:center;gap:10px;max-width:340px;";
+                const link = document.createElement("a");
+                link.href = url;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                link.textContent = `🚀 Open ${name || url}`;
+                link.style.cssText = "color:#c084fc;font-weight:600;text-decoration:none;";
+                link.addEventListener("click", () => toast.remove());
+                const close = document.createElement("button");
+                close.textContent = "✕";
+                close.style.cssText = "background:none;border:none;color:#94a3b8;cursor:pointer;font-size:12px;";
+                close.addEventListener("click", () => toast.remove());
+                toast.append(link, close);
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 20000);
+            };
+
             const dispatch = (data) => {
                 if (data.type === "chunk") {
                     const token = data.content || "";
@@ -2167,6 +2195,11 @@ document.addEventListener("DOMContentLoaded", () => {
                     statusBar.stage(`Tool: ${data.tool}`, 55);
                     envelope.phase(data.phase);
                     envelope.detail(humanizeTool(data.tool, data.args || data.input));
+                } else if (data.type === "open_url") {
+                    HN.log("open_url", data.url);
+                    addLogStep(`Opening <strong>${data.name || data.url}</strong> in a new tab…`, "🚀");
+                    const win = window.open(data.url, "_blank", "noopener,noreferrer");
+                    if (!win) showOpenLinkToast(data.url, data.name);
                 } else if (data.type === "error") {
                     HN.error(data.message);
                     addLogStep(`Error: ${data.message}`, "❌");

@@ -1,0 +1,12 @@
+{
+  "_readme": "Curation defaults for the App Hub. Keyed by the portal-service registry id (stable forever — never a container id). Per-app keys: icon (emoji), name, launch_url, pinned, hidden, description. Runtime hide/pin toggles live in the DB overlay (agent_memory widget_state 'portal:overrides') and take precedence over this file. Apps listed here with no portal match become synthetic launch targets (status 'unknown'). To make a NEW service appear everywhere, add it to vault-service/projects.json — not here.",
+  "apps": {
+    "trading-client": {"icon": "📈", "pinned": true},
+    "music-player": {"icon": "🎵", "pinned": true},
+    "html-notes": {"icon": "🗒️"}
+  },
+  "defaults": {
+    "include_infrastructure": false,
+    "hide_patterns": []
+  }
+}

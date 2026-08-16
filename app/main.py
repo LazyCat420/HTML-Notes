@@ -378,7 +378,7 @@ _QUERY_ONLY_KEYS = {"news_topic", "topic", "search_query", "map_query", "query",
 _CONTENT_KEYS = ("items", "sources", "answer", "content", "values", "markers",
                  "events", "articles", "results", "price", "technicals", "image",
                  "rows", "series", "metrics", "stats", "entities", "facts",
-                 "sections")
+                 "sections", "apps")
 
 
 
@@ -425,6 +425,9 @@ _WIDGET_TYPE_ALIASES = {
     "token_card": "crypto_card",
     "holder_graph": "wallet_graph", "wallet_network": "wallet_graph",
     "holder_network": "wallet_graph", "whale_graph": "wallet_graph",
+    # App Hub launcher
+    "app_hub": "app_grid", "launcher": "app_grid", "apps": "app_grid",
+    "services": "app_grid", "service_grid": "app_grid",
 }
 
 
@@ -461,6 +464,9 @@ _PHASE_COMPOSING   = "composing"
 _TOOL_PHASES = {
     "html_notes_read_page":  _PHASE_READING,
     "canvas_read_dom":       _PHASE_READING,
+    "html_notes_list_services": _PHASE_READING,
+    "html_notes_open_app":      _PHASE_COMPOSING,
+    "html_notes_curate_app":    _PHASE_COMPOSING,
     "canvas_add_widget":     _PHASE_COMPOSING,
     "canvas_modify_dom":     _PHASE_COMPOSING,
     "create_widget":         _PHASE_COMPOSING,
@@ -581,7 +587,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR
+from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL
 import asyncio
 import contextvars
 import datetime
@@ -703,6 +709,7 @@ _CANVAS_CLASS_TYPE = {
     "image-widget": "image", "products-widget": "products", "chart-widget": "chart",
     "scoreboard": "scoreboard",
     "crypto-card": "crypto_card", "wallet-graph-widget": "wallet_graph",
+    "app-grid-widget": "app_grid",
 }
 _CANVAS_XDATA_TYPE = {
     "checklistWidget": "checklist", "clockWidget": "clock", "notesWidget": "notes",
@@ -710,6 +717,7 @@ _CANVAS_XDATA_TYPE = {
     "stockCardWidget": "stock_card", "converterWidget": "converter",
     "cryptoCardWidget": "crypto_card",
     "reminderWidget": "reminder", "settingsWidget": "settings",
+    "appGridWidget": "app_grid",
 }
 
 
@@ -724,7 +732,7 @@ _CANVAS_XDATA_TYPE = {
 # Types that should exist at most once on the canvas: a new ask UPDATES the open
 # one instead of adding a second. Media (video/music) already swap via
 # _place_media_widget; these are the data widgets that were stacking duplicates.
-SINGLETON_WIDGET_TYPES = {"map", "weather"}
+SINGLETON_WIDGET_TYPES = {"map", "weather", "app_grid"}
 
 # Roles that should exist at most once, identified by their widget id PREFIX
 # rather than their widget_type. Needed because a role's rendered type is not
@@ -2473,6 +2481,21 @@ def is_valid_tool_args(tool_name: str, args: dict) -> bool:
 # {"defer": true} for those and for anything it isn't confident about, so nothing
 # it can't do well is forced through it.
 
+# APP HUB fast lane: the user asking for THEIR launcher/services grid. Kept
+# deliberately possessive/deictic ("my apps", "app hub") so "best apps for
+# photo editing" or "what services does AWS offer" never trips it — those are
+# research asks. One-app opens ("open the trading client") go to the agent,
+# which can disambiguate via html_notes_open_app.
+# "dashboard" is deliberately ABSENT: the html-notes canvas itself is "the
+# dashboard" ("modify my dashboard tasks"), so that word means the canvas,
+# never the hub. Same for a bare "launcher" ("best launcher for android").
+APP_HUB_INTENT_RE = re.compile(
+    r'\b(app hub|apphub|'
+    r'(?:my|our) (?:apps|services|containers|launcher)|'
+    r'(?:show|open|list|pull up|bring up) (?:me )?(?:the )?'
+    r'(?:hub|launcher|app grid|apps? (?:hub|grid|launcher))|'
+    r'what(?:\'s| is) (?:currently )?running)\b', re.IGNORECASE)
+
 # type → (id_prefix, one-line spec for the classify prompt). The prompt text is
 # what the model sees; the id_prefix is the widget id stem we spawn with.
 ROUTER_WIDGETS = {
@@ -2496,6 +2519,7 @@ ROUTER_WIDGETS = {
     "products":   ("products",  'shopping / product recommendations to BUY or compare ("good outdoor shoes", "best budget laptop", "gift for a hiker"). query = the product ask. Renders a grid of picture cards linking to sources'),
     "trip":       ("trip",      'plan a TRIP / vacation / multi-day itinerary to a place ("plan a trip to Japan", "3 days in Rome"). query = the destination + any duration. Renders an itinerary card + a map of the spots'),
     "wikipedia":  ("wikipedia", 'an explicit Wikipedia-article request. query = the subject'),
+    "app_grid":   ("app-hub",   'the user\'s APP HUB / launcher — their own running services and apps ("show my apps", "open my launcher", "what services are running", "my containers"). NOT a request to open one specific app. query = the whole request'),
     "list":       ("checklist", 'a checklist / to-do / shopping list to CREATE. query = the whole request'),
     "notes":      ("notes",     'a notepad, optionally pre-filled. query = the whole request'),
     "clock":      ("clock",     'a clock / world clock / timer / countdown / stopwatch. query = the whole request'),
@@ -2837,6 +2861,7 @@ _INTERNAL_EXECUTE_TOOLS = frozenset({
     "html_notes_youtube_search", "html_notes_web_search", "html_notes_read_page",
     "html_notes_news", "html_notes_stock_history", "html_notes_stock_news",
     "html_notes_get_weather", "html_notes_sports_scores", "canvas_add_widget",
+    "html_notes_list_services", "html_notes_open_app", "html_notes_curate_app",
 })
 _internal_execute_auth_warned = False
 
@@ -2924,6 +2949,7 @@ from app.utils import *
 from app.llm import *
 from app.services.search import *
 from app.services.finance import *
+from app.services.portal import *
 from app.services.location import *
 from app.services.sports import *
 from app.services.youtube_helpers import *

@@ -26,6 +26,8 @@ services:
       # Interpolated from the staged .env (deploy-kit/.env.deploy) at deploy;
       # empty = endpoint runs in compat (unauthenticated) mode with a warning.
       - INTERNAL_EXECUTE_TOKEN=${INTERNAL_EXECUTE_TOKEN:-}
+      # portal-service inventory feeds the App Hub widget + open_app tool.
+      - PORTAL_SERVICE_URL=${PORTAL_SERVICE_URL:-http://10.0.0.16:4001}
     volumes:
       - ./data:/app/data
       # Shared SDK (research helper) — synced to the NAS by deploy.sh's

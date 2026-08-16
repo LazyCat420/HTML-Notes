@@ -16,6 +16,10 @@ MUSIC_PLAYER_URL = os.getenv("MUSIC_PLAYER_URL", "http://10.0.0.16:8002")
 # with a null endpoint and its python bridge has no interpreter in the image,
 # so they return "Unknown tool" — this is the only working search path.
 SCRAPER_SERVICE_URL = os.getenv("SCRAPER_SERVICE_URL", "http://10.0.0.16:8001")
+# portal-service is the live inventory of every registered service/container
+# (fed from vault-service's projects.json). The App Hub widget and the
+# html_notes_list_services/open_app tools read it — never the Docker socket.
+PORTAL_SERVICE_URL = os.getenv("PORTAL_SERVICE_URL", "http://10.0.0.16:4001")
 # vault-service is the single source of truth for secrets (GOOGLE_API_KEY, etc).
 # Secrets are fetched at runtime with the bearer token — never hardcoded here.
 VAULT_SERVICE_URL = os.getenv("VAULT_SERVICE_URL", "http://10.0.0.16:5599")
