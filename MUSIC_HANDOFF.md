@@ -59,6 +59,20 @@ A **local-library** track opens the app with no `track` param: it is
 identified by a filesystem path that means nothing to a deep link, so there is
 nothing to hand over.
 
+## Surviving a track the source refuses
+
+`handleStreamError()` in `app/static/js/widgets.js`. Two details are easy to
+get wrong, and `tests/test_music_dead_track_skip.mjs` pins both:
+
+- **The skip must actively call `play()`.** A track that errors has usually
+  already flipped `isPlaying` false via the `pause` listener, so
+  `nextTrack()`'s own "resume if it was playing" does nothing and the widget
+  walks the queue in silence. The first version of that test could not see
+  this at all — its stubbed `nextTrack` supplied the resume itself, so the
+  assertion passed on the harness rather than on the code.
+- **`destroy()` sets `src=''`, which itself fires `error`.** Skipping on that
+  would resurrect a widget the user just closed.
+
 ## Verified live
 
 `scripts/music_handoff_check.py` (live check, not CI), 11/11 against the
@@ -78,10 +92,22 @@ appears and one click starts playback there.
 - **Autoplay may be refused.** `:8035 -> :3232` is cross-origin, so the new
   tab inherits no user gesture. That path is handled on the music-player side
   with a one-click resume card that lands on the same second.
-- **~30% of YouTube tracks will not stream at all right now**, in the handoff
-  *and* in the widget. This is not a handoff bug — the scraper/CDN 403s the
-  open-ended `Range: bytes=0-` that every `<audio>` element opens with, while
-  closed ranges succeed. Measured 2026-08-17 on a 10-track jazz mix: 7
-  playable, 3 dead (`K8mvBkmbMMg`, `GrQGKHZ5KmE`, `SBkZ4WCpo7s`). Details and
-  history in `music-player/AUDIO_PIPELINE.md`; a handoff that lands on one of
-  these now says so instead of silently playing a different song.
+- **Most YouTube tracks are refused by the CDN right now** — in the handoff
+  *and* in the widget, and not because of either. YouTube serves only the
+  first ~1MB of a file to a client with no PO token and no cookie; the rest
+  is 403 at every offset. Re-measured 2026-08-17 through the production path:
+  **10 of 12 tracks on a live jazz mix were unplayable.** Full diagnosis,
+  including what was ruled out, in `music-player/AUDIO_PIPELINE.md` item 4.
+  A handoff that lands on one of these says so instead of silently playing a
+  different song.
+
+  **The widget now skips them** (`d27d05a`): a stream error advances to the
+  next track and keeps playing, bounded at 8 consecutive failures so an
+  all-dead queue reports rather than spinning. About one track in six still
+  plays, and a genre queue holds ~100, so music plays again. Verified live —
+  the widget skipped 2 dead tracks and settled on a playing one, after which
+  the handoff carried a real live position rather than a parked one.
+
+  This is a mitigation, not a fix. The fix is a populated
+  `/app/cookies.txt` on the scraper (the plumbing exists; the file is 0
+  bytes) or a PO token provider.
