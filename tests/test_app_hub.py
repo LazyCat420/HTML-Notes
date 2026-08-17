@@ -370,3 +370,77 @@ def test_registry_overrides_the_dead_music_domain():
     mp = (reg.get("apps") or {}).get("music-player") or {}
     assert mp.get("launch_url") == "http://10.0.0.16:3232"
     assert "braindeadbot" not in mp.get("launch_url", "")
+
+
+# ── control plane (app_action) ───────────────────────────────────────────────
+
+from app.services import app_actions as A
+
+
+def test_registry_loads_and_every_action_is_well_formed():
+    rows = A.list_app_actions()
+    assert rows, "registry must not be empty"
+    for r in rows:
+        spec = A.get_action_spec(r["app_id"], r["action"])
+        assert spec.get("url", "").startswith("http"), r
+        assert spec.get("method", "GET").upper() in ("GET", "POST", "PUT", "DELETE"), r
+        assert r["description"], f"{r['app_id']}.{r['action']} needs a description"
+
+
+def test_money_and_job_actions_are_marked_destructive():
+    """The confirm gate is only as good as these flags. A cycle places orders;
+    a stop interrupts one; strain enrichment is a heavy job."""
+    for app_id, action in (("trading-client", "start_cycle"),
+                           ("trading-client", "stop_cycle"),
+                           ("treesearch-service", "enrich_strains")):
+        assert A.get_action_spec(app_id, action)["destructive"] is True, (app_id, action)
+    # ...and reads must NOT be, or every status check would nag for a click.
+    for app_id, action in (("trading-client", "cycle_status"),
+                           ("youtube-wallgarden", "suggest_videos"),
+                           ("youtube-wallgarden", "user_state"),
+                           ("music-player", "record_play")):
+        assert A.get_action_spec(app_id, action)["destructive"] is False, (app_id, action)
+
+
+def test_body_template_drops_optionals_and_enforces_required():
+    tpl = {"a": "$opt", "b": "$req!", "c": "literal"}
+    assert A._render_body(tpl, {"req": 1}) == {"b": 1, "c": "literal"}
+    assert A._render_body(tpl, {"req": 1, "opt": 2}) == {"a": 2, "b": 1, "c": "literal"}
+    with pytest.raises(ValueError):
+        A._render_body(tpl, {})
+
+
+def test_pending_action_runs_once_then_is_consumed():
+    """A double-click must not start two trading cycles."""
+    pid = A.park_pending_action("trading-client", "start_cycle", {"tickers": ["NVDA"]})
+    assert A.get_pending_action(pid)["action"] == "start_cycle"
+    A._pending_actions.pop(pid)              # simulate the run consuming it
+    assert A.get_pending_action(pid) is None
+
+
+def test_expired_pending_action_is_refused():
+    pid = A.park_pending_action("trading-client", "start_cycle", {})
+    A._pending_actions[pid]["created"] -= (A._PENDING_TTL + 10)
+    assert A.get_pending_action(pid) is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_action_never_reaches_the_network():
+    res = await A.execute_app_action("trading-client", "delete_everything", {})
+    assert res["is_error"] and "Unknown action" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_actions_prompt_block_flags_destructive():
+    block = await A.build_actions_prompt_block()
+    assert "YOU CAN DO" in block
+    assert "trading-client.start_cycle [CONFIRM REQUIRED]" in block
+    assert "cycle_status [CONFIRM REQUIRED]" not in block
+
+
+def test_action_confirm_registered_everywhere():
+    from app.widgets.factory import WIDGET_RENDERERS
+    assert "action_confirm" in WIDGET_RENDERERS
+    assert m._CANVAS_XDATA_TYPE["actionConfirmWidget"] == "action_confirm"
+    assert m._CANVAS_CLASS_TYPE["action-confirm-widget"] == "action_confirm"
+    assert {"html_notes_app_action", "html_notes_list_actions"} <= m._INTERNAL_EXECUTE_TOOLS

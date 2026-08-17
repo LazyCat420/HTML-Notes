@@ -1554,6 +1554,53 @@ document.addEventListener('alpine:init', () => {
         }
     }));
 
+    // Confirm card for a destructive container action. The action is already
+    // parked server-side; this button is the ONLY thing that fires it, and the
+    // server consumes the pending id so a double-click cannot run it twice.
+    Alpine.data('actionConfirmWidget', (initial) => ({
+        pendingId: (initial && initial.pendingId) || '',
+        label: (initial && initial.label) || '',
+        busy: false,
+        done: false,
+        ok: false,
+        message: '',
+
+        async run() {
+            if (this.busy || this.done || !this.pendingId) return;
+            this.busy = true;
+            try {
+                const res = await fetch('/api/actions/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pending_id: this.pendingId }),
+                });
+                const data = await res.json();
+                this.ok = Boolean(data && data.success);
+                this.message = this.ok
+                    ? `${this.label} started.`
+                    : (data && (data.error || data.detail)) || 'Action failed.';
+            } catch (e) {
+                this.ok = false;
+                this.message = 'Could not reach the server.';
+            } finally {
+                this.busy = false;
+                this.done = true;
+            }
+        },
+
+        cancel() {
+            this.done = true;
+            this.ok = false;
+            this.message = 'Cancelled — nothing ran.';
+            // Tell the server to drop it so it cannot be fired later.
+            fetch('/api/actions/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pending_id: this.pendingId }),
+            }).catch(() => {});
+        },
+    }));
+
     // App Hub launcher grid. Initial app list is baked server-side (paints
     // immediately); a 45s poll of /api/services refreshes status dots and picks
     // up newly registered services IN PLACE — Alpine state only, never a canvas

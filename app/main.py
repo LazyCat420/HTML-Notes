@@ -378,7 +378,7 @@ _QUERY_ONLY_KEYS = {"news_topic", "topic", "search_query", "map_query", "query",
 _CONTENT_KEYS = ("items", "sources", "answer", "content", "values", "markers",
                  "events", "articles", "results", "price", "technicals", "image",
                  "rows", "series", "metrics", "stats", "entities", "facts",
-                 "sections", "apps")
+                 "sections", "apps", "pending_id")
 
 
 
@@ -467,6 +467,8 @@ _TOOL_PHASES = {
     "html_notes_list_services": _PHASE_READING,
     "html_notes_open_app":      _PHASE_COMPOSING,
     "html_notes_curate_app":    _PHASE_COMPOSING,
+    "html_notes_list_actions":  _PHASE_READING,
+    "html_notes_app_action":    _PHASE_COMPOSING,
     "canvas_add_widget":     _PHASE_COMPOSING,
     "canvas_modify_dom":     _PHASE_COMPOSING,
     "create_widget":         _PHASE_COMPOSING,
@@ -710,6 +712,7 @@ _CANVAS_CLASS_TYPE = {
     "scoreboard": "scoreboard",
     "crypto-card": "crypto_card", "wallet-graph-widget": "wallet_graph",
     "app-grid-widget": "app_grid",
+    "action-confirm-widget": "action_confirm",
 }
 _CANVAS_XDATA_TYPE = {
     "checklistWidget": "checklist", "clockWidget": "clock", "notesWidget": "notes",
@@ -718,6 +721,7 @@ _CANVAS_XDATA_TYPE = {
     "cryptoCardWidget": "crypto_card",
     "reminderWidget": "reminder", "settingsWidget": "settings",
     "appGridWidget": "app_grid",
+    "actionConfirmWidget": "action_confirm",
 }
 
 
@@ -2961,6 +2965,7 @@ _INTERNAL_EXECUTE_TOOLS = frozenset({
     "html_notes_news", "html_notes_stock_history", "html_notes_stock_news",
     "html_notes_get_weather", "html_notes_sports_scores", "canvas_add_widget",
     "html_notes_list_services", "html_notes_open_app", "html_notes_curate_app",
+    "html_notes_app_action", "html_notes_list_actions",
 })
 _internal_execute_auth_warned = False
 
@@ -3049,6 +3054,7 @@ from app.llm import *
 from app.services.search import *
 from app.services.finance import *
 from app.services.portal import *
+from app.services.app_actions import *
 from app.services.location import *
 from app.services.sports import *
 from app.services.youtube_helpers import *

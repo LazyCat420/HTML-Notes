@@ -5,6 +5,38 @@ sys.modules[__name__].__dict__.update(main.__dict__)
 
 router = APIRouter()
 
+@router.get("/api/actions")
+async def api_actions(app_id: str = ""):
+    """Every registered container action. Backs the control plane's discovery
+    (and is handy for checking the registry without a chat turn)."""
+    return {"actions": list_app_actions(app_id)}
+
+
+@router.post("/api/actions/run")
+async def api_actions_run(request: Request):
+    """Fire a PARKED destructive action. The agent can never reach this — it
+    only parks; the user's click on the confirm card is what calls it."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pending_id = (body.get("pending_id") or "").strip()
+    if not pending_id:
+        raise HTTPException(status_code=400, detail="pending_id required")
+    return await run_pending_action(pending_id)
+
+
+@router.post("/api/actions/cancel")
+async def api_actions_cancel(request: Request):
+    """Drop a parked action so it can never fire."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    _pending_actions.pop((body.get("pending_id") or "").strip(), None)
+    return {"success": True}
+
+
 @router.get("/api/services")
 async def api_services(include_hidden: bool = False):
     """The curated PortalApp list (portal-service inventory ⊕ registry file ⊕

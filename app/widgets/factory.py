@@ -2410,6 +2410,57 @@ def render_app_grid(widget_id: str, config: dict) -> str:
     """
 
 
+def render_action_confirm(widget_id: str, config: dict) -> str:
+    """A destructive action parked awaiting the user's click.
+
+    The model never executes these — it can only ASK, which parks the action
+    server-side and renders this card. The button is the only thing that fires
+    it, so a misheard ticker or a hallucinated parameter cannot start a
+    trading cycle on its own. Consumed server-side on use, so a double-click
+    cannot start two.
+
+    Contract: {title, app_id, action, description, params, pending_id}."""
+    app_id = config.get("app_id", "?")
+    action = config.get("action", "?")
+    params = config.get("params") or {}
+    initial = {"pendingId": config.get("pending_id", ""),
+               "label": f"{app_id}.{action}"}
+
+    rows = "".join(
+        f"""<div class="flex items-start gap-2 text-xs py-0.5">
+                <span class="text-slate-400 shrink-0">{esc(k)}</span>
+                <span class="text-white font-mono break-all">{esc(json.dumps(v) if not isinstance(v, str) else v)}</span>
+            </div>"""
+        for k, v in params.items()) or (
+        '<div class="text-xs text-slate-400 italic">no parameters</div>')
+
+    return f"""
+    <div id="{widget_id}" x-data="actionConfirmWidget({json_escape(initial)})"
+         class="widget-container action-confirm-widget col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/70 backdrop-blur-xl border border-amber-400/30 text-white flex flex-col h-[280px] group">
+        {widget_header(config.get("title", "Confirm action"), "warning", app_id)}
+        <div class="flex flex-col flex-grow min-h-0 p-4 gap-2">
+            <div class="text-sm font-bold text-amber-300">{esc(action.replace('_', ' ').title())}</div>
+            <div class="text-xs text-slate-300 leading-relaxed line-clamp-3">{esc(config.get("description", ""))}</div>
+            <div class="rounded-xl bg-black/30 ring-1 ring-white/10 p-2 overflow-y-auto custom-scrollbar flex-grow min-h-0">
+                {rows}
+            </div>
+            <div x-show="!done" class="flex gap-2 shrink-0">
+                <button @click="run()" :disabled="busy"
+                        class="flex-1 py-2 rounded-xl bg-amber-500/80 hover:bg-amber-500 text-black text-xs font-bold disabled:opacity-50 transition-all">
+                    <span x-text="busy ? 'Running…' : 'Run it'"></span>
+                </button>
+                <button @click="cancel()" :disabled="busy"
+                        class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold disabled:opacity-50 transition-all">Cancel</button>
+            </div>
+            <div x-show="done" x-cloak class="text-xs shrink-0 rounded-xl p-2 ring-1"
+                 :class="ok ? 'bg-emerald-500/10 ring-emerald-400/30 text-emerald-200' : 'bg-red-500/10 ring-red-400/30 text-red-200'">
+                <span x-text="message"></span>
+            </div>
+        </div>
+    </div>
+    """
+
+
 WIDGET_RENDERERS = {
     "checklist": render_checklist,
     "scoreboard": render_scoreboard,
@@ -2431,6 +2482,7 @@ WIDGET_RENDERERS = {
     "converter": render_converter,
     "reminder": render_reminder,
     "app_grid": render_app_grid,
+    "action_confirm": render_action_confirm,
     # Widget-pack additions (2026-07-21): dense data, comparison and composite
     # display shapes the audit found inexpressible with the original set.
     "table": render_table,

@@ -1,0 +1,128 @@
+{
+  "_readme": "Capability registry for the canvas control plane. Each entry is ONE action the agent can run on a container via html_notes_app_action(app_id, action, params). Adding a repo or an action is a JSON edit here — no tool-schema rebuild and no lazy-agent redeploy, because the agent sees a single generic tool and this file is read at call time.",
+  "_field_docs": {
+    "method/url": "HTTP call to make. {placeholders} in url are filled from params.",
+    "body": "JSON body template. A value of '$name' is replaced by params['name'] (dropped when absent); '$name!' is required. Any other value is sent literally.",
+    "destructive": "true => the canvas renders a confirm card and NOTHING fires until the user clicks Run. Mark true for anything that spends money, deletes, or takes real-world action.",
+    "params": "name -> one-line description. Purely documentation for the model; the executor does not type-check beyond required ($name!).",
+    "summary": "Optional dotted path into the JSON response to quote back, e.g. 'data.status'.",
+    "timeout": "Seconds; default 20."
+  },
+  "actions": {
+    "trading-client": {
+      "start_cycle": {
+        "method": "POST",
+        "url": "http://10.0.0.16:8888/api/v1/run-cycle",
+        "destructive": true,
+        "timeout": 30,
+        "description": "Start a trading cycle (collect + analyze, and optionally place trades). Returns 409 if a cycle is already running — that is a normal answer, not an error.",
+        "params": {
+          "tickers": "Optional list of symbols, e.g. ['NVDA','AMD']. Omit to let the pipeline choose.",
+          "trade": "true to actually place orders. Defaults to false (analysis only).",
+          "collect": "Run data collection first. Default true.",
+          "analyze": "Run analysis. Default true.",
+          "max_tickers": "Cap on how many symbols to process."
+        },
+        "body": {
+          "tickers": "$tickers",
+          "trade": "$trade",
+          "collect": "$collect",
+          "analyze": "$analyze",
+          "max_tickers": "$max_tickers",
+          "pipeline_version": "v3"
+        }
+      },
+      "cycle_status": {
+        "method": "GET",
+        "url": "http://10.0.0.16:8888/api/v1/run-cycle/status?summary_only=true",
+        "destructive": false,
+        "description": "Current trading cycle state — whether one is running, which phase, and progress.",
+        "params": {}
+      },
+      "stop_cycle": {
+        "method": "POST",
+        "url": "http://10.0.0.16:8888/api/v1/run-cycle/stop",
+        "destructive": true,
+        "description": "Ask the running trading cycle to stop at the next safe point.",
+        "params": {}
+      }
+    },
+    "youtube-wallgarden": {
+      "suggest_videos": {
+        "method": "POST",
+        "url": "http://10.0.0.16:8007/api/wallgarden/similar",
+        "destructive": false,
+        "timeout": 60,
+        "description": "Ask wallgarden's taste engine what to watch. Use this for VAGUE asks ('something to watch', 'find me something interesting') so the suggestion is informed by the user's own ratings and topics instead of a cold search. For a SPECIFIC ask ('bloomberg live news feed') just search normally.",
+        "params": {
+          "query": "REQUIRED. The subject or mood to find videos like.",
+          "interests": "Optional list of extra interest strings to bias toward.",
+          "disliked": "Optional list of strings to avoid."
+        },
+        "body": {
+          "query": "$query!",
+          "interests": "$interests",
+          "disliked": "$disliked"
+        }
+      },
+      "taste_topics": {
+        "method": "POST",
+        "url": "http://10.0.0.16:8007/api/wallgarden/brainstorm",
+        "destructive": false,
+        "timeout": 60,
+        "description": "Generate search topics from the user's taste. Use when you need good YouTube QUERIES rather than a specific video — it leverages the topics/ratings wallgarden already holds so you are not guessing from scratch.",
+        "params": {
+          "interests": "REQUIRED list of interest strings to brainstorm around.",
+          "numTopics": "How many topics to return (default is wallgarden's own)."
+        },
+        "body": {
+          "interests": "$interests!",
+          "numTopics": "$numTopics"
+        }
+      },
+      "user_state": {
+        "method": "GET",
+        "url": "http://10.0.0.16:8007/sync/global",
+        "destructive": false,
+        "description": "Read the user's wallgarden state — ratings, watched history, queue, mined topics and taste profile. Useful for grounding a recommendation in what they already liked.",
+        "params": {}
+      }
+    },
+    "music-player": {
+      "record_play": {
+        "method": "POST",
+        "url": "http://10.0.0.16:8002/api/music/history",
+        "destructive": false,
+        "description": "Record that a track was played, so the music library's history and smart mixes learn from canvas listening too.",
+        "params": {
+          "track_id": "REQUIRED track identifier.",
+          "artist": "REQUIRED artist name.",
+          "title": "REQUIRED track title.",
+          "duration": "Seconds listened.",
+          "source": "Where it played, e.g. 'canvas'."
+        },
+        "body": {
+          "id": "$track_id!",
+          "track_id": "$track_id!",
+          "artist": "$artist!",
+          "title": "$title!",
+          "album": "$album",
+          "duration": "$duration",
+          "completion_rate": "$completion_rate",
+          "source": "$source",
+          "context": "canvas"
+        }
+      }
+    },
+    "treesearch-service": {
+      "enrich_strains": {
+        "method": "POST",
+        "url": "http://10.0.0.16:8005/api/strains/enrich",
+        "destructive": true,
+        "timeout": 30,
+        "description": "Kick off strain-database enrichment. Heavy background job; self-guards with 409 when one is already running.",
+        "params": {}
+      }
+    }
+  }
+}

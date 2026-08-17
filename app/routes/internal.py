@@ -497,6 +497,39 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
                              "Call html_notes_list_services to see valid ids.",
                     "is_error": True}
 
+        elif t == "html_notes_list_actions":
+            return {"actions": list_app_actions(a.get("app_id") or ""),
+                    "hint": "Run one with html_notes_app_action(app_id, action, params)."}
+
+        elif t == "html_notes_app_action":
+            app_id = (a.get("app_id") or "").strip()
+            action = (a.get("action") or "").strip()
+            params = a.get("params") or {}
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except Exception:
+                    params = {}
+            spec = get_action_spec(app_id, action)
+            if not spec:
+                return {"error": f"No action '{action}' on '{app_id}'.",
+                        "available": [f"{r['app_id']}.{r['action']}"
+                                      for r in list_app_actions()],
+                        "is_error": True}
+            if spec.get("destructive"):
+                # NEVER executed here. Park it; the SSE interceptor renders a
+                # confirm card and only the user's click runs it.
+                pending_id = park_pending_action(app_id, action, params)
+                cache_tool_result(f"action_confirm:{pending_id}",
+                                  build_action_confirm_config(app_id, action,
+                                                              params, pending_id))
+                return {"success": True, "confirmation_required": True,
+                        "pending_id": pending_id,
+                        "message": (f"{app_id}.{action} needs confirmation — a confirm "
+                                    "card is on the canvas. Tell the user to click "
+                                    "Run it. Do NOT claim it has started.")}
+            return await execute_app_action(app_id, action, params)
+
         elif t == "html_notes_curate_app":
             data = await get_portal_apps(include_hidden=True)
             app_id = (a.get("app_id") or "").strip()

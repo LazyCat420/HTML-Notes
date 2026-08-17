@@ -1309,6 +1309,8 @@ async def send_message(req: MessageRequest):
         # The user's live app inventory for the prompt (cached ~15ms; "" on a
         # portal outage so a turn is never blocked by it).
         apps_block = await build_apps_prompt_block()
+        # What the canvas can DO to those apps (local file read, no network).
+        actions_block = await build_actions_prompt_block()
 
         # Build system prompt with canvas context.
         #
@@ -1400,6 +1402,7 @@ async def send_message(req: MessageRequest):
             # had no way to know "trading bot" names a container of theirs —
             # it web-searched and rendered a junk card.
             + apps_block
+            + actions_block
             + f"{turn_ctx['context_block']}"
             # TIER-2's VERDICT, placed in the recency window. The note above
             # (instruction-following decays with instruction count and what gets
@@ -1482,6 +1485,9 @@ async def send_message(req: MessageRequest):
             "mcp__lazy-tool-service__html_notes_list_services",
             "mcp__lazy-tool-service__html_notes_open_app",
             "mcp__lazy-tool-service__html_notes_curate_app",
+            # Control plane: run registered actions on the other containers.
+            "mcp__lazy-tool-service__html_notes_app_action",
+            "mcp__lazy-tool-service__html_notes_list_actions",
         ]
 
         # Build messages array — use system role at index 0.
@@ -2672,6 +2678,47 @@ async def send_message(req: MessageRequest):
                                         yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}...", "phase": tool_phase})}\n\n'
                                     
                                     active_tool_args = args
+
+                                    # DESTRUCTIVE ACTION: the tool parked it and
+                                    # returned a pending_id; put the confirm card
+                                    # on the canvas so the user's click is the
+                                    # only thing that can fire it. Rendered here
+                                    # (not by canvas_add_widget) so the model
+                                    # cannot skip it or invent its own config.
+                                    if (active_tool_name == "mcp__lazy-tool-service__html_notes_app_action"
+                                            and not executed_active_tool
+                                            and status in ("done", "success")):
+                                        _act_app = str((args or {}).get("app_id") or "").strip()
+                                        _act_name = str((args or {}).get("action") or "").strip()
+                                        _act_spec = get_action_spec(_act_app, _act_name)
+                                        if _act_spec and _act_spec.get("destructive"):
+                                            executed_active_tool = True
+                                            _act_params = (args or {}).get("params") or {}
+                                            if isinstance(_act_params, str):
+                                                try:
+                                                    _act_params = json.loads(_act_params)
+                                                except Exception:
+                                                    _act_params = {}
+                                            _pid = park_pending_action(_act_app, _act_name, _act_params)
+                                            _cfg = build_action_confirm_config(
+                                                _act_app, _act_name, _act_params, _pid)
+
+                                            def _place_confirm(soup, _cfg=_cfg):
+                                                grid = soup.select_one('#dashboard-grid')
+                                                if grid is None:
+                                                    soup.append(BeautifulSoup(
+                                                        '<div id="dashboard-grid" class="dashboard-grid"></div>',
+                                                        'html.parser'))
+                                                    grid = soup.select_one('#dashboard-grid')
+                                                grid.append(BeautifulSoup(render_widget(
+                                                    "action_confirm",
+                                                    f"confirm-{uuid.uuid4().hex[:8]}", _cfg),
+                                                    'html.parser'))
+
+                                            _evt = await commit_canvas(req.session_id, _place_confirm)
+                                            if _evt:
+                                                logger.info(f"[ACTIONS] confirm card for {_act_app}.{_act_name}")
+                                                yield _evt
 
                                     # BROWSER OPEN: html_notes_open_app names an
                                     # approved catalog app — resolve it server-side
