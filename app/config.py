@@ -11,6 +11,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "data/notes.db")
 LAZY_TOOL_SERVICE_URL = os.getenv("LAZY_TOOL_SERVICE_URL", "http://10.0.0.16:5591")
 TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "http://10.0.0.16:3032")
 MUSIC_PLAYER_URL = os.getenv("MUSIC_PLAYER_URL", "http://10.0.0.16:8002")
+# The music-player WEB app, not its API — the mini player hands a track off to
+# it. Pinned to the port for the same reason the App Hub pins it: the registry
+# domain music.braindeadbot.com has no DNS record.
+MUSIC_PLAYER_WEB_URL = os.getenv("MUSIC_PLAYER_WEB_URL", "http://10.0.0.16:3232")
 # scraper-service backs web_search/read_page. The tools-api search tools
 # (search_web/search_news/read_web_page) are registered in the gateway catalog
 # with a null endpoint and its python bridge has no interpreter in the image,
