@@ -1005,6 +1005,12 @@ document.addEventListener('alpine:init', () => {
         lastRefillAt: 0,
         currentTime: 0,
         duration: 0,
+        // Consecutive tracks the CDN refused. YouTube serves only the first
+        // ~1MB of most files without a PO token, so a queue is now a mix of
+        // playable and dead tracks; skipping finds the playable ones. Bounded
+        // so an all-dead queue reports instead of spinning.
+        deadInARow: 0,
+        maxDeadInARow: 8,
         isShuffle: false,
         isRepeat: false,
         volume: 1.0,
@@ -1060,12 +1066,12 @@ document.addEventListener('alpine:init', () => {
                 if (this.audio) this.duration = this.audio.duration || 0;
             });
             this.audio.addEventListener('error', (e) => {
-                // destroy() sets src='' which itself fires an error event —
-                // not a real playback failure, don't surface it.
                 if (!this.audio || !this.audio.src) return;
                 console.error('[MusicPlayer] Native audio playback error:', e);
-                this.error = 'Audio playback error.';
-                this.isPlaying = false;
+                this.handleStreamError();
+            });
+            this.audio.addEventListener('playing', () => {
+                this.notePlaybackStarted();
             });
 
             const term = this.genreFilter || 'lo-fi';
@@ -1330,6 +1336,36 @@ document.addEventListener('alpine:init', () => {
             const rect = e.currentTarget.getBoundingClientRect();
             const percent = ((e.clientX - rect.left) / rect.width) * 100;
             this.seek(percent);
+        },
+
+        // A stream the CDN will not serve must not end the session: step to the
+        // next track and keep playing. Called by the audio `error` listener.
+        handleStreamError() {
+            // destroy() sets src='' which itself fires `error` — skipping on
+            // that would resurrect a widget the user just closed.
+            if (!this.audio || !this.audio.src) return;
+
+            this.deadInARow++;
+            const canSkip = this.queue.length > 1 && this.deadInARow <= this.maxDeadInARow;
+            if (canSkip) {
+                this.error = '';
+                this.streamStatus = 'Skipping a track the source refused...';
+                this.nextTrack();
+                // nextTrack only resumes when it thought it was playing; a
+                // failed track may already have cleared that.
+                if (!this.isPlaying && this.audio) this.audio.play();
+                return;
+            }
+            this.error = this.queue.length > 1
+                ? 'Nothing in this queue would play. The source is refusing these streams.'
+                : 'Audio playback error.';
+            this.isPlaying = false;
+        },
+
+        // A track that actually plays clears the budget, so a later bad patch
+        // gets its own full set of retries.
+        notePlaybackStarted() {
+            this.deadInARow = 0;
         },
 
         // Hand the current track off to the full music-player app: open it at
