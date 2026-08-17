@@ -994,6 +994,7 @@ document.addEventListener('alpine:init', () => {
         kind: cfg.kind || '',
         autoplayWanted: !!cfg.autoplay,
         base: cfg.base || `http://${window.location.hostname}:8002`,
+        webBase: cfg.webBase || `http://${window.location.hostname}:3232`,
         es: null,
         streamStatus: '',
         showQueue: false,
@@ -1329,6 +1330,34 @@ document.addEventListener('alpine:init', () => {
             const rect = e.currentTarget.getBoundingClientRect();
             const percent = ((e.clientX - rect.left) / rect.width) * 100;
             this.seek(percent);
+        },
+
+        // Hand the current track off to the full music-player app: open it at
+        // the same position, then stop playing here so the two are not doubled.
+        // The widget itself stays on the canvas so playback can resume locally.
+        openInFullPlayer() {
+            const track = this.currentTrack;
+            if (!track) return;
+
+            let url = this.webBase;
+            if (track.isYoutube) {
+                // Read the position BEFORE pausing.
+                const params = new URLSearchParams({
+                    track: track.id,
+                    t: String(Math.floor((this.audio && this.audio.currentTime) || 0)),
+                    autoplay: '1',
+                });
+                if (track.title) params.set('title', track.title);
+                if (track.artist) params.set('artist', track.artist);
+                if (this.genreFilter) params.set('genre', this.genreFilter);
+                url = `${this.webBase}/?${params.toString()}`;
+            }
+
+            // Synchronous, so it counts as the user's gesture and no popup
+            // blocker fires. With noopener the handle is null even on success,
+            // so the pause below must not depend on it.
+            window.open(url, '_blank', 'noopener,noreferrer');
+            if (this.audio && !this.audio.paused) this.audio.pause();
         },
 
         setVolume(vol) {

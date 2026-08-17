@@ -1133,7 +1133,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
     # NOTE: this template has a hand-maintained twin in app/static/index.js
     # (the self-heal rehydration for music widgets that lost their Alpine
     # attrs). Structural changes here must be mirrored there.
-    from app.config import MUSIC_PLAYER_URL
+    from app.config import MUSIC_PLAYER_URL, MUSIC_PLAYER_WEB_URL
     genre = config.get("genre", "")
     # 'genre' | 'artist' | '' — routing's guess at what the query names.
     # The widget tries the genre pipeline first when unset; a miss fails over
@@ -1141,7 +1141,8 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
     kind = config.get("kind", "")
     autoplay = str(config.get("autoplay", False)).lower()
     cfg_js = (f'{{ genre: {json_escape(genre)}, kind: {json_escape(kind)}, '
-              f'autoplay: {autoplay}, base: {json_escape(MUSIC_PLAYER_URL)} }}')
+              f'autoplay: {autoplay}, base: {json_escape(MUSIC_PLAYER_URL)}, '
+              f'webBase: {json_escape(MUSIC_PLAYER_WEB_URL)} }}')
 
     return f"""
     <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col justify-between group transition-all duration-300" :class="showQueue ? 'h-[420px]' : 'h-[280px]'" x-data="musicPlayerWidget({cfg_js})">
@@ -1166,8 +1167,8 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                 <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}}"></div>
                 <span class="material-symbols-outlined text-2xl text-white relative z-10">album</span>
             </div>
-            <div class="flex-grow min-w-0 flex flex-col justify-center">
-                <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
+            <div class="flex-grow min-w-0 flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
+                <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
                 <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
             </div>
         </div>
