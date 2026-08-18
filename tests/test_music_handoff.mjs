@@ -41,7 +41,11 @@ function extract(startMarker, endMarker) {
 }
 
 const handoffSrc = extract("openInFullPlayer() {", "setVolume(vol) {");
-const makeHandoff = new Function("window", `return { ${handoffSrc} };`);
+// awaitHandoff rides along in this slice; give it stubs so a test can never
+// start a real 700ms poll against a real network (it leaks a live timer and
+// hangs the runner).
+const makeHandoff = new Function("window", "fetch", "setInterval", "clearInterval",
+  `return { ${handoffSrc} };`);
 
 // A widget mid-playback. `opened` records what window.open was handed.
 function widget(overrides = {}) {
@@ -64,7 +68,12 @@ function widget(overrides = {}) {
     ...overrides,
   };
   const fakeWindow = { open: (url, target, features) => { opened.push({ url, target, features }); return null; } };
-  Object.assign(self, makeHandoff(fakeWindow));
+  Object.assign(self, makeHandoff(
+    fakeWindow,
+    async () => ({ ok: true, json: async () => ({ started: false }) }),
+    () => 1,
+    () => { },
+  ));
   return { self, opened, audio };
 }
 
@@ -93,12 +102,24 @@ test("the position is read before the pause, not after", () => {
   assert.equal(new URL(opened[0].url).searchParams.get("t"), "51");
 });
 
-test("playback stops here, even though noopener returns a null handle", () => {
+test("playback KEEPS GOING here until the other tab actually starts", () => {
+  // Pausing on faith is what produced silence on BOTH sides: this tab stopped,
+  // and the new tab never started because a cross-origin tab cannot inherit
+  // the click that opened it, so Chrome refuses to autoplay there. Measured
+  // live 2026-08-17 with the default autoplay policy: the receiver sat loaded
+  // and paused at exactly the handed-over second until the card was clicked.
   const { self, audio, opened } = widget();
   assert.equal(audio.paused, false);
   self.openInFullPlayer();
-  assert.equal(audio.paused, true, "the canvas widget must stop playing");
+  assert.equal(audio.paused, false, "must still be playing right after the click");
   assert.match(opened[0].features || "", /noopener/);
+});
+
+test("the link carries a rendezvous id so the other tab can report back", () => {
+  const { self, opened } = widget();
+  self.openInFullPlayer();
+  const handoff = new URL(opened[0].url).searchParams.get("handoff");
+  assert.match(handoff || "", /^[A-Za-z0-9_-]{8,64}$/, `bad handoff id: ${handoff}`);
 });
 
 test("a title or artist with URL metacharacters survives the trip", () => {

@@ -1011,6 +1011,9 @@ document.addEventListener('alpine:init', () => {
         // so an all-dead queue reports instead of spinning.
         deadInARow: 0,
         maxDeadInARow: 8,
+        // Pending tab handoff: keep playing until the other tab confirms.
+        handoffPending: null,
+        handoffTimer: null,
         isShuffle: false,
         isRepeat: false,
         volume: 1.0,
@@ -1049,7 +1052,7 @@ document.addEventListener('alpine:init', () => {
                     this.audio.currentTime = 0;
                     this.audio.play();
                 } else {
-                    this.nextTrack();
+                    this.nextTrack({ auto: true });
                 }
                 this.maybeRefill();
             });
@@ -1277,6 +1280,7 @@ document.addEventListener('alpine:init', () => {
 
         /** Jump to an absolute queue index. The one entry point for playback. */
         playAt(i, { auto = false } = {}) {
+            if (!auto) this.cancelHandoff();
             if (i < 0 || i >= this.queue.length) return;
             this.currentIndex = i;
             this.loadTrack();
@@ -1297,6 +1301,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         playPause() {
+            this.cancelHandoff();
             if (!this.audio.src) return;
             if (this.audio.paused) {
                 this.audio.play();
@@ -1305,7 +1310,10 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        nextTrack() {
+        nextTrack({ auto = false } = {}) {
+            // Auto-advance (track ended, or a stream the CDN refused) must NOT
+            // abandon a pending handoff — only a deliberate "next" does.
+            if (!auto) this.cancelHandoff();
             if (this.queue.length === 0) return;
             const wasPlaying = this.isPlaying;
             this.currentIndex = (this.currentIndex + 1) % this.queue.length;
@@ -1314,6 +1322,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         prevTrack() {
+            this.cancelHandoff();
             if (this.queue.length === 0) return;
             // Standard player behavior: >3s in, "previous" means restart.
             if (this.audio && this.audio.currentTime > 3) {
@@ -1350,7 +1359,7 @@ document.addEventListener('alpine:init', () => {
             if (canSkip) {
                 this.error = '';
                 this.streamStatus = 'Skipping a track the source refused...';
-                this.nextTrack();
+                this.nextTrack({ auto: true });
                 // nextTrack only resumes when it thought it was playing; a
                 // failed track may already have cleared that.
                 if (!this.isPlaying && this.audio) this.audio.play();
@@ -1376,12 +1385,15 @@ document.addEventListener('alpine:init', () => {
             if (!track) return;
 
             let url = this.webBase;
+            let handoffId = null;
             if (track.isYoutube) {
+                handoffId = this.newHandoffId();
                 // Read the position BEFORE pausing.
                 const params = new URLSearchParams({
                     track: track.id,
                     t: String(Math.floor((this.audio && this.audio.currentTime) || 0)),
                     autoplay: '1',
+                    handoff: handoffId,
                 });
                 if (track.title) params.set('title', track.title);
                 if (track.artist) params.set('artist', track.artist);
@@ -1391,9 +1403,89 @@ document.addEventListener('alpine:init', () => {
 
             // Synchronous, so it counts as the user's gesture and no popup
             // blocker fires. With noopener the handle is null even on success,
-            // so the pause below must not depend on it.
+            // so nothing below may depend on the returned handle.
             window.open(url, '_blank', 'noopener,noreferrer');
-            if (this.audio && !this.audio.paused) this.audio.pause();
+
+            if (!handoffId) {
+                // Nothing to hand over (local file) — just stop.
+                if (this.audio && !this.audio.paused) this.audio.pause();
+                return;
+            }
+            this.awaitHandoff(handoffId);
+        },
+
+        newHandoffId() {
+            if (window.crypto && window.crypto.randomUUID) {
+                return window.crypto.randomUUID().replace(/-/g, '');
+            }
+            return `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+        },
+
+        // KEEP PLAYING until the other tab is genuinely playing, then stop.
+        //
+        // The new tab is a different origin and cannot inherit the click that
+        // opened it, so the browser usually refuses to autoplay there. Pausing
+        // on faith is what produced silence on BOTH sides: this side stopped,
+        // that side never started. The rendezvous record on the music-player
+        // API is the only channel the two tabs share.
+        //
+        // While waiting we park the live position, so the other tab resumes
+        // from where the music ACTUALLY got to, not from where it was when the
+        // link was built.
+        awaitHandoff(handoffId, timeoutMs = 45000) {
+            const base = this.base;
+            const started = Date.now();
+            this.handoffPending = handoffId;
+            this.streamStatus = 'Opening in Music Player...';
+
+            const stop = () => {
+                if (this.handoffTimer) clearInterval(this.handoffTimer);
+                this.handoffTimer = null;
+                this.handoffPending = null;
+            };
+
+            const tick = async () => {
+                // A new track here means the listener moved on; the handoff is
+                // stale and must not silence what they are playing now.
+                if (this.handoffPending !== handoffId) return stop();
+                if (Date.now() - started > timeoutMs) {
+                    this.streamStatus = '';
+                    return stop();
+                }
+                const position = (this.audio && this.audio.currentTime) || 0;
+                try {
+                    const res = await fetch(`${base}/api/handoff/${handoffId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ track: this.currentTrack ? this.currentTrack.id : null, position }),
+                    });
+                    const rec = res.ok ? await res.json() : null;
+                    // Re-check AFTER the await: the listener may have picked a
+                    // different track while this request was in flight, and a
+                    // late "started" must not silence what they just chose.
+                    if (this.handoffPending !== handoffId) return stop();
+                    if (rec && rec.started) {
+                        stop();
+                        this.streamStatus = 'Playing in Music Player';
+                        if (this.audio && !this.audio.paused) this.audio.pause();
+                    }
+                } catch (e) {
+                    // The other tab may still be loading; keep playing and retry.
+                }
+            };
+
+            if (this.handoffTimer) clearInterval(this.handoffTimer);
+            this.handoffTimer = setInterval(tick, 700);
+            tick();
+        },
+
+        // Any deliberate change of track abandons a pending handoff — otherwise
+        // the other tab starting later would pause music the listener just
+        // chose here.
+        cancelHandoff() {
+            this.handoffPending = null;
+            if (this.handoffTimer) clearInterval(this.handoffTimer);
+            this.handoffTimer = null;
         },
 
         setVolume(vol) {
@@ -1449,6 +1541,7 @@ document.addEventListener('alpine:init', () => {
             // load-bearing: an orphaned EventSource keeps auto-reconnecting
             // and re-running the discovery pipeline against the rate limit.
             this.closeStream();
+            this.cancelHandoff();
             if (this.audio) {
                 this.audio.pause();
                 this.audio.src = '';
