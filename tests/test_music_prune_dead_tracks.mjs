@@ -118,3 +118,55 @@ test("local-library tracks are left alone — the probe is YouTube-only", async 
   assert.ok(!asked.includes("local1"));
   assert.ok(ids(self).includes("local1"));
 });
+
+// ── settleOnPlayable: the gate that runs BEFORE the audio element ──────────
+// Pruning ahead is not enough on its own. When most of a queue is refused,
+// playback burns through the unprobed tail faster than background probes
+// finish, and each one is an audible failure — measured live at 9 in a row on
+// a queue that still contained playable tracks.
+
+const settleSrc = extract("async settleOnPlayable(", "        // Drop tracks the CDN");
+const probeSrc = extract("async probePlayable(", "        // A stream the CDN will not serve");
+const makeSettle = new Function("fetch", "setTimeout", "clearTimeout", "AbortController",
+  `return { ${settleSrc} ${probeSrc} };`);
+
+function settler({ dead = [] } = {}) {
+  const asked = [];
+  const fakeFetch = async (url) => {
+    const id = url.split("/").pop();
+    asked.push(id);
+    return { ok: true, json: async () => ({ playable: !dead.includes(id) }) };
+  };
+  const self = {
+    base: "http://svc:8002",
+    streamStatus: "",
+    queue: ["a", "b", "c", "d", "e"].map(id => ({ id, isYoutube: true })),
+  };
+  Object.assign(self, makeSettle(fakeFetch, () => 0, () => { }, class { abort() { } signal = null; }));
+  return { self, asked };
+}
+
+test("it lands on the first track that will actually play", async () => {
+  const { self } = settler({ dead: ["a", "b", "c"] });
+  const i = await self.settleOnPlayable(0);
+  assert.equal(i, 0, "index 0 after the dead ones were spliced out");
+  assert.equal(self.queue[i].id, "d");
+});
+
+test("an all-dead queue reports -1 rather than playing something broken", async () => {
+  const { self } = settler({ dead: ["a", "b", "c", "d", "e"] });
+  assert.equal(await self.settleOnPlayable(0), -1);
+});
+
+test("an already-probed track is trusted, not re-probed", async () => {
+  const { self, asked } = settler({});
+  self.queue[0].probed = true;
+  assert.equal(await self.settleOnPlayable(0), 0);
+  assert.equal(asked.length, 0);
+});
+
+test("it stops after a bounded number of probes", async () => {
+  const { self, asked } = settler({ dead: ["a", "b", "c", "d", "e"] });
+  await self.settleOnPlayable(0, 2);
+  assert.ok(asked.length <= 2, `probed ${asked.length}, expected <= 2`);
+});

@@ -1282,10 +1282,23 @@ document.addEventListener('alpine:init', () => {
         },
 
         /** Jump to an absolute queue index. The one entry point for playback. */
-        playAt(i, { auto = false } = {}) {
+        async playAt(i, { auto = false } = {}) {
             if (!auto) this.cancelHandoff();
             if (i < 0 || i >= this.queue.length) return;
-            this.currentIndex = i;
+            // Settle on a track that will actually stream BEFORE touching the
+            // audio element. Pruning ahead is not enough on its own: when most
+            // of a queue is refused, playback burns through the unprobed tail
+            // faster than the background probes complete, and every one of
+            // those is an audible failure (measured: 9 in a row, on a queue
+            // that still held playable tracks).
+            const target = await this.settleOnPlayable(i);
+            if (target < 0) {
+                this.error = 'Nothing in this queue would play. The source is refusing these streams.';
+                this.streamStatus = '';
+                this.isPlaying = false;
+                return;
+            }
+            this.currentIndex = target;
             this.loadTrack();
             const shouldPlay = auto ? this.autoplayWanted : true;
             if (shouldPlay) {
@@ -1348,6 +1361,26 @@ document.addEventListener('alpine:init', () => {
             const rect = e.currentTarget.getBoundingClientRect();
             const percent = ((e.clientX - rect.left) / rect.width) * 100;
             this.seek(percent);
+        },
+
+        // Walk forward from `i` until a track probes playable, discarding the
+        // refused ones as it goes. Returns the index to play, or -1.
+        async settleOnPlayable(i, maxProbes = 25) {
+            let probes = 0;
+            while (i < this.queue.length && probes < maxProbes) {
+                const t = this.queue[i];
+                if (!t || !t.isYoutube || t.probed) return i;
+                t.probed = true;
+                probes++;
+                if (await this.probePlayable(t.id)) return i;
+                if (this.queue[i] === t) {
+                    this.queue.splice(i, 1);   // dead: the next slides into i
+                    this.streamStatus = 'Skipping tracks the source refused...';
+                } else {
+                    i++;                        // queue moved under us
+                }
+            }
+            return i < this.queue.length ? i : -1;
         },
 
         // Drop tracks the CDN will not serve BEFORE they are heard.
