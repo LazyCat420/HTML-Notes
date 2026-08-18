@@ -30,36 +30,60 @@ prism's agentic tool loop returns empty output on every iteration; the jetson
 vllm shim returns 0 tokens for sizeable prompts. Both in Rod's territory —
 music-player now routes around them.
 
-## Phase 1 — Make most tracks playable (decision needed, then ~half a day)
+## Phase 1 — PO tokens: MEASURED AND RULED OUT 2026-08-17
 
-YouTube serves only the first ~1MB without a PO token or cookie, so ~5 of 6
-tracks die at the CDN (full diagnosis: `AUDIO_PIPELINE.md` item 4). The skip
-mitigation makes queues survivable; this phase makes them mostly playable.
+**A PO token provider does not fix this.** Built and tested end to end before
+plumbing it anywhere:
 
-- [ ] **DECISION (owner):** cookies or PO tokens?
-  - **Option A — PO token provider** (recommended: no account risk): run
-    `bgutil-ytdlp-pot-provider` as a container beside scraper-service; add its
-    yt-dlp plugin to the scraper image; pass the provider URL via extractor
-    args.
-  - **Option B — cookies:** export a logged-in YouTube session (Netscape
-    format) into the scraper's `/app/cookies.txt` (currently **0 bytes**; the
-    code path exists end-to-end and activates on a non-empty file). Fastest,
-    but uses a real account.
-- [ ] ⚠ **Deploy hazard, either option:** the scraper lives in
-  **trading-service**. Deploying it (a) kills live trading cycles, (b) the
-  staged `.env.deploy` flag map arms a 30-table Mongo migration on the NEXT
-  deploy of either trading repo. Reconcile with the migration work before any
-  scraper deploy. (Option B may avoid a deploy entirely if `cookies.txt` is
-  volume-mounted — verify before assuming.)
-- [ ] Verify with the measured probe: `Range: bytes=0-` on 10 mix tracks,
-  before vs after. Target: >8/10 playable (was 2/12).
+- `brainicism/bgutil-ytdlp-pot-provider` 1.3.1 running, `/ping` healthy.
+- The yt-dlp plugin loads (`bgutil:http-1.3.1 (external)`) and **mints valid
+  tokens** — the provider log shows `Generating POT for tiB_nJ2ebo8` and
+  yt-dlp confirms `Retrieved a gvs PO Token for web client`.
+- It still does not help. Every cookie-free client either cannot extract at
+  all (`web`, `web_safari`, `mweb`, `web_embedded`, `tv` → "Only images are
+  available", YouTube's bot-block signature) or extracts a URL with **no
+  `pot=` and the same ~1MB cap** (`default`, `android_vr`, `tv_embedded`).
 
-## Phase 2 — Widget resilience polish (HTML-Notes only, independent)
+The token is accepted for the `web` client; that client also needs a
+signed-in session, so the token alone buys nothing. The test container was
+removed afterwards.
 
-- [ ] **Pre-flight probe:** before handing a track to the audio element,
-  `fetch` the stream URL with `Range: bytes=0-` (CORS is open; abort after
-  headers). Drop dead tracks in the background so playback rarely hits a 403
-  at all — the current skip is reactive and audible as a delay.
+### Phase 1 (revised) — cookies are the only remaining unblock
+
+- [ ] **OWNER ACTION:** export a logged-in YouTube session in Netscape format
+  into the scraper's `/app/cookies.txt` (currently **0 bytes**; the code path
+  exists end-to-end and activates on a non-empty file, `_extract_stream_url`
+  logs "Cookies file exists but is empty, ignoring").
+- [ ] Check first whether that file is volume-mounted — if it is, this needs
+  **no trading-service deploy** and therefore avoids both hazards below.
+- [ ] ⚠ If a deploy IS required: the scraper lives in **trading-service**.
+  Deploying it kills live trading cycles, and the staged `.env.deploy` flag
+  map arms a 30-table Mongo migration on the next deploy of either trading
+  repo. Reconcile with the migration work first.
+- [ ] Verify with `GET :8002/api/youtube/playable/{id}` over a 12-track mix,
+  before vs after.
+
+**Measured playable rate, same day, same method** — it rotates per video and
+has been trending down:
+
+| time | sample | playable |
+|---|---|---|
+| earlier | 10-track jazz mix | 7/10 |
+| midday | 12-track jazz mix | 2/12 |
+| later | 12-track jazz mix | 3/12 |
+| evening | 8-track house / 8-track jazz | **3/8 house, 0/8 jazz** |
+
+## Phase 2 — Widget resilience polish
+
+- [x] **Pre-flight probe — DONE** (`music-player@287bc42`, `HTML-Notes@d654b90`).
+  `GET :8002/api/youtube/playable/{id}` answers whether a track will stream,
+  server-side because the discriminating request (`Range: bytes=0-`) needs a
+  CORS preflight from a browser. The widget prunes the upcoming few AND gates
+  each load on it. Pruning alone was not enough: playback burned through the
+  unprobed tail faster than background probes finished (9 audible failures on
+  a queue that still held playable tracks). Live after: house plays with 2
+  brief skips instead of failing outright; jazz, measured 0/8 playable, says
+  so instead of churning.
 - [ ] **Silence the noise:** `loadTrack`'s `play()` promise is uncaught →
   "Uncaught (in promise) NotSupportedError" spam in the console. Add a
   `.catch` (the `error` event listener already drives the skip).
