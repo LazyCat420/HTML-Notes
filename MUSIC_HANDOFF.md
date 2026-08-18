@@ -42,13 +42,17 @@ side. All three are pinned by `tests/test_music_handoff.mjs`, which slices the
 real `openInFullPlayer` out of `widgets.js` and runs it — a retyped copy would
 keep passing after the original changed.
 
-1. **The position is read BEFORE the pause.** Reversed, the handoff still
+1. **The canvas does NOT stop on click.** It keeps playing and stops only when
+   the other tab reports audio actually flowing — see the rendezvous below.
+   Pausing on faith was the original design and it produced silence on BOTH
+   sides.
+2. **The position is read BEFORE the pause.** Reversed, the handoff still
    works and still pauses — it just always hands over `0`. Pinning a non-zero
    `t` is what catches it.
-2. **The pause must not depend on `window.open`'s return.** With `noopener`
+3. **The pause must not depend on `window.open`'s return.** With `noopener`
    the handle is `null` even on success, so `if (win) pause()` leaves both
    players running at once.
-3. **Both template twins need the handler.** `app/widgets/factory.py` renders
+4. **Both template twins need the handler.** `app/widgets/factory.py` renders
    the widget and `app/static/index.js` re-renders it during self-heal, so a
    handler in only one is a click that works until the page rehydrates.
 
@@ -73,7 +77,42 @@ get wrong, and `tests/test_music_dead_track_skip.mjs` pins both:
 - **`destroy()` sets `src=''`, which itself fires `error`.** Skipping on that
   would resurrect a widget the user just closed.
 
+## The rendezvous (why the canvas knows when to stop)
+
+Two different origins share no `localStorage` and no `BroadcastChannel`, so
+the only channel is the music-player API, which both can reach:
+
+| call | who | when |
+|---|---|---|
+| `PUT :8002/api/handoff/{id}` | canvas | every 700ms while waiting, parking its LIVE position |
+| `GET :8002/api/handoff/{id}` | music-player | at boot, and again on the resume click |
+| `POST :8002/api/handoff/{id}/started` | music-player | when audio is genuinely FLOWING (`playing`), never merely loaded |
+
+`openInFullPlayer` mints the id, opens the tab with `&handoff=<id>`, and calls
+`awaitHandoff`, which polls until `started` and then pauses. Records are
+in-memory with a 5-minute TTL; losing one just means the canvas keeps playing.
+
+**Cancellation is the sharp edge.** A deliberate play/pause, next, prev or
+queue pick abandons the handoff — otherwise a late `started` would silence
+music the listener had just chosen. The auto-advance behind a CDN-refused
+track does NOT cancel (`nextTrack({auto:true})`), or a dead track would
+sabotage a live handoff. The poll also re-checks ownership **after** its
+`await`; a test caught a late response landing on a cancelled handoff.
+
 ## Verified live
+
+Measured on the deployed stack with a **real browser autoplay policy** (the
+earlier harness forced `--autoplay-policy=no-user-gesture-required` and so
+could not see any of this):
+
+```
+PHASE 1 — autoplay blocked
+   1.5s canvas t=5.7  playing   tab t=4.1 paused
+   6.0s canvas t=10.9 playing   tab t=4.1 paused     <- canvas never went silent
+PHASE 2 — listener clicks Resume
+   1.5s canvas t=11.8 PAUSED    tab t=12.5 playing   <- picks up where it got to
+   7.5s canvas t=11.8 paused    tab t=18.5 playing
+```
 
 `scripts/music_handoff_check.py` (live check, not CI), 11/11 against the
 deployed stack: the click opens one tab on **:3232**, carrying the same track
@@ -87,11 +126,13 @@ appears and one click starts playback there.
 
 ## Known limits
 
-- **Not gapless.** The new tab needs a second or two to load and buffer. The
-  position is exact; the silence between tabs is not removable.
-- **Autoplay may be refused.** `:8035 -> :3232` is cross-origin, so the new
-  tab inherits no user gesture. That path is handled on the music-player side
-  with a one-click resume card that lands on the same second.
+- **Not gapless**, but no longer silent: the canvas plays until the other tab
+  takes over, so the seam is a fraction of a second rather than dead air.
+- **Autoplay is usually refused**, and that is now harmless. `:8035 -> :3232`
+  is cross-origin, so the new tab inherits no user gesture and Chrome will not
+  start audio there. The canvas keeps playing until the listener clicks the
+  resume card, and only then hands over — at the position the music had
+  reached by that click, not the one in the URL.
 - **Most YouTube tracks are refused by the CDN right now** — in the handoff
   *and* in the widget, and not because of either. YouTube serves only the
   first ~1MB of a file to a client with no PO token and no cookie; the rest
