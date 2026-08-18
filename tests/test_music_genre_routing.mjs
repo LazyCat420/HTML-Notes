@@ -25,7 +25,7 @@ const read = (...p) => readFileSync(join(here, "..", ...p), "utf8");
 const widgetsJs = read("app", "static", "js", "widgets.js");
 const indexJs = read("app", "static", "index.js");
 const factoryPy = read("app", "widgets", "factory.py");
-const mainPy = read("app", "main.py");
+const mainPy = read("app", "main.py") + "\n" + read("app", "config_builders.py") + "\n" + read("app", "routes", "message.py");
 
 // Slice out just the music player component so asserts about absence don't
 // trip over other widgets (e.g. the youtube player legitimately differs).

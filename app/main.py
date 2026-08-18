@@ -2194,7 +2194,8 @@ _TRIP_STOPWORDS = {
 # Words extract_topic keeps but that shouldn't survive into a news/market topic —
 # "news about AI" → topic "ai", not a doubled "News: News Ai" title.
 _NEWSY = {"news", "headline", "headlines", "latest", "recent", "breaking",
-          "update", "updates", "today", "story", "stories", "about"}
+          "update", "updates", "today", "todays", "day", "days", "daily",
+          "story", "stories", "about", "morning", "evening", "tonight", "top", "feed"}
 
 
 

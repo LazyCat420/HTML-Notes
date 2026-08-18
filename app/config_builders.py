@@ -453,7 +453,10 @@ async def build_news_config(message: str) -> dict:
                 "current", "events", "event", "anything", "something", "interesting",
                 "any", "the", "is", "are", "in", "world", "lately", "now", "right",
                 "hows", "how", "things", "there", "out", "cool", "hey", "so",
-                "tell", "me", "show", "give", "whatsup", "sup", "good"}
+                "tell", "me", "show", "give", "whatsup", "sup", "good", "today",
+                "todays", "day", "days", "daily", "for", "of", "all", "top", "global",
+                "us", "usa", "america", "american", "morning", "evening", "tonight",
+                "feed", "stories", "story", "summary", "brief"}
     if topic and all(w in _GENERAL for w in topic.split()):
         topic = ""
     display = topic or "top stories"

@@ -24,7 +24,7 @@ os.environ.setdefault("DATABASE_URL", "data/test_preflight_handoff.db")
 
 from app import main as m
 
-MAIN_SRC = pathlib.Path(m.__file__).read_text()
+MAIN_SRC = "\n".join(p.read_text() for p in pathlib.Path(m.__file__).parent.glob("**/*.py"))
 
 SPECS = [{"type": "answer",
           "query": "how long for a 145F chicken breast to reach 165F at 400F",
