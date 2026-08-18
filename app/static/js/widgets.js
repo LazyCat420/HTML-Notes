@@ -1014,6 +1014,7 @@ document.addEventListener('alpine:init', () => {
         // Pending tab handoff: keep playing until the other tab confirms.
         handoffPending: null,
         handoffTimer: null,
+        pruneInFlight: false,
         isShuffle: false,
         isRepeat: false,
         volume: 1.0,
@@ -1119,6 +1120,7 @@ document.addEventListener('alpine:init', () => {
                 .map(v => this.asTrack(v));
             fresh.forEach(t => this.seenIds.add(t.id));
             this.queue.push(...fresh);
+            if (fresh.length) this.pruneAhead();
             return fresh.length;
         },
 
@@ -1264,6 +1266,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         loadTrack() {
+            this.pruneAhead();
             if (!this.currentTrack) return;
             if (!this.audio) {
                 this.audio = new Audio();
@@ -1345,6 +1348,54 @@ document.addEventListener('alpine:init', () => {
             const rect = e.currentTarget.getBoundingClientRect();
             const percent = ((e.clientX - rect.left) / rect.width) * 100;
             this.seek(percent);
+        },
+
+        // Drop tracks the CDN will not serve BEFORE they are heard.
+        //
+        // Roughly three quarters of YouTube tracks currently return only their
+        // first ~1MB (AUDIO_PIPELINE.md item 4), and the reactive skip in
+        // handleStreamError only reacts once a track has already failed —
+        // audible as a stutter. Probing the upcoming few turns that into
+        // nothing at all. The probe lives on the music-player API because the
+        // one request that discriminates, `Range: bytes=0-`, needs a CORS
+        // preflight from a browser.
+        async pruneAhead(lookahead = 4) {
+            if (this.pruneInFlight) return;
+            this.pruneInFlight = true;
+            try {
+                for (let n = 1; n <= lookahead; n++) {
+                    const i = this.currentIndex + n;
+                    if (i >= this.queue.length) break;
+                    const t = this.queue[i];
+                    if (!t || !t.isYoutube || t.probed) continue;
+                    t.probed = true;
+                    const playable = await this.probePlayable(t.id);
+                    if (!playable && this.queue[i] === t) {
+                        this.queue.splice(i, 1);
+                        n--;  // the next track slid into this slot
+                    }
+                }
+            } finally {
+                this.pruneInFlight = false;
+            }
+        },
+
+        async probePlayable(id) {
+            if (!id) return true;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
+            try {
+                const res = await fetch(`${this.base}/api/youtube/playable/${encodeURIComponent(id)}`,
+                                        { signal: ctrl.signal });
+                if (!res.ok) return true;
+                const d = await res.json();
+                return d.playable !== false;
+            } catch (e) {
+                // Unknown, not dead — a blip must never discard a good track.
+                return true;
+            } finally {
+                clearTimeout(timer);
+            }
         },
 
         // A stream the CDN will not serve must not end the session: step to the
