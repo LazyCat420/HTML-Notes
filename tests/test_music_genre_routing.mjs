@@ -26,6 +26,8 @@ const widgetsJs = read("app", "static", "js", "widgets.js");
 const indexJs = read("app", "static", "index.js");
 const factoryPy = read("app", "widgets", "factory.py");
 const mainPy = read("app", "main.py");
+const configBuildersPy = read("app", "config_builders.py");
+const messagePy = read("app", "routes", "message.py");
 
 // Slice out just the music player component so asserts about absence don't
 // trip over other widgets (e.g. the youtube player legitimately differs).
@@ -144,7 +146,7 @@ test("maybeRefill gating: threshold, in-flight, and 90s floor", () => {
 
 // ── Routing passes `kind`; the widget and template carry it ─────────────────
 test("fast-path spawns music with kind=genre", () => {
-  const fastPath = mainPy.slice(mainPy.indexOf("(music|player|radio)"));
+  const fastPath = messagePy.slice(messagePy.indexOf("(music|player|radio)"));
   assert.match(fastPath.slice(0, 900), /"kind": "genre"/,
     '"X music" phrasing must default the genre pipeline');
 });
@@ -152,7 +154,7 @@ test("fast-path spawns music with kind=genre", () => {
 test("LLM router catalog teaches kind and the builder sanitizes it", () => {
   assert.match(mainPy, /"music":\s+\("music",\s+'[^']*kind[^']*'\)/,
     "router catalog must describe the kind modifier");
-  assert.match(mainPy, /mods\.get\("kind"\) if mods\.get\("kind"\) in \("genre", "artist"\) else ""/,
+  assert.match(configBuildersPy, /mods\.get\("kind"\) if mods\.get\("kind"\) in \("genre", "artist"\) else ""/,
     "builder must sanitize kind to genre|artist|empty");
 });
 

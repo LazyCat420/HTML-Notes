@@ -22,9 +22,12 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL", "data/test_preflight_handoff.db")
 
+import glob
+
 from app import main as m
 
-MAIN_SRC = pathlib.Path(m.__file__).read_text()
+_app_dir = pathlib.Path(m.__file__).parent
+MAIN_SRC = "\n".join(pathlib.Path(p).read_text() for p in glob.glob(str(_app_dir / "**" / "*.py"), recursive=True))
 
 SPECS = [{"type": "answer",
           "query": "how long for a 145F chicken breast to reach 165F at 400F",
