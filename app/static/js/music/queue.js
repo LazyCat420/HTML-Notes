@@ -77,3 +77,7 @@ export class MusicQueue {
     this.seenIds.clear();
   }
 }
+
+if (typeof globalThis !== "undefined") {
+  globalThis.MusicQueue = MusicQueue;
+}

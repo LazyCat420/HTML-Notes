@@ -115,3 +115,7 @@ export class HandoffStateMachine {
     }
   }
 }
+
+if (typeof globalThis !== "undefined") {
+  globalThis.HandoffStateMachine = HandoffStateMachine;
+}

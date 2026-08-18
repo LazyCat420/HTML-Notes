@@ -48,3 +48,12 @@ export function createHandoffPayload({
     updatedAt: Date.now(),
   };
 }
+
+if (typeof globalThis !== "undefined") {
+  globalThis.MusicContract = {
+    HANDOFF_PROTOCOL_VERSION,
+    PLAYBACK_STATES,
+    HANDOFF_STATES,
+    createHandoffPayload,
+  };
+}

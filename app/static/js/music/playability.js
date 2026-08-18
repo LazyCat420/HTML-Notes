@@ -83,3 +83,7 @@ export class PlayabilityChecker {
     return index < queue.length ? index : -1;
   }
 }
+
+if (typeof globalThis !== "undefined") {
+  globalThis.PlayabilityChecker = PlayabilityChecker;
+}

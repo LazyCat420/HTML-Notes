@@ -103,3 +103,7 @@ export class AudioController {
     this.playbackState = PLAYBACK_STATES.IDLE;
   }
 }
+
+if (typeof globalThis !== "undefined") {
+  globalThis.AudioController = AudioController;
+}
