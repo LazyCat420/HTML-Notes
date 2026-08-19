@@ -575,7 +575,7 @@ async def read_web_page(url: str, max_chars: int = 6000) -> dict:
     return {"url": url, "content": content[:max_chars]}
 
 
-async def _fetch_news_fetch_news_page_text(n):
+async def _fetch_news_page_text(n):
     url = n.get("url", "")
     if not url:
         return ""
