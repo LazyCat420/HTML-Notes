@@ -226,3 +226,43 @@ Guards, in order (`extract_open_app_target` in `app/main.py`):
 5. Stop any container on the NAS, wait ~2 min → its dot goes red WITHOUT a
    page reload (45s poll + portal's 60s sweep). Bug if: needs reload.
 6. Play music, then pin/hide tiles → audio must not stutter.
+
+---
+
+## App rail (shipped 2026-08-26, `7c7f9a9`) — the "I forgot what I have" surface
+
+The hub grid answers a QUESTION; the rail removes the need to ask. A fixed
+left rail (page chrome in `index.html`/`index.css`, logic `initAppRail` in
+`index.js`) lists every non-hidden app from the same curated `/api/services`
+list the grid polls — collapsed it is a 52px icon column with a health dot
+per app; the ⟩ toggle expands it to 220px with names (an OVERLAY, so widgets
+never reflow); state persists in `localStorage` (`html_notes_app_rail_open`).
+Order: pinned → client frontends → `-service` backends behind a separator
+(suffix rule, never `projectType` — that field lies). Clicking an item is a
+real `<a target=_blank rel=noopener>` to `launch_url`. 60s repoll; a portal
+blip keeps the last good list rather than blanking the rail.
+
+Placement decision (vs a mac-style top dock with names): vertical space is
+the canvas's scarce resource (380px widgets + bottom chat bar), and at 32
+registered apps a horizontal named bar overflows or needs an overflow menu.
+The rail costs 52px of width collapsed and nothing vertically.
+
+It sits OUTSIDE `#live-canvas`, so `getCleanedCanvasHtml` serialization and
+widget self-heal never see it — no factory.py twin exists for it.
+
+**Discovery phrasings** (same commit): `APP_HUB_INTENT_RE` now also catches
+"what projects do i have", "what can i open", "what apps are available",
+"my projects" — measured falling through to a ~30s agent turn before (the
+regex lacked the word "projects"); now they hit the deterministic app_grid
+fast path.
+
+Verified live 2026-08-26 (headless Chromium against the deployed container,
+`app_rail_check.py`): 32 apps rendered with Spark Console present; collapsed
+width 52px with canvas padding 76px (no overlap); expand → names visible
+(opacity .92) and the state survived a reload; clicking the first item opened
+a new tab at `:3232`; "what projects do i have" spawned the `app-hub` grid
+widget via the fast path.
+
+UNVERIFIED: rail appearance on light themes (egg/pastel) and at narrow
+viewports; behavior when portal-service is down at first paint (code keeps
+an empty list + toggle, by inspection only).
