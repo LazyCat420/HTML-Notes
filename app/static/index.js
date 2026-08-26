@@ -467,18 +467,44 @@ document.addEventListener("DOMContentLoaded", () => {
         const dotColor = (s) => s === "healthy" ? "#34d399"
             : (s === "unknown" || s == null) ? "#8fb2cc" : "#f87171";
 
+        // Monogram tiles, not emoji: two letters on a per-app deterministic
+        // color actually IDENTIFY the app when collapsed ("Tc" on teal vs
+        // "Mp" on violet), where a 🌐 tells you nothing. Registry `short`
+        // wins; otherwise initials, with a candidate chain so Trading /
+        // Treesearch style collisions resolve instead of both reading "TC".
+        const hue = (s) => {
+            let h = 0;
+            for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+            return h % 360;
+        };
+        function assignMonograms(list) {
+            const used = new Set();
+            for (const a of list) {
+                const words = String(a.name || a.id || "?")
+                    .split(/[^A-Za-z0-9]+/).filter(Boolean);
+                const w0 = words[0] || "?";
+                const cands = [];
+                if (a.short) cands.push(String(a.short).slice(0, 3));
+                if (words.length > 1) cands.push(w0[0] + words[1][0]);
+                cands.push(w0.slice(0, 2));
+                if (words.length > 1 && words[1].length > 1) cands.push(w0[0] + words[1].slice(0, 2));
+                cands.push(w0.slice(0, 3), String(a.id || "??").slice(0, 2));
+                const norm = (c) => c[0].toUpperCase() + c.slice(1).toLowerCase();
+                a._mono = norm(cands.find((c) => c && !used.has(norm(c))) || cands[0]);
+                used.add(a._mono);
+            }
+        }
+
         function render() {
             rail.classList.toggle("expanded", open);
             const rows = apps.map((a) => `
                 <a class="rail-item" href="${escAttr(a.launch_url)}" target="_blank"
                    rel="noopener" title="${escAttr(a.name)} — ${escAttr(a.status || "unknown")}">
-                    <span class="rail-icon">${escAttr(a.icon || "🧩")}<span class="rail-dot"
-                        style="background:${dotColor(a.status)}"></span></span>
+                    <span class="rail-icon rail-mono"
+                          style="background:hsla(${hue(a.id)},52%,40%,0.92)">${escAttr(a._mono)}<span
+                        class="rail-dot" style="background:${dotColor(a.status)}"></span></span>
                     <span class="rail-name">${escAttr(a.name)}</span>
                 </a>`);
-            // Separator between frontends and backends when both are present.
-            const firstBackend = apps.findIndex((a) => /-service$/.test(a.id || ""));
-            if (firstBackend > 0) rows.splice(firstBackend, 0, '<hr class="rail-sep">');
             rail.innerHTML = `
                 <button class="rail-toggle" data-rail-toggle
                         title="${open ? "Collapse" : "Your apps"}">
@@ -491,9 +517,14 @@ document.addEventListener("DOMContentLoaded", () => {
             try {
                 const r = await fetch("/api/services");
                 const d = await r.json();
-                const all = ((d && d.apps) || []).filter((a) => a && !a.hidden && a.launch_url);
-                const rank = (a) => (a.pinned ? 0 : /-service$/.test(a.id || "") ? 2 : 1);
-                all.sort((x, y) => rank(x) - rank(y) || String(x.name).localeCompare(String(y.name)));
+                // Clients only — the server decides (registry override →
+                // -service suffix → text/html probe). The rail is a launcher,
+                // not an inventory; backends live in the App Hub grid.
+                const all = ((d && d.apps) || []).filter(
+                    (a) => a && !a.hidden && a.launch_url && a.is_client === true);
+                all.sort((x, y) => (y.pinned === true) - (x.pinned === true)
+                    || String(x.name).localeCompare(String(y.name)));
+                assignMonograms(all);
                 apps = all;
             } catch (e) { /* keep the last good list — portal blips must not blank the rail */ }
             render();

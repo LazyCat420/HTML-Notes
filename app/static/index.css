@@ -2529,8 +2529,12 @@ body.has-rail .live-canvas { padding-left: calc(52px + 1.5rem); }
     transition: opacity .12s ease;
 }
 .app-rail.expanded .rail-name { opacity: .92; }
-.app-rail .rail-sep {
-    margin: 4px 6px;
-    border: none;
-    border-top: 1px solid rgba(var(--hud-line-rgb, 120, 210, 255), 0.12);
+.app-rail .rail-mono {
+    border-radius: 9px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    color: rgba(255, 255, 255, 0.95);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.14);
 }

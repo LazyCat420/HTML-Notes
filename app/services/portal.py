@@ -136,9 +136,13 @@ def _normalize_portal_service(svc: dict) -> dict:
 
 def _apply_curation(app: dict, entry: dict) -> None:
     """One registry-file/overlay entry onto a PortalApp, in place."""
-    for key in ("icon", "name", "launch_url", "description"):
+    for key in ("icon", "name", "launch_url", "description", "short"):
         if entry.get(key):
             app[key] = entry[key]
+    # Explicit client-frontend override — checked with `in` because False is
+    # a meaningful value (force an HTML-serving backend off the rail).
+    if isinstance(entry.get("client"), bool):
+        app["client"] = entry["client"]
     if isinstance(entry.get("aliases"), list):
         # Union, not replace: the DB overlay must be able to ADD an alias
         # without wiping the git-versioned defaults.
@@ -150,6 +154,54 @@ def _apply_curation(app: dict, entry: dict) -> None:
         app["pinned"] = bool(entry["pinned"])
     if "hidden" in entry:
         app["hidden"] = bool(entry["hidden"])
+
+
+# ── CLIENT-FRONTEND DETECTION ────────────────────────────────────────────────
+# The rail lists only apps a human can OPEN — a page, not an API. Authorities,
+# strongest first: registry `client: true/false` (curation) → the `-service`
+# id suffix (backends; the suffix, never projectType — that field lies) → a
+# cached probe of launch_url (a frontend answers text/html; an API answers
+# JSON/xml/plain — verified against the whole fleet 2026-08-26: 14 clients,
+# zero misclassifications). The verdict is STICKY for the process lifetime:
+# a client that goes down keeps its verdict, so it stays on the rail with a
+# red dot instead of vanishing. Never-probed-successfully (down since boot,
+# or nothing listening) resolves False — junk must not leak onto the rail.
+_CLIENT_PROBE_TTL = 600.0
+_client_probe: Dict[str, dict] = {}  # app_id -> {"at": ts, "verdict": bool|None}
+
+
+async def _probe_serves_html(app_id: str, url: str) -> Optional[bool]:
+    now = time.time()
+    hit = _client_probe.setdefault(app_id, {"at": 0.0, "verdict": None})
+    if now - hit["at"] < _CLIENT_PROBE_TTL:
+        return hit["verdict"]
+    hit["at"] = now  # stamp before probing so a dead host isn't hammered per call
+    try:
+        async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
+            async with client.stream("GET", url) as r:
+                ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+        hit["verdict"] = ctype == "text/html"
+    except Exception:
+        pass  # keep the sticky last verdict
+    return hit["verdict"]
+
+
+async def _mark_clients(apps: list) -> None:
+    """Stamp is_client on every app, probing the undecided ones concurrently."""
+    undecided = []
+    for a in apps:
+        override = a.get("client")
+        if isinstance(override, bool):
+            a["is_client"] = override
+        elif a["id"].endswith("-service"):
+            a["is_client"] = False
+        else:
+            undecided.append(a)
+    verdicts = await asyncio.gather(
+        *(_probe_serves_html(a["id"], a["launch_url"]) for a in undecided),
+        return_exceptions=True)
+    for a, v in zip(undecided, verdicts):
+        a["is_client"] = v is True
 
 
 _DOCKER_CACHE_TTL = 30.0
