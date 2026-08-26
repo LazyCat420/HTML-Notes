@@ -2375,9 +2375,14 @@ def render_app_grid(widget_id: str, config: dict) -> str:
                         <a :href="app.launch_url" target="_blank" rel="noopener noreferrer"
                            class="flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/5 hover:bg-white/10 ring-1 ring-white/10 hover:ring-purple-400/40 transition-all no-underline hover:!no-underline"
                            :title="app.description || app.name">
-                            <span class="relative text-2xl leading-none">
-                                <span x-text="app.icon"></span>
-                                <span class="absolute -bottom-0.5 -right-1.5 w-2 h-2 rounded-full ring-2 ring-slate-900"
+                            <span class="relative text-2xl leading-none w-8 h-8 flex items-center justify-center">
+                                <template x-if="app.icon_url">
+                                    <img :src="app.icon_url" :alt="app.name" class="w-8 h-8 rounded-lg object-cover ring-1 ring-white/10" />
+                                </template>
+                                <template x-if="!app.icon_url">
+                                    <span x-text="app.icon"></span>
+                                </template>
+                                <span class="absolute -bottom-0.5 -right-1.5 w-2 h-2 rounded-full ring-2 ring-slate-900 z-10"
                                       :class="app.status === 'healthy' ? 'bg-emerald-400'
                                               : (app.status === 'unhealthy' ? 'bg-red-400' : 'bg-slate-500')"></span>
                             </span>

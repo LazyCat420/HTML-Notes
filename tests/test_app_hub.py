@@ -565,3 +565,51 @@ def test_extract_open_app_target_with_container_keyword():
     assert m.extract_open_app_target("launch container drift-king") == ("drift-king", False, False)
     assert m.extract_open_app_target("open the pinball-knight container") == ("pinball-knight", True, False)
     assert m.extract_bare_app_name("container pinball-knight") == "pinball-knight"
+
+
+@pytest.mark.anyio
+async def test_portal_registry_icon_url_and_office_client_curation():
+    reg = portal._load_portal_registry()
+    apps = reg.get("apps", {})
+    assert "trading-client" in apps
+    assert apps["trading-client"].get("icon_url") == "icons/trading-client.png"
+    assert apps["drift-king"].get("icon_url") == "icons/drift-king.png"
+    assert apps["music-player"].get("icon_url") == "icons/music-player.png"
+    assert apps["html-notes"].get("icon_url") == "icons/html-notes.png"
+    assert apps["braindeadbot-client"].get("icon_url") == "icons/braindeadbot-client.png"
+    assert apps["office-client"].get("hidden") is True
+    assert apps["office-client"].get("client") is False
+
+
+@pytest.mark.asyncio
+async def test_apply_curation_preserves_icon_url(monkeypatch):
+    async def fake_portal_raw():
+        return {
+            "services": [
+                {"id": "trading-client", "name": "Trading Bot", "url": "http://10.0.0.16:3030",
+                 "healthy": True, "checkedAt": "2026-08-16T12:00:00Z", "projectType": "Client",
+                 "dockerProject": "trading-client"},
+                {"id": "office-client", "name": "Office Client", "url": "http://10.0.0.16:3000",
+                 "healthy": True, "checkedAt": "2026-08-16T12:00:00Z", "projectType": "Client",
+                 "dockerProject": "office-client"},
+            ],
+            "infrastructure": [],
+        }
+    async def fake_docker():
+        return []
+    async def fake_probe(app_id, url):
+        return True
+
+    monkeypatch.setattr(portal, "_fetch_portal_raw", fake_portal_raw)
+    monkeypatch.setattr(portal, "_fetch_docker_containers_raw", fake_docker)
+    monkeypatch.setattr(portal, "_probe_serves_html", fake_probe)
+    monkeypatch.setattr(portal, "_load_portal_overrides", lambda: {})
+
+    data = await portal.get_portal_apps()
+    app_ids = {a["id"] for a in data["apps"]}
+    assert "trading-client" in app_ids
+    assert "office-client" not in app_ids  # hidden by default in portal_registry.json
+
+    tc = next(a for a in data["apps"] if a["id"] == "trading-client")
+    assert tc["icon_url"] == "icons/trading-client.png"
+

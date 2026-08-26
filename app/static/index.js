@@ -497,14 +497,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
         function render() {
             rail.classList.toggle("expanded", open);
-            const rows = apps.map((a) => `
+            const rows = apps.map((a) => {
+                const iconHtml = a.icon_url
+                    ? `<span class="rail-icon rail-icon-img"><img class="rail-img" src="${escAttr(a.icon_url)}" alt="${escAttr(a.name)}" /><span class="rail-dot" style="background:${dotColor(a.status)}"></span></span>`
+                    : `<span class="rail-icon rail-mono" style="background:hsla(${hue(a.id)},52%,40%,0.92)">${escAttr(a._mono)}<span class="rail-dot" style="background:${dotColor(a.status)}"></span></span>`;
+                return `
                 <a class="rail-item" href="${escAttr(a.launch_url)}" target="_blank"
                    rel="noopener" title="${escAttr(a.name)} — ${escAttr(a.status || "unknown")}">
-                    <span class="rail-icon rail-mono"
-                          style="background:hsla(${hue(a.id)},52%,40%,0.92)">${escAttr(a._mono)}<span
-                        class="rail-dot" style="background:${dotColor(a.status)}"></span></span>
+                    ${iconHtml}
                     <span class="rail-name">${escAttr(a.name)}</span>
-                </a>`);
+                </a>`;
+            });
             rail.innerHTML = `
                 <button class="rail-toggle" data-rail-toggle
                         title="${open ? "Collapse" : "Your apps"}">

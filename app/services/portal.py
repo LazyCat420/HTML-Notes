@@ -119,6 +119,7 @@ def _normalize_portal_service(svc: dict) -> dict:
         "name": svc.get("name") or svc.get("id") or "?",
         "description": svc.get("description") or "",
         "icon": _PORTAL_TYPE_ICONS.get(ptype, "🌐"),
+        "icon_url": "",
         "launch_url": launch,
         "status": status,
         "latency_ms": svc.get("responseTimeMs"),
@@ -136,7 +137,7 @@ def _normalize_portal_service(svc: dict) -> dict:
 
 def _apply_curation(app: dict, entry: dict) -> None:
     """One registry-file/overlay entry onto a PortalApp, in place."""
-    for key in ("icon", "name", "launch_url", "description", "short"):
+    for key in ("icon", "icon_url", "name", "launch_url", "description", "short"):
         if entry.get(key):
             app[key] = entry[key]
     # Explicit client-frontend override — checked with `in` because False is
@@ -297,6 +298,7 @@ def _normalize_docker_container(ctr: dict, default_host: str = "10.0.0.16") -> O
         "name": label,
         "description": f"Docker container on {ctr.get('device') or 'NAS'}",
         "icon": _PORTAL_TYPE_ICONS.get(ptype, "📦"),
+        "icon_url": "",
         "launch_url": launch_url,
         "status": status,
         "latency_ms": None,
@@ -371,7 +373,7 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
             # website, a desktop link, a not-yet-registered service).
             apps[app_id] = {
                 "id": app_id, "name": app_id, "description": "", "icon": "🌐",
-                "launch_url": "", "status": "unknown", "latency_ms": None,
+                "icon_url": "", "launch_url": "", "status": "unknown", "latency_ms": None,
                 "project_type": "Link", "device": "", "pinned": False,
                 "hidden": False, "has_container": False, "repo": "",
                 "aliases": [],
