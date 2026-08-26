@@ -449,6 +449,68 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.WidgetResizer.observe(document.getElementById("live-canvas"));
 
+    // ─── APP RAIL ───────────────────────────────────────────────────────────
+    // Collapsible launcher of the user's own apps so nobody has to REMEMBER
+    // what containers exist: same curated /api/services list the App Hub grid
+    // polls (portal inventory ⊕ registry ⊕ DB overlay). Pinned first, then
+    // client frontends, then '-service' backends; hidden apps stay hidden.
+    (function initAppRail() {
+        const rail = document.getElementById("app-rail");
+        if (!rail) return;
+        document.body.classList.add("has-rail");
+        const KEY = "html_notes_app_rail_open";
+        let open = false;
+        try { open = localStorage.getItem(KEY) === "1"; } catch (e) {}
+        let apps = [];
+        const escAttr = (s) => String(s ?? "").replace(/[&<>"']/g,
+            (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+        const dotColor = (s) => s === "healthy" ? "#34d399"
+            : (s === "unknown" || s == null) ? "#8fb2cc" : "#f87171";
+
+        function render() {
+            rail.classList.toggle("expanded", open);
+            const rows = apps.map((a) => `
+                <a class="rail-item" href="${escAttr(a.launch_url)}" target="_blank"
+                   rel="noopener" title="${escAttr(a.name)} — ${escAttr(a.status || "unknown")}">
+                    <span class="rail-icon">${escAttr(a.icon || "🧩")}<span class="rail-dot"
+                        style="background:${dotColor(a.status)}"></span></span>
+                    <span class="rail-name">${escAttr(a.name)}</span>
+                </a>`);
+            // Separator between frontends and backends when both are present.
+            const firstBackend = apps.findIndex((a) => /-service$/.test(a.id || ""));
+            if (firstBackend > 0) rows.splice(firstBackend, 0, '<hr class="rail-sep">');
+            rail.innerHTML = `
+                <button class="rail-toggle" data-rail-toggle
+                        title="${open ? "Collapse" : "Your apps"}">
+                    <span class="rail-chevron">⟩</span><span class="rail-name">Your apps</span>
+                </button>
+                <nav class="rail-list">${rows.join("")}</nav>`;
+        }
+
+        async function refresh() {
+            try {
+                const r = await fetch("/api/services");
+                const d = await r.json();
+                const all = ((d && d.apps) || []).filter((a) => a && !a.hidden && a.launch_url);
+                const rank = (a) => (a.pinned ? 0 : /-service$/.test(a.id || "") ? 2 : 1);
+                all.sort((x, y) => rank(x) - rank(y) || String(x.name).localeCompare(String(y.name)));
+                apps = all;
+            } catch (e) { /* keep the last good list — portal blips must not blank the rail */ }
+            render();
+        }
+
+        rail.addEventListener("click", (e) => {
+            if (!e.target.closest("[data-rail-toggle]")) return;
+            open = !open;
+            try { localStorage.setItem(KEY, open ? "1" : "0"); } catch (err) {}
+            render();
+        });
+
+        render();
+        refresh();
+        setInterval(refresh, 60000);
+    })();
+
     // ─── FOLLOW-UP FOCUS TRACKING ───────────────────────────────────────────
     // Which widget did the question come from? Delegated on the canvas rather
     // than bound per widget, so it survives reconcileCanvas replacing nodes.

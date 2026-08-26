@@ -2433,3 +2433,104 @@ img.crt-reveal {
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
 }
+
+/* ─── APP RAIL ─────────────────────────────────────────────────────────────
+   Collapsed: a 52px icon rail (health dot per app). Expanded: overlays the
+   canvas at 220px with names — an overlay so widgets never reflow when it
+   opens. body.has-rail shifts .live-canvas right by the COLLAPSED width only. */
+.app-rail {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 52px;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 6px;
+    gap: 6px;
+    background: rgba(6, 14, 24, 0.62);
+    backdrop-filter: blur(14px);
+    border-right: 1px solid rgba(var(--hud-line-rgb, 120, 210, 255), 0.14);
+    transition: width .16s ease;
+    overflow: hidden;
+}
+.app-rail.expanded {
+    width: 220px;
+    box-shadow: 26px 0 60px rgba(0, 0, 0, 0.45);
+}
+body.has-rail .live-canvas { padding-left: calc(52px + 1.5rem); }
+
+.app-rail .rail-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 6px;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--hud-ink, #d7ecfb);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12.5px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    opacity: .75;
+    white-space: nowrap;
+}
+.app-rail .rail-toggle:hover { background: rgba(var(--hud-line-rgb, 120, 210, 255), 0.10); opacity: 1; }
+.app-rail .rail-toggle .rail-chevron {
+    width: 28px;
+    flex: 0 0 28px;
+    text-align: center;
+    font-size: 15px;
+    transition: transform .16s ease;
+}
+.app-rail.expanded .rail-toggle .rail-chevron { transform: rotate(180deg); }
+
+.app-rail .rail-list {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+}
+.app-rail .rail-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px;
+    border-radius: 10px;
+    color: var(--hud-ink, #d7ecfb);
+    text-decoration: none;
+    white-space: nowrap;
+}
+.app-rail .rail-item:hover { background: rgba(var(--hud-line-rgb, 120, 210, 255), 0.12); }
+.app-rail .rail-icon {
+    position: relative;
+    width: 28px; height: 28px;
+    flex: 0 0 28px;
+    display: grid;
+    place-items: center;
+    font-size: 17px;
+}
+.app-rail .rail-dot {
+    position: absolute;
+    right: -2px; bottom: -2px;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    border: 2px solid rgba(6, 14, 24, 0.9);
+}
+.app-rail .rail-name {
+    font-size: 12.5px;
+    opacity: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: opacity .12s ease;
+}
+.app-rail.expanded .rail-name { opacity: .92; }
+.app-rail .rail-sep {
+    margin: 4px 6px;
+    border: none;
+    border-top: 1px solid rgba(var(--hud-line-rgb, 120, 210, 255), 0.12);
+}

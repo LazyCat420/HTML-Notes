@@ -35,6 +35,12 @@
     </script>
 </head>
 <body>
+    <!-- App rail: collapsible launcher of the user's own apps (the same
+         curated /api/services list the App Hub grid polls). Page chrome, NOT
+         a widget — it lives outside #live-canvas so canvas serialization and
+         self-heal never touch it. Contents rendered by initAppRail (index.js). -->
+    <aside id="app-rail" class="app-rail" aria-label="Your apps"></aside>
+
     <!-- Live Canvas Area -->
     <div id="live-canvas" class="live-canvas">
         <div id="dashboard-grid" class="dashboard-grid">

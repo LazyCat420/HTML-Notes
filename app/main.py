@@ -2503,9 +2503,15 @@ def is_valid_tool_args(tool_name: str, args: dict) -> bool:
 # never the hub. Same for a bare "launcher" ("best launcher for android").
 APP_HUB_INTENT_RE = re.compile(
     r'\b(app hub|apphub|'
-    r'(?:my|our) (?:apps|services|containers|launcher)|'
+    r'(?:my|our) (?:apps|services|containers|launcher|projects)|'
     r'(?:show|open|list|pull up|bring up) (?:me )?(?:the )?'
     r'(?:hub|launcher|app grid|apps? (?:hub|grid|launcher))|'
+    # Discovery questions — the user who doesn't remember what they have.
+    # "what projects do i have" fell through to a ~30s agent turn (measured
+    # 2026-08-26) for want of the word "projects" here.
+    r'what (?:apps?|projects?|services?|containers?) '
+    r'(?:can (?:i|we) open|do (?:i|we) have|are (?:there|available))|'
+    r'what can (?:i|we) open|'
     r'what(?:\'s| is) (?:currently )?running)\b', re.IGNORECASE)
 
 # OPEN-APP fast lane: "open the trading client" used to cost a full agent
