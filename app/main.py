@@ -3018,6 +3018,7 @@ _tomtom_last_status: Dict[str, int] = {}
 
 
 # Mount UI static files at root
+app.mount("/icons", StaticFiles(directory="app/static/icons"), name="icons")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 _CACHE_BUSTED_ASSETS = ("index.js", "index.css", "js/widgets.js", "hud-theme.css")

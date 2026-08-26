@@ -97,7 +97,7 @@
       "name": "Spark Console",
       "icon": "⚡",
       "icon_url": "icons/spark-console.png",
-      "launch_url": "http://10.0.0.16:3333",
+      "launch_url": "http://10.0.0.16:8801",
       "client": true,
       "aliases": ["spark", "spark console", "spark-console"]
     },
@@ -105,7 +105,7 @@
       "name": "Doc Client",
       "icon": "📄",
       "icon_url": "icons/doc-client.png",
-      "launch_url": "http://10.0.0.16:8035",
+      "launch_url": "http://10.0.0.16:8910",
       "client": true,
       "aliases": ["doc", "doc client", "documentation"]
     },

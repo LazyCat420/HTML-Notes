@@ -671,10 +671,23 @@ def test_resolve_portal_app_spark_console_and_prism():
         }
         catalog.append(item)
 
-    # 'spark console' resolves to spark-console or prism-client
+    # 'spark console' resolves to spark-console
     app, exact = portal.resolve_portal_app("spark console", catalog, strict=True)
     assert app is not None
-    assert app["id"] in ("spark-console", "prism-client")
+    assert app["id"] == "spark-console"
+    assert app["launch_url"] == "http://10.0.0.16:8801"
+
+    # 'spark' resolves to spark-console
+    app_spark, exact = portal.resolve_portal_app("spark", catalog, strict=True)
+    assert app_spark is not None
+    assert app_spark["id"] == "spark-console"
+    assert app_spark["launch_url"] == "http://10.0.0.16:8801"
+
+    # 'doc' / 'documentation' resolves to doc-client
+    app_doc, exact = portal.resolve_portal_app("documentation", catalog, strict=True)
+    assert app_doc is not None
+    assert app_doc["id"] == "doc-client"
+    assert app_doc["launch_url"] == "http://10.0.0.16:8910"
 
     # 'music player' resolves to music-player
     app, exact = portal.resolve_portal_app("music player", catalog, strict=True)
@@ -685,5 +698,16 @@ def test_resolve_portal_app_spark_console_and_prism():
     app, exact = portal.resolve_portal_app("trading bot", catalog, strict=True)
     assert app is not None
     assert app["id"] == "trading-client"
+
+
+def test_icons_static_mount():
+    """Verify /icons/ route serves static icon PNGs correctly."""
+    from starlette.testclient import TestClient
+    client = TestClient(m.app)
+    resp = client.get("/icons/spark-console.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] in ("image/png", "application/octet-stream")
+    assert len(resp.content) > 0
+
 
 
