@@ -385,6 +385,7 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
     result = [a for a in apps.values()
               if (include_hidden or not a["hidden"]) and a["launch_url"]]
     result.sort(key=lambda a: (not a["pinned"], a["name"].lower()))
+    await _mark_clients(result)
     return {"apps": result,
             "stale": bool(_portal_cache["stale"]) or raw is None,
             "count": len(result)}
