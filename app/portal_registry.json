@@ -37,6 +37,10 @@
     "prism-client": {
       "icon": "🔷",
       "aliases": ["prism"]
+    },
+    "minio": {
+      "_why": "Infra, but its API port redirects to the embedded HTML console, so the rail's text/html probe reads it as a client frontend. Force it off the rail.",
+      "client": false
     }
   },
   "defaults": {
