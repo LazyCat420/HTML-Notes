@@ -15,6 +15,14 @@ from app.services import portal
 from app.widgets.factory import WIDGET_RENDERERS, render_app_grid
 
 
+@pytest.fixture(autouse=True)
+def _stub_docker_containers(monkeypatch):
+    """Offline test isolation: portal._fetch_docker_containers_raw defaults to empty list."""
+    async def _empty_docker():
+        return []
+    monkeypatch.setattr(portal, "_fetch_docker_containers_raw", _empty_docker)
+
+
 def _svc(**over):
     base = {
         "id": "music-player", "name": "Music Player",
@@ -444,3 +452,116 @@ def test_action_confirm_registered_everywhere():
     assert m._CANVAS_XDATA_TYPE["actionConfirmWidget"] == "action_confirm"
     assert m._CANVAS_CLASS_TYPE["action-confirm-widget"] == "action_confirm"
     assert {"html_notes_app_action", "html_notes_list_actions"} <= m._INTERNAL_EXECUTE_TOOLS
+
+
+# ── dynamic docker container discovery & opening ─────────────────────────────
+
+def test_normalize_docker_container_with_web_port():
+    ctr = {
+        "name": "pinball-knight",
+        "state": "running",
+        "device": "server",
+        "ports": [{"publicPort": 5173, "type": "tcp"}],
+    }
+    app = portal._normalize_docker_container(ctr, default_host="10.0.0.16")
+    assert app is not None
+    assert app["id"] == "pinball-knight"
+    assert app["name"] == "Pinball Knight"
+    assert app["launch_url"] == "http://10.0.0.16:5173"
+    assert app["status"] == "healthy"
+    assert app["has_container"] is True
+    assert "pinball knight" in [a.lower() for a in app["aliases"]]
+
+
+def test_normalize_docker_container_strips_compose_prefix_and_replica():
+    ctr = {
+        "name": "sun_drift-king-service_1",
+        "state": "running",
+        "device": "server",
+        "ports": [{"publicPort": 5580, "type": "tcp"}],
+    }
+    app = portal._normalize_docker_container(ctr, default_host="10.0.0.16")
+    assert app is not None
+    assert app["id"] == "drift-king-service"
+    assert app["name"] == "Drift King Service"
+    assert app["launch_url"] == "http://10.0.0.16:5580"
+    assert "drift-king" in app["aliases"] or "drift king" in app["aliases"]
+
+
+def test_normalize_docker_container_port_priority():
+    ctr = {
+        "name": "multi-port-app",
+        "state": "running",
+        "device": "server",
+        "ports": [
+            {"publicPort": 2222, "type": "tcp"},
+            {"publicPort": 8080, "type": "tcp"},
+        ],
+    }
+    app = portal._normalize_docker_container(ctr, default_host="10.0.0.16")
+    assert app is not None
+    assert app["launch_url"] == "http://10.0.0.16:8080"
+
+
+def test_normalize_docker_container_without_web_port():
+    ctr = {
+        "name": "postgres-service",
+        "state": "running",
+        "device": "server",
+        "ports": [],
+    }
+    app = portal._normalize_docker_container(ctr, default_host="10.0.0.16")
+    assert app is not None
+    assert app["id"] == "postgres-service"
+    assert app["launch_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_get_portal_apps_merges_docker_containers(monkeypatch):
+    async def fake_services():
+        return {"services": [_svc()], "infrastructure": []}
+    async def fake_docker():
+        return [
+            {"name": "pinball-knight", "state": "running", "device": "server",
+             "ports": [{"publicPort": 5173, "type": "tcp"}]},
+        ]
+    monkeypatch.setattr(portal, "_fetch_portal_raw", fake_services)
+    monkeypatch.setattr(portal, "_fetch_docker_containers_raw", fake_docker)
+    monkeypatch.setattr(portal, "_load_portal_registry", lambda: {"apps": {}, "defaults": {}})
+    monkeypatch.setattr(portal, "_load_portal_overrides", lambda: {})
+
+    data = await portal.get_portal_apps()
+    app_ids = {a["id"] for a in data["apps"]}
+    assert "music-player" in app_ids
+    assert "pinball-knight" in app_ids
+
+    pk = next(a for a in data["apps"] if a["id"] == "pinball-knight")
+    assert pk["launch_url"] == "http://10.0.0.16:5173"
+    assert pk["has_container"] is True
+
+
+def test_resolve_dynamic_docker_container():
+    catalog = [
+        {"id": "pinball-knight", "name": "Pinball Knight", "description": "",
+         "project_type": "Client", "aliases": ["pinball knight"], "launch_url": "http://10.0.0.16:5173"},
+        {"id": "drift-king-service", "name": "Drift King Service", "description": "",
+         "project_type": "Service", "aliases": ["drift-king", "drift king"], "launch_url": "http://10.0.0.16:5580"},
+    ]
+    # Kebab-case exact match
+    app, _ = portal.resolve_portal_app("pinball-knight", catalog, strict=True)
+    assert app["id"] == "pinball-knight"
+
+    # Spaced words match
+    app, _ = portal.resolve_portal_app("pinball knight", catalog, strict=True)
+    assert app["id"] == "pinball-knight"
+
+    # Stripped service suffix match
+    app, _ = portal.resolve_portal_app("drift king", catalog, strict=True)
+    assert app["id"] == "drift-king-service"
+
+
+def test_extract_open_app_target_with_container_keyword():
+    assert m.extract_open_app_target("open container pinball-knight") == ("pinball-knight", False, False)
+    assert m.extract_open_app_target("launch container drift-king") == ("drift-king", False, False)
+    assert m.extract_open_app_target("open the pinball-knight container") == ("pinball-knight", True, False)
+    assert m.extract_bare_app_name("container pinball-knight") == "pinball-knight"

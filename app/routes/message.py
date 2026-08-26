@@ -315,6 +315,26 @@ async def send_message(req: MessageRequest):
                     content=text)
                 yield 'data: {"type": "done"}\n\n'
 
+        def _stream_no_url_app(app: dict):
+            """Container matched but has no public web port to open."""
+            app_name = app.get("name") or app.get("id") or "Container"
+            device = app.get("device") or "the NAS"
+            text = f"Container **{app_name}** is on {device}, but has no exposed public web port to open in a browser."
+
+            async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path",
+                    "widget_type": "open_app_no_url", "id_prefix": app["id"],
+                    "query": req.message}) + '\n\n')
+                logger.info(f"[APP HUB] container has no launch_url → {app['id']}")
+                yield f'data: {json.dumps({"type": "chunk", "content": text})}\n\n'
+                database.save_chat_message(
+                    message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                    session_id=req.session_id,
+                    role="assistant",
+                    content=text)
+                yield 'data: {"type": "done"}\n\n'
+
             return StreamingResponse(
                 _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
                 media_type="text/event-stream",
@@ -620,8 +640,10 @@ async def send_message(req: MessageRequest):
                     _bare_hub = await get_portal_apps()
                     _bare_app, _ = resolve_portal_app(
                         _bare, _bare_hub["apps"], strict=True, exact_only=True)
-                    if _bare_app and _bare_app.get("launch_url"):
-                        return _stream_open_app(_bare_app)
+                    if _bare_app:
+                        if _bare_app.get("launch_url"):
+                            return _stream_open_app(_bare_app)
+                        return _stream_no_url_app(_bare_app)
             if _open_target:
                 _open_name, _explicit, _has_widget_noun = _open_target
                 _hub = await get_portal_apps()
@@ -632,9 +654,11 @@ async def send_message(req: MessageRequest):
                 _exact = bool(_open_app) and _norm_key(_open_name) in (
                     {_norm_key(_open_app["id"]), _norm_key(_open_app["name"])}
                     | {_norm_key(x) for x in (_open_app.get("aliases") or [])})
-                if _open_app and _open_app.get("launch_url") and (
-                        _exact or _explicit or not _has_widget_noun):
-                    return _stream_open_app(_open_app)
+                if _open_app and (_exact or _explicit or not _has_widget_noun):
+                    if _open_app.get("launch_url"):
+                        return _stream_open_app(_open_app)
+                    elif _exact or _explicit:
+                        return _stream_no_url_app(_open_app)
                 # Ambiguity is only worth a prompt when the ask was clearly
                 # about an app — otherwise let the widget lanes have it.
                 if (_open_cands and len(_open_cands) > 1

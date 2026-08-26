@@ -152,13 +152,127 @@ def _apply_curation(app: dict, entry: dict) -> None:
         app["hidden"] = bool(entry["hidden"])
 
 
+_DOCKER_CACHE_TTL = 30.0
+_DOCKER_TIMEOUT = 8.0
+_docker_cache: Dict[str, Any] = {"at": 0.0, "raw": None, "stale": False}
+
+
+async def _fetch_docker_containers_raw() -> Optional[list]:
+    """The cached /stats/containers payload from portal-service.
+    Returns a list of container dictionaries or empty list."""
+    now = time.time()
+    if _docker_cache["raw"] is not None and now - _docker_cache["at"] < _DOCKER_CACHE_TTL:
+        return _docker_cache["raw"]
+    try:
+        async with httpx.AsyncClient(timeout=_DOCKER_TIMEOUT) as client:
+            resp = await client.get(f"{PORTAL_SERVICE_URL}/stats/containers")
+            if resp.status_code == 404:
+                resp = await client.get(f"{PORTAL_SERVICE_URL}/containers")
+            resp.raise_for_status()
+            data = resp.json()
+            containers = data.get("containers") if isinstance(data, dict) else data
+            if isinstance(containers, list):
+                _docker_cache.update({"at": now, "raw": containers, "stale": False})
+                return containers
+        logger.warning("[PORTAL] /stats/containers returned an unexpected shape")
+    except Exception as e:
+        logger.warning(f"[PORTAL] docker containers fetch failed ({e}); serving last-good")
+    if _docker_cache["raw"] is not None:
+        _docker_cache["stale"] = True
+        _docker_cache["at"] = now
+    return _docker_cache["raw"]
+
+
+def _normalize_docker_container(ctr: dict, default_host: str = "10.0.0.16") -> Optional[dict]:
+    """Convert a raw Docker container stats record into a PortalApp."""
+    raw_name = (ctr.get("name") or ctr.get("id") or "").strip().lstrip("/")
+    if not raw_name:
+        return None
+
+    # Strip docker-compose project prefixes and replica indices
+    # e.g., "sun_trading-client_1" -> "trading-client"
+    # "pinball-knight-1" -> "pinball-knight"
+    clean_name = re.sub(r"^[a-zA-Z0-9_-]+?_([a-zA-Z0-9_-]+?)_\d+$", r"\1", raw_name)
+    clean_name = re.sub(r"-\d+$", "", clean_name)
+
+    # Parse public ports
+    ports = ctr.get("ports") or []
+    public_ports = []
+    if isinstance(ports, list):
+        for p in ports:
+            if isinstance(p, dict):
+                pub = p.get("publicPort")
+                if pub and isinstance(pub, int) and pub > 0:
+                    public_ports.append(pub)
+
+    # Web port priority: common web ports first, otherwise first public port
+    launch_url = ""
+    if public_ports:
+        preferred_ports = [p for p in public_ports if p in (80, 443, 3000, 3030, 3232, 4000, 4001, 5173, 5174, 5580, 8000, 8001, 8005, 8006, 8007, 8035, 8080) or (3000 <= p <= 9999)]
+        chosen_port = preferred_ports[0] if preferred_ports else public_ports[0]
+        launch_url = f"http://{default_host}:{chosen_port}"
+
+    state = (ctr.get("state") or "").lower()
+    status = "healthy" if state == "running" else ("unhealthy" if state in ("exited", "dead", "stopped") else "unknown")
+
+    # Human-friendly label: "drift-king-service" -> "Drift King Service"
+    label = re.sub(r"[-_]+", " ", clean_name).title()
+
+    # Determine project type
+    ptype = "Service"
+    low_name = clean_name.lower()
+    if low_name.endswith("-client") or "client" in low_name:
+        ptype = "Client"
+    elif low_name.endswith("-bot") or "bot" in low_name:
+        ptype = "Bot"
+    elif "postgres" in low_name or "mongo" in low_name or "db" in low_name or "redis" in low_name:
+        ptype = "Database"
+    elif launch_url:
+        ptype = "Client"
+
+    # Generate aliases
+    aliases = set()
+    aliases.add(clean_name)
+    aliases.add(raw_name)
+    aliases.add(re.sub(r"[-_]+", " ", clean_name))
+    stripped_suffix = re.sub(r"-(?:service|client|bot|app)$", "", clean_name)
+    if stripped_suffix != clean_name:
+        aliases.add(stripped_suffix)
+        aliases.add(re.sub(r"[-_]+", " ", stripped_suffix))
+
+    return {
+        "id": clean_name,
+        "name": label,
+        "description": f"Docker container on {ctr.get('device') or 'NAS'}",
+        "icon": _PORTAL_TYPE_ICONS.get(ptype, "📦"),
+        "launch_url": launch_url,
+        "status": status,
+        "latency_ms": None,
+        "project_type": ptype,
+        "device": ctr.get("device") or "server",
+        "pinned": False,
+        "hidden": False,
+        "has_container": True,
+        "repo": "",
+        "aliases": [a for a in aliases if a and a != clean_name],
+    }
+
+
 async def get_portal_apps(include_hidden: bool = False) -> dict:
-    """The curated PortalApp list: portal inventory ⊕ registry file ⊕ DB
+    """The curated PortalApp list: portal inventory ⊕ docker containers ⊕ registry file ⊕ DB
     overlay. Pinned first, then A-Z. {apps, stale, count} — never raises."""
     registry = _load_portal_registry()
     reg_apps: dict = registry.get("apps") or {}
     defaults: dict = registry.get("defaults") or {}
     raw = await _fetch_portal_raw()
+    raw_docker = await _fetch_docker_containers_raw() if raw is not None else []
+
+    # Determine default host from PORTAL_SERVICE_URL or fallback
+    try:
+        from urllib.parse import urlparse
+        default_host = urlparse(PORTAL_SERVICE_URL).hostname or "10.0.0.16"
+    except Exception:
+        default_host = "10.0.0.16"
 
     apps: Dict[str, dict] = {}
     rows = list((raw or {}).get("services") or [])
@@ -168,6 +282,28 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
         if not isinstance(svc, dict) or not svc.get("id"):
             continue
         apps[svc["id"]] = _normalize_portal_service(svc)
+
+    # Merge discovered docker containers without overwriting curated services from projects.json
+    for ctr in (raw_docker or []):
+        if not isinstance(ctr, dict):
+            continue
+        norm_ctr = _normalize_docker_container(ctr, default_host=default_host)
+        if not norm_ctr:
+            continue
+        ctr_id = norm_ctr["id"]
+        if ctr_id not in apps:
+            apps[ctr_id] = norm_ctr
+        else:
+            # If the app exists in projects.json but lacks launch_url or container signal, enrich it
+            if not apps[ctr_id].get("launch_url") and norm_ctr.get("launch_url"):
+                apps[ctr_id]["launch_url"] = norm_ctr["launch_url"]
+            apps[ctr_id]["has_container"] = True
+            if norm_ctr.get("aliases"):
+                merged = list(apps[ctr_id].get("aliases") or [])
+                for a in norm_ctr["aliases"]:
+                    if a and a not in merged:
+                        merged.append(a)
+                apps[ctr_id]["aliases"] = merged
 
     hide_patterns = [p for p in (defaults.get("hide_patterns") or [])
                      if isinstance(p, str) and p]

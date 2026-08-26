@@ -2513,14 +2513,14 @@ APP_HUB_INTENT_RE = re.compile(
 # names EXACTLY one catalog app, the handler emits open_url directly with no
 # LLM at all; anything ambiguous or widget-flavoured falls through unchanged.
 OPEN_APP_VERB_RE = re.compile(
-    r'^(?:open|launch|start|pull up|bring up)\s+(?:the\s+|my\s+)?(.+)$',
+    r'^(?:open|launch|start|pull up|bring up)\s+(?:the\s+|my\s+|our\s+|container\s+)?(.+)$',
     re.IGNORECASE)
 
 # Trailing markers that say "the APP, not a widget". Their presence overrides
 # the widget-noun guard below ("open the music player app" → the app in a
 # tab; "open the music player" → the mini player widget, as always).
 _OPEN_APP_MARKER_RE = re.compile(
-    r'\s+(?:app|application|website|site|page|(?:in\s+a\s+)?new\s+tab|tab|window)s?\s*[.!]?$',
+    r'\s+(?:app|application|website|site|page|container|(?:in\s+a\s+)?new\s+tab|tab|window)s?\s*[.!]?$',
     re.IGNORECASE)
 
 # Words that mean a WIDGET ask in this app. A name containing one never
@@ -2593,7 +2593,7 @@ def extract_bare_app_name(text: str) -> Optional[str]:
         return None
     if _BARE_NAME_STOP_RE.search(t):
         return None
-    t = re.sub(r'^(?:my|the|our)\s+', '', t, flags=re.IGNORECASE).strip()
+    t = re.sub(r'^(?:my|the|our|container)\s+', '', t, flags=re.IGNORECASE).strip()
     # Needs a letter, and at most four words — an app name, not a sentence.
     if not re.search(r'[a-z]', t, re.IGNORECASE) or len(t.split()) > 4:
         return None
