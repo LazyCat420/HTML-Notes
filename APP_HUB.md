@@ -266,3 +266,31 @@ widget via the fast path.
 UNVERIFIED: rail appearance on light themes (egg/pastel) and at narrow
 viewports; behavior when portal-service is down at first paint (code keeps
 an empty list + toggle, by inspection only).
+
+### Rail v2 (2026-08-26, `c4d6b4d`+`7644cbc`+minio fix): clients only, monograms
+
+User feedback killed two v1 choices the same day: emoji tiles identify
+nothing, and the rail listed all 32 apps including backends.
+
+- **Clients only.** `portal.py` stamps `is_client` on every app
+  (`_mark_clients`): registry `client:` override → `-service` suffix →
+  cached probe of `launch_url` (2.5s, TTL 600s, concurrent) where
+  `text/html` = frontend. Verdicts are STICKY per process — a down client
+  keeps its red dot on the rail instead of vanishing; never-probed resolves
+  False so junk can't leak on. Fleet survey before building: suffix + probe
+  classify all 31 launchable apps correctly except minio, whose API port
+  redirects to its embedded HTML console — pinned `client: false` in
+  `portal_registry.json`. Result live: exactly the 14 real frontends.
+- **Monogram tiles.** Two letters on a per-app deterministic hue
+  (id-hashed), registry `short` override honored, candidate chain dedupes
+  collisions (Trading→Tc / Treesearch→Tr; Pinball→Pk / Portal→Pc /
+  Prism→Pr). All 14 unique, verified live.
+- **Bug shipped in between:** `_mark_clients` existed but `get_portal_apps`
+  never CALLED it — every app lacked `is_client`, the `=== true` filter
+  matched nothing, and the deployed rail rendered EMPTY. Caught by the
+  post-deploy E2E (`rail_v2_check.py`), fixed in `7644cbc`. A helper is not
+  a feature until something invokes it.
+
+Curation contract additions: `short` (1-3 chars, rail monogram) and
+`client` (bool, force on/off the rail) ride the same registry-file/DB
+overlay path as icon/name/aliases.
