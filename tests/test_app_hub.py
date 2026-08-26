@@ -613,3 +613,77 @@ async def test_apply_curation_preserves_icon_url(monkeypatch):
     tc = next(a for a in data["apps"] if a["id"] == "trading-client")
     assert tc["icon_url"] == "icons/trading-client.png"
 
+
+@pytest.mark.asyncio
+async def test_offline_portal_returns_all_curated_apps(monkeypatch):
+    """When portal-service /services is down (returns None), all curated apps
+    are returned with valid launch_url, is_client=True, and icon_url."""
+    async def fake_portal_raw():
+        return None
+    async def fake_docker():
+        return []
+    async def fake_probe(app_id, url):
+        return False  # even if probe fails/times out, curated clients stay clients
+
+    monkeypatch.setattr(portal, "_fetch_portal_raw", fake_portal_raw)
+    monkeypatch.setattr(portal, "_fetch_docker_containers_raw", fake_docker)
+    monkeypatch.setattr(portal, "_probe_serves_html", fake_probe)
+    monkeypatch.setattr(portal, "_load_portal_overrides", lambda: {})
+
+    data = await portal.get_portal_apps()
+    assert data["stale"] is True
+    app_ids = {a["id"] for a in data["apps"]}
+
+    expected_curated = [
+        "trading-client", "music-player", "html-notes", "braindeadbot-client",
+        "drift-king", "youtube-wallgarden", "treesearch-client", "portal-client",
+        "prism-client", "spark-console", "pinball-knight", "doc-client"
+    ]
+    for exp in expected_curated:
+        assert exp in app_ids, f"Expected {exp} in offline apps list"
+
+    # office-client must stay excluded
+    assert "office-client" not in app_ids
+
+    # All returned apps must have a valid launch_url and icon_url
+    for app in data["apps"]:
+        assert app["launch_url"].startswith("http://10.0.0.16:")
+        assert app["icon_url"].startswith("icons/")
+        if app["id"].endswith("-service"):
+            assert app["is_client"] is False
+        else:
+            assert app["is_client"] is True
+
+
+def test_resolve_portal_app_spark_console_and_prism():
+    reg = portal._load_portal_registry()
+    catalog = []
+    for app_id, entry in reg.get("apps", {}).items():
+        if entry.get("hidden"):
+            continue
+        item = {
+            "id": app_id,
+            "name": entry.get("name", app_id),
+            "description": "",
+            "project_type": "Client" if entry.get("client") else "Service",
+            "aliases": entry.get("aliases", []),
+            "launch_url": entry.get("launch_url", "")
+        }
+        catalog.append(item)
+
+    # 'spark console' resolves to spark-console or prism-client
+    app, exact = portal.resolve_portal_app("spark console", catalog, strict=True)
+    assert app is not None
+    assert app["id"] in ("spark-console", "prism-client")
+
+    # 'music player' resolves to music-player
+    app, exact = portal.resolve_portal_app("music player", catalog, strict=True)
+    assert app is not None
+    assert app["id"] == "music-player"
+
+    # 'trading bot' resolves to trading-client
+    app, exact = portal.resolve_portal_app("trading bot", catalog, strict=True)
+    assert app is not None
+    assert app["id"] == "trading-client"
+
+

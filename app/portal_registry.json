@@ -1,96 +1,112 @@
 {
-  "_readme": "Curation defaults for the App Hub. Keyed by the portal-service registry id (stable forever — never a container id). Per-app keys: icon (emoji), icon_url (PNG/WebP), name, launch_url, pinned, hidden, description, aliases. Runtime hide/pin toggles live in the DB overlay (agent_memory widget_state 'portal:overrides') and take precedence over this file; overlay aliases are UNIONED with these. Apps listed here with no portal match become synthetic launch targets (status 'unknown'). To make a NEW service appear everywhere, add it to vault-service/projects.json — not here.",
+  "_readme": "Curation defaults for the App Hub. Keyed by the portal-service registry id (stable forever — never a container id). Per-app keys: icon (emoji), icon_url (PNG/WebP), name, launch_url, client, pinned, hidden, description, aliases. Runtime hide/pin toggles live in the DB overlay (agent_memory widget_state 'portal:overrides') and take precedence over this file; overlay aliases are UNIONED with these. Apps listed here with no portal match become synthetic launch targets (status 'unknown'). To make a NEW service appear everywhere, add it to vault-service/projects.json — not here.",
   "_aliases_readme": "aliases = extra names YOU say for an app ('open the trading bot'). They are matched EXACTLY (normalized: case/spaces/dashes ignored), so they beat widget spawning — keep them app-specific. Do NOT add a bare widget word like 'music', 'notes' or 'map': that would steal 'play music'-style asks from their widgets. A '-service' backend is never opened by a vague ask; say its full name ('open trading service') to reach it.",
   "apps": {
-    "drift-king": {
-      "name": "Drift King",
-      "icon": "🏎️",
-      "icon_url": "icons/drift-king.png",
-      "pinned": true,
-      "aliases": ["drift king", "drift-king", "drift", "the drift game"]
-    },
-    "drift-king-service": {
-      "name": "Drift King",
-      "icon": "🏎️",
-      "icon_url": "icons/drift-king.png",
-      "pinned": true,
-      "client": true,
-      "aliases": ["drift king", "drift-king", "drift", "drift king service"]
-    },
     "trading-client": {
       "name": "Trading Client",
       "icon": "📈",
       "icon_url": "icons/trading-client.png",
+      "launch_url": "http://10.0.0.16:3030",
+      "client": true,
       "pinned": true,
-      "aliases": ["trading bot", "trading dashboard", "trading ui", "trade bot", "the trading app"]
+      "aliases": ["trading bot", "trading dashboard", "trading ui", "trade bot", "the trading app", "trading client"]
     },
     "music-player": {
       "name": "Music Player",
       "icon": "🎵",
       "icon_url": "icons/music-player.png",
+      "launch_url": "http://10.0.0.16:3232",
+      "client": true,
       "pinned": true,
-      "aliases": ["music app", "music site", "music player app", "music library"],
-      "_launch_url_why": "OVERRIDE. The vault registry gives music-player domain 'music.braindeadbot.com', so portal's domain-beats-url convention hands out https://music.braindeadbot.com — which has NO DNS RECORD (verified 2026-08-16: getent finds nothing, curl exits 6, while :3232 answers 200). Every open of this app landed on a dead tab. Remove this override once the domain actually exists.",
-      "launch_url": "http://10.0.0.16:3232"
+      "aliases": ["music app", "music site", "music player app", "music library", "music player"]
     },
     "html-notes": {
       "name": "HTML Notes",
       "icon": "👁️",
       "icon_url": "icons/html-notes.png",
-      "aliases": ["html notes", "notes app", "canvas app"]
+      "launch_url": "http://10.0.0.16:8035",
+      "client": true,
+      "aliases": ["html notes", "notes app", "canvas app", "html notes app"]
     },
     "braindeadbot-client": {
       "name": "Brain Dead Bot",
       "icon": "🧠",
       "icon_url": "icons/braindeadbot-client.png",
-      "aliases": ["braindeadbot", "braindead bot", "jungle room", "braindeadbot website", "the game site", "braindead bot client"]
+      "launch_url": "http://10.0.0.16:5174",
+      "client": true,
+      "aliases": ["braindeadbot", "braindead bot", "jungle room", "braindeadbot website", "the game site", "braindead bot client", "braindeadbot client"]
     },
-    "braindeadbot-service": {
-      "name": "Brain Dead Bot",
-      "icon": "🧠",
-      "icon_url": "icons/braindeadbot-client.png",
-      "aliases": ["braindeadbot", "braindead bot", "braindeadbot service"]
+    "drift-king": {
+      "name": "Drift King",
+      "icon": "🏎️",
+      "icon_url": "icons/drift-king.png",
+      "launch_url": "http://10.0.0.16:5580",
+      "client": true,
+      "pinned": true,
+      "aliases": ["drift king", "drift-king", "drift", "the drift game", "drift king game"]
+    },
+    "drift-king-service": {
+      "name": "Drift King Server",
+      "icon": "🏎️",
+      "icon_url": "icons/drift-king.png",
+      "launch_url": "http://10.0.0.16:5580",
+      "client": false,
+      "aliases": ["drift king server", "drift king service"]
     },
     "youtube-wallgarden": {
       "name": "YouTube Wallgarden",
       "icon": "📺",
       "icon_url": "icons/youtube-wallgarden.png",
-      "aliases": ["wallgarden", "wall garden", "youtube wall"]
+      "launch_url": "http://10.0.0.16:8007",
+      "client": true,
+      "aliases": ["wallgarden", "wall garden", "youtube wall", "youtube wallgarden"]
     },
     "treesearch-client": {
       "name": "Treesearch",
       "icon": "🌲",
       "icon_url": "icons/treesearch-client.png",
+      "launch_url": "http://10.0.0.16:8006",
+      "client": true,
       "aliases": ["treesearch", "tree search", "treesearch client"]
     },
     "portal-client": {
       "name": "Portal",
       "icon": "🧭",
       "icon_url": "icons/portal-client.png",
-      "aliases": ["portal", "portal dashboard", "the portal"]
+      "launch_url": "http://10.0.0.16:4000",
+      "client": true,
+      "aliases": ["portal", "portal dashboard", "the portal", "portal client"]
     },
     "prism-client": {
       "name": "Prism",
       "icon": "🔷",
       "icon_url": "icons/prism-client.png",
-      "aliases": ["prism", "prism client"]
+      "launch_url": "http://10.0.0.16:3333",
+      "client": true,
+      "aliases": ["prism", "prism client", "prism dashboard"]
     },
     "pinball-knight": {
       "name": "Pinball Knight",
       "icon": "🛡️",
       "icon_url": "icons/pinball-knight.png",
-      "aliases": ["pinball", "pinball knight"]
+      "launch_url": "http://10.0.0.16:8789",
+      "client": true,
+      "aliases": ["pinball", "pinball knight", "pinball knight game"]
     },
     "spark-console": {
       "name": "Spark Console",
       "icon": "⚡",
       "icon_url": "icons/spark-console.png",
-      "aliases": ["spark", "spark console"]
+      "launch_url": "http://10.0.0.16:3333",
+      "client": true,
+      "aliases": ["spark", "spark console", "spark-console"]
     },
     "doc-client": {
       "name": "Doc Client",
       "icon": "📄",
       "icon_url": "icons/doc-client.png",
+      "launch_url": "http://10.0.0.16:8035",
+      "client": true,
       "aliases": ["doc", "doc client", "documentation"]
     },
     "office-client": {

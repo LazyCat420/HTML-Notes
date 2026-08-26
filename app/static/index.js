@@ -524,7 +524,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 // -service suffix → text/html probe). The rail is a launcher,
                 // not an inventory; backends live in the App Hub grid.
                 const all = ((d && d.apps) || []).filter(
-                    (a) => a && !a.hidden && a.launch_url && a.is_client === true);
+                    (a) => a && !a.hidden && a.launch_url && (a.is_client === true || a.is_client !== false));
                 all.sort((x, y) => (y.pinned === true) - (x.pinned === true)
                     || String(x.name).localeCompare(String(y.name)));
                 assignMonograms(all);

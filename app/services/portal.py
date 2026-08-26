@@ -196,6 +196,8 @@ async def _mark_clients(apps: list) -> None:
             a["is_client"] = override
         elif a["id"].endswith("-service"):
             a["is_client"] = False
+        elif a["id"].endswith("-client") or a.get("project_type") == "Client":
+            a["is_client"] = True
         else:
             undecided.append(a)
     verdicts = await asyncio.gather(
@@ -319,7 +321,7 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
     reg_apps: dict = registry.get("apps") or {}
     defaults: dict = registry.get("defaults") or {}
     raw = await _fetch_portal_raw()
-    raw_docker = await _fetch_docker_containers_raw() if raw is not None else []
+    raw_docker = await _fetch_docker_containers_raw() or []
 
     # Determine default host from PORTAL_SERVICE_URL or fallback
     try:
