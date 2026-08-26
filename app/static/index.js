@@ -1924,6 +1924,22 @@ document.addEventListener("DOMContentLoaded", () => {
         drainChatQueue();
     }
 
+    // Programmatic ask: widget chrome (a stock chart's legend, etc.) drives the
+    // same queue the chat box uses, so the turn gets history, echo and the
+    // stale-snapshot guard for free. Clears the widget-focus hint first — the
+    // click that triggered this landed INSIDE a widget, and letting it ride as
+    // focus_widget_id would invite the server to edit that widget in place
+    // instead of spawning the asked-for one.
+    window.HN.ask = function (text) {
+        text = String(text || "").trim();
+        if (!text) return;
+        state.focusWidgetId = null;
+        appendChatMessageToHistory("user", text);
+        chatQueue.push(text);
+        updateQueueIndicator();
+        drainChatQueue();
+    };
+
     function drainChatQueue() {
         while (chatQueue.length && activeTurns.size < MAX_CONCURRENT_TURNS) {
             const text = chatQueue.shift();
@@ -2416,6 +2432,41 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (pre.dataset.chartRendered === '1') return;
 
                 const config = JSON.parse(block.innerText);
+
+                // Ticker comparison charts (trending / compare): every series
+                // label is "SYM  +x.x%" (one shared builder makes them all), so
+                // that shape — not the widget id, which differs across the
+                // fast-path/router/agent lanes — is the gate. A legend click
+                // opens that ticker's own stock widget via HN.ask instead of
+                // Chart.js's default hide-the-series toggle; shift-click keeps
+                // the toggle. Injected here because a function can't ride in
+                // the baked JSON config.
+                try {
+                    const TICKER_PCT = /^([A-Z][A-Z0-9.\-]{0,9})\s+[+\-−]?\d+(?:\.\d+)?%$/;
+                    const dsets = (config.data && config.data.datasets) || [];
+                    if (dsets.length && dsets.every(d => TICKER_PCT.test(String(d.label || "").trim()))) {
+                        const opts = config.options = config.options || {};
+                        const plugins = opts.plugins = opts.plugins || {};
+                        const legend = plugins.legend = plugins.legend || {};
+                        const defToggle = Chart.defaults.plugins.legend.onClick;
+                        legend.onClick = function (e, item, legendCtx) {
+                            const m = TICKER_PCT.exec(String((item && item.text) || "").trim());
+                            if (!m || (e && e.native && e.native.shiftKey)) {
+                                defToggle.call(this, e, item, legendCtx);
+                                return;
+                            }
+                            if (window.HN && HN.ask) HN.ask(m[1] + " stock");
+                        };
+                        legend.onHover = function (e) {
+                            const t = e && e.native && e.native.target;
+                            if (t) t.style.cursor = "pointer";
+                        };
+                        legend.onLeave = function (e) {
+                            const t = e && e.native && e.native.target;
+                            if (t) t.style.cursor = "";
+                        };
+                    }
+                } catch (err) { /* odd config shape → keep the default legend */ }
 
                 // Create canvas container
                 const canvasContainer = document.createElement('div');
