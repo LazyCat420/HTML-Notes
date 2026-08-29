@@ -1,8 +1,14 @@
 import os
 
 PORT = int(os.getenv("PORT", "8035"))
-VLLM_URL = os.getenv("VLLM_URL", "http://10.0.0.141:8000")
-VLLM_FAST_URL = os.getenv("VLLM_FAST_URL", "http://10.0.0.16:8001")
+VLLM_URL = os.getenv("VLLM_URL", "http://10.0.0.30:8000")
+VLLM_FAST_URL = os.getenv("VLLM_FAST_URL", "http://10.0.0.30:8000")
+VLLM_ENDPOINTS = [
+    url.strip() for url in os.getenv(
+        "VLLM_ENDPOINTS",
+        f"{VLLM_URL},http://10.0.0.141:8000,http://10.0.0.30:8001"
+    ).split(",") if url.strip()
+]
 PRISM_URL = os.getenv("PRISM_URL", "http://10.0.0.16:7777")
 # lazy-tool-service gateway (runs the agentic loop + widget tool execution).
 # Host port 5591 maps to the container's 7778.

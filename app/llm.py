@@ -2,37 +2,76 @@ import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 
-async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dict]:
+async def fast_llm_json(instruction: str, max_tokens: int = 1000) -> Optional[dict]:
     """One tool-free completion against the local vLLM, parsed as JSON.
     Rotates through available local vLLM endpoints before failing open.
+    Supports both traditional and reasoning models (extracting JSON from content or reasoning).
     """
-    urls = [VLLM_URL]
-    fast_url = getattr(main, "VLLM_FAST_URL", None) or os.getenv("VLLM_FAST_URL", "")
-    if fast_url and fast_url not in urls:
-        urls.append(fast_url)
+    configured_urls = getattr(main, "VLLM_ENDPOINTS", None) or []
+    default_pool = [
+        getattr(main, "VLLM_URL", "http://10.0.0.30:8000"),
+        getattr(main, "VLLM_FAST_URL", "http://10.0.0.30:8000"),
+        "http://10.0.0.30:8000",
+        "http://10.0.0.141:8000",
+        "http://10.0.0.30:8001",
+    ]
+    urls = []
+    for u in list(configured_urls) + default_pool:
+        if u and u not in urls:
+            urls.append(u)
 
     for target_url in urls:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=3.0)) as client:
-                model = _fast_model.get("name") if target_url == VLLM_URL else None
+                model = _fast_model.get(target_url)
                 if not model:
                     resp = await client.get(f"{target_url}/v1/models")
-                    model = resp.json()["data"][0]["id"]
-                    if target_url == VLLM_URL:
-                        _fast_model["name"] = model
-                resp = await client.post(f"{target_url}/v1/chat/completions", json={
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json().get("data", [])
+                    if not data:
+                        continue
+                    model = data[0]["id"]
+                    _fast_model[target_url] = model
+
+                payload = {
                     "model": model,
-                    "temperature": 0.3,
+                    "temperature": 0.2,
                     "max_tokens": max_tokens,
                     "messages": [{"role": "user", "content": instruction}],
-                })
-                text = resp.json()["choices"][0]["message"]["content"]
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
+                }
+                resp = await client.post(f"{target_url}/v1/chat/completions", json=payload)
+                if resp.status_code != 200:
+                    logger.warning(f"fast_llm_json {target_url} returned HTTP {resp.status_code}")
+                    continue
+
+                res_json = resp.json()
+                msg = (res_json.get("choices") or [{}])[0].get("message") or {}
+                content = msg.get("content") or ""
+                reasoning = msg.get("reasoning") or ""
+                text = (content if content.strip() else reasoning) or ""
+
+                if not text:
+                    continue
+
+                # Find valid JSON object
+                matches = list(re.finditer(r'\{[\s\S]*\}', text))
+                for m in reversed(matches):
+                    cand = m.group(0)
+                    try:
+                        return json.loads(cand)
+                    except Exception:
+                        # Try shrinking to find valid JSON substring
+                        end_pos = cand.rfind("}")
+                        while end_pos > 0:
+                            sub = cand[:end_pos + 1]
+                            try:
+                                return json.loads(sub)
+                            except Exception:
+                                end_pos = cand.rfind("}", 0, end_pos)
         except Exception as e:
-            if target_url == VLLM_URL:
-                _fast_model["name"] = None
+            if target_url in _fast_model:
+                _fast_model[target_url] = None
             logger.warning(f"fast_llm_json failed on {target_url}: {type(e).__name__}: {e}")
             continue
 

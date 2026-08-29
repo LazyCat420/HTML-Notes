@@ -356,6 +356,24 @@ def _is_generic_news_thumb(url: str) -> bool:
         return False
 
 
+_GENERIC_NEWS_DESC_SNIPPETS = (
+    "comprehensive up-to-date news coverage",
+    "aggregated from sources all over the world by google news",
+    "google news",
+    "visit the post for more",
+    "please enable javascript",
+    "access to this page has been denied",
+    "attention required! | cloudflare",
+)
+
+
+def _is_generic_news_desc(desc: str) -> bool:
+    if not desc:
+        return True
+    low = desc.lower().strip()
+    return any(sig in low for sig in _GENERIC_NEWS_DESC_SNIPPETS) or len(low) < 15
+
+
 async def _enrich_news(items: list, timeout: float = 5.0) -> None:
     """Fill each item's summary (og:description) and, when GDELT had no social
     image, its photo (og:image), by fetching the real article. Concurrent and
@@ -370,10 +388,11 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
         except Exception:
             stats["fail"] += 1
             return
-        if not item.get("snippet"):
+        if not item.get("snippet") or _is_generic_news_desc(item.get("snippet", "")):
             m = _OG_DESC_RE.search(html)
             if m:
-                item["snippet"] = _html_unescape(m.group(1)).strip()[:400]
+                cand = _html_unescape(m.group(1)).strip()[:400]
+                item["snippet"] = "" if _is_generic_news_desc(cand) else cand
         if not item.get("image"):
             m = _OG_IMAGE_RE.search(html)
             if m:
@@ -387,23 +406,17 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
                     resolved = urllib.parse.urljoin(str(resp.url), raw) if raw else ""
                 except Exception:
                     resolved = raw
-                # A Google News redirect page does NOT resolve to the publisher
-                # (it 200s on news.google.com and the article link is JS-driven),
-                # and the og:image it serves is Google's own generic News logo —
-                # the SAME lh3.googleusercontent.com URL for every story. Taking
-                # it at face value produced a news card whose six "photos" were
-                # six identical 300x300 tiles. An earlier comment here claimed
-                # these URLs serve a real article image; they serve a constant.
-                # Leave the image empty so the publisher favicon fallback runs
-                # instead of dressing the card in decorative duplicates.
                 item["image"] = "" if _is_generic_news_thumb(resolved) else resolved
         stats["ok"] += 1
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         await asyncio.gather(*(one(client, it) for it in items),
                              return_exceptions=True)
-    # One aggregate line so a SYSTEMIC enrichment outage (e.g. every article 403s
-    # the UA) is distinguishable from "these pages had no og:description".
+    # Filter any surviving generic descriptions across all items
+    for it in items:
+        if _is_generic_news_desc(it.get("snippet", "")):
+            it["snippet"] = ""
+
     if items and stats["fail"] > stats["ok"]:
         logger.info(f"[ENRICH] {stats['ok']}/{len(items)} enriched "
                     f"({stats['fail']} fetch failures)")
@@ -414,29 +427,19 @@ async def _shared_news_search(topic: str, limit: int) -> list:
 
     PRIMARY source, ahead of the Google News RSS path below, because it returns
     what that path structurally cannot: the PUBLISHER's own URL and THAT STORY's
-    photo. A Google News /rss/articles/ link is a redirect stub — it does not
-    resolve server-side, and the og:image it serves is Google's News logo, the
-    same picture for every story (which is how a six-story card ended up with
-    six identical tiles). GDELT has real URLs and photos but measured 15s on
-    success and 1 req/5s, so it cannot front this path either.
-
-    lazy-tool-service rotates across keyed providers (gnews, worldnewsapi,
-    currentsapi, ...) and answers in about a second. Empty result or an outage
-    just falls through to the chain below, so news still works if it is down.
+    photo.
     """
-    if not topic or not topic.strip():
-        return []
+    clean_topic = (topic or "").strip() or "top stories"
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(
                 f"{LAZY_TOOL_SERVICE_URL}/execute/news_search",
-                json={"topic": topic.strip(), "limit": limit},
+                json={"topic": clean_topic, "limit": limit},
             )
         if resp.status_code != 200:
             logger.warning(f"[news] shared news_search HTTP {resp.status_code}")
             return []
         payload = resp.json()
-        # ExecuteRoutes may wrap the tool result; accept either shape.
         body = payload.get("result", payload) if isinstance(payload, dict) else {}
         rows = body.get("items") or []
     except Exception as e:

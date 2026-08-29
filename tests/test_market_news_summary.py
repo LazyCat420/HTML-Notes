@@ -24,6 +24,10 @@ async def test_build_stock_news_config_has_answer_on_success(monkeypatch):
             ]
         }
 
+    async def mock_empty_shared(q, limit=6):
+        return []
+
+    monkeypatch.setattr(m, "_shared_news_search", mock_empty_shared)
     monkeypatch.setattr(m, "stock_news", mock_stock_news)
     monkeypatch.setattr(m, "_fetch_news_page_text", mock_fetch_page)
     monkeypatch.setattr(m, "fast_llm_json", mock_llm_json)
@@ -53,6 +57,10 @@ async def test_build_stock_news_config_has_answer_on_degraded(monkeypatch):
     async def mock_dead_llm(prompt, **kw):
         return None  # simulates vLLM outage / failure
 
+    async def mock_empty_shared(q, limit=6):
+        return []
+
+    monkeypatch.setattr(m, "_shared_news_search", mock_empty_shared)
     monkeypatch.setattr(m, "stock_news", mock_stock_news)
     monkeypatch.setattr(m, "_fetch_news_page_text", mock_fetch_page)
     monkeypatch.setattr(m, "fast_llm_json", mock_dead_llm)

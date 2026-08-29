@@ -460,7 +460,8 @@ async def build_news_config(message: str) -> dict:
     if topic and all(w in _GENERAL for w in topic.split()):
         topic = ""
     display = topic or "top stories"
-    results = await news_search(topic, limit=6)
+    news_search_fn = getattr(main, "news_search", None) or news_search
+    results = await news_search_fn(topic, limit=6)
     if not results:
         return {"title": f"News: {display}".title()[:60], "icon": "newspaper", "items": []}
 
@@ -548,40 +549,40 @@ async def build_stock_news_config(message: str) -> dict:
                 "prices", "ticker", "tickers", "equities", "equity", "finance",
                 "financial", "trading", "the"}
     is_general = not topic or all(w in _MARKETY for w in topic.split())
-    # Strip market filler ("stock"/"shares"/"price"/...) from the query. Yahoo's
-    # news search quote-matches on the company/ticker; a trailing "stock" makes it
-    # MISS the match and dump the generic market-wire feed — verified: "nvidia" →
-    # real Nvidia stories, but "nvidia stock" → Moët Hennessy / Cadeler / NAV
-    # noise. This was the actual cause of bad ticker news (not the news source).
     core = " ".join(w for w in topic.split() if w not in _MARKETY).strip()
     query = "stock market" if is_general else (core or topic)
     display = "the market" if is_general else (core or topic)
-    stock_news_fn = getattr(main, "stock_news", None) or stock_news
-    data0 = await stock_news_fn(query, limit=8)
-    yahoo_news = [n for n in (data0.get("news") or []) if n.get("title")]
 
-    # NOTE: finnews is deliberately NOT merged into this CARD. It fans out over 10
-    # providers but sorts by recency and tags fast-moving market-wire ("Cadeler
-    # receives 11th vessel") with whatever ticker was queried, so recent filler
-    # floats to the top and crowds out substantive stories — measurably noisier
-    # than Yahoo's already-loose ticker relevance. finnews (via _finnews_articles)
-    # is instead a source for the COMPREHENSIVE-REPORT path, where an LLM can
-    # synthesize and relevance-filter across many articles. The news card stays on
-    # Yahoo, which returns clean top stories.
-    news = yahoo_news
+    # 1. PRIMARY: Shared multi-provider news tool (Seeking Alpha, Barchart, Reuters, etc.)
+    shared_news_fn = getattr(main, "_shared_news_search", None) or _shared_news_search
+    shared_news = []
+    if shared_news_fn:
+        try:
+            res = shared_news_fn(query, limit=6)
+            shared_news = await res if asyncio.iscoroutine(res) else res
+        except Exception:
+            shared_news = []
+    if shared_news:
+        news = shared_news
+    else:
+        # 2. SECONDARY: Yahoo Finance with strict PR-wire clickbait filtering
+        stock_news_fn = getattr(main, "stock_news", None) or stock_news
+        data0 = await stock_news_fn(query, limit=10)
+        raw_yahoo = [n for n in (data0.get("news") or []) if n.get("title")]
+        _PR_SPAM = (
+            "paid press release", "press release distributor", "globenewswire", "pr newswire",
+            "business wire", "stocks we like better", "5 stocks to buy", "motley fool"
+        )
+        filtered = [
+            n for n in raw_yahoo
+            if not any(s in ((n.get("title") or "") + " " + (n.get("publisher") or "")).lower() for s in _PR_SPAM)
+        ]
+        news = filtered or raw_yahoo
 
     if not news:
-        # Both struck out (obscure company, crypto slang) → general news chain,
-        # which searches Google News/GDELT with the full topic.
         return await build_news_config(message)
 
-    # Yahoo's finance search returns NO snippet, and its linked article pages are
-    # JS-heavy/paywalled so read_web_page often comes back empty — which left the
-    # editor pass with only a headline and forced it into one-line restatements
-    # ("never gave me a summary"). Enrich the URLs with og:description first: a
-    # cheap 6s meta-fetch that yields a real 1-2 sentence blurb per story even when
-    # the full page won't scrape, giving the editor real material AND a fallback.
-    enrich_items = [{"url": n.get("url") or n.get("link") or "", "snippet": "", "image": n.get("image", "")}
+    enrich_items = [{"url": n.get("url") or n.get("link") or "", "snippet": n.get("snippet", ""), "image": n.get("image", "")}
                     for n in news[:6]]
     try:
         enrich_fn = getattr(main, "_enrich_news", None) or _enrich_news
@@ -599,15 +600,13 @@ async def build_stock_news_config(message: str) -> dict:
         out = []
         for i, n in enumerate(news[:6]):
             tickers = ", ".join(n.get("related_tickers") or [])
-            # Fallback chain for the description: the LLM summary, else the og:desc
-            # blurb, else the headline — never an empty body.
-            desc = ((summaries or {}).get(i) or n.get("og_desc") or "")[:500]
+            desc = ((summaries or {}).get(i) or n.get("og_desc") or n.get("snippet") or "")[:500]
             out.append({
                 "title": (n.get("title") or "")[:140],
                 "description": desc,
                 "url": n.get("url") or n.get("link") or "",
                 "image": n.get("image", ""),
-                "meta": " · ".join(x for x in [n.get("publisher"), n.get("published")] if x),
+                "meta": " · ".join(x for x in [n.get("publisher") or n.get("source"), n.get("published") or n.get("date")] if x),
                 "badge": tickers[:24] or "Markets",
             })
         return out
