@@ -2,6 +2,18 @@ import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 
+try:
+    from app.services.search import _enrich_news as _fallback_enrich_news, news_search as _fallback_news_search, web_search as _fallback_web_search
+except Exception:
+    _fallback_enrich_news = None
+    _fallback_news_search = None
+    _fallback_web_search = None
+
+try:
+    from app.llm import fast_llm_json as _fallback_fast_llm_json
+except Exception:
+    _fallback_fast_llm_json = None
+
 def pick_theme(text: str) -> Optional[str]:
     """Resolve a free-text appearance request to the closest catalog theme name.
 
@@ -137,7 +149,10 @@ async def _synthesize_answer_from_items(config: dict, query_hint: str = "") -> s
            if (it.get("description") or it.get("summary") or it.get("snippet")) else "")
         for it in items[:8])
     q = (query_hint or config.get("title") or "").strip()
-    data = await fast_llm_json(
+    llm_fn = getattr(main, "fast_llm_json", None) or _fallback_fast_llm_json
+    if not llm_fn:
+        return ""
+    data = await llm_fn(
         "You write a 2-3 sentence plain-language overview that ties together the "
         "items below into a direct answer. Use ONLY what the items state — invent "
         "no facts. Return ONLY JSON: {\"answer\": \"...\"}\n\n"
@@ -197,7 +212,9 @@ async def _backfill_item_images(items: list, timeout: float = 6.0) -> int:
         # snippet is pre-filled above: _enrich_news only fills falsy fields, so a
         # non-empty snippet keeps this pass strictly about images and stops it
         # overwriting descriptions the card already has.
-        await asyncio.wait_for(_enrich_news(probe, timeout=timeout), timeout=timeout + 1.0)
+        enrich_fn = getattr(main, "_enrich_news", None) or _fallback_enrich_news
+        if enrich_fn:
+            await asyncio.wait_for(enrich_fn(probe, timeout=timeout), timeout=timeout + 1.0)
     except (asyncio.TimeoutError, Exception):
         pass  # best-effort; the favicon fallback below still applies
     filled = 0
@@ -244,7 +261,9 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
             enrich = [{"url": it.get("url") or it.get("link"), "snippet": "",
                        "image": it.get("image", "")} for it in bare]
             try:
-                await asyncio.wait_for(_enrich_news(enrich, timeout=6.0), timeout=7.0)
+                enrich_fn = getattr(main, "_enrich_news", None) or _fallback_enrich_news
+                if enrich_fn:
+                    await asyncio.wait_for(enrich_fn(enrich, timeout=6.0), timeout=7.0)
             except asyncio.TimeoutError:
                 pass
             for it, e in zip(bare, enrich):
@@ -255,12 +274,15 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
             still = [it for it in bare if not it.get("description")]
             if still:
                 lines = "\n".join(f'[{i}] {it.get("title","")}' for i, it in enumerate(still))
-                data = await fast_llm_json(
-                    'You are a news editor. For each headline below write a faithful '
-                    'one-sentence summary of what it is about — do NOT invent facts '
-                    'beyond the headline. Return ONLY JSON: '
-                    '{"items":[{"index":<N>,"summary":"..."}]}\n\nHEADLINES:\n' + lines,
-                    max_tokens=600)
+                llm_fn = getattr(main, "fast_llm_json", None) or _fallback_fast_llm_json
+                data = None
+                if llm_fn:
+                    data = await llm_fn(
+                        'You are a news editor. For each headline below write a faithful '
+                        'one-sentence summary of what it is about — do NOT invent facts '
+                        'beyond the headline. Return ONLY JSON: '
+                        '{"items":[{"index":<N>,"summary":"..."}]}\n\nHEADLINES:\n' + lines,
+                        max_tokens=600)
                 if data and isinstance(data.get("items"), list):
                     by_i = {d.get("index"): (d.get("summary") or "").strip()
                             for d in data["items"] if isinstance(d.get("index"), int)}
@@ -280,36 +302,22 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
             q = (query_hint or config.get("title") or "").strip()
             if q:
                 # Cite what the answer was actually WRITTEN FROM.
-                #
-                # This used to call news_search() for every sourceless card, so
-                # "best espresso machines under $500" — answered by the model
-                # from html_notes_web_search results — got five unrelated Google
-                # News articles stapled on under a "Sources" badge. Wrong corpus
-                # for a non-news question, and worse, a groundedness lie: the
-                # card cited pages the answer had never seen. (They also all
-                # resolved to the same Google News og:image, so every thumbnail
-                # was the same picture.)
-                #
-                # The real sources are already in hand — html_notes_web_search
-                # caches under "search:<query>", so the model's own reading list
-                # is a dict lookup away. Fall back to a fresh web search for the
-                # right corpus, and reach for news only when the ask is actually
-                # news-shaped.
                 hits = get_cached_tool_result(f"search:{q}")
                 origin = "cached web_search"
                 if not hits:
-                    searcher = news_search if NEWS_ASK_RE.search(q) else web_search
-                    origin = searcher.__name__
+                    searcher = (getattr(main, "news_search", None) or _fallback_news_search) if NEWS_ASK_RE.search(q) else (getattr(main, "web_search", None) or _fallback_web_search)
+                    origin = getattr(searcher, "__name__", "search")
                     try:
-                        hits = await asyncio.wait_for(searcher(q, limit=5), timeout=8.0)
+                        if searcher:
+                            hits = await asyncio.wait_for(searcher(q, limit=5), timeout=8.0)
                     except asyncio.TimeoutError:
                         hits = []
                 hits = (hits or [])[:5]
-                # Same starve-the-image-path problem as build_answer_config: these
-                # carry no og:image until something fetches for one.
                 if hits:
                     try:
-                        await asyncio.wait_for(_enrich_news(hits, timeout=5.0), timeout=6.0)
+                        enrich_fn = getattr(main, "_enrich_news", None) or _fallback_enrich_news
+                        if enrich_fn:
+                            await asyncio.wait_for(enrich_fn(hits, timeout=5.0), timeout=6.0)
                     except asyncio.TimeoutError:
                         pass
                 srcs = [{"title": (h.get("title") or "")[:120],

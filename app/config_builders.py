@@ -556,7 +556,8 @@ async def build_stock_news_config(message: str) -> dict:
     core = " ".join(w for w in topic.split() if w not in _MARKETY).strip()
     query = "stock market" if is_general else (core or topic)
     display = "the market" if is_general else (core or topic)
-    data0 = await stock_news(query, limit=8)
+    stock_news_fn = getattr(main, "stock_news", None) or stock_news
+    data0 = await stock_news_fn(query, limit=8)
     yahoo_news = [n for n in (data0.get("news") or []) if n.get("title")]
 
     # NOTE: finnews is deliberately NOT merged into this CARD. It fans out over 10
@@ -580,10 +581,12 @@ async def build_stock_news_config(message: str) -> dict:
     # ("never gave me a summary"). Enrich the URLs with og:description first: a
     # cheap 6s meta-fetch that yields a real 1-2 sentence blurb per story even when
     # the full page won't scrape, giving the editor real material AND a fallback.
-    enrich_items = [{"url": n.get("url", ""), "snippet": "", "image": n.get("image", "")}
+    enrich_items = [{"url": n.get("url") or n.get("link") or "", "snippet": "", "image": n.get("image", "")}
                     for n in news[:6]]
     try:
-        await asyncio.wait_for(_enrich_news(enrich_items, timeout=6.0), timeout=7.0)
+        enrich_fn = getattr(main, "_enrich_news", None) or _enrich_news
+        if enrich_fn:
+            await asyncio.wait_for(enrich_fn(enrich_items, timeout=6.0), timeout=7.0)
     except asyncio.TimeoutError:
         pass
     for n, e in zip(news[:6], enrich_items):
@@ -602,7 +605,7 @@ async def build_stock_news_config(message: str) -> dict:
             out.append({
                 "title": (n.get("title") or "")[:140],
                 "description": desc,
-                "url": n.get("url", ""),
+                "url": n.get("url") or n.get("link") or "",
                 "image": n.get("image", ""),
                 "meta": " · ".join(x for x in [n.get("publisher"), n.get("published")] if x),
                 "badge": tickers[:24] or "Markets",
@@ -611,13 +614,9 @@ async def build_stock_news_config(message: str) -> dict:
 
     # Yahoo gives headlines only — read the top pages so the summaries have real
     # material instead of restated headlines. Best-effort, hard-capped.
-    # All 6 rendered stories get a real page read — before this, stories 4-6 only
-    # ever saw Yahoo's og:description, which is itself a teaser. Timeout is PER
-    # PAGE, not per batch: a whole-batch wait_for(gather(...)) cancels everything
-    # when one slow page busts the wall, throwing away the reads that finished
-    # (observed live: 3 scrapes done, all discarded, every summary degraded).
+    fetch_page_fn = getattr(main, "_fetch_news_page_text", None) or _fetch_news_page_text
     results = await asyncio.gather(
-        *[asyncio.wait_for(_fetch_news_page_text(n), timeout=14.0) for n in news[:6]],
+        *[asyncio.wait_for(fetch_page_fn(n), timeout=14.0) for n in news[:6]],
         return_exceptions=True)
     page_texts = [r if isinstance(r, str) else "" for r in results]
     got = sum(1 for t in page_texts if t)
@@ -636,7 +635,8 @@ async def build_stock_news_config(message: str) -> dict:
             head += f" [tickers: {tickers}]"
         source_lines.append(head + ("\n" + body[:2500] if body else ""))
 
-    data = await fast_llm_json(
+    llm_fn = getattr(main, "fast_llm_json", None) or fast_llm_json
+    data = await llm_fn(
         'You are a financial news editor. Return ONLY a JSON object, no prose, no '
         'markdown fence:\n'
         '{"overview": "<one-sentence read on what is moving and why>", '
@@ -660,7 +660,15 @@ async def build_stock_news_config(message: str) -> dict:
         logger.info(f"[DEGRADED] stock_news editor pass empty for {query!r} — "
                     "serving og:desc/excerpt items")
         excerpts = {i: t[:220] for i, t in enumerate(page_texts) if t}
-        return {"title": title, "icon": "trending_up", "items": raw_items(excerpts)}
+        raw_list = raw_items(excerpts)
+        fallback_summary = " ".join(r["description"] for r in raw_list[:3] if r.get("description"))
+        return {
+            "title": title,
+            "answer": fallback_summary,
+            "subtitle": fallback_summary[:120],
+            "icon": "trending_up",
+            "items": raw_list
+        }
     summaries = {it.get("index"): (it.get("summary") or "").strip()
                  for it in data["items"] if isinstance(it.get("index"), int)}
     titles = {it.get("index"): (it.get("title") or "").strip()
@@ -669,9 +677,13 @@ async def build_stock_news_config(message: str) -> dict:
     for i, item in enumerate(items):
         if titles.get(i):
             item["title"] = titles[i][:140]
+    overview = (data.get("overview") or "").strip()
+    if not overview and items:
+        overview = " ".join(it["description"] for it in items[:3] if it.get("description"))
     return {
         "title": title,
-        "subtitle": (data.get("overview") or "")[:120],
+        "answer": overview,
+        "subtitle": overview[:120],
         "icon": "trending_up",
         "items": items,
     }

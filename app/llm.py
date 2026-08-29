@@ -3,46 +3,40 @@ import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 
 async def fast_llm_json(instruction: str, max_tokens: int = 400) -> Optional[dict]:
-    """One tool-free completion against the Spark, parsed as JSON.
-
-    A grocery list needs no tools — the model just knows it. Routing that through
-    the agentic loop costs ~60s of reasoning and tool-call churn; a direct
-    completion answers in ~2s. Returns None on any failure so the caller can
-    still spawn an empty widget rather than erroring.
-
-    Timeout is sized for the WORST consumer, not the typical one: the news/answer
-    passes emit 500-1000 tokens and the backend generates ~20 tok/s under load,
-    so a 30s cap silently killed every news summary (httpx timeouts stringify to
-    "" — the logs just said "failed:") and the cards degraded to snippet items.
-    Fast callers still return in seconds; the ceiling only matters on the slow ones.
+    """One tool-free completion against the local vLLM, parsed as JSON.
+    Rotates through available local vLLM endpoints before failing open.
     """
-    try:
-        # Long read budget for the 500-1000 token passes, but a SHORT connect cap:
-        # a down/overloaded backend should fail fast (5s) rather than making every
-        # card wait the full read ceiling to discover the host is unreachable.
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
-            model = _fast_model["name"]
-            if not model:
-                resp = await client.get(f"{VLLM_URL}/v1/models")
-                model = resp.json()["data"][0]["id"]
-                _fast_model["name"] = model
-            resp = await client.post(f"{VLLM_URL}/v1/chat/completions", json={
-                "model": model,
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": instruction}],
-            })
-            text = resp.json()["choices"][0]["message"]["content"]
-        match = re.search(r'\{.*\}', text, re.DOTALL)  # tolerate ``` fences / stray prose
-        return json.loads(match.group(0)) if match else None
-    except Exception as e:
-        # Drop the cached model id: if the backend restarted serving a DIFFERENT
-        # model, every call posts a stale `model` and 400s forever until the
-        # process restarts. Re-discover it on the next call.
-        _fast_model["name"] = None
-        # type name matters: httpx timeout exceptions stringify to ""
-        logger.warning(f"fast_llm_json failed: {type(e).__name__}: {e}")
-        return None
+    urls = [VLLM_URL]
+    fast_url = getattr(main, "VLLM_FAST_URL", None) or os.getenv("VLLM_FAST_URL", "")
+    if fast_url and fast_url not in urls:
+        urls.append(fast_url)
+
+    for target_url in urls:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=3.0)) as client:
+                model = _fast_model.get("name") if target_url == VLLM_URL else None
+                if not model:
+                    resp = await client.get(f"{target_url}/v1/models")
+                    model = resp.json()["data"][0]["id"]
+                    if target_url == VLLM_URL:
+                        _fast_model["name"] = model
+                resp = await client.post(f"{target_url}/v1/chat/completions", json={
+                    "model": model,
+                    "temperature": 0.3,
+                    "max_tokens": max_tokens,
+                    "messages": [{"role": "user", "content": instruction}],
+                })
+                text = resp.json()["choices"][0]["message"]["content"]
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+        except Exception as e:
+            if target_url == VLLM_URL:
+                _fast_model["name"] = None
+            logger.warning(f"fast_llm_json failed on {target_url}: {type(e).__name__}: {e}")
+            continue
+
+    return None
 
 
 async def ground_query(message: str) -> dict:

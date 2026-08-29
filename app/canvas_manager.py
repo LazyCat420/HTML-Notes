@@ -454,7 +454,10 @@ def _spoken_summary(widget_type: str, config: dict, question: str = "") -> str:
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             return ""
-        first = re.split(r"(?<=[.!?])\s+", text)[0]
+        # Protect abbreviations like U.S., e.g., i.e. from being split as sentence ends
+        clean_split = re.sub(r'\b([A-Z]\.)\s+', r'\1__SP__', text)
+        clean_split = re.sub(r'\b(U\.S\.|e\.g\.|i\.e\.|vs\.|Inc\.|Corp\.|Ltd\.|Jan\.|Feb\.|Mar\.|Apr\.|Aug\.|Sept?\.|Oct\.|Nov\.|Dec\.)\s+', r'\1__SP__', clean_split, flags=re.I)
+        first = re.split(r"(?<=[.!?])\s+", clean_split)[0].replace('__SP__', ' ')
         if len(first) > limit:
             first = first[:limit].rsplit(" ", 1)[0] + "…"
         return first
