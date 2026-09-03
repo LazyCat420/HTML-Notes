@@ -75,12 +75,12 @@ def test_first_engine_with_hits_wins(monkeypatch, no_backfill):
     assert "never" not in calls, "kept trying engines after one succeeded"
 
 
-def test_brave_is_the_primary_engine():
-    """DDG is unreachable from the NAS; Brave must be tried first. The DDG
-    engines stay behind it so this self-heals if DDG comes back."""
+def test_free_engines_are_primary():
+    """Brave is removed; free engines (ddg-lite, ddg-collector) are used."""
     names = [n for n, _ in m._SEARCH_ENGINES]
-    assert names[0] == "brave-api"
-    assert "ddg-lite" in names and "ddg-collector" in names
+    assert names[0] == "ddg-lite"
+    assert "ddg-collector" in names
+    assert "brave-api" not in names
 
 
 def test_web_search_still_returns_a_plain_list(monkeypatch, no_backfill):
@@ -92,10 +92,10 @@ def test_web_search_still_returns_a_plain_list(monkeypatch, no_backfill):
     assert isinstance(out, list) and out[0]["title"] == "T"
 
 
-# ── Brave response normalization ────────────────────────────────────────────
+# ── Scraper-Service DDG collector normalization ─────────────────────────────
 
-def test_brave_normalizes_and_strips_highlight_markup(monkeypatch):
-    """Brave wraps matched terms in <strong>; that must not reach the widget."""
+def test_scraper_ddg_normalizes_and_filters_results(monkeypatch):
+    """scraper-service DDG returns items; non-http or empty titles must be dropped."""
     class _Resp:
         status_code = 200
 
@@ -103,12 +103,13 @@ def test_brave_normalizes_and_strips_highlight_markup(monkeypatch):
             pass
 
         def json(self):
-            return {"web": {"results": [
+            return {"items": [
                 {"title": "Best Sandals",
                  "url": "https://example.com/a",
-                 "description": "The <strong>best</strong> waterproof pick."},
-                {"title": "no url", "url": "", "description": "skip me"},
-            ]}}
+                 "snippet": "The best waterproof pick."},
+                {"title": "no url", "url": "", "snippet": "skip me"},
+                {"title": "", "url": "https://example.com/b", "snippet": "no title"},
+            ]}
 
     class _Client:
         def __init__(self, *a, **k):
@@ -120,26 +121,34 @@ def test_brave_normalizes_and_strips_highlight_markup(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-        async def get(self, *a, **k):
+        async def post(self, *a, **k):
             return _Resp()
 
-    async def key(_name):
-        return "test-key"
-
-    monkeypatch.setattr(m, "_fetch_secret", key)
     monkeypatch.setattr(m.httpx, "AsyncClient", _Client)
-    monkeypatch.setattr(m, "_BRAVE_MIN_INTERVAL", 0)
-    out = _run(m._search_brave_api("sandals", 5))
-    assert len(out) == 1, "a result with no url must be dropped"
+    out = _run(m._search_scraper_ddg("sandals", 5))
+    assert len(out) == 1, "only valid items with title and http url must be kept"
+    assert out[0]["title"] == "Best Sandals"
+    assert out[0]["url"] == "https://example.com/a"
     assert out[0]["snippet"] == "The best waterproof pick."
-    assert "<strong>" not in out[0]["snippet"]
 
 
-def test_brave_without_a_key_is_skipped_not_fatal(monkeypatch):
-    async def nokey(_name):
-        return ""
-    monkeypatch.setattr(m, "_fetch_secret", nokey)
-    assert _run(m._search_brave_api("q", 5)) == []
+def test_scraper_ddg_network_failure_returns_empty(monkeypatch):
+    """scraper-service unreachable should return empty list gracefully."""
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            raise OSError("scraper-service down")
+
+    monkeypatch.setattr(m.httpx, "AsyncClient", _Client)
+    assert _run(m._search_scraper_ddg("q", 5)) == []
 
 
 # ── the tool contract: no retry advice on an outage ─────────────────────────

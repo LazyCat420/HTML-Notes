@@ -42,39 +42,16 @@ from typing import Any, Dict, List, Optional
 
 from app.youtube_service import *
 
-_SEARCH_NOISE_HOSTS = ("search.brave.com", "imgs.search.brave.com", "brave.com/download")
-
-
-
-
-
+_SEARCH_NOISE_HOSTS = ()
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-
-# Brave's free tier is ~1 request/second; a burst gets 429s that look exactly like
-# "no results" to every caller. Space our calls instead of discovering that later.
-_BRAVE_MIN_INTERVAL = 1.1
-_brave_last_call = 0.0
-# Created on first use, not at module scope: asyncio/time are imported further
-# down this file, and a module-level asyncio.Lock() here NameErrors on import.
-_brave_lock = None
-
-
-
-
-
-
-
-
 _SEARCH_ENGINES = (
-    # Brave's keyed API first: it is the only engine currently reachable from this
-    # host. The two DDG engines stay behind it — keyless and free, so if DDG
-    # becomes reachable again this self-heals with no code change.
-    ("brave-api", lambda q, n: _search_brave_api(q, n)),
+    # Free, keyless engines: direct DuckDuckGo Lite first, scraper-service collector
+    # (with headless Playwright anti-bot fallback) second.
     ("ddg-lite", lambda q, n: _search_duckduckgo(q, n)),
     ("ddg-collector", lambda q, n: _search_scraper_ddg(q, n)),
 )
@@ -1192,8 +1169,7 @@ async def _warn_if_research_is_down() -> None:
         logger.error(
             "[BOOT] WEB SEARCH IS DOWN — every search backend is unreachable. "
             "Research asks will have no data to work from. Check "
-            "BRAVE_SEARCH_API_KEY in the vault and outbound access to "
-            "api.search.brave.com.")
+            "SCRAPER_SERVICE_URL and outbound network connectivity.")
     if status.get("ok") and not engines_down:
         logger.info(f"[BOOT] research path OK — {status.get('tool_count')} MCP tools "
                     f"via {status.get('prism')}, web search reachable")

@@ -49,59 +49,6 @@ async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -
             result["snippet"] = text[:500]
 
 
-async def _search_brave_api(query: str, limit: int) -> list:
-    """Brave's Search API — the PRIMARY web-search engine.
-
-    Added 2026-07-20 after DuckDuckGo became unreachable from this host:
-    `duckduckgo.com` and `lite.duckduckgo.com` both ConnectTimeout from inside the
-    container while google.com and wikipedia.org return 200. Both previous engines
-    were DuckDuckGo, so search failed closed and returned zero for EVERY query —
-    and the caller then told the model to retry, which is what produced turns with
-    10-18 identical searches.
-
-    NOTE: this is the keyed API (api.search.brave.com), NOT scraping
-    search.brave.com — that is bot-walled and was removed for good reason. They
-    are unrelated services."""
-    global _brave_last_call, _brave_lock
-    fetch_sec = getattr(main, "_fetch_secret", _fetch_secret)
-    key = await fetch_sec("BRAVE_SEARCH_API_KEY")
-    if not key:
-        return []
-    if _brave_lock is None:
-        _brave_lock = asyncio.Lock()
-    min_interval = getattr(main, "_BRAVE_MIN_INTERVAL", _BRAVE_MIN_INTERVAL)
-    async with _brave_lock:
-        wait = min_interval - (time.time() - _brave_last_call)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _brave_last_call = time.time()
-    try:
-        client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
-        async with client_cls(timeout=6.0) as client:
-            resp = await client.get(
-                "https://api.search.brave.com/res/v1/web/search",
-                params={"q": query, "count": max(1, min(int(limit), 20))},
-                headers={"X-Subscription-Token": key,
-                         "Accept": "application/json"},
-            )
-        if resp.status_code == 429:
-            logger.warning(f"[SEARCH] brave rate-limited on {query!r}")
-            return []
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as e:
-        logger.warning(f"brave api search failed for {query!r}: {e}")
-        return []
-    out = []
-    for it in (payload.get("web", {}).get("results") or [])[:limit]:
-        url = (it.get("url") or "").strip()
-        title = (it.get("title") or "").strip()
-        if title and url.startswith("http"):
-            # Brave puts the summary in `description`, occasionally with <strong>
-            # highlight markup around the matched terms.
-            snippet = re.sub(r"<[^>]+>", "", it.get("description") or "")
-            out.append({"title": title, "url": url, "snippet": snippet[:500]})
-    return out
 
 
 async def _search_duckduckgo(query: str, limit: int) -> list:
@@ -155,15 +102,12 @@ async def _search_duckduckgo(query: str, limit: int) -> list:
 async def _search_scraper_ddg(query: str, limit: int) -> list:
     """Second web-search engine: scraper-service's DuckDuckGo collector.
 
-    Replaces the old Brave fallback, which has been fully bot-walled since
-    2026-07-14 (crawl4ai gets zero bytes, playwright gets a CAPTCHA) — it never
-    returned a result, only cost a scrape round-trip. This collector hits DDG's
-    `/html/` endpoint with a Playwright fallback on block/captcha, so it's a
-    genuinely independent engine from our direct `/lite/` call: if lite starts
-    failing, this can still come back with results.
+    This collector hits DDG's `/html/` endpoint with an automated Playwright
+    fallback on block/captcha, running independently through scraper-service.
     """
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
+        async with client_cls(timeout=20.0) as client:
             resp = await client.post(
                 f"{SCRAPER_SERVICE_URL}/collect",
                 json={"source": "duckduckgo", "query": query, "limit": limit},
@@ -471,28 +415,51 @@ async def _shared_news_search(topic: str, limit: int) -> list:
     return items
 
 
+async def _scraper_service_news(topic: str, limit: int = 6) -> list:
+    """Collect news stories through scraper-service (DuckDuckGo or RSS)."""
+    try:
+        client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
+        async with client_cls(timeout=12.0) as client:
+            resp = await client.post(
+                f"{SCRAPER_SERVICE_URL}/collect",
+                json={"source": "duckduckgo", "query": f"{topic} news" if topic else "news top stories", "limit": limit},
+            )
+            payload = resp.json()
+        items = []
+        for it in (payload.get("items") or [])[:limit]:
+            url = it.get("url") or ""
+            title = (it.get("title") or "").strip()
+            if title and url.startswith("http"):
+                items.append({
+                    "title": title,
+                    "url": url,
+                    "image": "",
+                    "meta": _host_of(url),
+                    "snippet": (it.get("snippet") or "").strip()[:500],
+                    "date": "",
+                })
+        return items
+    except Exception as e:
+        logger.warning(f"scraper-service news collect failed for {topic!r}: {e}")
+        return []
+
+
 async def news_search(topic: str, limit: int = 6) -> list:
     """Current headlines with real photos and summaries. Returns
     [{title, url, image, meta, snippet, date}].
 
-    Order, and why:
-
-    1. The SHARED news_search tool in lazy-tool-service (~1s). The only source
-       here that returns the PUBLISHER's own URL and THAT STORY's photo.
-    2. Google News RSS (~0.1s, ~100 deduped headlines). Reliable and fast, but
-       its links are redirect stubs: they do not resolve server-side, and every
-       one serves Google's News logo as og:image — so a card built from these
-       shows N copies of the same picture and cites news.google.com rather than
-       the outlet. Fine as a headline source, poor as a sourcing one.
-       (An earlier note here claimed these URLs serve a real article image.
-       They do not — measured.)
-    3. GDELT. Real URLs and photos, but measured 15.6s / 14.9s on SUCCESS and
-       1 req/5s, with throttled replies still taking 11-16s. Fast-fail only.
-    4. Generic web search.
+    Order:
+    1. The SHARED news_search tool in lazy-tool-service (~1s).
+    2. Google News RSS (~0.1s, reliable, keyless).
+    3. scraper-service news/DDG collector.
+    4. GDELT (keyless).
+    5. Generic web search.
     """
     items, source = await _shared_news_search(topic, limit), "lazy-tool"
     if not items:
         items, source = await _google_news_rss(topic, limit), "google-news"
+    if not items:
+        items, source = await _scraper_service_news(topic, limit), "scraper-news"
     if not items:
         items, source = await _gdelt_news(topic, limit), "gdelt"
     if not items:

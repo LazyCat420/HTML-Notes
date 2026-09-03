@@ -355,12 +355,27 @@ async def stock_news(query: str, limit: int = 8) -> dict:
             if q.get("symbol")
         ]
 
+        # Supplement or fallback with scraper-service finnews (Finnhub, AlphaVantage, Marketaux)
+        if len(news) < 4:
+            try:
+                fin_articles = await _finnews_articles(query=query, limit=limit)
+                if fin_articles:
+                    news = _merge_news(news, fin_articles)[:limit]
+            except Exception as e:
+                logger.warning(f"finnews fallback in stock_news failed: {e}")
+
         if not news and not matches:
             return {"news": [], "matches": [], "count": 0,
                     "message": "Nothing found. Retry with a ticker symbol or a shorter company name."}
         return {"news": news, "matches": matches, "count": len(news)}
     except Exception as e:
-        logger.error(f"stock_news({query}) error: {e}")
+        logger.warning(f"stock_news({query}) Yahoo search failed: {e}; falling back to finnews")
+        try:
+            fin_articles = await _finnews_articles(query=query, limit=limit)
+            if fin_articles:
+                return {"news": fin_articles, "matches": [], "count": len(fin_articles)}
+        except Exception:
+            pass
         return {"error": str(e), "is_error": True}
 
 
