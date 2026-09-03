@@ -1,6 +1,7 @@
 import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
+from app.utils import _fetch_secret
 
 async def _scrape(url: str, engine: str = "crawl4ai", timeout: float = 90.0) -> str:
     """Fetch a URL through scraper-service. Returns page content ('' on failure)."""
@@ -62,18 +63,21 @@ async def _search_brave_api(query: str, limit: int) -> list:
     search.brave.com — that is bot-walled and was removed for good reason. They
     are unrelated services."""
     global _brave_last_call, _brave_lock
-    key = await _fetch_secret("BRAVE_SEARCH_API_KEY")
+    fetch_sec = getattr(main, "_fetch_secret", _fetch_secret)
+    key = await fetch_sec("BRAVE_SEARCH_API_KEY")
     if not key:
         return []
     if _brave_lock is None:
         _brave_lock = asyncio.Lock()
+    min_interval = getattr(main, "_BRAVE_MIN_INTERVAL", _BRAVE_MIN_INTERVAL)
     async with _brave_lock:
-        wait = _BRAVE_MIN_INTERVAL - (time.time() - _brave_last_call)
+        wait = min_interval - (time.time() - _brave_last_call)
         if wait > 0:
             await asyncio.sleep(wait)
         _brave_last_call = time.time()
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
+        async with client_cls(timeout=6.0) as client:
             resp = await client.get(
                 "https://api.search.brave.com/res/v1/web/search",
                 params={"q": query, "count": max(1, min(int(limit), 20))},
@@ -187,7 +191,7 @@ async def web_search_ex(query: str, limit: int = 6) -> tuple:
     every backend was unreachable. The model obliged, 10-18 times per turn. Retry
     advice must never be given for a transport failure."""
     reached_any = False
-    for engine, search in _SEARCH_ENGINES:
+    for engine, search in getattr(main, "_SEARCH_ENGINES", _SEARCH_ENGINES):
         try:
             results = await search(query, limit)
         except Exception as e:

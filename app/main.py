@@ -3083,5 +3083,5 @@ from app.routes.health import router as health_router
 app.include_router(health_router)
 from app.routes.api import router as api_router
 app.include_router(api_router)
-from app.routes.internal import router as internal_router
+from app.routes.internal import router as internal_router, internal_tool_execute, InternalToolRequest
 app.include_router(internal_router)

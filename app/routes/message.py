@@ -1627,13 +1627,18 @@ async def send_message(req: MessageRequest):
                         models_data = resp.json().get("data", [])
                         if models_data:
                             model_name = models_data[0].get("id")
-                            req.provider = "vllm-2"
+                            if "10.0.0.141" in VLLM_URL:
+                                req.provider = "vllm-2"
+                            elif "10.0.0.30:8001" in VLLM_URL:
+                                req.provider = "vllm-3"
+                            else:
+                                req.provider = "vllm"
             except Exception as e:
                 logger.warning(f"Failed to fetch dynamic model from {VLLM_URL}: {e}")
             if not model_name:
                 # Last resort: the Jetson instance/model pair.
                 req.provider = "vllm"
-                model_name = "cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit"
+                model_name = "nemotron35"
         # REMOVED: a PUT {target_url}/settings that rewrote the gateway's GLOBAL
         # memory.extractionModel on EVERY turn. Three problems: (1) a client has no
         # business mutating a shared gateway's global config — it raced every other

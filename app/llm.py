@@ -2,10 +2,11 @@ import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 
-async def fast_llm_json(instruction: str, max_tokens: int = 1000) -> Optional[dict]:
+async def fast_llm_json(instruction: str, max_tokens: int = 4096) -> Optional[dict]:
     """One tool-free completion against the local vLLM, parsed as JSON.
     Rotates through available local vLLM endpoints before failing open.
     Supports both traditional and reasoning models (extracting JSON from content or reasoning).
+    Ensures sufficient token headroom for reasoning models (e.g. Nemotron 3.5).
     """
     configured_urls = getattr(main, "VLLM_ENDPOINTS", None) or []
     default_pool = [
@@ -19,6 +20,28 @@ async def fast_llm_json(instruction: str, max_tokens: int = 1000) -> Optional[di
     for u in list(configured_urls) + default_pool:
         if u and u not in urls:
             urls.append(u)
+
+    # Reasoning models (Nemotron 3.5, etc.) consume 1000-1800 tokens on thinking
+    # before emitting content. Ensure at least 4096 tokens so completions do not truncate.
+    token_budget = max(max_tokens, 4096)
+
+    def _extract_json(src: str) -> Optional[dict]:
+        if not src or not src.strip():
+            return None
+        matches = list(re.finditer(r'\{[\s\S]*\}', src))
+        for m in reversed(matches):
+            cand = m.group(0)
+            try:
+                return json.loads(cand)
+            except Exception:
+                end_pos = cand.rfind("}")
+                while end_pos > 0:
+                    sub = cand[:end_pos + 1]
+                    try:
+                        return json.loads(sub)
+                    except Exception:
+                        end_pos = cand.rfind("}", 0, end_pos)
+        return None
 
     for target_url in urls:
         try:
@@ -37,7 +60,7 @@ async def fast_llm_json(instruction: str, max_tokens: int = 1000) -> Optional[di
                 payload = {
                     "model": model,
                     "temperature": 0.2,
-                    "max_tokens": max_tokens,
+                    "max_tokens": token_budget,
                     "messages": [{"role": "user", "content": instruction}],
                 }
                 resp = await client.post(f"{target_url}/v1/chat/completions", json=payload)
@@ -47,28 +70,16 @@ async def fast_llm_json(instruction: str, max_tokens: int = 1000) -> Optional[di
 
                 res_json = resp.json()
                 msg = (res_json.get("choices") or [{}])[0].get("message") or {}
-                content = msg.get("content") or ""
-                reasoning = msg.get("reasoning") or ""
-                text = (content if content.strip() else reasoning) or ""
+                content = (msg.get("content") or "").strip()
+                reasoning = (msg.get("reasoning") or "").strip()
 
-                if not text:
-                    continue
+                # Prioritize content, fall back to reasoning if content is empty
+                parsed = _extract_json(content) if content else None
+                if parsed is None and reasoning:
+                    parsed = _extract_json(reasoning)
 
-                # Find valid JSON object
-                matches = list(re.finditer(r'\{[\s\S]*\}', text))
-                for m in reversed(matches):
-                    cand = m.group(0)
-                    try:
-                        return json.loads(cand)
-                    except Exception:
-                        # Try shrinking to find valid JSON substring
-                        end_pos = cand.rfind("}")
-                        while end_pos > 0:
-                            sub = cand[:end_pos + 1]
-                            try:
-                                return json.loads(sub)
-                            except Exception:
-                                end_pos = cand.rfind("}", 0, end_pos)
+                if parsed is not None:
+                    return parsed
         except Exception as e:
             if target_url in _fast_model:
                 _fast_model[target_url] = None

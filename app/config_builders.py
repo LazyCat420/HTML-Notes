@@ -1266,7 +1266,7 @@ async def build_answer_config(query: str, results: Optional[list] = None,
     # timeout we synthesise from snippets alone.
     try:
         page_texts = (await asyncio.wait_for(
-            asyncio.gather(*[_fetch_news_page_text(r) for r in top]), timeout=12.0)) if top else []
+            asyncio.gather(*[_fetch_news_page_text(r) for r in top]), timeout=25.0)) if top else []
     except asyncio.TimeoutError:
         logger.info(f"build_answer_config: page reads timed out for {q!r}, using snippets")
         page_texts = []
@@ -1334,7 +1334,7 @@ async def build_answer_config(query: str, results: Optional[list] = None,
         '- Ground every claim in the SOURCES text above. Never invent quantities, names, '
         'dates or numbers that are not present. If sources conflict, say so briefly.\n'
         '- `sources` lists only the indices you drew from.',
-        max_tokens=1400,
+        max_tokens=4096,
     )
 
     def summarised_items(indices=None):

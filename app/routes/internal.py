@@ -377,7 +377,8 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
 
         elif t == "html_notes_web_search":
             query = a.get("query", "")
-            results, engines_down = await web_search_ex(
+            search_fn = getattr(main, "web_search_ex", None) or web_search_ex
+            results, engines_down = await search_fn(
                 query, limit=int(a.get("limit", 6)))
             if engines_down:
                 # NEVER advise a retry here. This is a transport failure, not a bad
