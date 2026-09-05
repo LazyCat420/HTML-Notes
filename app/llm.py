@@ -2,28 +2,59 @@ import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 
-async def fast_llm_json(instruction: str, max_tokens: int = 4096) -> Optional[dict]:
+#: Turns the reasoning trace OFF for structured-JSON calls.
+#:
+#: `nemotron35` is a reasoning model, and on this box `enable_thinking` is the
+#: spelling that works — measured 2026-09-05 against 10.0.0.30:8000, all on the
+#: real router prompt:
+#:
+#:     chat_template_kwargs {"enable_thinking": false}  0.8s  content, valid JSON
+#:     reasoning_effort "none"                          0.8s  content, valid JSON
+#:     chat_template_kwargs {"thinking": false}         7.9s  NO content
+#:     reasoning_effort "low"                           8.4s  NO content
+#:     system "/no_think"                               7.9s  NO content
+#:     system "detailed thinking off"                   8.4s  NO content
+#:     (baseline)                                       7.8s  NO content
+#:
+#: Note this is the OPPOSITE of the DeepSeek case the vllm shim handles, where
+#: `thinking` is the live key and `enable_thinking` is ignored. Sending both is
+#: harmless — a template ignores the key it does not read — so both are sent and
+#: a model swap in either direction stays covered.
+#:
+#: This is a correctness fix as much as a speed one: with the trace on, the
+#: reasoning consumes the whole allowance and `content` comes back EMPTY at any
+#: budget a router can afford (550 -> content_len 0, finish=length).
+NO_THINKING = {"enable_thinking": False, "thinking": False}
+
+
+async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[dict]:
     """One tool-free completion against the local vLLM, parsed as JSON.
     Rotates through available local vLLM endpoints before failing open.
-    Supports both traditional and reasoning models (extracting JSON from content or reasoning).
-    Ensures sufficient token headroom for reasoning models (e.g. Nemotron 3.5).
+    Reasoning is disabled (see NO_THINKING) — measured 15x faster on the real
+    router prompt for identical decisions.
     """
     configured_urls = getattr(main, "VLLM_ENDPOINTS", None) or []
+    # Preference, not a pin: the Jetson leads, Gold Spark backs it up, and a box
+    # is taken out by leaving its URL unset rather than by deleting the fallback
+    # (a static pin has no way back — see the SOLO_JETSON_MODE incident).
+    # 10.0.0.30:8001 is deliberately ABSENT: it serves embeddinggemma, whose
+    # /v1/chat/completions returns 404, so it could only ever cost a round-trip.
     default_pool = [
         getattr(main, "VLLM_URL", "http://10.0.0.30:8000"),
         getattr(main, "VLLM_FAST_URL", "http://10.0.0.30:8000"),
         "http://10.0.0.30:8000",
         "http://10.0.0.141:8000",
-        "http://10.0.0.30:8001",
     ]
     urls = []
     for u in list(configured_urls) + default_pool:
         if u and u not in urls:
             urls.append(u)
 
-    # Reasoning models (Nemotron 3.5, etc.) consume 1000-1800 tokens on thinking
-    # before emitting content. Ensure at least 4096 tokens so completions do not truncate.
-    token_budget = max(max_tokens, 4096)
+    # The caller's budget is the budget. This used to be max(max_tokens, 4096)
+    # because a reasoning trace left no room for content; with the trace off, 550
+    # tokens returns valid JSON in ~1.2s, and the floor only bought a slower
+    # generation on every call on every path.
+    token_budget = max_tokens
 
     def _extract_json(src: str) -> Optional[dict]:
         if not src or not src.strip():
@@ -45,7 +76,11 @@ async def fast_llm_json(instruction: str, max_tokens: int = 4096) -> Optional[di
 
     for target_url in urls:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=3.0)) as client:
+            # 20s, not 90s: with reasoning off the p95 is under 2s, and a 90s
+            # read across a 3-endpoint rotation is 270s of dead air. That is
+            # literally how one measured turn reached 201s — Jetson ReadTimeout
+            # (90s) + Gold Spark ReadTimeout (90s) + embeddinggemma 404.
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=3.0)) as client:
                 model = _fast_model.get(target_url)
                 if not model:
                     resp = await client.get(f"{target_url}/v1/models")
@@ -62,6 +97,7 @@ async def fast_llm_json(instruction: str, max_tokens: int = 4096) -> Optional[di
                     "temperature": 0.2,
                     "max_tokens": token_budget,
                     "messages": [{"role": "user", "content": instruction}],
+                    "chat_template_kwargs": dict(NO_THINKING),
                 }
                 resp = await client.post(f"{target_url}/v1/chat/completions", json=payload)
                 if resp.status_code != 200:

@@ -3,10 +3,16 @@ import os
 PORT = int(os.getenv("PORT", "8035"))
 VLLM_URL = os.getenv("VLLM_URL", "http://10.0.0.30:8000")
 VLLM_FAST_URL = os.getenv("VLLM_FAST_URL", "http://10.0.0.30:8000")
+# CHAT endpoints, in preference order: the Jetson leads, Gold Spark backs it up.
+# 10.0.0.30:8001 is NOT here — it serves embeddinggemma, which has no chat
+# endpoint at all (/v1/chat/completions -> 404), so every rotation onto it was a
+# wasted round-trip. The model keeps running there for its real consumers; it is
+# simply not a chat target. To take a box out, leave its URL unset rather than
+# pinning to one — a pin cannot let the box back in when it recovers.
 VLLM_ENDPOINTS = [
     url.strip() for url in os.getenv(
         "VLLM_ENDPOINTS",
-        f"{VLLM_URL},http://10.0.0.141:8000,http://10.0.0.30:8001"
+        f"{VLLM_URL},http://10.0.0.141:8000"
     ).split(",") if url.strip()
 ]
 PRISM_URL = os.getenv("PRISM_URL", "http://10.0.0.16:7777")

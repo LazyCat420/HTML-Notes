@@ -1599,40 +1599,63 @@ async def send_message(req: MessageRequest):
             # Discover a provider/model pair from the gateway's local catalog so
             # the provider instance and model always match (e.g. "vllm" serves a
             # different model than "vllm-2").
+            #
+            # Two things this used to get wrong, both measured live 2026-09-05:
+            #
+            # 1. It used a BLOCKING httpx.Client inside this async handler, and
+            #    /config-local takes ~3s by its own comment — so every agent turn
+            #    stalled the whole event loop, serialised across all users.
+            # 2. It took the FIRST catalog entry with modelType "conversation"
+            #    and "Tool Calling", i.e. whatever dict order happened to yield.
+            #    The catalog advertises embeddinggemma exactly that way, and that
+            #    endpoint 404s on /v1/chat/completions. Landing on nemotron was
+            #    luck, not policy. Now: walk PREFERRED_AGENT_PROVIDERS in order
+            #    and refuse a model that cannot chat whatever the catalog claims.
             try:
-                # /config-local probes each vLLM instance and takes ~3s itself,
-                # so the client timeout must sit well above that.
-                with httpx.Client(timeout=10.0) as client:
-                    resp = client.get(f"{target_url}/config-local")
-                    if resp.status_code == 200:
-                        local_models = resp.json().get("models", {})
-                        for provider_id, provider_models in local_models.items():
-                            for m in provider_models:
-                                if m.get("modelType") == "conversation" and "Tool Calling" in (m.get("tools") or []):
-                                    req.provider = provider_id
-                                    model_name = m.get("name")
-                                    break
-                            if model_name:
-                                break
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(f"{target_url}/config-local")
+                if resp.status_code == 200:
+                    local_models = resp.json().get("models", {})
+
+                    def _pick(provider_id):
+                        for entry in local_models.get(provider_id) or []:
+                            name = entry.get("name")
+                            if (entry.get("modelType") == "conversation"
+                                    and "Tool Calling" in (entry.get("tools") or [])
+                                    and _is_chat_capable_model(name)):
+                                return name
+                        return None
+
+                    ordered = list(PREFERRED_AGENT_PROVIDERS) + [
+                        p for p in local_models if p not in PREFERRED_AGENT_PROVIDERS]
+                    for provider_id in ordered:
+                        picked = _pick(provider_id)
+                        if picked:
+                            req.provider, model_name = provider_id, picked
+                            break
+                    if model_name:
+                        logger.info(f"[AGENT MODEL] {req.provider}/{model_name} "
+                                    f"(preference {PREFERRED_AGENT_PROVIDERS})")
             except Exception as e:
                 logger.warning(f"Failed to fetch model catalog from {target_url}: {e}")
         if not model_name:
-            # VLLM_URL is Gold Spark (10.0.0.141), registered as provider
-            # "vllm-2" in the gateway — the pair must match or the gateway
-            # 404s with "model does not exist" on the wrong instance.
+            # Fall back to whatever VLLM_URL is serving, mapping the URL to the
+            # gateway provider id it is registered under — the pair must match or
+            # the gateway 404s with "model does not exist" on the wrong instance.
+            # VLLM_URL defaults to the Jetson (10.0.0.30:8000) = provider "vllm".
             try:
-                with httpx.Client(timeout=2.0) as client:
-                    resp = client.get(f"{VLLM_URL}/v1/models")
-                    if resp.status_code == 200:
-                        models_data = resp.json().get("data", [])
-                        if models_data:
-                            model_name = models_data[0].get("id")
-                            if "10.0.0.141" in VLLM_URL:
-                                req.provider = "vllm-2"
-                            elif "10.0.0.30:8001" in VLLM_URL:
-                                req.provider = "vllm-3"
-                            else:
-                                req.provider = "vllm"
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(f"{VLLM_URL}/v1/models")
+                if resp.status_code == 200:
+                    for entry in resp.json().get("data", []):
+                        if _is_chat_capable_model(entry.get("id")):
+                            model_name = entry.get("id")
+                            break
+                    if model_name:
+                        if "10.0.0.141" in VLLM_URL:
+                            req.provider = "vllm-2"
+                        else:
+                            req.provider = "vllm"
             except Exception as e:
                 logger.warning(f"Failed to fetch dynamic model from {VLLM_URL}: {e}")
             if not model_name:

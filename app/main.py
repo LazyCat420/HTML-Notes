@@ -1853,6 +1853,34 @@ async def _wiki_summary(topic: str) -> dict:
 
 _fast_model = {"name": None}
 
+# Models that answer /v1/models but cannot serve /v1/chat/completions.
+#
+# The gateway's /config-local advertises embeddinggemma as
+# `modelType: "conversation"` with `tools: ["Tool Calling"]` — measured live on
+# 2026-09-05, and provably false: that endpoint 404s on /v1/chat/completions. A
+# catalog's capability field is a CLAIM, and the agent selection loop was
+# trusting it while taking the first entry in dict order. Treat a known
+# embedding model as ineligible regardless of what the catalog says.
+_NON_CHAT_MODEL_MARKERS = ("embed", "rerank", "bge-", "e5-", "gte-")
+
+
+def _is_chat_capable_model(model_id: str) -> bool:
+    """False for a model that cannot serve a chat completion, whatever the
+    catalog claims about it."""
+    name = (model_id or "").strip().lower()
+    if not name:
+        return False
+    return not any(marker in name for marker in _NON_CHAT_MODEL_MARKERS)
+
+
+# Which gateway provider to hand an agent turn to, in order. The Jetson's
+# nemotron35 leads because it is the box that measurably works: native
+# tool_calls parsed at 0.38-0.55s, versus Gold Spark head-of-line blocked at
+# ~21 tok/s with requests sitting in "deferred". This is a PREFERENCE with a
+# fallback, not a pin — an unavailable box is skipped and rejoins on its own.
+PREFERRED_AGENT_PROVIDERS = ("vllm", "vllm-2")
+
+
 
 
 
