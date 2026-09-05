@@ -103,13 +103,13 @@ def test_extract_and_merge_checklist(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_list_add_merges_without_dupes(monkeypatch):
+async def test_build_list_add_merges_without_dupes(patch_server):
     import app.main as m
 
     async def fake_llm(_instruction, max_tokens=400):
         return {"items": ["feta cheese", "cucumber", "pork ribs"]}  # "pork ribs" dupes
 
-    monkeypatch.setattr(m, "fast_llm_json", fake_llm)
+    patch_server("fast_llm_json", fake_llm)
     existing = [{"text": "pork ribs", "done": True}, {"text": "bbq sauce", "done": False}]
     out = await m.build_list_add_config("add a greek salad", "BBQ Pork Ribs", existing)
 
@@ -185,11 +185,11 @@ def test_persist_and_resolve_list():
 
 
 @pytest.mark.asyncio
-async def test_build_list_remove(monkeypatch):
+async def test_build_list_remove(patch_server):
     import app.main as m
     async def fake_llm(_instruction, max_tokens=400):
         return {"remove": ["carrots", "broccoli"]}
-    monkeypatch.setattr(m, "fast_llm_json", fake_llm)
+    patch_server("fast_llm_json", fake_llm)
     items = [{"text": "carrots", "done": False},
              {"text": "milk", "done": True},
              {"text": "broccoli", "done": False}]
@@ -200,11 +200,11 @@ async def test_build_list_remove(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_list_remove_no_match_keeps_list(monkeypatch):
+async def test_build_list_remove_no_match_keeps_list(patch_server):
     import app.main as m
     async def fake_llm(_instruction, max_tokens=400):
         return {"remove": []}
-    monkeypatch.setattr(m, "fast_llm_json", fake_llm)
+    patch_server("fast_llm_json", fake_llm)
     items = [{"text": "milk", "done": False}]
     out = await m.build_list_remove_config("delete the veggies", "Groceries", items)
     assert [i["text"] for i in out["items"]] == ["milk"]  # unchanged, not emptied
@@ -222,7 +222,7 @@ def test_poi_map_detection():
 
 
 @pytest.mark.asyncio
-async def test_google_places_search_maps_markers(monkeypatch):
+async def test_google_places_search_maps_markers(monkeypatch, patch_server):
     import app.main as m
     async def fake_secret(name): return "FAKE_KEY"
     class FakeResp:
@@ -240,7 +240,7 @@ async def test_google_places_search_maps_markers(monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def post(self, *a, **k): return FakeResp()
-    monkeypatch.setattr(m, "_fetch_secret", fake_secret)
+    patch_server("_fetch_secret", fake_secret)
     monkeypatch.setattr(m.httpx, "AsyncClient", FakeClient)
     out = await m.google_places_search("coffee shops in seattle")
     assert len(out) == 1                        # the coord-less place is dropped
@@ -251,19 +251,19 @@ async def test_google_places_search_maps_markers(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_google_places_search_no_key_returns_empty(monkeypatch):
+async def test_google_places_search_no_key_returns_empty(patch_server):
     import app.main as m
     async def no_secret(name): return ""
-    monkeypatch.setattr(m, "_fetch_secret", no_secret)
+    patch_server("_fetch_secret", no_secret)
     assert await m.google_places_search("coffee shops") == []
 
 
 @pytest.mark.asyncio
-async def test_build_map_config_uses_places_for_poi(monkeypatch):
+async def test_build_map_config_uses_places_for_poi(patch_server):
     import app.main as m
     async def fake_places(q, limit=12):
         return [{"lat": 1.0, "lon": 2.0, "label": "Shop", "detail": "", "color": "#8b5cf6"}]
-    monkeypatch.setattr(m, "google_places_search", fake_places)
+    patch_server("google_places_search", fake_places)
     cfg = await m.build_map_config("coffee shops in seattle")
     assert cfg["markers"] and cfg["markers"][0]["label"] == "Shop"
     assert "1 place" in cfg["subtitle"]
@@ -302,7 +302,7 @@ def test_anchor_places_query(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_map_config_food_anchors_to_user_city(monkeypatch):
+async def test_build_map_config_food_anchors_to_user_city(monkeypatch, patch_server):
     """'where can i get food' must reach Google Places with the user's city
     appended — the exact bug where a New York user got a blank whole-US map."""
     import app.main as m, app.database as db
@@ -311,7 +311,7 @@ async def test_build_map_config_food_anchors_to_user_city(monkeypatch):
     async def fake_places(q, limit=12):
         seen["q"] = q
         return [{"lat": 40.7, "lon": -74.0, "label": "Joe's Pizza", "detail": "", "color": "#8b5cf6"}]
-    monkeypatch.setattr(m, "google_places_search", fake_places)
+    patch_server("google_places_search", fake_places)
     cfg = await m.build_map_config("where can i get food")
     assert seen["q"] == "where can i get food in New York"   # anchored, not bare
     assert cfg["markers"] and cfg["markers"][0]["label"] == "Joe's Pizza"
@@ -364,7 +364,7 @@ def test_list_edit_matches_conversational_followups():
 
 
 @pytest.mark.asyncio
-async def test_traffic_widget_fallbacks_without_tomtom_key(monkeypatch):
+async def test_traffic_widget_fallbacks_without_tomtom_key(monkeypatch, patch_server):
     """Without a TomTom key a traffic ask no longer pretends to show live flow:
     when the place geocodes it degrades to OUR themed area map (traffic off) with
     an honest 'needs a TomTom key' subtitle, instead of a plain Google embed
@@ -377,8 +377,8 @@ async def test_traffic_widget_fallbacks_without_tomtom_key(monkeypatch):
 
     async def geo(name):
         return {"lat": 47.6, "lon": -122.33, "resolved": "Seattle"}
-    monkeypatch.setattr(m, "_fetch_secret", no_key)
-    monkeypatch.setattr(m, "geocode_place", geo)
+    patch_server("_fetch_secret", no_key)
+    patch_server("geocode_place", geo)
 
     wtype, cfg = await m.build_traffic_widget("traffic in seattle")
     assert wtype == "map" and cfg and cfg.get("traffic") is not True
@@ -399,7 +399,7 @@ async def test_traffic_widget_fallbacks_without_tomtom_key(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_traffic_widget_renders_leaflet_tomtom_map_with_key(monkeypatch):
+async def test_traffic_widget_renders_leaflet_tomtom_map_with_key(monkeypatch, patch_server):
     import app.main as m, app.database as db
     monkeypatch.setattr(db, "get_user_facts", lambda: {"location": "Seattle"})
 
@@ -408,8 +408,8 @@ async def test_traffic_widget_renders_leaflet_tomtom_map_with_key(monkeypatch):
 
     async def geo(name):
         return {"lat": 47.6, "lon": -122.33, "resolved": "Seattle"}
-    monkeypatch.setattr(m, "_fetch_secret", key)
-    monkeypatch.setattr(m, "geocode_place", geo)
+    patch_server("_fetch_secret", key)
+    patch_server("geocode_place", geo)
     wtype, cfg = await m.build_traffic_widget("traffic near me")
     assert wtype == "map" and cfg["traffic"] is True
     assert cfg["center"]["lat"] == 47.6 and cfg["markers"]
@@ -458,7 +458,7 @@ def test_stock_news_asks_route_to_market_branch():
 
 
 @pytest.mark.asyncio
-async def test_build_stock_news_config_writes_summaries(monkeypatch):
+async def test_build_stock_news_config_writes_summaries(patch_server):
     import app.main as m
 
     async def fake_stock_news(query, limit=8):
@@ -474,9 +474,9 @@ async def test_build_stock_news_config_writes_summaries(monkeypatch):
         return {"overview": "Chips rallied.",
                 "items": [{"index": 0, "title": "Nvidia jumps on earnings",
                            "summary": "Nvidia stock rose 5% after a strong report."}]}
-    monkeypatch.setattr(m, "stock_news", fake_stock_news)
-    monkeypatch.setattr(m, "read_web_page", fake_read)
-    monkeypatch.setattr(m, "fast_llm_json", fake_llm)
+    patch_server("stock_news", fake_stock_news)
+    patch_server("read_web_page", fake_read)
+    patch_server("fast_llm_json", fake_llm)
     cfg = await m.build_stock_news_config("nvidia stock news")
     item = cfg["items"][0]
     assert item["description"].startswith("Nvidia stock rose")
@@ -487,7 +487,7 @@ async def test_build_stock_news_config_writes_summaries(monkeypatch):
     # LLM pass failing must still yield article excerpts, never bare links
     async def dead_llm(instruction, max_tokens=400):
         return None
-    monkeypatch.setattr(m, "fast_llm_json", dead_llm)
+    patch_server("fast_llm_json", dead_llm)
     cfg = await m.build_stock_news_config("nvidia stock news")
     assert cfg["items"][0]["description"].startswith("Nvidia rose after")
 
@@ -501,7 +501,7 @@ def test_traffic_gate_does_not_hijack_translation():
 
 
 @pytest.mark.asyncio
-async def test_build_map_config_prompts_when_no_location(monkeypatch):
+async def test_build_map_config_prompts_when_no_location(monkeypatch, patch_server):
     """No place named and no saved city → build_map_config must NOT call Places
     (which would return the server region); it returns a location-prompt card."""
     import app.main as m, app.database as db
@@ -510,7 +510,7 @@ async def test_build_map_config_prompts_when_no_location(monkeypatch):
     async def fake_places(q, limit=12):
         called["places"] = True
         return [{"lat": 1, "lon": 2, "label": "X", "detail": "", "color": "#8b5cf6"}]
-    monkeypatch.setattr(m, "google_places_search", fake_places)
+    patch_server("google_places_search", fake_places)
     cfg = await m.build_map_config("where can i get food")
     assert cfg.get("prompt_for_location") is True
     assert not cfg.get("markers")
@@ -520,13 +520,13 @@ async def test_build_map_config_prompts_when_no_location(monkeypatch):
 
 # ── News: general "what's going on" must fetch top stories, not literal-search ─
 @pytest.mark.asyncio
-async def test_general_news_uses_top_stories(monkeypatch):
+async def test_general_news_uses_top_stories(patch_server):
     import app.main as m
     captured = {}
     async def fake_news_search(topic, limit=6):
         captured["topic"] = topic
         return []  # short-circuits the rest of build_news_config
-    monkeypatch.setattr(m, "news_search", fake_news_search)
+    patch_server("news_search", fake_news_search)
 
     await m.build_news_config("whats going on in the news")
     assert captured["topic"] == "", "general ask must search top stories (empty topic)"
@@ -589,7 +589,7 @@ def test_user_facts_prompt():
 
 # ── Agentic router (LLM widget selection + composition) ─────────────────────
 @pytest.mark.asyncio
-async def test_route_with_llm_validates_and_filters(monkeypatch):
+async def test_route_with_llm_validates_and_filters(patch_server):
     """The router must accept only known types, cap at 4, and pass a defer through
     untouched — a malformed model reply degrades to None (→ agent), never a crash."""
     import app.main as m
@@ -597,7 +597,7 @@ async def test_route_with_llm_validates_and_filters(monkeypatch):
     async def run(fake):
         async def fake_llm(instruction, max_tokens=400):
             return fake
-        monkeypatch.setattr(m, "fast_llm_json", fake_llm)
+        patch_server("fast_llm_json", fake_llm)
         return await m.route_with_llm("whatever", "")
 
     # valid multi-widget plan, plus one bogus type that must be dropped
@@ -619,7 +619,7 @@ async def test_route_with_llm_validates_and_filters(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_router_widget_dispatches_each_type(monkeypatch):
+async def test_build_router_widget_dispatches_each_type(patch_server):
     """Each router type routes to the matching builder and returns a spawnable
     (widget_type, id_prefix, config) triple — or None when the pull is empty."""
     import app.main as m
@@ -632,9 +632,9 @@ async def test_build_router_widget_dispatches_each_type(monkeypatch):
         return {"title": "A", "answer": "text"}
     async def fake_map(msg):
         return {"title": "M", "markers": [{"lat": 1, "lon": 2}]}
-    monkeypatch.setattr(m, "get_weather", ok_weather)
-    monkeypatch.setattr(m, "build_answer_config", fake_answer)
-    monkeypatch.setattr(m, "build_map_config", fake_map)
+    patch_server("get_weather", ok_weather)
+    patch_server("build_answer_config", fake_answer)
+    patch_server("build_map_config", fake_map)
 
     wt, pfx, cfg = await m.build_router_widget({"type": "weather", "query": "Tokyo"}, "s", "msg")
     # extract_location normalises to lowercase before geocoding
@@ -647,7 +647,7 @@ async def test_build_router_widget_dispatches_each_type(monkeypatch):
     assert wt == "map" and cfg["markers"]
 
     # a failed weather pull → None (skipped, not an empty widget)
-    monkeypatch.setattr(m, "get_weather", bad_weather)
+    patch_server("get_weather", bad_weather)
     assert await m.build_router_widget({"type": "weather", "query": "Nowhere"}, "s", "msg") is None
 
     # unknown type → None
@@ -655,7 +655,7 @@ async def test_build_router_widget_dispatches_each_type(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_router_widget_clock_and_traffic(monkeypatch):
+async def test_build_router_widget_clock_and_traffic(patch_server):
     import app.main as m
     # timer parsing lands a countdown, not a bare clock
     wt, pfx, cfg = await m.build_router_widget(
@@ -666,7 +666,7 @@ async def test_build_router_widget_clock_and_traffic(monkeypatch):
     async def fake_traffic(msg, force_traffic=False):
         seen["force_traffic"] = force_traffic
         return "iframe_app", {"url": "https://maps.google.com/maps?q=x&output=embed"}
-    monkeypatch.setattr(m, "build_traffic_widget", fake_traffic)
+    patch_server("build_traffic_widget", fake_traffic)
     wt, pfx, cfg = await m.build_router_widget(
         {"type": "traffic", "query": "traffic in LA", "modifiers": {"traffic": True}}, "s", "msg")
     assert wt == "iframe_app" and "output=embed" in cfg["url"]
@@ -678,10 +678,10 @@ async def test_build_router_widget_clock_and_traffic(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_ticker(monkeypatch):
+async def test_resolve_ticker(patch_server):
     import app.main as m
     assert await m._resolve_ticker("TSLA") == "TSLA"      # bare symbol passes through
     async def fake_news(q, limit=8):
         return {"news": [], "matches": [{"symbol": "AAPL", "name": "Apple Inc."}]}
-    monkeypatch.setattr(m, "stock_news", fake_news)
+    patch_server("stock_news", fake_news)
     assert await m._resolve_ticker("Apple") == "AAPL"     # name resolves via matches

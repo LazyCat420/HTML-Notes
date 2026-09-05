@@ -5,7 +5,7 @@ from app.canvas_manager import _spoken_summary
 
 
 @pytest.mark.asyncio
-async def test_build_stock_news_config_has_answer_on_success(monkeypatch):
+async def test_build_stock_news_config_has_answer_on_success(patch_server):
     async def mock_stock_news(q, limit=8):
         return {
             "news": [
@@ -27,10 +27,10 @@ async def test_build_stock_news_config_has_answer_on_success(monkeypatch):
     async def mock_empty_shared(q, limit=6):
         return []
 
-    monkeypatch.setattr(m, "_shared_news_search", mock_empty_shared)
-    monkeypatch.setattr(m, "stock_news", mock_stock_news)
-    monkeypatch.setattr(m, "_fetch_news_page_text", mock_fetch_page)
-    monkeypatch.setattr(m, "fast_llm_json", mock_llm_json)
+    patch_server("_shared_news_search", mock_empty_shared)
+    patch_server("stock_news", mock_stock_news)
+    patch_server("_fetch_news_page_text", mock_fetch_page)
+    patch_server("fast_llm_json", mock_llm_json)
 
     cfg = await build_stock_news_config("stock market news")
     assert cfg.get("answer") == "U.S. markets gained as major tech companies posted strong quarterly earnings."
@@ -44,7 +44,7 @@ async def test_build_stock_news_config_has_answer_on_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_stock_news_config_has_answer_on_degraded(monkeypatch):
+async def test_build_stock_news_config_has_answer_on_degraded(patch_server):
     async def mock_stock_news(q, limit=8):
         return {
             "news": [
@@ -60,10 +60,10 @@ async def test_build_stock_news_config_has_answer_on_degraded(monkeypatch):
     async def mock_empty_shared(q, limit=6):
         return []
 
-    monkeypatch.setattr(m, "_shared_news_search", mock_empty_shared)
-    monkeypatch.setattr(m, "stock_news", mock_stock_news)
-    monkeypatch.setattr(m, "_fetch_news_page_text", mock_fetch_page)
-    monkeypatch.setattr(m, "fast_llm_json", mock_dead_llm)
+    patch_server("_shared_news_search", mock_empty_shared)
+    patch_server("stock_news", mock_stock_news)
+    patch_server("_fetch_news_page_text", mock_fetch_page)
+    patch_server("fast_llm_json", mock_dead_llm)
 
     cfg = await build_stock_news_config("stock market news")
     assert cfg.get("answer"), "Degraded news card must still return a non-empty fallback answer"

@@ -35,7 +35,7 @@ def _results():
 
 
 @pytest.mark.asyncio
-async def test_results_with_snippets_still_get_images(monkeypatch):
+async def test_results_with_snippets_still_get_images(patch_server):
     """The regression: good snippet + no image must STILL be enriched.
 
     Fails on the old `thin` selection, which skipped every one of these.
@@ -47,9 +47,9 @@ async def test_results_with_snippets_still_get_images(monkeypatch):
         for i in items:
             i["image"] = f"https://cdn.example{i['url'][-4:]}.jpg"
 
-    monkeypatch.setattr(m, "_enrich_news", fake_enrich)
-    monkeypatch.setattr(m, "read_web_page", _unreachable_page)
-    monkeypatch.setattr(m, "fast_llm_json", _fake_llm)
+    patch_server("_enrich_news", fake_enrich)
+    patch_server("read_web_page", _unreachable_page)
+    patch_server("fast_llm_json", _fake_llm)
 
     cfg = await m.build_answer_config("best espresso machines", results=_results())
 
@@ -59,15 +59,15 @@ async def test_results_with_snippets_still_get_images(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_items_pair_each_image_with_its_source_link(monkeypatch):
+async def test_items_pair_each_image_with_its_source_link(patch_server):
     """An image is only useful if it's attributed — image and url travel together."""
     async def fake_enrich(items, timeout=5.0):
         for i in items:
             i["image"] = f"https://cdn.example/{i['url'][-3:]}.jpg"
 
-    monkeypatch.setattr(m, "_enrich_news", fake_enrich)
-    monkeypatch.setattr(m, "read_web_page", _unreachable_page)
-    monkeypatch.setattr(m, "fast_llm_json", _fake_llm)
+    patch_server("_enrich_news", fake_enrich)
+    patch_server("read_web_page", _unreachable_page)
+    patch_server("fast_llm_json", _fake_llm)
 
     cfg = await m.build_answer_config("q", results=_results())
 
@@ -78,7 +78,7 @@ async def test_items_pair_each_image_with_its_source_link(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_already_imaged_results_are_not_refetched(monkeypatch):
+async def test_already_imaged_results_are_not_refetched(patch_server):
     """Enrichment is a network cost — only pay it for what's actually missing."""
     seen = []
 
@@ -89,9 +89,9 @@ async def test_already_imaged_results_are_not_refetched(monkeypatch):
     for r in results:
         r["image"] = "https://cdn.example/already.jpg"
 
-    monkeypatch.setattr(m, "_enrich_news", fake_enrich)
-    monkeypatch.setattr(m, "read_web_page", _unreachable_page)
-    monkeypatch.setattr(m, "fast_llm_json", _fake_llm)
+    patch_server("_enrich_news", fake_enrich)
+    patch_server("read_web_page", _unreachable_page)
+    patch_server("fast_llm_json", _fake_llm)
 
     await m.build_answer_config("q", results=results)
 
@@ -99,14 +99,14 @@ async def test_already_imaged_results_are_not_refetched(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_enrichment_timeout_still_yields_a_card(monkeypatch):
+async def test_enrichment_timeout_still_yields_a_card(patch_server):
     """A slow site must cost pictures, never the answer."""
     async def hanging_enrich(items, timeout=5.0):
         await asyncio.sleep(60)
 
-    monkeypatch.setattr(m, "_enrich_news", hanging_enrich)
-    monkeypatch.setattr(m, "read_web_page", _unreachable_page)
-    monkeypatch.setattr(m, "fast_llm_json", _fake_llm)
+    patch_server("_enrich_news", hanging_enrich)
+    patch_server("read_web_page", _unreachable_page)
+    patch_server("fast_llm_json", _fake_llm)
 
     cfg = await asyncio.wait_for(
         m.build_answer_config("q", results=_results()), timeout=20.0)
@@ -147,7 +147,7 @@ async def _fake_llm(prompt, max_tokens=1400):
 # Google News og:image, so every thumbnail was identical.
 
 @pytest.mark.asyncio
-async def test_sourceless_answer_cites_the_cached_search_it_read(monkeypatch):
+async def test_sourceless_answer_cites_the_cached_search_it_read(patch_server):
     """The model's own reading list is cached — cite THAT, don't go find new pages."""
     q = "best espresso machines under $500"
     cached = [{"title": "Real Review", "url": "https://coffee.example/review",
@@ -159,10 +159,10 @@ async def test_sourceless_answer_cites_the_cached_search_it_read(monkeypatch):
         called.append("searched")
         return []
 
-    monkeypatch.setattr(m, "get_cached_tool_result", lambda k: cached if k == f"search:{q}" else None)
-    monkeypatch.setattr(m, "news_search", should_not_run)
-    monkeypatch.setattr(m, "web_search", should_not_run)
-    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
+    patch_server("get_cached_tool_result", lambda k: cached if k == f"search:{q}" else None)
+    patch_server("news_search", should_not_run)
+    patch_server("web_search", should_not_run)
+    patch_server("_enrich_news", _noop_enrich)
 
     cfg = await m._ensure_data_card_quality(
         {"title": q, "answer": "Some real prose about espresso machines."}, q)
@@ -172,7 +172,7 @@ async def test_sourceless_answer_cites_the_cached_search_it_read(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_news_question_never_falls_back_to_news_search(monkeypatch):
+async def test_non_news_question_never_falls_back_to_news_search(patch_server):
     """With no cache, a product question searches the WEB, not the news wire."""
     q = "best espresso machines under $500"
     used = []
@@ -185,10 +185,10 @@ async def test_non_news_question_never_falls_back_to_news_search(monkeypatch):
         used.append("news")
         return [{"title": "Article", "url": "https://news.google.com/rss/x", "snippet": ""}]
 
-    monkeypatch.setattr(m, "get_cached_tool_result", lambda k: None)
-    monkeypatch.setattr(m, "web_search", fake_web)
-    monkeypatch.setattr(m, "news_search", fake_news)
-    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
+    patch_server("get_cached_tool_result", lambda k: None)
+    patch_server("web_search", fake_web)
+    patch_server("news_search", fake_news)
+    patch_server("_enrich_news", _noop_enrich)
 
     cfg = await m._ensure_data_card_quality({"title": q, "answer": "prose"}, q)
 
@@ -197,7 +197,7 @@ async def test_non_news_question_never_falls_back_to_news_search(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_genuine_news_ask_still_uses_the_news_wire(monkeypatch):
+async def test_a_genuine_news_ask_still_uses_the_news_wire(patch_server):
     """The news path is still right for news — don't overcorrect into breaking it."""
     q = "latest news on the election"
     used = []
@@ -210,10 +210,10 @@ async def test_a_genuine_news_ask_still_uses_the_news_wire(monkeypatch):
         used.append("news")
         return [{"title": "Story", "url": "https://ap.example/s", "snippet": "s"}]
 
-    monkeypatch.setattr(m, "get_cached_tool_result", lambda k: None)
-    monkeypatch.setattr(m, "web_search", fake_web)
-    monkeypatch.setattr(m, "news_search", fake_news)
-    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
+    patch_server("get_cached_tool_result", lambda k: None)
+    patch_server("web_search", fake_web)
+    patch_server("news_search", fake_news)
+    patch_server("_enrich_news", _noop_enrich)
 
     await m._ensure_data_card_quality({"title": q, "answer": "prose"}, q)
 
@@ -231,7 +231,7 @@ async def _noop_enrich(items, timeout=5.0):
 # tool the model RAN, not the key it typed.
 
 @pytest.mark.asyncio
-async def test_news_topic_with_only_a_web_search_cache_is_treated_as_research(monkeypatch):
+async def test_news_topic_with_only_a_web_search_cache_is_treated_as_research(patch_server):
     q = "best espresso machines under $500"
     search_hits = [{"title": "Real Review", "url": "https://coffee.example/r",
                     "snippet": "We tested twelve."}]
@@ -246,8 +246,8 @@ async def test_news_topic_with_only_a_web_search_cache_is_treated_as_research(mo
         return {"title": "T", "answer": "prose", "items": [
             {"title": "Real Review", "url": "https://coffee.example/r", "image": "https://i/x.jpg"}]}
 
-    monkeypatch.setattr(m, "get_cached_tool_result", fake_cache)
-    monkeypatch.setattr(m, "build_answer_config", fake_answer)
+    patch_server("get_cached_tool_result", fake_cache)
+    patch_server("build_answer_config", fake_answer)
 
     cfg = await m._resolve_news_topic_config({"news_topic": q, "answer": "prose"})
 
@@ -257,19 +257,19 @@ async def test_news_topic_with_only_a_web_search_cache_is_treated_as_research(mo
 
 
 @pytest.mark.asyncio
-async def test_news_topic_with_a_real_news_cache_still_uses_news(monkeypatch):
+async def test_news_topic_with_a_real_news_cache_still_uses_news(patch_server):
     """Don't overcorrect: a genuine news card must keep its news path."""
     topic = "election results"
     news_cfg = {"title": "Election", "items": [
         {"title": "Story", "url": "https://ap.example/s", "image": "https://i/n.jpg"}]}
 
-    monkeypatch.setattr(m, "get_cached_tool_result",
+    patch_server("get_cached_tool_result", 
                         lambda k: news_cfg if k == f"news:{topic}" else None)
 
     async def should_not_run(*a, **k):
         raise AssertionError("a real news card must not be rerouted to research")
 
-    monkeypatch.setattr(m, "build_answer_config", should_not_run)
+    patch_server("build_answer_config", should_not_run)
 
     cfg = await m._resolve_news_topic_config({"news_topic": topic, "answer": "brief"})
 

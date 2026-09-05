@@ -22,7 +22,12 @@ import re
 
 from app import main as m
 
-SRC = inspect.getsource(m)
+# The agent proxy, its widget injectors and the SYSTEM_PROMPT all moved out of
+# app/main.py into app/routes/message.py. `inspect.getsource(m)` still returned
+# a real, large string, so these guards kept "running" while asserting against a
+# file that no longer contains the code — 18 of them failed outright and the
+# rest were checking nothing. See tests/_sources.py.
+from tests._sources import MESSAGE_SRC as SRC, SERVER_SRC, LLM_SRC, BUILDERS_SRC
 
 
 def _image_branch():
@@ -213,9 +218,9 @@ def test_compare_chart_is_never_coerced_to_stock_card():
 
 def test_router_collapses_multiple_stock_specs():
     # The prompt's "never open a second stock" is prose; the collapse is code.
-    assert "collapsed" in SRC and "stock_specs" in SRC
-    idx = SRC.index("stock_specs = [w for w in clean")
-    assert '" vs ".join' in SRC[idx:idx + 400]
+    assert "collapsed" in LLM_SRC and "stock_specs" in LLM_SRC
+    idx = LLM_SRC.index("stock_specs = [w for w in clean")
+    assert '" vs ".join' in LLM_SRC[idx:idx + 400]
 
 
 def test_agent_prompt_and_injector_route_comparisons():
@@ -283,8 +288,8 @@ def test_router_builder_guards_the_converter_type():
     reaches the 'all builds empty -> answer card' degrade, and
     _drop_offsubject_widgets no-ops on a single widget. Nothing catches a wrong
     converter downstream, so the builder has to guard itself."""
-    start = SRC.index('if wtype == "converter":')
-    branch = SRC[start:SRC.index('if wtype == "reminder":', start)]
+    start = BUILDERS_SRC.index('if wtype == "converter":')
+    branch = BUILDERS_SRC[start:BUILDERS_SRC.index('if wtype == "reminder":', start)]
     assert "is_conversion_ask" in branch
     assert "build_answer_config" in branch
 

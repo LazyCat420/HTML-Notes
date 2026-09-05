@@ -134,7 +134,7 @@ class _MockAsyncResponse:
 
 
 @pytest.fixture
-def agent_turn(monkeypatch):
+def agent_turn(monkeypatch, patch_server):
     """Drive one turn down the PRISM AGENT path with a scripted prism stream.
 
     The tier-2 classifier is stubbed to `None` (rather than left to time out
@@ -153,7 +153,7 @@ def agent_turn(monkeypatch):
 
     async def _no_plan(*a, **kw):
         return None
-    monkeypatch.setattr(m, "route_with_llm", _no_plan)
+    patch_server("route_with_llm", _no_plan)
 
     def run(events):
         chunks = [f'data: {json.dumps(e)}\n' for e in events] + ['data: {"type": "done"}\n']

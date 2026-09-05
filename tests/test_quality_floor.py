@@ -32,7 +32,7 @@ def test_answer_without_sources_flagged():
 # ── the guarantee ────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_bare_card_gets_synthesized_answer(monkeypatch):
+async def test_bare_card_gets_synthesized_answer(patch_server):
     async def _noop_enrich(enrich, timeout=6.0):
         return None
     async def _synth(prompt, **kw):
@@ -40,8 +40,8 @@ async def test_bare_card_gets_synthesized_answer(monkeypatch):
         if "overview" in prompt or "answer" in prompt:
             return {"answer": "Taco Bell reworked its value menu."}
         return None
-    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
-    monkeypatch.setattr(m, "fast_llm_json", _synth)
+    patch_server("_enrich_news", _noop_enrich)
+    patch_server("fast_llm_json", _synth)
 
     out = await m._ensure_data_card_quality(
         {"items": [{"title": "Taco Bell news", "url": "http://x"}]},
@@ -50,13 +50,13 @@ async def test_bare_card_gets_synthesized_answer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fails_safe_when_everything_errors(monkeypatch):
+async def test_fails_safe_when_everything_errors(patch_server):
     async def _noop_enrich(enrich, timeout=6.0):
         return None
     async def _dead_llm(prompt, **kw):
         return None  # every model call fails/empties
-    monkeypatch.setattr(m, "_enrich_news", _noop_enrich)
-    monkeypatch.setattr(m, "fast_llm_json", _dead_llm)
+    patch_server("_enrich_news", _noop_enrich)
+    patch_server("fast_llm_json", _dead_llm)
 
     out = await m._ensure_data_card_quality(
         {"items": [{"title": "Taco Bell news", "url": "http://x"}]},
@@ -68,10 +68,10 @@ async def test_fails_safe_when_everything_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clean_card_is_untouched(monkeypatch):
+async def test_clean_card_is_untouched(patch_server):
     async def _boom(*a, **k):
         raise AssertionError("should not enrich a clean card")
-    monkeypatch.setattr(m, "_enrich_news", _boom)
+    patch_server("_enrich_news", _boom)
     cfg = {"items": [{"title": "A", "url": "http://a", "description": "already good"}]}
     out = await m._ensure_data_card_quality(cfg, query_hint="a")
     assert out == cfg

@@ -100,8 +100,7 @@ def test_fastpath_uses_the_shared_predicate(q, expect):
 
 
 def test_fastpath_calls_the_shared_predicate_in_source():
-    import inspect
-    src = inspect.getsource(m)
+    from tests._sources import SERVER_SRC as src
     assert "if is_conversion_ask(text_clean):" in src
     assert "CONVERT_INTENT_RE.search(text_clean)" not in src, (
         "the always-on fast path must go through is_conversion_ask so all three "
@@ -127,7 +126,7 @@ async def test_fx_rejects_bad_base():
 
 def test_router_and_prompt_know_converter():
     assert "converter" in m.ROUTER_WIDGETS
-    src = __import__("pathlib").Path(m.__file__).read_text()
+    from tests._sources import SERVER_SRC as src
     assert "widget_type='converter'" in src
 
 

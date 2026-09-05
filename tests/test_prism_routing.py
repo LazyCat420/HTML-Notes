@@ -18,13 +18,19 @@ import ast
 import os
 import pathlib
 
+import httpx
+
 import pytest
 
 os.environ.setdefault("DATABASE_URL", "data/test_prism_routing.db")
 
 from app import main as m
 
-MAIN_SRC = pathlib.Path(m.__file__).read_text()
+# The request path is no longer one file. Each guard below reads the module
+# that actually owns the behaviour it pins — see tests/_sources.py for why a
+# guard pointed at the wrong file is worse than a failing one.
+from tests._sources import (MESSAGE_SRC, LLM_SRC, SEARCH_SRC, SERVER_SRC,
+                            trees as _server_trees)
 
 
 # ── canvas control must bypass the prism-mode guard ──────────────────────────
@@ -56,7 +62,7 @@ def _calls_named(nodes, name):
 def test_clear_canvas_is_not_gated_behind_prism_mode():
     """'close everything' regressed to a no-op when the whole fast-path cascade
     was wrapped in the guard. The agent CANNOT clear a full canvas."""
-    tree = ast.parse(MAIN_SRC)
+    tree = ast.parse(MESSAGE_SRC)
     guarded = _guarded_by_use_lazy_agent(tree)
     assert not _calls_named(guarded, "_stream_clear_canvas"), (
         "_stream_clear_canvas() is inside an `if req.use_lazy_agent:` block — "
@@ -64,7 +70,7 @@ def test_clear_canvas_is_not_gated_behind_prism_mode():
 
 
 def test_clear_canvas_still_exists_and_is_reachable():
-    tree = ast.parse(MAIN_SRC)
+    tree = ast.parse(MESSAGE_SRC)
     all_calls = _calls_named(list(ast.walk(tree)), "_stream_clear_canvas")
     assert all_calls, "the CLEAR ALL intercept disappeared entirely"
 
@@ -94,7 +100,8 @@ def _live_string_literals(tree):
 def test_history_never_uses_an_imitable_prose_placeholder():
     """The literal '[Visual Component Rendered]' read as a valid assistant reply,
     so the model emitted it as text and called no tools."""
-    lits = _live_string_literals(ast.parse(MAIN_SRC))
+    lits = [lit for _name, tree in _server_trees()
+            for lit in _live_string_literals(tree)]
     offenders = [s for s in lits if "Visual Component Rendered" in s]
     assert not offenders, (
         f"the imitable placeholder is back as a live string: {offenders!r}")
@@ -199,7 +206,7 @@ def test_video_override_runs_before_the_classifier():
     """A watch request is deterministic. Moving news to tier 3 let the LLM router
     read 'cnn live news' as news -> research -> a card of links, and did it
     non-deterministically (the same intent behaved differently run to run)."""
-    src = MAIN_SRC
+    src = MESSAGE_SRC
     override = src.find("DETERMINISTIC VIDEO/LIVE OVERRIDE")
     classifier = src.find("TIER 2 — the classifier backstop")
     assert override != -1, "the deterministic video override is gone"
@@ -241,7 +248,7 @@ def test_live_sports_and_traffic_keep_their_own_widgets(msg):
 # ---------------------------------------------------------------------------
 
 def _main_src() -> str:
-    return pathlib.Path(m.__file__).read_text()
+    return SERVER_SRC
 
 
 def test_canvas_modify_dom_implements_every_action_it_advertises():
@@ -351,7 +358,7 @@ def test_news_prefers_the_shared_provider_tool():
     publisher and every one serves Google's own logo as og:image, so a card
     built from them cites news.google.com and shows N identical pictures. The
     shared tool returns real publisher URLs and real per-story photos."""
-    src = _main_src()
+    src = SEARCH_SRC
     body = src[src.index("async def news_search("):]
     body = body[:body.index("\nasync def ", 10)]
     shared = body.index("_shared_news_search")
@@ -362,10 +369,25 @@ def test_news_prefers_the_shared_provider_tool():
         f"got shared@{shared} google@{google} gdelt@{gdelt}")
 
 
-def test_shared_news_search_degrades_instead_of_raising():
+def test_shared_news_search_degrades_instead_of_raising(patch_server):
     """lazy-tool-service being down must not take news down with it — the
-    remaining chain still works, so this returns [] rather than propagating."""
+    remaining chain still works, so this returns [] rather than propagating.
+
+    The outage has to be SIMULATED. This test used to call the real service and
+    assert []: it therefore passed only while lazy-tool-service happened to be
+    down, and against a healthy service it failed with six real articles. A test
+    whose premise is an outage must create the outage."""
     import asyncio
+
+    class _Down:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw):
+            raise httpx.ConnectError("simulated lazy-tool-service outage")
+
+    patch_server("httpx", type("_hx", (), {"AsyncClient": _Down,
+                                           "ConnectError": httpx.ConnectError})())
     assert asyncio.run(m._shared_news_search("", 6)) == []
 
 
@@ -390,41 +412,41 @@ def test_router_prompt_asks_the_preflight_questions():
     """The classifier already has the message and the canvas; asking it the
     basic self-checks costs no extra call and no extra latency, and its output
     on the deferral path was otherwise thrown away entirely."""
-    assert '"checks"' in MAIN_SRC
-    assert '"is_arithmetic"' in MAIN_SRC
-    assert '"needs_fresh_data"' in MAIN_SRC
+    assert '"checks"' in LLM_SRC
+    assert '"is_arithmetic"' in LLM_SRC
+    assert '"needs_fresh_data"' in LLM_SRC
 
 
 @pytest.mark.asyncio
-async def test_converter_pick_is_demoted_when_checks_say_not_arithmetic(monkeypatch):
+async def test_converter_pick_is_demoted_when_checks_say_not_arithmetic(patch_server):
     async def fake(_instruction, max_tokens=400):
         return {"widgets": [{"type": "converter", "query": CHICKEN}],
                 "reason": "unit conversion",
                 "checks": {"is_arithmetic": False, "needs_fresh_data": True,
                            "wants": "answer", "subject": "chicken doneness"}}
-    monkeypatch.setattr(m, "fast_llm_json", fake)
+    patch_server("fast_llm_json", fake)
     plan = await m.route_with_llm(CHICKEN, "")
     assert [w["type"] for w in plan["widgets"]] == ["answer"]
     assert plan["widgets"][0]["query"]
 
 
 @pytest.mark.asyncio
-async def test_a_real_conversion_survives_the_demotion(monkeypatch):
+async def test_a_real_conversion_survives_the_demotion(patch_server):
     async def fake(_instruction, max_tokens=400):
         return {"widgets": [{"type": "converter", "query": "20 usd to eur"}],
                 "reason": "currency", "checks": {"is_arithmetic": True}}
-    monkeypatch.setattr(m, "fast_llm_json", fake)
+    patch_server("fast_llm_json", fake)
     plan = await m.route_with_llm("20 usd to eur", "")
     assert [w["type"] for w in plan["widgets"]] == ["converter"]
 
 
 @pytest.mark.asyncio
-async def test_missing_checks_leave_the_plan_alone(monkeypatch):
+async def test_missing_checks_leave_the_plan_alone(patch_server):
     """Fail open: a model that omits `checks` must not change routing."""
     async def fake(_instruction, max_tokens=400):
         return {"widgets": [{"type": "converter", "query": "20 usd to eur"}],
                 "reason": "currency"}
-    monkeypatch.setattr(m, "fast_llm_json", fake)
+    patch_server("fast_llm_json", fake)
     plan = await m.route_with_llm("20 usd to eur", "")
     assert [w["type"] for w in plan["widgets"]] == ["converter"]
     assert plan["checks"] == {}

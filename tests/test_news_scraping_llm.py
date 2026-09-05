@@ -70,7 +70,7 @@ async def test_fast_llm_json_extracts_from_reasoning_models():
 
 
 @pytest.mark.asyncio
-async def test_build_stock_news_config_prioritizes_shared_news(monkeypatch):
+async def test_build_stock_news_config_prioritizes_shared_news(patch_server):
     async def mock_shared(query, limit=6):
         return [
             {"title": "Tech Stocks Rally on AI Demand", "url": "https://seekingalpha.com/article1", "source": "Seeking Alpha", "snippet": "AI chips surge."}
@@ -83,10 +83,10 @@ async def test_build_stock_news_config_prioritizes_shared_news(monkeypatch):
             "items": [{"index": 0, "title": "Tech Stocks Rally on AI Demand", "summary": "AI chips surge."}]
         }
 
-    monkeypatch.setattr(m, "_shared_news_search", mock_shared)
-    monkeypatch.setattr(m, "stock_news", mock_stock_news_fail)
-    monkeypatch.setattr(m, "_fetch_news_page_text", lambda n: "")
-    monkeypatch.setattr(m, "fast_llm_json", mock_llm_json)
+    patch_server("_shared_news_search", mock_shared)
+    patch_server("stock_news", mock_stock_news_fail)
+    patch_server("_fetch_news_page_text", lambda n: "")
+    patch_server("fast_llm_json", mock_llm_json)
 
     cfg = await build_stock_news_config("stock market news")
     assert cfg is not None
