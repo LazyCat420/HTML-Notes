@@ -313,6 +313,23 @@ async def _ensure_data_card_quality(config: dict, query_hint: str = "") -> dict:
                     except asyncio.TimeoutError:
                         hits = []
                 hits = (hits or [])[:5]
+                # These are UNVETTED search hits about to be attached to a card
+                # as "Source". Nothing used to check they had anything to do with
+                # the answer, which is a direct route to "the card gained sources
+                # that have nothing to do with it". Drop the ads, then put them
+                # through the same relevance gate the news card uses — both fail
+                # open, so a grading outage still attaches what it found.
+                if hits:
+                    dropper = getattr(main, "_drop_pr_spam", None)
+                    if dropper:
+                        hits = dropper(hits)
+                    gate = getattr(main, "filter_items_by_relevance", None)
+                    if gate and q:
+                        try:
+                            hits = await asyncio.wait_for(
+                                gate(q, [], hits, min_keep=1), timeout=8.0)
+                        except asyncio.TimeoutError:
+                            pass
                 if hits:
                     try:
                         enrich_fn = getattr(main, "_enrich_news", None) or _fallback_enrich_news

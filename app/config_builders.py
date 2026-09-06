@@ -444,11 +444,37 @@ async def build_news_config(message: str) -> dict:
     summaries mapped back to their sources. Falls back to the raw items if the
     model call fails, so the card is never a wall of links.
     """
-    raw = extract_topic(message)
-    topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip()
-    # "what's going on in the news", "anything interesting", "what's happening"
-    # are GENERAL asks — fetch TOP stories, don't literal-search "whats going".
-    # If every surviving word is question/filler, treat the topic as empty.
+    # The topic used to be built by DELETING stopwords from the message, using a
+    # list assembled for the music widget (TOPIC_STOPWORDS = MUSIC_FILLER_WORDS
+    # | {...}). Measured 2026-09-05, that deleted the subject and kept the
+    # scaffolding:
+    #
+    #   news about track and field world championships -> "field world championships"
+    #   latest news on the player transfer window      -> "transfer window"
+    #   latest news on us china trade talks            -> "china trade talks"
+    #   what is the latest news on the israel hamas ceasefire
+    #                                          -> "what is israel hamas ceasefire"
+    #
+    # That last one returned ONE article, live, for one of the largest running
+    # stories. Ground the ask instead — the same ground_query the image and
+    # products builders already use, so a news query gets the disambiguation and
+    # the `negatives` those paths have had all along.
+    ground_fn = getattr(main, "ground_query", None) or ground_query
+    g = await ground_fn(message)
+    subject = (g.get("subject") or "").strip()
+    topic = (g.get("retrieval_query") or subject or "").strip()
+    # ground_query fails OPEN with retrieval_query = the raw message, so on a
+    # grounding outage the topic would be the whole sentence ("news about AI").
+    # Detect that case and fall back to a light scaffolding strip instead.
+    strip_fn = getattr(main, "_strip_news_scaffolding", None) or _strip_news_scaffolding
+    if not topic or topic.strip().lower() == (message or "").strip().lower():
+        topic = strip_fn(message)
+        subject = subject if subject and subject.lower() != (message or "").lower() else topic
+
+    # A genuinely general ask ("what's going on in the news") has no subject, and
+    # that is not a failure — an empty topic is what fetches TOP stories. Keep
+    # the old word-set as the cheap detector, but apply it to the ORIGINAL
+    # message rather than to the mangled remains of it.
     _GENERAL = {"whats", "what", "s", "going", "on", "happening", "up", "new",
                 "current", "events", "event", "anything", "something", "interesting",
                 "any", "the", "is", "are", "in", "world", "lately", "now", "right",
@@ -457,11 +483,24 @@ async def build_news_config(message: str) -> dict:
                 "todays", "day", "days", "daily", "for", "of", "all", "top", "global",
                 "us", "usa", "america", "american", "morning", "evening", "tonight",
                 "feed", "stories", "story", "summary", "brief"}
-    if topic and all(w in _GENERAL for w in topic.split()):
-        topic = ""
-    display = topic or "top stories"
+    bare = [w for w in re.findall(r"[a-z]+", (message or "").lower())
+            if w not in _NEWSY]
+    if g.get("is_general_news") or (bare and all(w in _GENERAL for w in bare)):
+        topic, subject = "", ""
+    display = subject or topic or "top stories"
     news_search_fn = getattr(main, "news_search", None) or news_search
     results = await news_search_fn(topic, limit=6)
+
+    # Filter BEFORE summarising. The editor pass below writes a confident 2-3
+    # sentence summary for every story it is handed and has no way to say "this
+    # one is not about the question" — which is exactly why irrelevant articles
+    # read as deliberate rather than as an error.
+    if results:
+        results = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(results)
+    if results and subject:
+        gate = getattr(main, "filter_items_by_relevance", None) or filter_items_by_relevance
+        results = await gate(subject, g.get("negatives") or [], results,
+                             min_keep=1, hyde=g.get("hyde") or "")
     if not results:
         return {"title": f"News: {display}".title()[:60], "icon": "newspaper", "items": []}
 
@@ -485,10 +524,14 @@ async def build_news_config(message: str) -> dict:
         '"items": [{"index": <the [N] number of the source>, "title": "<tightened headline>", '
         '"summary": "<2-3 sentence plain-English summary of what happened>"}]}\n'
         f'Topic: "{display}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
-        'Write one entry per distinct story (max 6). Base every summary ONLY on that '
-        "source's text — never invent facts, names, or numbers not present in it. If a "
-        "source is only a headline with no body text, keep its summary to a faithful "
-        "one-line restatement of that headline.",
+        'Write one entry per distinct story, at most 6. Base every summary ONLY on '
+        "that source's text — never invent facts, names, or numbers not present in "
+        "it. If a source is only a headline with no body text, keep its summary to a "
+        "faithful one-line restatement of that headline.\n"
+        "OMIT a source entirely rather than writing it up if it is not actually "
+        "about the topic, is a press release or advertisement, or only mentions the "
+        "topic in passing. Returning FEWER, on-topic entries is correct and "
+        "expected — you are not required to use every source.",
         max_tokens=1000,
     )
     if not data or not isinstance(data.get("items"), list) or not data["items"]:
@@ -565,19 +608,17 @@ async def build_stock_news_config(message: str) -> dict:
     if shared_news:
         news = shared_news
     else:
-        # 2. SECONDARY: Yahoo Finance with strict PR-wire clickbait filtering
+        # 2. SECONDARY: Yahoo Finance with strict PR-wire clickbait filtering.
+        # The signature list and the filter now live in one place (_drop_pr_spam)
+        # so BOTH tiers get it — this used to be inlined here, which meant that
+        # whenever the primary shared provider succeeded no ad filtering ran at
+        # all. It also used to end `filtered or raw_yahoo`, so a page that was
+        # entirely ads came back in full: the filter defeated itself in exactly
+        # the case it existed for.
         stock_news_fn = getattr(main, "stock_news", None) or stock_news
         data0 = await stock_news_fn(query, limit=10)
         raw_yahoo = [n for n in (data0.get("news") or []) if n.get("title")]
-        _PR_SPAM = (
-            "paid press release", "press release distributor", "globenewswire", "pr newswire",
-            "business wire", "stocks we like better", "5 stocks to buy", "motley fool"
-        )
-        filtered = [
-            n for n in raw_yahoo
-            if not any(s in ((n.get("title") or "") + " " + (n.get("publisher") or "")).lower() for s in _PR_SPAM)
-        ]
-        news = filtered or raw_yahoo
+        news = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(raw_yahoo)
 
     if not news:
         return await build_news_config(message)
