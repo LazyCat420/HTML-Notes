@@ -596,6 +596,23 @@ PRISM_AGENT_ID = os.getenv("PRISM_AGENT_ID", "CUSTOM_HTML_NOTES_CANVAS")
 # tool prefix (mcp__lazy-tool-service__*) derives from it, so it is load-bearing
 # — see lazy-tool-service/src/services/PrismRegistrationService.ts.
 MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "lazy-tool-service")
+
+# Names that identify OUR MCP server in a gateway's registry, for health lookups
+# ONLY. The registration was renamed to `lazy-agent-service` (measured on prism
+# 2026-09-05: that row is connected with 91 tools, and no `lazy-tool-service` row
+# exists), so a lookup on the single name reported
+#     agent.ok=false "lazy-tool-service is not registered for this scope"
+# on a stack whose agent path demonstrably works — a health endpoint saying the
+# thing is broken while it serves tools is worse than no health endpoint.
+#
+# MCP_SERVER_NAME itself must NOT change: the tool-call prefix
+# `mcp__lazy-tool-service__*` derives from it and is baked into enabledTools
+# here, into the gateway's own catalog, and into personas across several repos.
+# This tuple is only for "is our server present in that registry".
+MCP_SERVER_NAMES = tuple(
+    n.strip() for n in os.getenv(
+        "MCP_SERVER_NAMES", f"{MCP_SERVER_NAME},lazy-agent-service").split(",")
+    if n.strip())
 FORK_AGENT_ID = os.getenv("FORK_AGENT_ID", "HTML_NOTES")
 import pathlib
 import time
@@ -1088,7 +1105,7 @@ async def _try_reconnect_mcp() -> bool:
             servers = (await client.get(f"{PRISM_URL}/mcp-servers",
                                         headers=headers)).json()
             servers = servers if isinstance(servers, list) else servers.get("servers", [])
-            mine = next((s for s in servers if s.get("name") == MCP_SERVER_NAME), None)
+            mine = next((s for s in servers if s.get("name") in MCP_SERVER_NAMES), None)
             if not mine:
                 logger.error(f"[MCP] {MCP_SERVER_NAME} is not registered for "
                              f"{AGENT_PROJECT}/{AGENT_USERNAME} — cannot reconnect; "
@@ -1104,7 +1121,7 @@ async def _try_reconnect_mcp() -> bool:
             servers = (await client.get(f"{PRISM_URL}/mcp-servers",
                                         headers=headers)).json()
             servers = servers if isinstance(servers, list) else servers.get("servers", [])
-            mine = next((s for s in servers if s.get("name") == MCP_SERVER_NAME), None) or {}
+            mine = next((s for s in servers if s.get("name") in MCP_SERVER_NAMES), None) or {}
             tools = int(mine.get("toolCount") or 0)
             if mine.get("connected") and tools > 0:
                 logger.info(f"[MCP] reconnected — {tools} tools")
@@ -3005,7 +3022,7 @@ async def _mcp_scopes_serving_us(client: httpx.AsyncClient) -> list:
                 f"{PRISM_URL}/mcp-servers",
                 headers={"x-project": project, "x-username": username})).json()
             rows = rows if isinstance(rows, list) else rows.get("servers", [])
-            if any(r.get("name") == MCP_SERVER_NAME and r.get("connected")
+            if any(r.get("name") in MCP_SERVER_NAMES and r.get("connected")
                    for r in rows):
                 found.append(f"{project}/{username}")
         except Exception:
@@ -3040,7 +3057,7 @@ async def _agent_dependency_status() -> dict:
             servers = (await client.get(f"{PRISM_URL}/mcp-servers",
                                         headers=headers)).json()
             servers = servers if isinstance(servers, list) else servers.get("servers", [])
-            mine = next((s for s in servers if s.get("name") == MCP_SERVER_NAME), None)
+            mine = next((s for s in servers if s.get("name") in MCP_SERVER_NAMES), None)
             if not mine:
                 # Not in OUR scope — but Prism serves MCP tools globally once a
                 # server is connected under any scope, so this is a registration
@@ -3051,12 +3068,12 @@ async def _agent_dependency_status() -> dict:
                 elsewhere = await _mcp_scopes_serving_us(client)
                 if elsewhere:
                     return {**detail, "ok": True, "degraded": True,
-                            "error": f"{MCP_SERVER_NAME} is not registered for "
+                            "error": f"none of {MCP_SERVER_NAMES} is registered for "
                                      f"{AGENT_PROJECT}/{AGENT_USERNAME}; serving from "
                                      f"{', '.join(elsewhere)} instead (tools resolve, "
                                      f"but our own scope shows none)"}
                 return {**detail, "ok": False,
-                        "error": f"{MCP_SERVER_NAME} is not registered for this scope"}
+                        "error": f"none of {MCP_SERVER_NAMES} is registered for this scope"}
             tools = int(mine.get("toolCount") or 0)
             detail |= {"mcp_connected": bool(mine.get("connected")), "tool_count": tools}
             if not mine.get("connected") or tools <= 0:

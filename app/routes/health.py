@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter, Request, HTTPException, Response
 import sys
 import app.main as main
@@ -20,8 +22,35 @@ async def health_model():
         return {"status": "offline", "detail": str(e)}
 
 
+# The search probe is a REAL DuckDuckGo query, and docker-compose healthchecks
+# /health/app every 30s — roughly 2,880 live searches a day purely to answer
+# "is search up", which floods the log with `[SEARCH] ddg-lite served 'test'`
+# and is a good way to earn a rate-limit on the backend the app depends on.
+# Cache it: the probe's value is catching a sustained outage, and a 5-minute
+# resolution does that just as well as a 30-second one.
+_SEARCH_PROBE_TTL = 300.0
+_search_probe_cache: dict = {"at": 0.0, "result": None}
+
+
+async def _search_health(force: bool = False) -> dict:
+    now = time.monotonic()
+    cached = _search_probe_cache["result"]
+    if cached is not None and not force and (now - _search_probe_cache["at"]) < _SEARCH_PROBE_TTL:
+        return dict(cached, cached=True)
+    try:
+        hits, engines_down = await web_search_ex("test", 3)
+        result = {"ok": not engines_down, "hits": len(hits),
+                  "engines": [n for n, _ in _SEARCH_ENGINES]}
+        if engines_down:
+            result["error"] = "every search backend unreachable"
+    except Exception as e:
+        result = {"ok": False, "error": f"probe raised: {e}"}
+    _search_probe_cache.update({"at": now, "result": result})
+    return result
+
+
 @router.get("/health/app")
-async def health_app():
+async def health_app(fresh: bool = False):
     """LIVENESS — is this process serving?
 
     Deliberately still 200 when the agent dependency is down. docker-compose
@@ -33,14 +62,8 @@ async def health_app():
     agent = await _agent_dependency_status()
     # Search is reported separately from MCP: they fail independently, and an
     # agent with live tools that all return nothing looks "ok" without this.
-    try:
-        hits, engines_down = await web_search_ex("test", 3)
-        search = {"ok": not engines_down, "hits": len(hits),
-                  "engines": [n for n, _ in _SEARCH_ENGINES]}
-        if engines_down:
-            search["error"] = "every search backend unreachable"
-    except Exception as e:
-        search = {"ok": False, "error": f"probe raised: {e}"}
+    # `?fresh=1` forces a live probe for when a human is actually asking.
+    search = await _search_health(force=fresh)
     return {"status": "ok", "service": "html-notes",
             "agent": agent, "search": search}
 

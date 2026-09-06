@@ -20,7 +20,7 @@ def test_health_endpoints():
     assert "status" in res.json()
 
 
-def test_liveness_stays_ok_when_the_agent_dependency_is_down(monkeypatch):
+def test_liveness_stays_ok_when_the_agent_dependency_is_down(patch_server):
     """docker-compose healthchecks /health/app with `curl -f`. A non-2xx here
     restarts the container — which cannot fix a Prism-side outage, so it would
     just loop. The breakage must be visible in the body, not in the status."""
@@ -29,34 +29,46 @@ def test_liveness_stays_ok_when_the_agent_dependency_is_down(monkeypatch):
     async def dead(*a, **k):
         return {"ok": False, "error": "prism unreachable: boom"}
 
-    monkeypatch.setattr(m, "_agent_dependency_status", dead)
+    # patch_server, not monkeypatch(m, ...): health_app lives in
+    # app/routes/health.py and resolves this name against ITS OWN globals, so
+    # rebinding it on app.main alone never reached it. These two tests were
+    # passing because the REAL function returned ok=False — the MCP registry
+    # lookup was searching for a server name that had been renamed — i.e. they
+    # were green because the app was broken, and went red when it was fixed.
+    patch_server("_agent_dependency_status", dead)
 
     res = client.get("/health/app")
     assert res.status_code == 200, "liveness must not fail on a downstream outage"
     assert res.json()["agent"]["ok"] is False, "but it must SAY so"
 
 
-def test_readiness_503s_when_the_agent_dependency_is_down(monkeypatch):
+def test_readiness_503s_when_the_agent_dependency_is_down(patch_server):
     """/health/agent is the one that fails, so a monitor can see it."""
     import app.main as m
 
     async def dead(*a, **k):
         return {"ok": False, "error": "MCP server registered but not serving tools"}
 
-    monkeypatch.setattr(m, "_agent_dependency_status", dead)
+    # patch_server, not monkeypatch(m, ...): health_app lives in
+    # app/routes/health.py and resolves this name against ITS OWN globals, so
+    # rebinding it on app.main alone never reached it. These two tests were
+    # passing because the REAL function returned ok=False — the MCP registry
+    # lookup was searching for a server name that had been renamed — i.e. they
+    # were green because the app was broken, and went red when it was fixed.
+    patch_server("_agent_dependency_status", dead)
 
     res = client.get("/health/agent")
     assert res.status_code == 503
     assert res.json()["status"] == "unavailable"
 
 
-def test_readiness_is_ok_when_tools_are_serving(monkeypatch):
+def test_readiness_is_ok_when_tools_are_serving(patch_server):
     import app.main as m
 
     async def alive(*a, **k):
         return {"ok": True, "mcp_connected": True, "tool_count": 75, "persona_tools": 21}
 
-    monkeypatch.setattr(m, "_agent_dependency_status", alive)
+    patch_server("_agent_dependency_status", alive)
 
     res = client.get("/health/agent")
     assert res.status_code == 200

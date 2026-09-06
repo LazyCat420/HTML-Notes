@@ -38,21 +38,25 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-# Every module that participates in the copied-globals arrangement above.
-_SERVER_MODULES = (
-    "app.main", "app.llm", "app.utils", "app.canvas_manager",
-    "app.config_builders", "app.services.search", "app.services.finance",
-    "app.routes.message", "app.routes.internal",
-)
+def _server_modules():
+    """Every loaded `app.*` module, discovered rather than listed.
+
+    A hand-maintained list is the same kind of twin that caused the original
+    bug: it was missing app.routes.health, so a patch aimed at
+    _agent_dependency_status silently missed the only caller that mattered and
+    the test went on asserting against the real function. Discovery cannot drift
+    when a module is added or a function moves between files.
+    """
+    return [m for name, m in list(sys.modules.items())
+            if m is not None and (name == "app" or name.startswith("app."))]
 
 
 def _patch_everywhere(monkeypatch, name, value):
     hits = []
-    for mod_name in _SERVER_MODULES:
-        mod = sys.modules.get(mod_name)
-        if mod is not None and hasattr(mod, name):
+    for mod in _server_modules():
+        if hasattr(mod, name):
             monkeypatch.setattr(mod, name, value, raising=False)
-            hits.append(mod_name)
+            hits.append(mod.__name__)
     if not hits:
         raise AssertionError(
             f"patch_server({name!r}) matched no server module — the name is "
