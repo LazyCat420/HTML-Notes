@@ -2078,8 +2078,11 @@ async def filter_items_by_relevance(subject: str, negatives: list, items: list,
     Same two safety properties as the vision gate, for the same reasons:
       * FAILS OPEN — a model outage or an unparseable reply keeps every item, so
         grading can never be the reason a card is empty.
-      * `min_keep` floor — if the model rejects everything, return the original
-        list. A blank card is a worse answer than a loose one.
+      * `min_keep` floor — with min_keep>=1, if the model rejects everything,
+        return the original list (a blank card is a worse answer than a loose
+        one). With min_keep=0 an all-rejected set returns [] and the CALLER
+        escalates to another source — "every story is off-subject" is a verdict
+        about the result set, not a grading failure.
     """
     rows = [it for it in (items or []) if (it.get("title") or "").strip()]
     if len(rows) <= 1:
@@ -2110,10 +2113,20 @@ async def filter_items_by_relevance(subject: str, negatives: list, items: list,
         return items                      # model failed → keep all (fail open)
     survivors = [it for i, it in enumerate(judged) if i in keep_set]
     survivors += rows[len(judged):]       # anything past the judged window passes
-    if len(survivors) < max(min_keep, 1):
+    # `min_keep=0` means the CALLER owns the all-rejected case and wants the
+    # honest empty list back so it can escalate to another source. This used to
+    # read `max(min_keep, 1)`, which clamped 0 straight back to 1 — so the
+    # escalation branch in build_news_config had never executed once, and the
+    # user's own log showed "model rejected all 6 — keeping unfiltered" for a
+    # query whose fix was supposed to be exactly that escalation. The test that
+    # was meant to cover it used min_keep=1, so it was green while testing nothing.
+    if len(survivors) < min_keep:
         logger.info(f"[NEWS GATE] {subject!r}: model rejected all "
                     f"{len(judged)} — keeping unfiltered rather than an empty card")
         return items
+    if not survivors:
+        logger.info(f"[NEWS GATE] {subject!r}: model rejected all {len(judged)} "
+                    "— returning [] so the caller can escalate")
     if len(survivors) < len(rows):
         logger.info(f"[NEWS GATE] {subject!r}: kept {len(survivors)}/{len(rows)} "
                     f"(dropped {len(rows) - len(survivors)} off-subject)")

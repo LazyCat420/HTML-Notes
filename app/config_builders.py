@@ -495,7 +495,7 @@ async def build_news_config(message: str) -> dict:
                 "feed", "stories", "story", "summary", "brief"}
     bare = [w for w in re.findall(r"[a-z]+", (message or "").lower())
             if w not in _NEWSY]
-    if g.get("is_general_news") or (bare and all(w in _GENERAL for w in bare)):
+    if bare and all(w in _GENERAL for w in bare):
         topic, subject = "", ""
     display = subject or topic or "top stories"
     news_search_fn = getattr(main, "news_search", None) or news_search

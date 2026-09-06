@@ -90,10 +90,13 @@ async def test_a_general_ask_still_means_top_stories(patch_server):
     """'what's going on in the news' has no subject — that is not a bug, and the
     grounding rewrite must not invent one."""
     async def fake_ground(message):
+        # No invented keys: ground_query never returns an "is_general_news"
+        # flag, and a fixture that supplies one only proves the test's own
+        # premise. The general verdict has to come from the MESSAGE.
         return {"subject": "current events", "intent": "informational",
                 "retrieval_query": "today's top news stories", "hyde": "",
                 "negatives": [], "freshness": "today", "ambiguous": False,
-                "clarify": "", "is_general_news": True}
+                "clarify": ""}
 
     seen = {}
 
@@ -135,6 +138,21 @@ async def test_relevance_gate_fails_open_on_model_failure(patch_server):
     patch_server("fast_llm_json", dead)
     kept = await m.filter_items_by_relevance("anything", [], list(ITEMS))
     assert kept == ITEMS
+
+
+@pytest.mark.asyncio
+async def test_relevance_gate_min_keep_zero_returns_empty_on_all_rejected(patch_server):
+    """min_keep=0 hands the all-rejected verdict BACK to the caller as [].
+
+    This is the contract build_news_config's escalation depends on, and it was
+    silently broken: the gate read `max(min_keep, 1)`, clamping 0 to 1, so an
+    all-rejected set was always reinstated and the escalation branch never ran.
+    The sibling test below uses min_keep=1 and therefore could not see it."""
+    async def reject_all(instruction, max_tokens=400):
+        return {"keep": []}
+    patch_server("fast_llm_json", reject_all)
+    kept = await m.filter_items_by_relevance("x", [], list(ITEMS), min_keep=0)
+    assert kept == [], f"min_keep=0 must return [] on all-rejected, got {len(kept)} items"
 
 
 @pytest.mark.asyncio
