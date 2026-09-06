@@ -2063,7 +2063,11 @@ document.addEventListener("DOMContentLoaded", () => {
         // finished being read. Same rule the exec-log already uses below.
         if (activeTurns.size <= 1) clearSpeechQueue();
 
-        let provider = "vllm-2";
+        // "vllm" is the Jetson (nemotron35). This was "vllm-2" — Gold Spark — which
+        // meant every browser turn asked for GLM regardless of what the server
+        // preferred, because the request body's `model` short-circuits the
+        // server's own selection. The client's default IS the effective default.
+        let provider = "vllm";
         let model = "";
         if (elements.modelSelect) {
             let selectValue = elements.modelSelect.value;
@@ -3220,14 +3224,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (data.models.length > 0) {
                     let defaultIndex = 0;
                     const options = Array.from(elements.modelSelect.options);
-                    const vllm2Index = options.findIndex(opt => {
-                        try {
-                            const val = JSON.parse(opt.value);
-                            return val.provider === "vllm-2";
-                        } catch(e) {
-                            return false;
-                        }
-                    });
                     const vllmIndex = options.findIndex(opt => {
                         try {
                             const val = JSON.parse(opt.value);
@@ -3236,10 +3232,23 @@ document.addEventListener("DOMContentLoaded", () => {
                             return false;
                         }
                     });
-                    if (vllm2Index !== -1) {
-                        defaultIndex = vllm2Index;
-                    } else if (vllmIndex !== -1) {
+                    const vllm2Index = options.findIndex(opt => {
+                        try {
+                            const val = JSON.parse(opt.value);
+                            return val.provider === "vllm-2";
+                        } catch(e) {
+                            return false;
+                        }
+                    });
+                    // Jetson ("vllm") first, Gold Spark ("vllm-2") only as a
+                    // fallback. The previous order was the reverse, so the
+                    // dropdown auto-selected GLM-5.3 whenever Gold Spark was in
+                    // the catalog at all — even while that box was head-of-line
+                    // blocked and could not serve a completion.
+                    if (vllmIndex !== -1) {
                         defaultIndex = vllmIndex;
+                    } else if (vllm2Index !== -1) {
+                        defaultIndex = vllm2Index;
                     }
                     elements.modelSelect.options[defaultIndex].selected = true;
                 }

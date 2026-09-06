@@ -15,14 +15,32 @@ async def get_models():
             
             data = resp.json()
             models_map = data.get("textToText", {}).get("models", {})
-            
+
+            # Two things this list used to get wrong, both visible in the
+            # dropdown on 2026-09-05:
+            #   * it offered embeddinggemma as a selectable chat model — that
+            #     endpoint 404s on /v1/chat/completions, so picking it can only
+            #     fail. The catalog's own "Tool Calling" claim is not evidence.
+            #   * it listed providers in catalog dict order, and the client picks
+            #     from the top — so the dropdown landed on whatever Gold Spark
+            #     served rather than the Jetson. Order by PREFERRED_AGENT_PROVIDERS
+            #     (Jetson first); unknown providers keep their order after those.
+            def _rank(provider_id):
+                try:
+                    return PREFERRED_AGENT_PROVIDERS.index(provider_id)
+                except ValueError:
+                    return len(PREFERRED_AGENT_PROVIDERS)
+
             flat_models = []
-            for provider, provider_models in models_map.items():
-                for model in provider_models:
+            for provider in sorted(models_map, key=_rank):
+                for model in models_map[provider]:
+                    name = model.get("name")
+                    if not _is_chat_capable_model(name):
+                        continue
                     flat_models.append({
                         "provider": provider,
-                        "model": model.get("name"),
-                        "label": model.get("label") or model.get("name")
+                        "model": name,
+                        "label": model.get("label") or name
                     })
             return JSONResponse(content={"models": flat_models})
     except Exception as e:
@@ -1594,7 +1612,15 @@ async def send_message(req: MessageRequest):
         target_url = LAZY_AGENT_URL if req.use_lazy_agent else PRISM_URL
 
         # Build /agent payload — NO tools array (the gateway uses its own catalog)
-        model_name = req.model
+        # The browser ALWAYS sends `model`, which means everything below this
+        # line — the preference order, the chat-capability check — had never
+        # executed for a real person: the client's default won every turn. Honour
+        # an explicit pick, but only if it can actually chat; otherwise fall into
+        # the discovery block rather than 404 on a model that cannot answer.
+        model_name = req.model if _is_chat_capable_model(req.model) else None
+        if req.model and not model_name:
+            logger.info(f"[AGENT MODEL] overriding non-chat model {req.model!r} "
+                        "with the preferred provider")
         if not model_name:
             # Discover a provider/model pair from the gateway's local catalog so
             # the provider instance and model always match (e.g. "vllm" serves a
