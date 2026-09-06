@@ -1,0 +1,131 @@
+{
+ "controls": {
+  "positive": 0.5833333333333334,
+  "negative": 0.0,
+  "feeds": 8,
+  "ok": true,
+  "floor": 0.4
+ },
+ "rows": [
+  {
+   "ask": "top stories",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.8,
+   "front_page2": 0.5,
+   "secs": 5.8,
+   "titles": [
+    "U.S. military strikes 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Fundraiser for Lindsay Clancy\u2019s Parents Raises Over $1.1 Million After Mistrial",
+    "Judge reinforces order halting immediate work on Trump's 250-foot arch",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Nepal Floods Buried a House. The Woman Inside Was Still Alive.",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest"
+   ]
+  },
+  {
+   "ask": "top news",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.8,
+   "front_page2": 0.5,
+   "secs": 6.6,
+   "titles": [
+    "U.S. military hits 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Fundraiser for Lindsay Clancy\u2019s Parents Raises Over $1.1 Million After Mistrial",
+    "Judge reinforces order halting immediate work on Trump's 250-foot arch",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Nepal Floods Buried a House. The Woman Inside Was Still Alive.",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest"
+   ]
+  },
+  {
+   "ask": "world news",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.6,
+   "front_page2": 0.1,
+   "secs": 16.7,
+   "titles": [
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest",
+    "Prince William to attend King Harald's funeral in Norway",
+    "Russia-Ukraine peace talks could begin next year, ex-MI6 chief says",
+    "Majority Russian-speaking city in Ukraine considers language ban in the arts",
+    "Whatever happened to the floating schools of Bangladesh?",
+    "Laura Loomer Claims She Found Out \u2018Real Reason\u2019 Why Pete Hegseth Vanished From Fox News",
+    "Chinese national rescued from Nepal tunnel 10 days after flash flood",
+    "Fighter jet crashes at air show, killing 2 pilots with thousands of spectators watching"
+   ]
+  },
+  {
+   "ask": "us news today",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.7,
+   "front_page2": 0.6,
+   "secs": 7.3,
+   "titles": [
+    "Russia\u2019s Putin and US envoys discuss Trump proposal to end Ukraine war",
+    "U.S. military retaliates after Iran launches missiles at Navy ships",
+    "Fundraiser for Lindsay Clancy\u2019s parents raises over $1.1 million after mistrial",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Judge reinforces order halting immediate work on Trump\u2019s 250-foot arch",
+    "Gloria Steinem, feminist icon and activist, dies at 92",
+    "Southern California Labor Day weekend forecast: 4 risks to watch for as Marie churns off the coast",
+    "Judge extends block on Postal Service mail ballot rules",
+    "Trump calls the Iran war \u2014 which has left 18 U.S. service members dead \u2014 'small potatoes'",
+    "Captain calamity: Pete Hegseth under fire for \u2018inept\u2019 leadership of US military"
+   ]
+  },
+  {
+   "ask": "business news",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.1,
+   "front_page2": 0.0,
+   "secs": 9.1,
+   "titles": [
+    "Seattle is the No. 1 Labor Day destination in the U.S. Here\u2019s what travelers need to know",
+    "OpenAI acknowledges 'wiki incident' and need for more transparency around unintended AI behavior",
+    "Oliver Blume\u2019s VW jobs victory leaves power questions untouched",
+    "Unruly Passenger Is Restrained With Duct Tape During a Flight",
+    "'Can't Message That Away': GOP Frets as Trump Administration Desperately Spins Record-High Diesel Prices",
+    "Trump turns up the heat on Warsh as Fed rate hike looms",
+    "These industries will lead hiring in the next decade, with just one sector accounting for more than a third of all new jobs",
+    "Kenyans Made a Living Writing College Essays. Then A.I. Arrived.",
+    "Tesla\u2019s Cybercab has been deployed, and it\u2019s already under investigation",
+    "Wall Street ends lower as solid jobs data fuels hawkish Fed bets"
+   ]
+  },
+  {
+   "ask": "tech news",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 6.6,
+   "titles": [
+    "There May Not Be an iPhone 18 This Year",
+    "Miami Police Release New Official Statement Ahead of GTA 6's Release",
+    "NBA 2K27 predicts the season: LeBron's shocking start with 76ers, a new MVP and an NBA Finals rematch",
+    "IFA 2026: the biggest tech and gadget announcements",
+    "HP\u2019s latest OmniBooks get RTX Spark, 128 GB LPDDR5X RAM and 3K OLED displays",
+    "Rumor: New Smash Bros. game on the way, Nintendogs returning, more",
+    "No, Sony isn't cutting PlayStation disc production by 90 percent, just 10",
+    "14 Predictions for the September 2026 Nintendo Direct and Zelda 40th Anniversary Direct",
+    "Microsoft\u2019s latest moves suggest Xbox Cloud Gaming is slipping out of the spotlight \u2014 and the strategy shift feels impossible to ignore",
+    "This Hiking Exoskeleton May Actually Help Your Bad Knees, Finally"
+   ]
+  }
+ ]
+}
