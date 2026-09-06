@@ -262,11 +262,15 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         # outcome except a widget, and with a finance canvas as context "hello"
         # became "lead with news + trending stocks". Reply is now a verdict.
         "- FIRST decide whether this ask needs anything fetched or built at all. "
-        "If it does NOT — a greeting, thanks, a reaction, small talk, or a question "
-        "you can answer from RECENT TURNS or from what is on the canvas — return "
+        "If it is a PURE social pleasantry, greeting, thanks, reaction, or small talk "
+        '(e.g. "hello", "thanks!", "nice", "how are you"), return '
         '{"reply": "<one or two natural sentences>", "reason": "<=8 words"} and '
-        "NOTHING else: no widgets, no defer. Only an ask that needs data or a "
-        "widget goes on to the rules below.\n"
+        "NOTHING else: no widgets, no defer.\n"
+        "- BUT if the ask is a SUBSTANTIVE QUESTION, follow-up, recipe/cooking question, "
+        'or inquiry about facts/cards/topics (e.g. "so i shouldn\'t boil the sausages?", '
+        '"even raw?", "tell me why", "how do I cook them?"), do NOT answer it in a fast reply. '
+        'Instead, if it does not need a new widget, return {"defer": true, "reason": "conversational-followup"} '
+        "so the full conversational agent can answer with complete context and history.\n"
         "- Match the widgets to the ask. A NARROW single-intent ask (a forecast, a "
         "ticker, a timer) is ONE widget. A BROAD or rich ask should COMPOSE the "
         "modalities that together serve it — lead with the explanation/answer, then "
@@ -320,8 +324,19 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
     checks = _clean_preflight_checks(data.get("checks"))
     reply = data.get("reply")
     if isinstance(reply, str) and reply.strip():
-        # A conversational turn. The caller streams this as a chat bubble and
-        # builds nothing — the model decided no tool was warranted.
+        # A conversational turn.
+        # Guard against fast router prematurely answering substantive questions or domain followups
+        # with truncated/hasty replies:
+        wants = str(checks.get("wants", "")).lower()
+        reason = str(data.get("reason", "")).lower()
+        msg_lower = message.lower().strip()
+        is_question = any(msg_lower.endswith(q) for q in ("?", "??")) or any(
+            msg_lower.startswith(w) for w in ("how", "why", "what", "can i", "should i", "do i", "is it", "so ", "even ")
+        )
+        if wants in ("answer", "track", "research") or is_question or any(k in reason for k in ("recipe", "cook", "sausage", "boil")):
+            logger.info(f"[ROUTER] deferring substantive question to full agent: wants={wants}, reason={reason}, msg={message!r}")
+            return {"defer": True, "reason": "conversational-followup", "checks": checks}
+
         return {"reply": reply.strip()[:400], "reason": str(data.get("reason", ""))[:80],
                 "checks": checks}
     if data.get("defer"):

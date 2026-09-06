@@ -131,6 +131,11 @@ def _canvas_lock(session_id: str) -> asyncio.Lock:
 
 
 def get_session_canvas(session_id: str) -> str:
+    main_mod = sys.modules.get("app.main")
+    if main_mod:
+        main_fn = getattr(main_mod, "get_session_canvas", None)
+        if main_fn and main_fn is not get_session_canvas:
+            return main_fn(session_id)
     return _session_canvas.get(session_id, "")
 
 
@@ -569,7 +574,11 @@ def _widget_content_gist(config: dict) -> str:
     return (config.get("subtitle") or config.get("title") or "").strip()[:160]
 
 
-def record_turn(session_id: str, message: str, route: str, widgets: list) -> None:
+PASSIVE_MEDIA_TYPES = {"youtube_player", "audio_player", "music_player"}
+
+
+def record_turn(session_id: str, message: str, route: str, widgets: list,
+                assistant_reply: str = "") -> None:
     """Append one turn to the session ledger. `widgets` is a list of
     (widget_id, widget_type, subject, detail) tuples for what the turn produced
     (empty for a turn that only cleared/answered). Best-effort — never raises."""
@@ -579,6 +588,7 @@ def record_turn(session_id: str, message: str, route: str, widgets: list) -> Non
         entry = {
             "message": (message or "").strip()[:200],
             "route": route or "",
+            "assistant_reply": (assistant_reply or "").strip()[:300],
             "widgets": [{"id": wid, "type": wt, "subject": (subj or "")[:80],
                          # 200 matches _widget_detail's budget — clipping back
                          # to 160 here silently re-amputated the appended names.
@@ -630,25 +640,39 @@ def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
     for e in led:
         wpart = ", ".join(
             f'{w["type"]} #{w["id"]}' + (f' — {w["detail"]}' if w["detail"] else "")
-            for w in e["widgets"]) or "(no widget)"
+            for w in e["widgets"])
+        if not wpart:
+            ans = (e.get("assistant_reply") or "").strip()
+            if ans:
+                wpart = f'(reply: "{ans[:120]}…")' if len(ans) > 120 else f'(reply: "{ans}")'
+            else:
+                wpart = "(no widget)"
         lines.append(f'- "{e["message"]}" → {wpart}')
     ledger_text = "\n".join(lines)
     focus_id = None
+    # Prioritize substantive non-media widgets so passive YouTube/audio players
+    # don't steal conversational focus from informational cards
     for e in reversed(led):
-        if e["widgets"]:
-            focus_id = e["widgets"][-1]["id"]
+        substantive = [w["id"] for w in e["widgets"] if w["type"] not in PASSIVE_MEDIA_TYPES]
+        if substantive:
+            focus_id = substantive[-1]
             break
+    if not focus_id:
+        for e in reversed(led):
+            if e["widgets"]:
+                focus_id = e["widgets"][-1]["id"]
+                break
     if not focus_id:
         # The ledger is in-memory, so a container restart loses it while the
         # canvas survives (the client resends current_canvas). focus_id going
         # None silently disabled BOTH the follow-up directive and the user-message
         # rewrite, so follow-ups behaved differently before/after a restart with
-        # identical on-screen state. Recover from the canvas: last widget in DOM
-        # order is the most recently added.
+        # identical on-screen state. Recover from the canvas: prioritize non-media.
         try:
-            widgets = [wid for wid, _t, _ti in _iter_canvas_widgets(canvas_html)
+            widgets = [(wid, _t) for wid, _t, _ti in _iter_canvas_widgets(canvas_html)
                        if wid and wid != "unknown"]
-            focus_id = widgets[-1] if widgets else None
+            non_media = [wid for wid, wt in widgets if wt not in PASSIVE_MEDIA_TYPES]
+            focus_id = non_media[-1] if non_media else (widgets[-1][0] if widgets else None)
         except Exception as e:
             logger.warning(f"focus_id canvas fallback failed: {e}")
     # CURRENT CANVAS goes FIRST: route_with_llm truncates this block to 1200

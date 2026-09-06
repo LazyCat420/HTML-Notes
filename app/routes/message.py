@@ -374,7 +374,7 @@ async def send_message(req: MessageRequest):
                 _rt = getattr(main, "record_turn", None)
                 if _rt:
                     try:
-                        _rt(req.session_id, req.message, "reply", [])
+                        _rt(req.session_id, req.message, "reply", [], assistant_reply=text)
                     except Exception:
                         pass
                 yield 'data: {"type": "done"}\n\n'
@@ -1237,11 +1237,13 @@ async def send_message(req: MessageRequest):
         # Where a refining follow-up should land: topical match beats the
         # recency focus when the message names a subject ("tell me more about
         # the costco deals" must not rewrite the sandals card built last turn).
-        # Resolved ONCE here so the directive and the message rewrite below
-        # can never disagree about the target.
+        _is_conv_q = getattr(main, "_is_conversational_question", lambda m: False)(req.message)
         followup_target = (
             _followup_target_id(req.session_id, turn_ctx.get("focus_id"), req.message)
-            if _is_refining_followup(req.message) else None)
+            if _is_refining_followup(req.message) and not _is_conv_q else None)
+        conversational_card_id = (
+            _followup_target_id(req.session_id, turn_ctx.get("focus_id"), req.message)
+            if _is_conv_q else None)
 
         # ── AGENTIC ROUTER (steps 2 & 3) ─────────────────────────────────────
         # Nothing in the fast lane matched. Before dropping into the ~30-60s agent
@@ -1490,7 +1492,17 @@ async def send_message(req: MessageRequest):
                 f"do not answer in prose: you MUST end this turn with a canvas "
                 f"mutation."
                 if followup_target
-                else ""
+                else (
+                    f"\n\nCONVERSATIONAL FOLLOW-UP CONTEXT: The user is asking a conversational question "
+                    f"referencing widget #{conversational_card_id}"
+                    + (f" (currently showing: {_widget_showing(req.session_id, conversational_card_id, req.message)})"
+                       if _widget_showing(req.session_id, conversational_card_id, req.message) else "")
+                    + ". Answer their question directly and helpfully in your conversational response "
+                    "using the card content and recent turns. Leave the card on canvas intact unless "
+                    "explicitly asked to modify it."
+                    if conversational_card_id
+                    else ""
+                )
             )
         )
 
@@ -1554,7 +1566,7 @@ async def send_message(req: MessageRequest):
         ]
 
         # Only include recent history to avoid context overflow (last 10 messages)
-        recent_history = history[-3:]
+        recent_history = history[-10:]
         for h in recent_history:
             content = h["content"]
 
@@ -3076,7 +3088,8 @@ async def send_message(req: MessageRequest):
             # worse than a card built from that, and _text_answer_card_config
             # runs it through _strip_agent_narration first.
             _fallback_text = final_text.strip() or pretool_buffer.strip()
-            if not canvas_settled and widgets_committed == 0 and _fallback_text:
+            is_conversational_turn = bool(conversational_card_id) or bool(router_plan and router_plan.get("reason") == "conversational-followup")
+            if not canvas_settled and widgets_committed == 0 and _fallback_text and not is_conversational_turn:
                 try:
                     if not final_text.strip():
                         logger.info("[AGENT] no post-tool prose — falling back to the "
@@ -3125,6 +3138,14 @@ async def send_message(req: MessageRequest):
                 role="assistant",
                 content=saved_content
             )
+
+            if widgets_committed == 0 and final_text.strip():
+                _rt = getattr(main, "record_turn", None)
+                if _rt:
+                    try:
+                        _rt(req.session_id, req.message, "agent:reply", [], assistant_reply=final_text.strip())
+                    except Exception:
+                        pass
 
             _clear_turn_freshness()
             yield 'data: {"type": "done"}\n\n'

@@ -824,6 +824,30 @@ def _is_refining_followup(message: str) -> bool:
                 or _REFINE_MARKERS_RE.search(m))
 
 
+_CONVERSATIONAL_QUESTION_RE = re.compile(
+    r"\b(?:should|shouldn't|can\s+i|could\s+i|would\s+it|is\s+it|is\s+that|"
+    r"why|how\s+come|explain|what\s+if|even\s+raw)\b",
+    re.I
+)
+
+
+def _is_conversational_question(message: str) -> bool:
+    """True when the message is asking for conversational clarification or advice
+    about an existing subject (e.g. 'so i shouldn't boil the sausages?', 'even raw?')
+    rather than commanding an in-place widget mutation/filter."""
+    m = (message or "").strip().lower()
+    if not m:
+        return False
+    if _CONVERSATIONAL_QUESTION_RE.search(m):
+        # Exclude commands that explicitly open with filter/narrow/sort verbs
+        if _REFINE_RE.search(m) and not any(m.startswith(w) for w in ("can i ", "could i ", "should i ", "why ", "how ", "is it ", "what if ")):
+            return False
+        return True
+    if m.endswith(("?", "??")) and any(m.startswith(w) for w in ("so ", "why", "how", "can i", "should i", "do i", "is it", "even ")):
+        return True
+    return False
+
+
 # Tokens that carry no subject signal — dropped before measuring topic overlap.
 _SUBJECT_STOP = {
     "the", "a", "an", "of", "in", "on", "for", "to", "and", "or", "is", "are",
@@ -848,6 +872,11 @@ _SUBJECT_STOP = {
     # overlap. The subject is {deals, costco, hardware}; these words scope it,
     # they don't name it.
     "anything", "something", "everything", "related", "specifically", "etc",
+    # Auxiliary/modal verbs, negations, and grammatical fillers:
+    "should", "shouldn", "shouldnt", "would", "wouldn", "wouldnt",
+    "could", "couldn", "couldnt", "can", "cant", "cannot",
+    "will", "wont", "dont", "doesnt", "didnt", "isnt", "arent",
+    "wasnt", "werent", "have", "has", "had", "been", "being",
 }
 
 
@@ -992,6 +1021,27 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
     scored = []
     canvas_html = ""
     try:
+        from app.canvas_manager import (
+            get_session_canvas,
+            PASSIVE_MEDIA_TYPES,
+            _ledger_details,
+            _iter_canvas_widgets,
+            _score_widget_for_query,
+            _REUSE_SCORE_THRESHOLD,
+            _subject_tokens,
+            _fuzzy_hit,
+        )
+    except Exception:
+        PASSIVE_MEDIA_TYPES = {"youtube_player", "audio_player", "music_player"}
+        get_session_canvas = lambda sid: ""
+        _ledger_details = lambda sid: {}
+        _iter_canvas_widgets = lambda h: []
+        _score_widget_for_query = lambda m, t, d: 0.0
+        _REUSE_SCORE_THRESHOLD = 0.5
+        _subject_tokens = lambda m: []
+        _fuzzy_hit = lambda t, s: False
+
+    try:
         canvas_html = get_session_canvas(session_id)
         details = _ledger_details(session_id)
         for order, (wid, _wtype, title) in enumerate(_iter_canvas_widgets(canvas_html)):
@@ -1001,6 +1051,48 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
                                                    details.get(wid, "")), order, wid))
     except Exception as e:
         logger.warning(f"_followup_target_id scoring failed: {e}")
+
+    # Determine non-media focus widget: if focus_id is a passive video/audio player,
+    # do NOT latch onto it for conversational text or recipe follow-ups
+    non_media_focus = focus_id
+    type_by_id = {}
+    if canvas_html:
+        try:
+            for wid, wt, _ti in _iter_canvas_widgets(canvas_html):
+                if wid:
+                    type_by_id[wid] = wt
+        except Exception:
+            pass
+    try:
+        from app.canvas_manager import _session_turn_ledger
+        for e in _session_turn_ledger.get(session_id, []):
+            for w in e.get("widgets", []):
+                if w.get("id"):
+                    type_by_id[w["id"]] = w.get("type", "")
+    except Exception:
+        pass
+
+    if focus_id and type_by_id.get(focus_id) in PASSIVE_MEDIA_TYPES:
+        substantive = None
+        try:
+            from app.canvas_manager import _session_turn_ledger
+            for e in reversed(_session_turn_ledger.get(session_id, [])):
+                cand = [w["id"] for w in e.get("widgets", []) if w.get("type") not in PASSIVE_MEDIA_TYPES]
+                if cand:
+                    substantive = cand[-1]
+                    break
+        except Exception:
+            pass
+        if not substantive and canvas_html:
+            try:
+                cand = [wid for wid, wt, _ti in _iter_canvas_widgets(canvas_html) if wid and wt not in PASSIVE_MEDIA_TYPES]
+                if cand:
+                    substantive = cand[-1]
+            except Exception:
+                pass
+        if substantive:
+            non_media_focus = substantive
+
     top = [c for c in scored if c[0] >= _REUSE_SCORE_THRESHOLD]
     if top:
         best = max(s for s, _, _ in top)
@@ -1011,13 +1103,13 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
         # overwritten with meme-coin content. On a tie the recency focus wins
         # (it's the thread the user is in); otherwise the most recent match.
         contenders = [c for c in top if best - c[0] <= 0.1]
-        if focus_id and any(wid == focus_id for _, _, wid in contenders):
-            return focus_id
+        if non_media_focus and any(wid == non_media_focus for _, _, wid in contenders):
+            return non_media_focus
         _score, _order, best_id = max(contenders, key=lambda c: (c[0], c[1]))
-        if best_id != focus_id:
+        if best_id != non_media_focus:
             logger.info(f"[WIDGET TARGET] follow-up names a subject — topical "
                         f"#{best_id} (score {_score:.2f}, {len(contenders)} "
-                        f"contender(s)) beats recency #{focus_id}")
+                        f"contender(s)) beats recency #{non_media_focus}")
         return best_id
     # Title+gist missed. Before falling back, look INSIDE the widgets: the
     # canvas holds every card's full rendered text, and the name a follow-up
@@ -1037,12 +1129,15 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
                 wid = card.get("id", "")
                 if not wid or wid == "unknown":
                     continue
+                wtype = card.get("data-widget-type") or ""
+                if wtype in PASSIVE_MEDIA_TYPES:
+                    continue
                 body_toks = _subject_tokens(card.get_text(" ", strip=True))
                 if all(_fuzzy_hit(t, body_toks) for t in msg_toks):
                     hits.append(wid)
             if len(hits) == 1:
                 logger.info(f"[WIDGET TARGET] follow-up subject found in the BODY "
-                            f"of #{hits[0]} — beats recency #{focus_id}")
+                            f"of #{hits[0]} — beats recency #{non_media_focus}")
                 return hits[0]
         except Exception as e:
             logger.warning(f"_followup_target_id body scan failed: {e}")
@@ -1054,11 +1149,13 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
     # nothing on canvas mean a fresh subject: no directive, let the agent
     # open a new widget. One or zero content words ("tell me more", "what
     # about the cheaper ones") is genuinely deictic — keep the recency focus.
+    if _is_conversational_question(message):
+        return non_media_focus
     if len(_subject_tokens(message)) >= 2:
         logger.info(f"[WIDGET TARGET] follow-up phrasing but fresh subject "
                     f"(no canvas match) — not forcing an in-place update")
         return None
-    return focus_id
+    return non_media_focus
 
 
 
