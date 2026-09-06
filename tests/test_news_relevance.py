@@ -229,3 +229,32 @@ def test_pr_spam_catches_the_known_offenders():
 def test_pr_spam_returns_empty_rather_than_reinstating():
     rows = [{"title": "5 Stocks To Buy Now", "meta": "Motley Fool"}]
     assert m._drop_pr_spam(rows) == []
+
+
+# ── a general ask is not a search for the words "top stories" ───────────────
+
+@pytest.mark.asyncio
+async def test_general_ask_passes_an_empty_topic_through(patch_server):
+    """The shared tool treats "" as "use your top-headlines endpoint". Turning it
+    into the literal query "top stories" keyword-matches roundup pages that
+    contain that phrase — measured live, it returned "...and other top stories
+    highlighted by Us for September 4", where the phrase was the match."""
+    sent = {}
+
+    class _Client:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None, **kw):
+            sent.update(json or {})
+            class _R:
+                status_code = 200
+                @staticmethod
+                def json(): return {"items": []}
+            return _R()
+
+    import app.services.search as S
+    patch_server("httpx", type("_hx", (), {"AsyncClient": _Client})())
+    await S._shared_news_search("", 6)
+    assert sent.get("topic") == "", (
+        f"a general ask must send an empty topic, sent {sent.get('topic')!r}")

@@ -377,7 +377,14 @@ async def _shared_news_search(topic: str, limit: int) -> list:
     what that path structurally cannot: the PUBLISHER's own URL and THAT STORY's
     photo.
     """
-    clean_topic = (topic or "").strip() or "top stories"
+    # An empty topic is passed THROUGH as empty. It used to be substituted with
+    # the literal string "top stories", which the provider then keyword-searched
+    # — matching roundup pages that contain that phrase rather than returning the
+    # day's headlines. Measured 2026-09-05, "what's going on in the news"
+    # returned "Alix Earle sheds light on her feud with Alex Cooper and other TOP
+    # STORIES highlighted by Us for September 4": the phrase WAS the match.
+    # news_search now treats "" as "use your top-headlines endpoint".
+    clean_topic = (topic or "").strip()
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(
