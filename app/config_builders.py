@@ -462,7 +462,17 @@ async def build_news_config(message: str) -> dict:
     ground_fn = getattr(main, "ground_query", None) or ground_query
     g = await ground_fn(message)
     subject = (g.get("subject") or "").strip()
-    topic = (g.get("retrieval_query") or subject or "").strip()
+    # The SUBJECT, not ground_query's retrieval_query. That field is documented
+    # as "an expanded, unambiguous WEB-SEARCH query", and a news API is not a web
+    # search engine — it keyword-matches, so a long bag of words matches poorly
+    # and falls back to recency. Measured against the live provider:
+    #
+    #   "US China trade talks"                                  -> 6 items, 4 on-topic
+    #   "latest news US China trade talks negotiations updates"  -> 4 items, 0 on-topic
+    #
+    # The expanded query is the right instrument for the web-search builders that
+    # already use it, and the wrong one here.
+    topic = subject or (g.get("retrieval_query") or "").strip()
     # ground_query fails OPEN with retrieval_query = the raw message, so on a
     # grounding outage the topic would be the whole sentence ("news about AI").
     # Detect that case and fall back to a light scaffolding strip instead.
@@ -499,10 +509,37 @@ async def build_news_config(message: str) -> dict:
         results = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(results)
     if results and subject:
         gate = getattr(main, "filter_items_by_relevance", None) or filter_items_by_relevance
-        results = await gate(subject, g.get("negatives") or [], results,
-                             min_keep=1, hyde=g.get("hyde") or "")
+        # min_keep=0: when the gate rejects EVERY story, that is a verdict about
+        # the RESULT SET, not a grading failure, and reinstating them defeats the
+        # gate at the one moment it had something to say. Measured live on "us
+        # china trade talks": the provider returned four stories about jobs
+        # reports, shipping chokepoints, crude oil and a Fed speech; the gate
+        # correctly rejected all four, and a min_keep floor put all four back.
+        # Escalate to a different source instead.
+        vetted = await gate(subject, g.get("negatives") or [], results,
+                            min_keep=0, hyde=g.get("hyde") or "")
+        if not vetted:
+            logger.info(f"[NEWS] every story was off-subject for {subject!r} — "
+                        "retrying through web search")
+            search_fn = getattr(main, "web_search", None) or web_search
+            try:
+                raw = await search_fn(f"{subject} news", 6)
+            except Exception:
+                raw = []
+            retry = [{"title": r.get("title", ""), "url": r.get("url", ""),
+                      "image": "", "meta": _host_of(r.get("url", "")),
+                      "snippet": r.get("snippet", ""), "date": ""}
+                     for r in (raw or [])]
+            retry = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(retry)
+            if retry:
+                vetted = await gate(subject, g.get("negatives") or [], retry,
+                                    min_keep=0, hyde=g.get("hyde") or "")
+        results = vetted
     if not results:
-        return {"title": f"News: {display}".title()[:60], "icon": "newspaper", "items": []}
+        return {"title": f"News: {display}".title()[:60], "icon": "newspaper",
+                "answer": (f"No recent coverage specifically about {display} came "
+                           "back from the news providers just now."),
+                "items": []}
 
     def raw_items():
         return [{
