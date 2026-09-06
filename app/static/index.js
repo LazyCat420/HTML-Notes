@@ -275,7 +275,7 @@ window.WidgetLayout = {
         this.saveOrder([...ids, ...carried]);
     },
     /** Reorder the grid's children to match the saved arrangement. Unknown/new
-     *  widgets keep their DOM order and land after the known ones. */
+     *  widgets keep their DOM order and land before known ones at the top of the feed. */
     apply(grid) {
         if (!grid) return;
         const order = this.getOrder();
@@ -283,7 +283,7 @@ window.WidgetLayout = {
         const rank = new Map(order.map((id, i) => [id, i]));
         const kids = Array.from(grid.querySelectorAll(':scope > .widget-container'));
         kids
-            .map((el, i) => ({ el, i, r: rank.has(el.id) ? rank.get(el.id) : Infinity }))
+            .map((el, i) => ({ el, i, r: rank.has(el.id) ? rank.get(el.id) : (-kids.length + i) }))
             .sort((a, b) => (a.r - b.r) || (a.i - b.i)) // stable: DOM order breaks ties
             .forEach(({ el }) => grid.appendChild(el));  // appendChild MOVES the node
     },
@@ -448,6 +448,67 @@ document.addEventListener("DOMContentLoaded", () => {
     window.HN.applyTheme(localStorage.getItem(THEME_KEY) || "hud");
 
     window.WidgetResizer.observe(document.getElementById("live-canvas"));
+
+    // ─── LEGO: CANVAS DENSITY & AUTO-RESIZE ──────────────────────────────
+    // Dynamically adjusts grid density and compacts older cards as new ones
+    // arrive at the top of the canvas feed, allowing 4–8+ boxes to fit cleanly.
+    window.CanvasDensity = {
+        update(grid) {
+            if (!grid) grid = document.querySelector('#dashboard-grid');
+            if (!grid) return;
+            const widgets = Array.from(grid.querySelectorAll(':scope > .widget-container, :scope > .glass-card:not(.system-message):not(.turn-envelope)'));
+            const count = widgets.length;
+
+            // Auto-density: compact columns when 3 or more widgets exist
+            if (count >= 3) {
+                grid.classList.add('density-compact');
+            } else {
+                grid.classList.remove('density-compact');
+            }
+
+            // Feed aging: top 2 are active hero cards; older cards (index >= 2)
+            // compress so they don't push the canvas feed into endless scrolling.
+            widgets.forEach((w, idx) => {
+                if (idx >= 2 && count >= 3) {
+                    w.classList.add('is-feed-aged');
+                    this.ensureExpandButton(w);
+                } else {
+                    w.classList.remove('is-feed-aged');
+                }
+            });
+
+            if (window.__masonryLayout) {
+                requestAnimationFrame(window.__masonryLayout);
+            }
+        },
+
+        ensureExpandButton(el) {
+            if (!el || el.querySelector('.widget-expand-toggle')) return;
+            const btn = document.createElement('button');
+            btn.className = 'widget-expand-toggle';
+            btn.type = 'button';
+            btn.title = 'Toggle full / compact size';
+            btn.innerHTML = '<span class="material-symbols-outlined" style="font-size: 14px;">unfold_more</span>';
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                el.classList.toggle('is-expanded');
+                const isExp = el.classList.contains('is-expanded');
+                btn.innerHTML = `<span class="material-symbols-outlined" style="font-size: 14px;">${isExp ? 'unfold_less' : 'unfold_more'}</span>`;
+                if (window.__masonryLayout) {
+                    requestAnimationFrame(window.__masonryLayout);
+                }
+            });
+
+            // Put next to close button if possible, else append
+            const closeBtn = el.querySelector('.close-widget-btn');
+            if (closeBtn && closeBtn.parentElement) {
+                closeBtn.parentElement.insertBefore(btn, closeBtn);
+            } else {
+                el.appendChild(btn);
+            }
+        }
+    };
 
     // ─── APP RAIL ───────────────────────────────────────────────────────────
     // Collapsible launcher of the user's own apps so nobody has to REMEMBER
@@ -1296,15 +1357,22 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             });
 
+        let prependAnchor = grid.firstElementChild;
         let changed = false;
+        let anyNewWidget = false;
         newWidgets.forEach(newWidget => {
             const id = newWidget.id;
 
             // No id to key on — safest to treat as new content every time.
             if (!id) {
-                grid.appendChild(newWidget);
+                if (prependAnchor && prependAnchor.parentElement === grid) {
+                    grid.insertBefore(newWidget, prependAnchor);
+                } else {
+                    grid.appendChild(newWidget);
+                }
                 relayoutOnMediaSettle(newWidget);
                 changed = true;
+                anyNewWidget = true;
                 return;
             }
 
@@ -1353,7 +1421,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 // once the paint pipeline has settled.
                 scheduleGlitch(grid, newWidget.id, outgoingText);
             } else {
-                grid.appendChild(newWidget);
+                if (prependAnchor && prependAnchor.parentElement === grid) {
+                    grid.insertBefore(newWidget, prependAnchor);
+                } else {
+                    grid.appendChild(newWidget);
+                }
+                anyNewWidget = true;
                 // Hold it back so it appears in time with the narration; shows
                 // immediately when nothing is going to be spoken. EXCEPT a
                 // provisional widget — its entire purpose is to be visible
@@ -1368,9 +1441,16 @@ document.addEventListener("DOMContentLoaded", () => {
             changed = true;
         });
 
-        // Restore the user's saved arrangement (and place any brand-new widget at
-        // the end) so the grid packs the same way every paint.
+        // Restore the user's saved arrangement (placing brand-new widgets at the top)
         window.WidgetLayout.apply(grid);
+
+        // Auto-density & feed aging
+        if (window.CanvasDensity) window.CanvasDensity.update(grid);
+
+        // Auto-scroll to top so new widgets on top are immediately visible without scrolling
+        if (anyNewWidget && elements.liveCanvas) {
+            elements.liveCanvas.scrollTo({ top: 0, behavior: 'smooth' });
+        }
 
         grid.style.removeProperty('min-height');
         // Drive the masonry recompute ourselves instead of waiting on the
@@ -1468,7 +1548,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         });
                         
                         elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, CANVAS_DOMPURIFY_CONFIG);
-                        window.WidgetLayout.apply(elements.liveCanvas.querySelector('#dashboard-grid'));
+                        const loadedGrid = elements.liveCanvas.querySelector('#dashboard-grid');
+                        window.WidgetLayout.apply(loadedGrid);
+                        if (window.CanvasDensity) window.CanvasDensity.update(loadedGrid);
                         seedWidgetSnapshots(elements.liveCanvas);
                         // Masonry measures row spans NOW, before restored <img>/<iframe>
                         // content has height. Without re-running on each media load the
@@ -1489,7 +1571,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         
                         if (htmlOnly) {
                             elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, CANVAS_DOMPURIFY_CONFIG)}</div>`;
-                            window.WidgetLayout.apply(elements.liveCanvas.querySelector('#dashboard-grid'));
+                            const fallbackGrid = elements.liveCanvas.querySelector('#dashboard-grid');
+                            window.WidgetLayout.apply(fallbackGrid);
+                            if (window.CanvasDensity) window.CanvasDensity.update(fallbackGrid);
                             seedWidgetSnapshots(elements.liveCanvas);
                             relayoutOnMediaSettle(elements.liveCanvas);
                             renderDynamicComponents(elements.liveCanvas);
@@ -1645,6 +1729,14 @@ document.addEventListener("DOMContentLoaded", () => {
         // Drag handles / resize handles are injected client-side; never persist them.
         temp.querySelectorAll('.widget-move-handle, .widget-resize-handle')
             .forEach(h => h.remove());
+
+        // Strip client-side density / feed aging classes and toggle buttons
+        const savedGrid = temp.querySelector('#dashboard-grid');
+        if (savedGrid) savedGrid.classList.remove('density-compact');
+        temp.querySelectorAll('.is-feed-aged, .is-expanded').forEach(el => {
+            el.classList.remove('is-feed-aged', 'is-expanded');
+        });
+        temp.querySelectorAll('.widget-expand-toggle').forEach(el => el.remove());
 
         return temp.innerHTML;
     }
@@ -1873,9 +1965,12 @@ document.addEventListener("DOMContentLoaded", () => {
             fillEl = node.querySelector(".turn-envelope-fill");
             phaseEl.textContent = ENVELOPE_PHASES[currentPhase] || ENVELOPE_PHASES.sent;
             elapsedEl.textContent = fmtElapsed();
-            // Appended last so the widget that reconcileCanvas appends next lands
-            // adjacent to it — the card is replaced by its own answer, in place.
-            g.appendChild(node);
+            // Prepended at top so the card holding this turn appears at the top
+            // of the feed, where the resulting widget will land.
+            g.prepend(node);
+            if (elements.liveCanvas) {
+                elements.liveCanvas.scrollTo({ top: 0, behavior: 'smooth' });
+            }
             // Flight: the card is drawn at the command bar and travels to its
             // slot. Measured, not hardcoded, so it survives a layout change.
             const bar = elements.chatInput;
@@ -2017,6 +2112,9 @@ document.addEventListener("DOMContentLoaded", () => {
         appendChatMessageToHistory("user", text);
         chatQueue.push(text);
         updateQueueIndicator();
+        if (elements.liveCanvas) {
+            elements.liveCanvas.scrollTo({ top: 0, behavior: 'smooth' });
+        }
         drainChatQueue();
     }
 
@@ -2033,6 +2131,9 @@ document.addEventListener("DOMContentLoaded", () => {
         appendChatMessageToHistory("user", text);
         chatQueue.push(text);
         updateQueueIndicator();
+        if (elements.liveCanvas) {
+            elements.liveCanvas.scrollTo({ top: 0, behavior: 'smooth' });
+        }
         drainChatQueue();
     };
 

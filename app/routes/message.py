@@ -165,7 +165,7 @@ async def send_message(req: MessageRequest):
                     if existing is not None:
                         existing.replace_with(node)
                     else:
-                        target.append(node)
+                        target.insert(0, node)
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
@@ -433,7 +433,7 @@ async def send_message(req: MessageRequest):
                         existing.replace_with(node)
                     else:
                         grid = soup.select_one('#dashboard-grid')
-                        (grid or soup).append(node)
+                        (grid or soup).insert(0, node)
 
                 event = await commit_canvas(req.session_id, _mutate)
                 if event:
@@ -512,6 +512,7 @@ async def send_message(req: MessageRequest):
                             '<div id="dashboard-grid" class="dashboard-grid"></div>', 'html.parser')
                         soup.append(grid)
                         target = soup.select_one('#dashboard-grid')
+                    batch_insert_idx = 0
                     for wtype, id_prefix, wcfg, model_target in good:
                         # UPDATE the widget this ask refines instead of stacking a
                         # second: the model's explicit target when valid (P2), else
@@ -533,7 +534,8 @@ async def send_message(req: MessageRequest):
                         if existing is not None:
                             existing.replace_with(node)
                         else:
-                            target.append(node)
+                            target.insert(batch_insert_idx, node)
+                            batch_insert_idx += 1
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
@@ -1868,7 +1870,7 @@ async def send_message(req: MessageRequest):
                         existing.replace_with(BeautifulSoup(html, "html.parser"))
                     else:
                         grid = soup.select_one("#dashboard-grid") or soup
-                        grid.append(BeautifulSoup(html, "html.parser"))
+                        grid.insert(0, BeautifulSoup(html, "html.parser"))
 
                 evt = await commit_canvas(req.session_id, _place)
                 if evt:
@@ -2430,9 +2432,9 @@ async def send_message(req: MessageRequest):
                             _stamp_media_seq(snippet, widget_type, req_seq)
                             target = soup.select_one('#dashboard-grid')
                             if target:
-                                target.append(snippet)
+                                target.insert(0, snippet)
                             else:
-                                soup.append(snippet)
+                                soup.insert(0, snippet)
                             logger.info(f"[WIDGET INJECTOR] Appended new {widget_type} widget")
 
                         event = await emit(_add)
@@ -2520,9 +2522,9 @@ async def send_message(req: MessageRequest):
                             snippet = BeautifulSoup(html_snippet, 'html.parser')
                             target = soup.select_one('#dashboard-grid')
                             if target:
-                                target.append(snippet)
+                                target.insert(0, snippet)
                             else:
-                                soup.append(snippet)
+                                soup.insert(0, snippet)
 
                         event = await emit(_create)
                         if event:
@@ -2791,7 +2793,7 @@ async def send_message(req: MessageRequest):
                                                         '<div id="dashboard-grid" class="dashboard-grid"></div>',
                                                         'html.parser'))
                                                     grid = soup.select_one('#dashboard-grid')
-                                                grid.append(BeautifulSoup(render_widget(
+                                                grid.insert(0, BeautifulSoup(render_widget(
                                                     "action_confirm",
                                                     f"confirm-{uuid.uuid4().hex[:8]}", _cfg),
                                                     'html.parser'))
@@ -3029,7 +3031,7 @@ async def send_message(req: MessageRequest):
                             existing.replace_with(BeautifulSoup(html, "html.parser"))
                         else:
                             grid = soup.select_one("#dashboard-grid") or soup
-                            grid.append(BeautifulSoup(html, "html.parser"))
+                            grid.insert(0, BeautifulSoup(html, "html.parser"))
 
                     evt = await commit_canvas(req.session_id, _promote)
                     if evt:
@@ -3083,7 +3085,7 @@ async def send_message(req: MessageRequest):
                             existing.replace_with(BeautifulSoup(html, "html.parser"))
                         else:
                             grid = soup.find(id="dashboard-grid") or soup
-                            grid.append(BeautifulSoup(html, "html.parser"))
+                            grid.insert(0, BeautifulSoup(html, "html.parser"))
 
                     evt = await commit_canvas(req.session_id, _fallback_mutate)
                     if evt:

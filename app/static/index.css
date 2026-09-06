@@ -140,7 +140,7 @@ body::after {
    800px min-height, out of sight. Grid auto-placement makes that impossible. */
 .dashboard-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
     /* Masonry: a 1px row track + no row-gap lets the inline layout script in
        index.html give each widget a grid-row span equal to its pixel height
        (+ a gap), so varying-height widgets pack tightly per column instead of
@@ -152,6 +152,11 @@ body::after {
     column-gap: 1.25rem;
     width: 100%;
     align-content: start;
+}
+/* Adaptive Compact Density: when 3 or more boxes exist on canvas */
+.dashboard-grid.density-compact {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+    column-gap: 1rem;
 }
 /* Until the layout script assigns a row span, keep the widget from stretching
    the implicit 1px track (which would clip it). It sizes to its own content. */
@@ -276,9 +281,15 @@ body::after {
 }
 
 /* Widgets size to their grid track. col-span-2 asks for a double-width cell,
-   but collapses to a single column when the viewport can't fit two. */
+   but collapses to a single column when the viewport can't fit two or in compact density. */
 .widget-container.col-span-1 { grid-column: span 1; }
 .widget-container.col-span-2 { grid-column: span 2; }
+
+/* In compact mode, standard cards collapse to single-column so 3-4 fit across,
+   while media widgets (youtube, charts) maintain span 2 */
+.dashboard-grid.density-compact > .widget-container.col-span-2:not([style*="grid-column"]):not(.youtube-player):not(.chart-widget):not(.wallet-graph-widget) {
+    grid-column: span 1;
+}
 
 @media (max-width: 800px) {
     /* !important so a user's saved multi-column width (written as an inline style
@@ -286,6 +297,60 @@ body::after {
        author !important outranks a normal inline declaration. */
     .widget-container.col-span-2,
     .widget-container[style*="grid-column"] { grid-column: span 1 !important; }
+}
+
+/* ─── Auto-Resize & Content-Hugging ─────────────────────────────── */
+/* Let cards size to their natural content instead of empty 380px-560px boxes. */
+.dashboard-grid > .widget-container:not(.is-resizing):not([style*="height"]) {
+    height: auto;
+    min-height: 180px;
+    max-height: 540px;
+}
+.dashboard-grid > .widget-container .data-card-content,
+.dashboard-grid > .widget-container .widget-body {
+    overflow-y: auto;
+    max-height: 440px;
+}
+
+/* ─── Feed-Aging Progressive Compression ────────────────────────── */
+/* As cards age down the feed, older cards compress so 4-8+ boxes fit on screen. */
+.dashboard-grid.density-compact > .widget-container.is-feed-aged:not([style*="height"]):not(.is-expanded) {
+    max-height: 220px !important;
+}
+.dashboard-grid.density-compact > .widget-container.is-feed-aged:not([style*="height"]):not(.is-expanded) .data-card-content,
+.dashboard-grid.density-compact > .widget-container.is-feed-aged:not([style*="height"]):not(.is-expanded) .widget-body,
+.dashboard-grid.density-compact > .widget-container.is-feed-aged:not([style*="height"]):not(.is-expanded) .image-widget-body {
+    max-height: 145px !important;
+}
+
+/* Expand toggle button for compact / feed-aged cards */
+.widget-expand-toggle {
+    position: absolute;
+    top: 0.75rem;
+    right: 2.35rem;
+    z-index: 25;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.6);
+    cursor: pointer;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.widget-container:hover .widget-expand-toggle,
+.glass-card:hover .widget-expand-toggle,
+.widget-container.is-expanded .widget-expand-toggle {
+    opacity: 1;
+}
+.widget-expand-toggle:hover {
+    color: var(--hud-cyan, #38bdf8);
+    background: rgba(56, 189, 248, 0.15);
+    border-color: rgba(56, 189, 248, 0.4);
 }
 
 /* ─── Resize handle ─────────────────────────────────────────────── */

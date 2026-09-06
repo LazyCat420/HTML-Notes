@@ -148,9 +148,9 @@ test("changed front-end assets are cache-busted", () => {
   const css = indexHtml.match(/index\.css\?v=([\d.]+)/);
   const hud = indexHtml.match(/hud-theme\.css\?v=([\d.]+)/);
   assert.ok(js && css && hud, "all three assets must carry a version query");
-  assert.ok(parseFloat(js[1]) >= 3.2, `index.js still pinned at v${js[1]}`);
-  assert.ok(parseFloat(css[1]) >= 3.1, `index.css still pinned at v${css[1]}`);
-  assert.ok(parseFloat(hud[1]) >= 1.1, `hud-theme.css still pinned at v${hud[1]}`);
+  assert.ok(parseFloat(js[1]) >= 3.3, `index.js still pinned at v${js[1]}`);
+  assert.ok(parseFloat(css[1]) >= 3.2, `index.css still pinned at v${css[1]}`);
+  assert.ok(parseFloat(hud[1]) >= 1.2, `hud-theme.css still pinned at v${hud[1]}`);
 });
 
 test("every animation the envelope uses is disabled under reduced motion", () => {
