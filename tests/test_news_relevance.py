@@ -258,3 +258,13 @@ async def test_general_ask_passes_an_empty_topic_through(patch_server):
     await S._shared_news_search("", 6)
     assert sent.get("topic") == "", (
         f"a general ask must send an empty topic, sent {sent.get('topic')!r}")
+
+
+def test_news_brief_sources_are_ad_filtered():
+    """The synthesized brief reaches the card without going through the news
+    builder, so it was the one route where a press release could still be cited
+    as a 'Source'."""
+    from tests._sources import BUILDERS_SRC
+    start = BUILDERS_SRC.index("async def build_news_brief_config")
+    body = BUILDERS_SRC[start:BUILDERS_SRC.index("async def build_stock_report_config", start)]
+    assert "_drop_pr_spam" in body, "the brief's sources bypass the ad filter"

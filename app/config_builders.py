@@ -890,6 +890,10 @@ async def build_news_brief_config(message: str, finance: bool = False) -> dict:
                 "url": s.get("url", ""), "image": s.get("image", ""),
                 "meta": s.get("publisher") or _host_of(s.get("url", "")),
                 "badge": "Source"})
+    # The brief path reaches the card without passing through the news builder,
+    # so it was the one route where a press release or a stock-promo listicle
+    # could still be cited as a "Source". Same filter, same place in the flow.
+    items = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(items)
     logger.info(f"[NEWS-BRIEF] synthesized brief ({len(brief.get('answer',''))} chars, "
                 f"{len(items)} sources)")
     return {
