@@ -602,7 +602,11 @@ async def test_route_with_llm_validates_and_filters(patch_server):
         async def fake_llm(instruction, max_tokens=400):
             return fake
         patch_server("fast_llm_json", fake_llm)
-        return await m.route_with_llm("whatever", "")
+        # An explicitly BROAD ask: the router now returns ONE widget unless the
+        # ask is broad (composition_allowed), so the multi-widget and cap-at-4
+        # assertions below need a message that is allowed to compose. The
+        # validation behaviour they pin is unchanged.
+        return await m.route_with_llm("plan my whole day in Seattle", "")
 
     # valid multi-widget plan, plus one bogus type that must be dropped
     plan = await run({

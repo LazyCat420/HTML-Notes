@@ -274,7 +274,8 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         "to watch, recent news if it's current, a map if it's a place). Examples: "
         '"plan my Saturday in Seattle" -> weather + map + things-to-do; "tesla stock '
         'and news" -> stock + stock_news; "tell me about black holes" -> answer + '
-        "image + video. Do NOT pad with a modality that doesn't serve the subject. Max 4.\n"
+        "image + video. Do NOT pad with a modality that doesn't serve the subject. Max 4. "
+        "The DEFAULT is ONE widget; compose only when the ask is explicitly broad.\n"
         "- For a traffic ask add modifiers {\"traffic\": true}.\n"
         "- FOLLOW-UPS UPDATE, THEY DON'T STACK. Read RECENT TURNS and the canvas "
         "below. If the ask refines something you already built (\"what about the "
@@ -354,6 +355,25 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         clean = [w for w in clean if w["type"] != "stock" or w is stock_specs[0]]
         logger.info(f"[ROUTER] collapsed {len(stock_specs)} stock specs into "
                     f"one compare: {joined!r}")
+    # stock_trending only when the ask literally says so. The feed behind it is
+    # Yahoo trending/US — "unscoped most-viewed noise" per its own docstring —
+    # and the router picked it for "stock market for the day please", charting
+    # NKE, VST, SCHD, KO and ETN for an ask that never mentioned trending stocks.
+    if any(w["type"] == "stock_trending" for w in clean) and not TRENDING_STOCK_RE.search(message or ""):
+        clean = [w for w in clean if w["type"] != "stock_trending"]
+        logger.info(f"[ROUTER] dropped stock_trending — no trending word in {message[:60]!r}")
+        if not clean:
+            if STOCK_WORD_RE.search(message or "") or MARKET_WORD_RE.search(message or ""):
+                clean = [{"type": "stock_news", "query": "", "modifiers": {}, "target": None}]
+            else:
+                return None
+    # ONE widget by default. Composition only for an explicitly broad ask —
+    # the prompt's "a BROAD or rich ask should COMPOSE" is advisory, and it was
+    # being applied to greetings whenever the canvas already held a dashboard.
+    if len(clean) > 1 and not composition_allowed(message or ""):
+        logger.info(f"[ROUTER] composition suppressed for {message[:60]!r}: "
+                    f"{[w['type'] for w in clean]} -> {clean[0]['type']}")
+        clean = clean[:1]
     # A converter pick is the one classification with no net underneath it (see
     # build_router_widget), and `checks.is_arithmetic` is the model's own answer
     # to "is this actually a calculation?" — when it says no, believe it.

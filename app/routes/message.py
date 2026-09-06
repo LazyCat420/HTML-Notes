@@ -844,10 +844,15 @@ async def send_message(req: MessageRequest):
                 status=("researching and writing your brief — this takes a minute..."
                         if _depth == "brief" else "gathering and summarizing the news..."))
 
-        # PRISM MODE (default): everything below is the "go around prism to
-        # save latency" fast-path cascade. It is SKIPPED so every content ask
-        # runs through the prism agent + lazy-tool-service MCP tools. The
-        # router below is gated the same way. use_lazy_agent=True restores it.
+        # use_lazy_agent defaults to TRUE (main.py MessageRequest), and the
+        # browser deliberately does not send it — so for every real turn this
+        # cascade RUNS and the local builders serve. The `_AGENT_RESEARCH_TYPES`
+        # deferral further down is inert unless a client sends
+        # use_lazy_agent=false. (An earlier comment here claimed the opposite —
+        # "prism mode is the default, this is skipped" — and was wrong for
+        # months; the default was flipped to True on 2026-08-16 because prism's
+        # local registry came up empty.) News never reaches this block: the
+        # pre-router above claims it first.
         if req.use_lazy_agent:
 
             # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember

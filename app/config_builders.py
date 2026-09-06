@@ -1879,11 +1879,16 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
         if wtype == "app_grid":
             return ("app_grid", "app-hub", await build_app_grid_config(query or message))
 
-        if wtype == "news":
-            return ("data_card", "news", await build_news_config(query or message))
-
-        if wtype == "stock_news":
-            return ("data_card", "stock-news", await build_stock_news_config(query or message))
+        if wtype in ("news", "stock_news"):
+            # An EXPLICIT empty query means "top stories". `query or message`
+            # used to throw that away and hand the raw message to the builder,
+            # which grounded "hello" into "hello (greeting)" and fetched an NYT
+            # piece about Gen-Z phone etiquette. The caller knew; the callee
+            # must not guess.
+            q = (query or "").strip()
+            return ("data_card", ROUTER_WIDGETS[wtype][0],
+                    await build_news_card(q or message, finance=(wtype == "stock_news"),
+                                          general=(q == "")))
 
         if wtype == "stock_report":
             return ("data_card", "stock-report", await build_stock_report_config(query or message))
@@ -1910,6 +1915,10 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             return ("data_card", "wallet", w_cfg) if w_cfg else None
 
         if wtype == "stock_trending":
+            # Mirror of the router-side guard: never chart "trending" tickers
+            # for an ask that did not say trending / gainers / losers / hot.
+            if not TRENDING_STOCK_RE.search(message or ""):
+                return None
             t_cfg = await build_trending_compare_config(query or message)
             return ("chart", "stock-trending", t_cfg) if t_cfg else None
 

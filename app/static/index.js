@@ -2166,8 +2166,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     // guard in _run_turn; without it a fast sibling turn's
                     // widget gets silently wiped).
                     canvas_version: canvasVersion
-                    // use_lazy_agent is deliberately NOT sent — the SERVER decides
-                    // (MessageRequest defaults it to False = PRISM MODE).
+                    // use_lazy_agent is deliberately NOT sent — the SERVER decides.
+                    // (MessageRequest defaults it to TRUE: the local cascade and
+                    // builders run for every browser turn. An earlier version of
+                    // this comment said "False = PRISM MODE" — that was wrong.)
                     //
                     // It used to be pinned to `true` (the :5591 fork) because prism
                     // dropped the mcp__lazy-tool-service__* widget tools ("not in

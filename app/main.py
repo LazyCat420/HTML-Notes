@@ -2193,6 +2193,50 @@ def classify_news_ask(raw: str, *, wants_removal: bool = False,
                    subject_hint=residual.strip())
 
 
+_CONJUNCTION_RE = re.compile(r"\b(and|also|plus|along with|both|as well as|with)\b")
+_DATA_NOUN_RE = re.compile(
+    r"\b(article|articles|news|list|boots|trails|guide|summary|info|review|reviews|buying|buy)\b")
+_STOCKISH_RE = re.compile(
+    r"\b(chart|charts|stock|stocks|ticker|share|shares|price|nvda|tsla|aapl|msft|googl|amzn)\b")
+_LISTISH_RE = re.compile(r"\b(list|checklist|to-?dos?)\b")
+_BROAD_ASK_RE = re.compile(r"\b(plan|dashboard|overview|rundown|everything|itinerary)\b")
+
+
+def count_explicit_intents(text_clean: str) -> int:
+    """How many distinct widget-shaped intents the message names — the same six
+    axes send_message uses to decide `is_compound_ask`, in one place so the
+    router can apply the same rule. video / data / stock / list / map / weather."""
+    t = (text_clean or "").lower()
+    # The generic data axis must not re-count a word a more specific axis
+    # already claimed: DATA_ASK_RE contains "weather", "forecast", "stock",
+    # "price" and "chart", so "weather and also the time" scored TWO intents
+    # (data + weather) and was allowed to compose. Count each word once.
+    t_data = WEATHER_ASK_RE.sub(" ", _STOCKISH_RE.sub(" ", t))
+    axes = [
+        bool(VIDEO_ASK_RE.search(t)),
+        bool(DATA_ASK_RE.search(t_data) or _DATA_NOUN_RE.search(t_data)),
+        bool(STOCK_REPORT_RE.search(t) or STOCK_WORD_RE.search(t) or _STOCKISH_RE.search(t)),
+        bool(_LISTISH_RE.search(t) or LIST_EDIT_RE.search(t) or LIST_ITEM_REMOVE_RE.search(t)),
+        bool(MAP_ASK_RE.search(t)),
+        bool(WEATHER_ASK_RE.search(t)),
+    ]
+    return sum(1 for x in axes if x)
+
+
+def composition_allowed(text_clean: str) -> bool:
+    """May the router return MORE than one widget for this ask?
+
+    Only when the ask is explicitly broad: a compose phrasing, a plan/dashboard
+    word, or a conjunction joining two distinct named intents. The router's
+    prompt invites composition ("a BROAD or rich ask should COMPOSE"), and with a
+    finance canvas as context it composed "news + trending stocks" for "hello".
+    Prose cannot outvote sampling; this can."""
+    t = (text_clean or "").lower()
+    if COMPOSE_ASK_RE.search(t) or _BROAD_ASK_RE.search(t):
+        return True
+    return bool(_CONJUNCTION_RE.search(t)) and count_explicit_intents(t) >= 2
+
+
 def _is_general_news_ask(message: str, *, finance: bool = False) -> bool:
     """True when the message names no subject beyond "news" itself.
 
@@ -2998,7 +3042,7 @@ ROUTER_WIDGETS = {
     "news":       ("news",      'general current headlines. query = the topic (empty for top stories)'),
     "stock_news": ("stock-news", 'stock / market / company NEWS. query = the ticker or company (e.g. "TSLA", "Apple"), or the market itself for a broad market-news ask. ONLY for a genuine finance/markets ask.'),
     "stock":      ("stock",     'a ticker\'s price + chart + technicals. query = company or symbol ("Apple", "TSLA")'),
-    "stock_trending": ("stock-trending", 'the top TRENDING / most-active / biggest-gainer or -loser stocks — a DISCOVERY ask naming NO specific company ("top trending stocks this month", "biggest gainers today", "compare the top 5 hot stocks"). Renders one multi-series comparison chart from live market feeds. query = the whole request'),
+    "stock_trending": ("stock-trending", 'ONLY when the ask literally says trending / gainers / losers / most active / hot / best-performing — a DISCOVERY ask naming NO specific company ("top trending stocks this month", "biggest gainers today", "compare the top 5 hot stocks"). NEVER for a general market ask ("stock market today", "how is the market") — that is stock_news. Renders one multi-series comparison chart from live market feeds. query = the whole request'),
     "stock_report": ("stock-report", 'a COMPREHENSIVE research report on ONE stock — synthesizes price, fundamentals, technicals, recent news AND analyst commentary into a written brief. Use for "full report on X", "deep dive / due diligence on X", "analyze X stock". query = company or symbol'),
     "crypto":     ("crypto",    'a CRYPTOCURRENCY / token\'s price + chart + stats + contract address. query = the coin name, symbol or contract address ("Bitcoin", "PEPE", "$SOL", "0x6982…"). Use for any "price of X coin/token", "X crypto chart" ask. NOT for stocks.'),
     "crypto_report": ("crypto-report", 'a COMPREHENSIVE written report on ONE crypto token — price, market context, ON-CHAIN holder distribution (whale concentration / rug risk) and news. Use for "full report / deep dive / due diligence / is X a scam / analyze X token". query = coin name, symbol or address'),
