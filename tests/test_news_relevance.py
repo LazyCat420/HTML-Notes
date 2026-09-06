@@ -230,10 +230,44 @@ def test_pr_spam_filter_does_not_reinstate_what_it_caught():
 
 
 def test_pr_spam_is_applied_to_every_tier_not_just_the_yahoo_fallback():
+    """The ad filter must run at build_news_card's TOP LEVEL, on the merged
+    list, before the summariser — not inside any tier's `if`/`else`.
+
+    The previous version of this test asserted `"_drop_pr_spam" in source`,
+    which a comment satisfies; it stayed green while the filter sat inside the
+    Yahoo `else` branch and the primary tier went unfiltered. Checked via the
+    AST: resolve the repo's `x = getattr(main, "_drop_pr_spam", None) or
+    _drop_pr_spam` alias, then require a direct-body `items = x(...)` that
+    precedes the first summariser call."""
+    import ast
     from tests._sources import BUILDERS_SRC
-    assert "_drop_pr_spam" in BUILDERS_SRC, (
-        "PR-spam filtering must be a shared helper applied to whichever tier "
-        "served the stories, not inlined in the Yahoo fallback only")
+    tree = ast.parse(BUILDERS_SRC)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "build_news_card")
+    aliases = {"_drop_pr_spam"}
+    filter_pos = None
+    llm_pos = None
+    for pos, stmt in enumerate(fn.body):            # DIRECT body only
+        if isinstance(stmt, ast.Assign):
+            dump = ast.dump(stmt.value)
+            targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+            if "_drop_pr_spam" in dump and not isinstance(stmt.value, ast.Call):
+                aliases.update(targets)             # spam_fn = getattr(...) or _drop_pr_spam
+            elif (isinstance(stmt.value, ast.Call)
+                  and isinstance(stmt.value.func, ast.Name)
+                  and stmt.value.func.id in aliases and filter_pos is None):
+                filter_pos = pos                    # items = spam_fn(items)
+        if llm_pos is None and any(
+                isinstance(c, ast.Call) and (
+                    "fast_llm_json" in ast.dump(c.func) or
+                    (isinstance(c.func, ast.Name) and c.func.id == "llm_fn"))
+                for c in ast.walk(stmt)):
+            llm_pos = pos
+    assert filter_pos is not None, (
+        "no top-level `items = _drop_pr_spam(...)` in build_news_card — the ad "
+        "filter is nested inside a tier branch again, or missing")
+    assert llm_pos is not None and filter_pos < llm_pos, (
+        "the ad filter must run BEFORE the summariser")
 
 
 def test_pr_spam_catches_the_known_offenders():

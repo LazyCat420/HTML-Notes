@@ -461,30 +461,34 @@ def test_stock_news_asks_route_to_market_branch():
 async def test_build_stock_news_config_writes_summaries(patch_server):
     import app.main as m
 
+    async def _none(*a, **k):
+        return []
+
     async def fake_stock_news(query, limit=8):
         return {"news": [{"title": "Nvidia pops 5%", "publisher": "Reuters",
                           "published": "2026-07-15 10:00 UTC", "url": "https://x/a",
-                          "image": "https://img/a.jpg", "related_tickers": ["NVDA"]}],
+                          "image": "https://img/a.jpg", "related_tickers": ["NVDA"],
+                          # provider summary — the card path does NOT scrape pages
+                          "og_desc": "Nvidia rose after earnings beat expectations."}],
                 "matches": [], "count": 1}
 
-    async def fake_read(url, max_chars=2000):
-        return {"content": "Nvidia rose after earnings beat expectations."}
-
     async def fake_llm(instruction, max_tokens=400):
-        return {"overview": "Chips rallied.",
+        return {"overview": "Nvidia rallied 5% after its earnings beat.",
                 "items": [{"index": 0, "title": "Nvidia jumps on earnings",
                            "summary": "Nvidia stock rose 5% after a strong report."}]}
+    patch_server("news_search", _none)
+    patch_server("_finnews_articles", _none)
     patch_server("stock_news", fake_stock_news)
-    patch_server("read_web_page", fake_read)
     patch_server("fast_llm_json", fake_llm)
     cfg = await m.build_stock_news_config("nvidia stock news")
     item = cfg["items"][0]
     assert item["description"].startswith("Nvidia stock rose")
     assert item["title"] == "Nvidia jumps on earnings"
     assert item["badge"] == "NVDA" and item["image"] == "https://img/a.jpg"
-    assert cfg["subtitle"] == "Chips rallied."
+    assert cfg["answer"] == "Nvidia rallied 5% after its earnings beat."
+    assert cfg["subtitle"] != cfg["answer"] and cfg["subtitle"].startswith("1 stories")
 
-    # LLM pass failing must still yield article excerpts, never bare links
+    # LLM pass failing must still yield the provider summary, never bare links
     async def dead_llm(instruction, max_tokens=400):
         return None
     patch_server("fast_llm_json", dead_llm)

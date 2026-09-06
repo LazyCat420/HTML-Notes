@@ -2037,10 +2037,120 @@ _PR_SPAM_SIGNATURES = (
     "pr newswire", "prnewswire", "business wire", "businesswire",
     "accesswire", "stocks we like better", "motley fool", "zacks",
     "sponsored content", "advertorial", "partner content",
+    # Stock-promo / listicle mills that the first list missed. Observed live
+    # 2026-09-06 on "market news": a nasdaq.com-syndicated "162% upside target"
+    # analyst piece rendered as a top source.
+    "benzinga", "insider monkey", "simply wall st", "24/7 wall st",
+    "invezz", "stocktwits", "marketbeat", "tipranks", "investorplace",
 )
 _PR_SPAM_TITLE_RE = re.compile(
-    r"\b\d+\s+(?:best|top|stocks?|things|reasons|ways)\b.*\b(?:to\s+buy|you\s+should|right\s+now)\b",
+    r"\b\d+\s+(?:best|top|stocks?|things|reasons|ways)\b.*\b(?:to\s+buy|you\s+should|right\s+now)\b"
+    # "...Skepticism Amid 162% Upside Target", "price target raised to $92"
+    r"|\b\d{2,3}%\s+(?:upside|downside)\b"
+    r"|\bprice\s+target\b.*\b(?:raised|lifted|cut|lowered|to\s+\$\d)"
+    r"|\b(?:strong\s+)?buy\s+rating\b|\bshould\s+you\s+buy\b",
     re.I)
+
+
+# The general-ask vocabulary, formerly a local `_GENERAL` inside
+# build_news_config and a local `_MARKETY` inside build_stock_news_config —
+# two builders, two copies, and the classifier (step 4) needs the same sets.
+# One copy here; every reader imports it.
+_NEWS_GENERAL_WORDS = frozenset({
+    "whats", "what", "s", "going", "on", "happening", "up", "new",
+    "current", "events", "event", "anything", "something", "interesting",
+    "any", "the", "is", "are", "in", "world", "lately", "now", "right",
+    "hows", "how", "things", "there", "out", "cool", "hey", "so",
+    "tell", "me", "show", "give", "whatsup", "sup", "good", "today",
+    "todays", "day", "days", "daily", "for", "of", "all", "top", "global",
+    "us", "usa", "america", "american", "morning", "evening", "tonight",
+    "feed", "stories", "story", "summary", "brief", "please", "pls",
+})
+_MARKETY_WORDS = frozenset({
+    "stock", "stocks", "market", "markets", "share", "shares", "price",
+    "prices", "ticker", "tickers", "equities", "equity", "finance",
+    "financial", "trading", "the", "wall", "street",
+})
+
+
+def _is_general_news_ask(message: str, *, finance: bool = False) -> bool:
+    """True when the message names no subject beyond "news" itself.
+
+    "whats going on in the news" -> True. "stock market news" -> True (finance).
+    "news about nvidia earnings" -> False. Decided from the MESSAGE, never from a
+    grounding pass — ground_query will happily invent a subject for "hello".
+    """
+    words = re.findall(r"[a-z0-9]+", (message or "").lower())
+    filler = _NEWS_SCAFFOLDING | _NEWS_GENERAL_WORDS | (_MARKETY_WORDS if finance else frozenset())
+    residual = [w for w in words if w not in filler and w not in _NEWSY]
+    # Two letters is a subject: "AI", "EU", "UK", "AMD". ("us" is filler and
+    # already gone.) Requiring three silently turned "news about AI" into a
+    # top-stories pull.
+    return not any(len(w) >= 2 and not w.isdigit() for w in residual)
+
+
+def _normalise_news_item(n: dict) -> dict:
+    """One item shape for every provider: {title, url, image, meta, snippet, date,
+    related_tickers}.
+
+    The shared provider returns {meta, date, snippet}; finnews and Yahoo return
+    {publisher, published, og_desc}; web search returns {url, snippet}. The old
+    stock-news builder read only the finnews spelling, so on its PRIMARY tier
+    every prompt header rendered as "(, )" and the card showed no publisher at
+    all — the model was asked to summarise stories with no source and no date.
+    """
+    n = n or {}
+    url = n.get("url") or n.get("link") or ""
+    return {
+        "title": (n.get("title") or "").strip(),
+        "url": url,
+        "image": n.get("image") or "",
+        "meta": (n.get("meta") or n.get("publisher") or n.get("source") or _host_of(url) or "").strip(),
+        "snippet": (n.get("snippet") or n.get("og_desc") or n.get("description") or "").strip(),
+        "date": (n.get("date") or n.get("published") or n.get("published_at") or "").strip(),
+        "related_tickers": list(n.get("related_tickers") or []),
+    }
+
+
+_OVERVIEW_GENERIC_WORDS = frozenset({
+    "market", "markets", "stock", "stocks", "investor", "investors", "wall",
+    "street", "today", "this", "the", "news", "analyst", "analysts", "earnings",
+    "season", "week", "sector", "sectors", "catalyst", "catalysts", "rotation",
+    "focus", "attention", "sentiment", "momentum", "volatility", "traders",
+})
+
+
+def _entity_tokens(text: str) -> set:
+    """Proper-noun-ish tokens: Capitalised words (not sentence-initial unless
+    also seen capitalised elsewhere), ALL-CAPS tickers, and numbers/figures."""
+    out = set()
+    for m in re.finditer(r"\$?\d[\d,.]*%?|\b[A-Z]{2,5}\b|\b[A-Z][a-z]{2,}\b", text or ""):
+        tok = m.group(0)
+        low = tok.lower().strip("$%,.")
+        if low in _OVERVIEW_GENERIC_WORDS:
+            continue
+        out.add(low)
+    return out
+
+
+def _overview_is_grounded(overview: str, items: list) -> bool:
+    """Does the overview name at least one specific thing that appears in its
+    own sources? Deterministic, no LLM.
+
+    "Market focus centers on biotech catalysts and semiconductor rotations as
+    earnings season progresses" shares nothing concrete with a card whose
+    stories are Viking Therapeutics and Snowflake — it could be printed on any
+    day. "Snowflake (SNOW) reported Q2 revenue up 37%" shares "snowflake",
+    "snow" and "37" with them. This is the acceptance check for the summariser,
+    and the fallback trigger when it produces filler anyway.
+    """
+    if not overview or not items:
+        return False
+    pool = set()
+    for it in items:
+        pool |= _entity_tokens(it.get("title", ""))
+        pool |= _entity_tokens(it.get("description", "") or it.get("snippet", ""))
+    return bool(_entity_tokens(overview) & pool)
 
 
 def _drop_pr_spam(items: list) -> list:

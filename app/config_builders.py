@@ -435,335 +435,252 @@ async def build_notes_config(message: str) -> dict:
     }
 
 
-async def build_news_config(message: str) -> dict:
-    """A news data_card of current stories: photo + tightened headline + a 2-3
-    sentence summary per item.
+async def build_news_card(message: str, *, finance: bool = False,
+                          general: Optional[bool] = None,
+                          depth: str = "card",
+                          subject_hint: str = "") -> dict:
+    """THE news pipeline. Every news-like ask — general headlines, a topic,
+    market/stock news, the agent's `news_topic` / `stock_news_query` injectors,
+    the router's `news` / `stock_news` types — ends up here.
 
-    Pulls real headlines with images via news_search (GDELT → Google News RSS →
-    web search), then a single local-LLM pass rewrites the snippets into
-    summaries mapped back to their sources. Falls back to the raw items if the
-    model call fails, so the card is never a wall of links.
+    Why one function: on 2026-09-05/06 there were six news-ish builders reached
+    by six regexes, each with its own query derivation, provider chain, ad
+    filter, gate and summariser. Fixing one per user complaint meant every fix
+    landed on a path the user's next sentence did not take. The pipeline below
+    is the union of what each of them got right, in one place:
+
+      ground -> query -> fetch -> normalise -> ad-filter -> gate (+escalate)
+             -> ONE summariser whose rules bind the overview too -> distinct fields
+
+    `general=None` lets the message decide; the classifier / router pass an
+    explicit bool. `depth="brief"` routes to the slower grounded_research
+    synthesis (~32s) and is only reachable from an explicit depth word.
     """
-    # The topic used to be built by DELETING stopwords from the message, using a
-    # list assembled for the music widget (TOPIC_STOPWORDS = MUSIC_FILLER_WORDS
-    # | {...}). Measured 2026-09-05, that deleted the subject and kept the
-    # scaffolding:
-    #
-    #   news about track and field world championships -> "field world championships"
-    #   latest news on the player transfer window      -> "transfer window"
-    #   latest news on us china trade talks            -> "china trade talks"
-    #   what is the latest news on the israel hamas ceasefire
-    #                                          -> "what is israel hamas ceasefire"
-    #
-    # That last one returned ONE article, live, for one of the largest running
-    # stories. Ground the ask instead — the same ground_query the image and
-    # products builders already use, so a news query gets the disambiguation and
-    # the `negatives` those paths have had all along.
-    ground_fn = getattr(main, "ground_query", None) or ground_query
-    g = await ground_fn(message)
-    subject = (g.get("subject") or "").strip()
-    # The SUBJECT, not ground_query's retrieval_query. That field is documented
-    # as "an expanded, unambiguous WEB-SEARCH query", and a news API is not a web
-    # search engine — it keyword-matches, so a long bag of words matches poorly
-    # and falls back to recency. Measured against the live provider:
-    #
-    #   "US China trade talks"                                  -> 6 items, 4 on-topic
-    #   "latest news US China trade talks negotiations updates"  -> 4 items, 0 on-topic
-    #
-    # The expanded query is the right instrument for the web-search builders that
-    # already use it, and the wrong one here.
-    topic = subject or (g.get("retrieval_query") or "").strip()
-    # ground_query fails OPEN with retrieval_query = the raw message, so on a
-    # grounding outage the topic would be the whole sentence ("news about AI").
-    # Detect that case and fall back to a light scaffolding strip instead.
-    strip_fn = getattr(main, "_strip_news_scaffolding", None) or _strip_news_scaffolding
-    if not topic or topic.strip().lower() == (message or "").strip().lower():
-        topic = strip_fn(message)
-        subject = subject if subject and subject.lower() != (message or "").lower() else topic
+    if depth == "brief":
+        if finance:
+            return await build_market_research_config(message)
+        return await build_news_brief_config(message)
 
-    # A genuinely general ask ("what's going on in the news") has no subject, and
-    # that is not a failure — an empty topic is what fetches TOP stories. Keep
-    # the old word-set as the cheap detector, but apply it to the ORIGINAL
-    # message rather than to the mangled remains of it.
-    _GENERAL = {"whats", "what", "s", "going", "on", "happening", "up", "new",
-                "current", "events", "event", "anything", "something", "interesting",
-                "any", "the", "is", "are", "in", "world", "lately", "now", "right",
-                "hows", "how", "things", "there", "out", "cool", "hey", "so",
-                "tell", "me", "show", "give", "whatsup", "sup", "good", "today",
-                "todays", "day", "days", "daily", "for", "of", "all", "top", "global",
-                "us", "usa", "america", "american", "morning", "evening", "tonight",
-                "feed", "stories", "story", "summary", "brief"}
-    bare = [w for w in re.findall(r"[a-z]+", (message or "").lower())
-            if w not in _NEWSY]
-    if bare and all(w in _GENERAL for w in bare):
-        topic, subject = "", ""
-    display = subject or topic or "top stories"
-    news_search_fn = getattr(main, "news_search", None) or news_search
-    results = await news_search_fn(topic, limit=6)
+    # 1. GROUND — skipped for a general ask (nothing to disambiguate, and
+    #    ground_query will invent a subject for anything: "hello" became
+    #    "hello (greeting)"). The general verdict comes from the MESSAGE.
+    general_fn = getattr(main, "_is_general_news_ask", None) or _is_general_news_ask
+    if general is None:
+        general = general_fn(message, finance=finance)
+    g: dict = {}
+    subject = ""
+    if not general:
+        ground_fn = getattr(main, "ground_query", None) or ground_query
+        g = await ground_fn(message) or {}
+        subject = (g.get("subject") or "").strip()
+        strip_fn = getattr(main, "_strip_news_scaffolding", None) or _strip_news_scaffolding
+        if not subject or subject.lower() == (message or "").strip().lower():
+            # ground_query failed open (returns the raw message) — light strip
+            # of question scaffolding only, never the music stopword list.
+            subject = strip_fn(subject_hint or message)
+        if not subject:
+            general = True
 
-    # Filter BEFORE summarising. The editor pass below writes a confident 2-3
-    # sentence summary for every story it is handed and has no way to say "this
-    # one is not about the question" — which is exactly why irrelevant articles
-    # read as deliberate rather than as an error.
-    if results:
-        results = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(results)
-    if results and subject:
+    # 2. QUERY — the SUBJECT, never ground_query's expanded retrieval_query: a
+    #    news API keyword-matches, and a long bag of words scores 0/4 on-topic
+    #    where the bare subject scores 4/6 (measured on "US China trade talks").
+    if general:
+        topic = "stock market" if finance else ""
+        display = "the market" if finance else "top stories"
+    else:
+        topic = subject
+        display = subject
+
+    # 3. FETCH — the shared region-aware provider (top headlines on ""); finance
+    #    asks also fan out to finnews for ticker-tagged, provider-summarised
+    #    stories. Yahoo's headline-only search is a FALLBACK, never a parallel
+    #    tier (its rows have no snippets and one source).
+    news_fn = getattr(main, "news_search", None) or news_search
+    tasks = [news_fn(topic, limit=8)]
+    if finance:
+        finnews_fn = getattr(main, "_finnews_articles", None) or _finnews_articles
+        tasks.append(finnews_fn(query=topic, limit=8))
+    fetched = await asyncio.gather(*tasks, return_exceptions=True)
+    lists = [r for r in fetched if isinstance(r, list)]
+    merge_fn = getattr(main, "_merge_news", None) or _merge_news
+    raw = merge_fn(*lists) if lists else []
+    if not raw and finance:
+        stock_news_fn = getattr(main, "stock_news", None) or stock_news
+        try:
+            data0 = await stock_news_fn(topic, limit=10)
+            raw = [n for n in (data0.get("news") or []) if n.get("title")]
+        except Exception:
+            raw = []
+
+    # 4. NORMALISE — one item shape regardless of which provider served it.
+    norm_fn = getattr(main, "_normalise_news_item", None) or _normalise_news_item
+    items = [norm_fn(n) for n in raw]
+    items = [it for it in items if it["title"] and it["url"]]
+
+    # 5. AD FILTER — once, here, for whichever tier served the stories. The old
+    #    stock-news builder had this inside its Yahoo `else`, so the primary
+    #    tier (the normal case) was never filtered at all.
+    spam_fn = getattr(main, "_drop_pr_spam", None) or _drop_pr_spam
+    items = spam_fn(items)
+
+    # 6. GATE + real escalation — only when there is a subject to gate against.
+    #    min_keep=0: "every story is off-subject" is a verdict about the RESULT
+    #    SET; hand it back as [] and go to another source rather than showing
+    #    six confident summaries of things the user did not ask about.
+    if items and subject:
         gate = getattr(main, "filter_items_by_relevance", None) or filter_items_by_relevance
-        # min_keep=0: when the gate rejects EVERY story, that is a verdict about
-        # the RESULT SET, not a grading failure, and reinstating them defeats the
-        # gate at the one moment it had something to say. Measured live on "us
-        # china trade talks": the provider returned four stories about jobs
-        # reports, shipping chokepoints, crude oil and a Fed speech; the gate
-        # correctly rejected all four, and a min_keep floor put all four back.
-        # Escalate to a different source instead.
-        vetted = await gate(subject, g.get("negatives") or [], results,
+        vetted = await gate(subject, g.get("negatives") or [], items,
                             min_keep=0, hyde=g.get("hyde") or "")
         if not vetted:
             logger.info(f"[NEWS] every story was off-subject for {subject!r} — "
                         "retrying through web search")
             search_fn = getattr(main, "web_search", None) or web_search
             try:
-                raw = await search_fn(f"{subject} news", 6)
+                hits = await search_fn(f"{subject} news", 6)
             except Exception:
-                raw = []
-            retry = [{"title": r.get("title", ""), "url": r.get("url", ""),
-                      "image": "", "meta": _host_of(r.get("url", "")),
-                      "snippet": r.get("snippet", ""), "date": ""}
-                     for r in (raw or [])]
-            retry = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(retry)
+                hits = []
+            retry = spam_fn([norm_fn(r) for r in (hits or [])])
+            retry = [it for it in retry if it["title"] and it["url"]]
             if retry:
                 vetted = await gate(subject, g.get("negatives") or [], retry,
                                     min_keep=0, hyde=g.get("hyde") or "")
-        results = vetted
-    if not results:
-        return {"title": f"News: {display}".title()[:60], "icon": "newspaper",
+        items = vetted
+
+    title = (("Market News" if general else f"Market News: {display}") if finance
+             else f"News: {display}").title()[:60]
+    icon = "trending_up" if finance else "newspaper"
+    if not items:
+        return {"title": title, "icon": icon,
                 "answer": (f"No recent coverage specifically about {display} came "
                            "back from the news providers just now."),
-                "items": []}
+                "subtitle": "0 stories", "items": []}
 
-    def raw_items():
-        return [{
-            "title": r.get("title", ""),
-            "description": (r.get("snippet") or "")[:300],
-            "url": r.get("url", ""),
-            "image": r.get("image", ""),
-            "meta": r.get("meta") or _host_of(r.get("url", "")),
-            "badge": "News",
-        } for r in results[:6]]
+    items = items[:6]
 
-    source_lines = [
-        f'[{i}] {r.get("title","")}\n{(r.get("snippet") or "")[:400]}'
-        for i, r in enumerate(results[:6])
-    ]
-    data = await fast_llm_json(
-        'You are a news editor. Return ONLY a JSON object, no prose, no markdown fence:\n'
-        '{"overview": "<one-sentence summary of the whole topic>", '
-        '"items": [{"index": <the [N] number of the source>, "title": "<tightened headline>", '
-        '"summary": "<2-3 sentence plain-English summary of what happened>"}]}\n'
-        f'Topic: "{display}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
-        'Write one entry per distinct story, at most 6. Base every summary ONLY on '
-        "that source's text — never invent facts, names, or numbers not present in "
-        "it. If a source is only a headline with no body text, keep its summary to a "
-        "faithful one-line restatement of that headline.\n"
-        "OMIT a source entirely rather than writing it up if it is not actually "
-        "about the topic, is a press release or advertisement, or only mentions the "
-        "topic in passing. Returning FEWER, on-topic entries is correct and "
-        "expected — you are not required to use every source.",
-        max_tokens=1000,
-    )
-    if not data or not isinstance(data.get("items"), list) or not data["items"]:
-        raw_list = raw_items()
-        fallback_summary = " ".join(r["description"] for r in raw_list[:3] if r.get("description"))
-        return {
-            "title": f"News: {display}".title()[:60],
-            "answer": fallback_summary,
-            "subtitle": fallback_summary[:120],
-            "icon": "newspaper",
-            "items": raw_list
-        }
+    def _meta_line(it: dict) -> str:
+        return " · ".join(x for x in (it.get("meta"), it.get("date")) if x)
 
-    items = []
-    for it in data["items"][:6]:
-        idx = it.get("index")
-        src = results[idx] if isinstance(idx, int) and 0 <= idx < len(results) else {}
-        summary = (it.get("summary") or "").strip()
-        items.append({
-            "title": (it.get("title") or src.get("title") or "")[:140],
-            "description": summary[:500] or (src.get("snippet") or "")[:300],
-            "url": src.get("url", ""),
-            "image": src.get("image", ""),
-            "meta": src.get("meta") or (_host_of(src.get("url", "")) if src.get("url") else ""),
-            "badge": "News",
-        })
-
-    overview = (data.get("overview") or "").strip()
-    if not overview and items:
-        overview = " ".join(it["description"] for it in items[:3] if it.get("description"))
-
-    return {
-        "title": f"News: {display}".title()[:60],
-        "answer": overview,
-        "subtitle": overview[:120],
-        "icon": "newspaper",
-        "items": items or raw_items(),
-    }
-
-
-async def build_stock_news_config(message: str) -> dict:
-    """Market/stock news with the same summarizing treatment as build_news_config —
-    the general news fast-path deliberately excludes stock words, and the agent's
-    stock_news tool returns bare title+publisher rows the model can only render as
-    a link list.
-
-    Yahoo's finance search has no snippets, so the top article pages are read for
-    real body text (build_answer_config's enrichment pattern, same 12s cap) before
-    the news-editor LLM pass writes the per-story summaries. Falls back to
-    headline items when the LLM pass fails, and to the general news chain when
-    Yahoo returns nothing — never bare links.
-    """
-    raw = extract_topic(message)
-    topic = " ".join(w for w in raw.split() if w not in _NEWSY).strip()
-    # Bare stock-words mean a GENERAL market ask ("stock market news") — Yahoo's
-    # search wants a real query, so default to the market itself.
-    _MARKETY = {"stock", "stocks", "market", "markets", "share", "shares", "price",
-                "prices", "ticker", "tickers", "equities", "equity", "finance",
-                "financial", "trading", "the"}
-    is_general = not topic or all(w in _MARKETY for w in topic.split())
-    core = " ".join(w for w in topic.split() if w not in _MARKETY).strip()
-    query = "stock market" if is_general else (core or topic)
-    display = "the market" if is_general else (core or topic)
-
-    # 1. PRIMARY: Shared multi-provider news tool (Seeking Alpha, Barchart, Reuters, etc.)
-    shared_news_fn = getattr(main, "_shared_news_search", None) or _shared_news_search
-    shared_news = []
-    if shared_news_fn:
-        try:
-            res = shared_news_fn(query, limit=6)
-            shared_news = await res if asyncio.iscoroutine(res) else res
-        except Exception:
-            shared_news = []
-    if shared_news:
-        news = shared_news
-    else:
-        # 2. SECONDARY: Yahoo Finance with strict PR-wire clickbait filtering.
-        # The signature list and the filter now live in one place (_drop_pr_spam)
-        # so BOTH tiers get it — this used to be inlined here, which meant that
-        # whenever the primary shared provider succeeded no ad filtering ran at
-        # all. It also used to end `filtered or raw_yahoo`, so a page that was
-        # entirely ads came back in full: the filter defeated itself in exactly
-        # the case it existed for.
-        stock_news_fn = getattr(main, "stock_news", None) or stock_news
-        data0 = await stock_news_fn(query, limit=10)
-        raw_yahoo = [n for n in (data0.get("news") or []) if n.get("title")]
-        news = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(raw_yahoo)
-
-    if not news:
-        return await build_news_config(message)
-
-    enrich_items = [{"url": n.get("url") or n.get("link") or "", "snippet": n.get("snippet", ""), "image": n.get("image", "")}
-                    for n in news[:6]]
-    try:
-        enrich_fn = getattr(main, "_enrich_news", None) or _enrich_news
-        if enrich_fn:
-            await asyncio.wait_for(enrich_fn(enrich_items, timeout=6.0), timeout=7.0)
-    except asyncio.TimeoutError:
-        pass
-    for n, e in zip(news[:6], enrich_items):
-        if e.get("snippet"):
-            n["og_desc"] = e["snippet"]
-        if not n.get("image") and e.get("image"):
-            n["image"] = e["image"]
-
-    def raw_items(summaries: dict = None):
+    def raw_items(summaries: dict = None, titles: dict = None) -> list:
         out = []
-        for i, n in enumerate(news[:6]):
-            tickers = ", ".join(n.get("related_tickers") or [])
-            desc = ((summaries or {}).get(i) or n.get("og_desc") or n.get("snippet") or "")[:500]
+        for i, it in enumerate(items):
+            tickers = ", ".join(it.get("related_tickers") or [])
+            desc = ((summaries or {}).get(i) or it.get("snippet") or "")[:500]
             out.append({
-                "title": (n.get("title") or "")[:140],
+                "title": (((titles or {}).get(i) or it["title"]) or "")[:140],
                 "description": desc,
-                "url": n.get("url") or n.get("link") or "",
-                "image": n.get("image", ""),
-                "meta": " · ".join(x for x in [n.get("publisher") or n.get("source"), n.get("published") or n.get("date")] if x),
-                "badge": tickers[:24] or "Markets",
+                "url": it["url"],
+                "image": it.get("image", ""),
+                "meta": _meta_line(it),
+                "badge": (tickers[:24] or "Markets") if finance else "News",
             })
         return out
 
-    # Yahoo gives headlines only — read the top pages so the summaries have real
-    # material instead of restated headlines. Best-effort, hard-capped.
-    fetch_page_fn = getattr(main, "_fetch_news_page_text", None) or _fetch_news_page_text
-    results = await asyncio.gather(
-        *[asyncio.wait_for(fetch_page_fn(n), timeout=14.0) for n in news[:6]],
-        return_exceptions=True)
-    page_texts = [r if isinstance(r, str) else "" for r in results]
-    got = sum(1 for t in page_texts if t)
-    if got < len(page_texts):
-        logger.info(f"build_stock_news_config: {got}/{len(page_texts)} page reads "
-                    f"yielded text for {query!r}")
+    # 7. NO SCRAPING on the card path. The old stock builder read six article
+    #    pages (up to 14s) and the snippets the providers already supply are
+    #    what the summariser needs. Depth asks take the brief path instead.
 
+    # 8. ONE summariser call. The grounding and concreteness rules bind EVERY
+    #    field — the previous prompt scoped all of them to `summary` and left
+    #    `overview` as "<one-sentence read on what is moving and why>", which a
+    #    model completes, correctly, with a sentence that could be printed on
+    #    any day. Pattern copied from lazycat.grounded_research.
     source_lines = []
-    for i, n in enumerate(news[:6]):
-        # Prefer the scraped body; fall back to the og:description blurb so the
-        # editor has real prose to summarise even when the page didn't scrape.
-        body = (page_texts[i] if i < len(page_texts) else "") or n.get("og_desc") or ""
-        tickers = ", ".join(n.get("related_tickers") or [])
-        head = f'[{i}] {n.get("title","")} ({n.get("publisher","")}, {n.get("published","")})'
+    for i, it in enumerate(items):
+        head = f"[{i}] {it['title']}"
+        prov = _meta_line(it)
+        if prov:
+            head += f" ({prov})"
+        tickers = ", ".join(it.get("related_tickers") or [])
         if tickers:
             head += f" [tickers: {tickers}]"
-        source_lines.append(head + ("\n" + body[:2500] if body else ""))
-
+        body = (it.get("snippet") or "")[:600]
+        source_lines.append(head + ("\n" + body if body else ""))
+    editor = "financial news editor" if finance else "news editor"
     llm_fn = getattr(main, "fast_llm_json", None) or fast_llm_json
     data = await llm_fn(
-        'You are a financial news editor. Return ONLY a JSON object, no prose, no '
-        'markdown fence:\n'
-        '{"overview": "<one-sentence read on what is moving and why>", '
-        '"items": [{"index": <the [N] number of the source>, "title": "<tightened headline>", '
-        '"summary": "<2-3 sentence plain-English summary: what happened and why it matters>"}]}\n'
-        f'Topic: "{display}"\n\nSOURCES:\n' + "\n\n".join(source_lines) + '\n\n'
-        'Write one entry per distinct story (max 6). Base every summary ONLY on that '
-        "source's text — never invent numbers, prices, or moves not present in it. "
-        'BE CONCRETE: name the actual tickers, funds, companies, and figures the source '
-        'gives (say "the Vanguard Total Stock Market ETF (VTI)", never "a specific '
-        'Vanguard ETF" or "an overlooked opportunity"). Skip ad copy embedded in the '
-        'article text. A summary that just restates the headline is a failure — if the '
-        "source is only a headline with no body, write its summary from the headline's "
-        'facts and keep it to one line.',
+        f"You are a {editor}. Today is {datetime.date.today().isoformat()}. "
+        "Return ONLY a JSON object, no prose, no code fence:\n"
+        '{"overview": "<ONE or TWO sentences saying what is actually happening, '
+        'built ONLY from the sources below and naming the specific stories>", '
+        '"overview_sources": [<the [N] numbers the overview draws on>], '
+        '"items": [{"index": <the [N] number of the source>, '
+        '"title": "<tightened headline>", '
+        '"summary": "<2-3 sentences: what happened and why it matters>"}]}\n'
+        f'Topic: "{display}"\n\n'
+        "RULES FOR EVERY FIELD, INCLUDING overview:\n"
+        "- Ground every claim in a listed source and cite it by [N]. Never invent "
+        "a fact, name, figure or move that is not in the sources.\n"
+        "- Be concrete: name the actual companies, tickers, people, places and "
+        "figures the sources give. An overview that could be printed on any day "
+        '("markets are focused on catalysts and rotation", "several developments '
+        'are unfolding") is a FAILURE - it must name at least one specific story '
+        "from the sources.\n"
+        "- Base each summary ONLY on that source's text. If a source is only a "
+        "headline, keep its summary to a faithful one-line restatement.\n"
+        "- OMIT a source entirely rather than write it up if it is not about the "
+        "topic, is a press release or advertisement, or mentions the topic only "
+        "in passing. Returning FEWER, on-topic entries is correct and expected.\n\n"
+        "SOURCES:\n" + "\n\n".join(source_lines),
         max_tokens=1000,
     )
-    title = ("Market News" if is_general else f"Market News: {display}").title()[:60]
+
+    strip_cites = getattr(main, "_strip_citation_markers", None) or _strip_citation_markers
+    grounded_fn = getattr(main, "_overview_is_grounded", None) or _overview_is_grounded
     if not data or not isinstance(data.get("items"), list) or not data["items"]:
-        # LLM pass failed → article excerpts (scrape or og:desc) as descriptions,
-        # not bare links. raw_items already falls back to og_desc per story.
-        logger.info(f"[DEGRADED] stock_news editor pass empty for {query!r} — "
-                    "serving og:desc/excerpt items")
-        excerpts = {i: t[:220] for i, t in enumerate(page_texts) if t}
-        raw_list = raw_items(excerpts)
-        fallback_summary = " ".join(r["description"] for r in raw_list[:3] if r.get("description"))
-        return {
-            "title": title,
-            "answer": fallback_summary,
-            "subtitle": fallback_summary[:120],
-            "icon": "trending_up",
-            "items": raw_list
-        }
-    summaries = {it.get("index"): (it.get("summary") or "").strip()
-                 for it in data["items"] if isinstance(it.get("index"), int)}
-    titles = {it.get("index"): (it.get("title") or "").strip()
-              for it in data["items"] if isinstance(it.get("index"), int)}
-    items = raw_items(summaries)
-    for i, item in enumerate(items):
-        if titles.get(i):
-            item["title"] = titles[i][:140]
-    overview = (data.get("overview") or "").strip()
-    if not overview and items:
-        overview = " ".join(it["description"] for it in items[:3] if it.get("description"))
+        logger.info(f"[DEGRADED] news editor pass empty for {topic!r} — serving "
+                    "provider snippets")
+        out_items = raw_items()
+    else:
+        summaries = {it.get("index"): strip_cites((it.get("summary") or "").strip())
+                     for it in data["items"] if isinstance(it.get("index"), int)}
+        titles = {it.get("index"): (it.get("title") or "").strip()
+                  for it in data["items"] if isinstance(it.get("index"), int)}
+        out_items = raw_items(summaries, titles)
+        # The editor may OMIT sources; keep only the ones it wrote up, in order.
+        kept = [i for i in sorted(summaries) if 0 <= i < len(out_items)]
+        if kept:
+            out_items = [out_items[i] for i in kept]
+
+    overview = strip_cites((data or {}).get("overview") or "").strip() if data else ""
+    if not overview or not grounded_fn(overview, out_items):
+        if overview:
+            logger.info(f"[NEWS] overview rejected as generic for {topic!r}: {overview[:80]!r}")
+        # The first story's own summary is grounded by construction; with
+        # headline-only sources and a dead editor pass, the headline itself is
+        # the most honest sentence available — never an empty card.
+        overview = (next((it["description"] for it in out_items if it.get("description")), "")
+                    or next((it["title"] for it in out_items if it.get("title")), ""))
+
+    # 10. DISTINCT FIELDS. `answer` is the prose the card shows and speaks;
+    #     `subtitle` is provenance for the header bar. The old builders put the
+    #     same sentence in both, which is why it rendered twice.
+    publishers = []
+    for it in out_items:
+        pub = (it.get("meta") or "").split(" · ")[0].strip()
+        if pub and pub not in publishers:
+            publishers.append(pub)
+    subtitle = f"{len(out_items)} stories" + (f" · {', '.join(publishers[:3])}" if publishers else "")
     return {
         "title": title,
         "answer": overview,
-        "subtitle": overview[:120],
-        "icon": "trending_up",
-        "items": items,
+        "subtitle": subtitle[:120],
+        "icon": icon,
+        "items": out_items,
     }
+
+
+async def build_news_config(message: str) -> dict:
+    """General news card. Thin wrapper — see build_news_card. The name survives
+    because the agent's `news_topic` injector and the router's `news` type call
+    it by name."""
+    return await build_news_card(message, finance=False)
+
+
+async def build_stock_news_config(message: str) -> dict:
+    """Market / stock news card. Thin wrapper — see build_news_card. Kept by name
+    for the agent's `stock_news_query` injector and the router's `stock_news`
+    type."""
+    return await build_news_card(message, finance=True)
 
 
 async def build_market_research_config(message: str) -> dict:
