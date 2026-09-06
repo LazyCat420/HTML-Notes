@@ -390,3 +390,51 @@ def test_a_subject_ask_still_lets_the_editor_drop_off_topic_sources(monkeypatch)
     cfg = run(cb.build_news_card("news about the apple vision pro",
                                  finance=False, general=False))
     assert len(cfg["items"]) == 1
+
+
+def test_the_section_survives_normalisation_and_reaches_the_badge(monkeypatch):
+    """The badge is the only thing that makes a mixed front page read as one.
+
+    Live, every badge on every card said "Top Stories" — including on the world
+    and business cards. The section reached the fetch and died one function
+    short of the card, in _normalise_news_item, which rebuilds the item dict
+    field by field and simply had no line for it.
+    """
+    async def fake_news(topic, limit=6, category="", country=""):
+        return [
+            {"title": "A world story", "url": "https://ex.com/1", "image": "",
+             "meta": "Reuters", "snippet": "s", "date": "", "category": "world"},
+            {"title": "A business story", "url": "https://ex.com/2", "image": "",
+             "meta": "FT", "snippet": "s", "date": "", "category": "business"},
+            {"title": "A US story", "url": "https://ex.com/3", "image": "",
+             "meta": "NPR", "snippet": "s", "date": "", "category": "us"},
+        ]
+
+    async def editor(prompt, **kw):
+        return {"overview": "A world story and a business story happened.",
+                "items": [{"index": i, "title": f"t{i}", "summary": "s"} for i in range(3)]}
+
+    monkeypatch.setattr(m, "news_search", fake_news, raising=False)
+    monkeypatch.setattr(m, "fast_llm_json", editor, raising=False)
+
+    cfg = run(cb.build_news_card("top stories", finance=False, general=True))
+    assert [it["badge"] for it in cfg["items"]] == ["World", "Business", "US"]
+
+
+def test_a_subject_card_still_badges_plainly(monkeypatch):
+    async def fake_news(topic, limit=6, category="", country=""):
+        return [{"title": "NVIDIA beats", "url": "https://ex.com/1", "image": "",
+                 "meta": "Reuters", "snippet": "s", "date": "", "category": "business"}]
+
+    async def editor(prompt, **kw):
+        return {"overview": "NVIDIA beats.",
+                "items": [{"index": 0, "title": "NVIDIA beats", "summary": "s"}]}
+
+    monkeypatch.setattr(m, "news_search", fake_news, raising=False)
+    monkeypatch.setattr(m, "fast_llm_json", editor, raising=False)
+    monkeypatch.setattr(m, "ground_query", None, raising=False)
+    monkeypatch.setattr(m, "filter_items_by_relevance", None, raising=False)
+
+    cfg = run(cb.build_news_card("news about the apple vision pro",
+                                 finance=False, general=False))
+    assert cfg["items"][0]["badge"] == "News"

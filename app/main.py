@@ -2330,6 +2330,14 @@ def _normalise_news_item(n: dict) -> dict:
         "snippet": (n.get("snippet") or n.get("og_desc") or n.get("description") or "").strip(),
         "date": (n.get("date") or n.get("published") or n.get("published_at") or "").strip(),
         "related_tickers": list(n.get("related_tickers") or []),
+        # Carried through, not rebuilt. The top-headlines path supplies which
+        # SECTION a story is in, how many newsrooms led with it, and whether the
+        # link is a Google redirect stub. Dropping them here made every badge on
+        # a mixed front page read "Top Stories" — the section survived as far as
+        # the fetch and died one function short of the card.
+        "category": (n.get("category") or "").strip(),
+        "consensus": n.get("consensus"),
+        "stub": bool(n.get("stub")),
     }
 
 
