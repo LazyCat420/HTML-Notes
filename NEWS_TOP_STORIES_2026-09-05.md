@@ -32,7 +32,7 @@ debug frame reads `{"path":"fast-path","id_prefix":"news"}` — that frame is th
 only instrument that says which of several news builders ran, and it is worth
 reading before believing any routing claim.
 
-## Why it was bad — five defects, each hiding the next
+## Why it was bad — six defects, each hiding the next
 
 **1. The provider answered a different question.** An empty topic went to
 whichever keyed provider had a top-headlines endpoint and a live quota. With
@@ -73,7 +73,14 @@ expected"* — is right for a subject ask and wrong for a front page, where ther
 is no topic to be off and variety is the point. Ten sources in, and it returned
 ten, then six, then four, for the same request.
 
-**5. Two wasted fetches per card, one of which could never work.** Enrichment
+**5. The section died one function short of the card.** Found only by driving
+the deployed app: every badge on every card read "Top Stories", including on the
+world and business cards. `_normalise_news_item` rebuilds each item field by
+field and had no line for the section, so it survived the classifier, the
+provider call and the ranking, and was dropped by the last function before
+render. The badge is the only thing that makes a mixed front page read as one.
+
+**6. Two wasted fetches per card, one of which could never work.** Enrichment
 fetched every article page including Google redirect links, which do not resolve
 server-side and whose `og:image` is Google's own logo. That fetch was the
 dominant latency term: a general ask measured **31.2s**.
