@@ -11,48 +11,60 @@
    "ask": "top stories",
    "id_prefix": "news",
    "n": 10,
-   "front_page": 0.9,
-   "front_page2": 0.8,
-   "secs": 11.8,
+   "front_page": 0.8,
+   "front_page2": 0.5,
+   "secs": 8.9,
    "titles": [
-    "U.S. military hits 3 Iranian tankers after Navy ships targeted",
-    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "U.S. military strikes three Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after Putin halts strikes on Kyiv",
     "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
     "Judge reinforces order halting immediate work on Trump's 250-foot arch",
     "Philippines Vice President Sara Duterte posts bail after arrest",
-    "Sympathetic defense dominates Clancy murder trial",
-    "Families turn to symbolic cremation after Nepal floods",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Families Turn to Symbolic Cremation After Nepal Floods",
     "TV presenter among 11 sentenced to death in Egypt drugs case",
-    "Gloria Steinem, pioneering feminist legend, passes away at 92",
-    "Severe weather to impact parts of US over Labor Day weekend"
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest"
    ]
   },
   {
    "ask": "top news",
    "id_prefix": "news",
-   "n": 4,
-   "front_page": 0.75,
-   "front_page2": 0.75,
-   "secs": 5.9,
+   "n": 10,
+   "front_page": 0.8,
+   "front_page2": 0.5,
+   "secs": 8.6,
    "titles": [
-    "U.S. military hits 3 Iranian tankers after Navy ships targeted",
-    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "U.S. military strikes three Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after Putin halts strikes on Kyiv",
+    "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
     "Judge reinforces order halting immediate work on Trump's 250-foot arch",
-    "Philippines Vice President Sara Duterte posts bail after arrest"
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Families Turn to Symbolic Cremation After Nepal Floods",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest"
    ]
   },
   {
    "ask": "world news",
    "id_prefix": "news",
-   "n": 4,
-   "front_page": 0.75,
-   "front_page2": 0.25,
-   "secs": 5.2,
+   "n": 10,
+   "front_page": 0.7,
+   "front_page2": 0.2,
+   "secs": 6.9,
    "titles": [
     "Philippines Vice President Sara Duterte posts bail after arrest",
     "Families Turn to Symbolic Cremation After Nepal Floods",
     "TV presenter among 11 sentenced to death in Egypt drugs case",
-    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest"
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest",
+    "Prince William to represent King Charles at funeral of Norway\u2019s King Harald V",
+    "Russia-Ukraine peace talks could begin next year, ex-MI6 chief says",
+    "Whatever happened to the floating schools of Bangladesh?",
+    "Laura Loomer Claims She Found Out \u2018Real Reason\u2019 Why Pete Hegseth Vanished From Fox News",
+    "Chinese national rescued from Nepal tunnel 10 days after flash flood",
+    "Fighter jet crashes at air show, killing 2 pilots with thousands of spectators watching"
    ]
   },
   {
@@ -61,7 +73,7 @@
    "n": 10,
    "front_page": 0.8,
    "front_page2": 0.5,
-   "secs": 8.9,
+   "secs": 12.8,
    "titles": [
     "Putin pauses strikes on Kyiv ahead of Trump envoy meeting",
     "U.S. hits Iranian tankers after missiles strike Navy ships",
@@ -78,30 +90,41 @@
   {
    "ask": "business news",
    "id_prefix": "news",
-   "n": 5,
+   "n": 10,
    "front_page": 0.2,
    "front_page2": 0.0,
-   "secs": 8.9,
+   "secs": 40.2,
    "titles": [
+    "What stores are open on Labor Day 2026? Holiday closings, hours",
     "Unruly Passenger Is Restrained With Duct Tape During a Flight",
+    "OpenAI acknowledges 'wiki incident' and need for more transparency around unintended AI behavior",
+    "Oliver Blume\u2019s VW jobs victory leaves power questions untouched",
+    "'Can't Message That Away': GOP Frets as Trump Administration Desperately Spins Record-High Diesel Prices",
     "Trump turns up the heat on Warsh as Fed rate hike looms",
     "These industries will lead hiring in the next decade, with just one sector accounting for more than a third of all new jobs",
     "Tesla\u2019s Cybercab has been deployed, and it\u2019s already under investigation",
-    "Wall Street ends lower as solid jobs data fuels hawkish Fed bets"
+    "Wall Street ends lower as solid jobs data fuels hawkish Fed bets",
+    "List of Countries and Funds Reducing US Treasuries Around the World"
    ]
   },
   {
    "ask": "tech news",
    "id_prefix": "news",
-   "n": 4,
+   "n": 10,
    "front_page": 0.0,
    "front_page2": 0.0,
-   "secs": 9.9,
+   "secs": 6.7,
    "titles": [
-    "IFA 2026 showcases major gadget announcements across Europe",
-    "Miami Police issue statement ahead of GTA 6 release",
-    "Nintendo rumors hint at new Smash Bros. game and Nintendogs return",
-    "HP OmniBooks debut with RTX Spark graphics and 3K OLED displays"
+    "There may not be an iPhone 18 this year",
+    "IFA 2026: the biggest tech and gadget announcements",
+    "Miami Police Release New Official Statement Ahead of GTA 6's Release",
+    "NBA 2K27 predicts the season: LeBron's shocking start with 76ers, a new MVP and an NBA Finals rematch",
+    "Rumor: New Smash Bros. game on the way, Nintendogs returning, more",
+    "HP\u2019s latest OmniBooks get RTX Spark, 128 GB LPDDR5X RAM and 3K OLED displays",
+    "No, Sony isn't cutting PlayStation disc production by 90 percent, just 10",
+    "14 Predictions for the September 2026 Nintendo Direct and Zelda 40th Anniversary Direct",
+    "Microsoft\u2019s latest moves suggest Xbox Cloud Gaming is slipping out of the spotlight \u2014 and the strategy shift feels impossible to ignore",
+    "This Hiking Exoskeleton May Actually Help Your Bad Knees, Finally"
    ]
   }
  ]

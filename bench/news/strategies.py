@@ -125,4 +125,54 @@ async def strategy_production(message: str, finance: bool = False, general=None,
                 note=(cfg.get("answer") or "")[:80])
 
 
-STRATEGIES = (strategy_legacy, strategy_grounded, strategy_gated, strategy_production)
+# ── P and T: the two mechanisms behind a GENERAL ask ────────────────────────
+#
+# A/B/C/D all differ in how the QUERY is derived, which is the right question
+# for a subject ask and the wrong one for "top stories" — there the query is
+# empty either way and the only thing that differs is which SOURCE answers.
+# These two isolate that: same call, same limit, one pinned to the keyed
+# providers' top-headlines endpoints and one to the editorial feeds.
+
+_GATEWAY = "http://10.0.0.16:5591/execute/news_search"
+
+
+async def _gateway(limit: int, category: str, **extra) -> list:
+    import httpx
+    body = {"topic": "", "limit": limit}
+    if category:
+        body["category"] = category
+    body.update(extra)
+    async with httpx.AsyncClient(timeout=45.0) as c:
+        r = await c.post(_GATEWAY, json=body)
+        return (r.json() or {}).get("items") or []
+
+
+async def strategy_keyed_top(message: str, category: str = "", general=None, **_) -> Pick:
+    """The BASELINE: what an empty topic used to reach.
+
+    `_source: "keyed"` is a debug-only pin, absent from the tool schema. It
+    exists so the old behaviour stays measurable after it stops being the
+    default — otherwise "it is better now" has nothing to be better than.
+    """
+    if not general:
+        return Pick("P keyed-top", "(n/a: subject ask)", [], 0, 0, "skipped")
+    t = time.time()
+    items = await _gateway(10, category, _source="keyed")
+    return Pick("P keyed-top", f"(top headlines{'/' + category if category else ''})",
+                items, int((time.time() - t) * 1000), 0)
+
+
+async def strategy_editorial(message: str, category: str = "", general=None, **_) -> Pick:
+    """The editorial feeds, straight from the gateway and with no card around
+    them — so a change in the card cannot be mistaken for a change in the
+    source, or the other way round."""
+    if not general:
+        return Pick("T editorial", "(n/a: subject ask)", [], 0, 0, "skipped")
+    t = time.time()
+    items = await _gateway(10, category)
+    return Pick("T editorial", f"(top headlines{'/' + category if category else ''})",
+                items, int((time.time() - t) * 1000), 0)
+
+
+STRATEGIES = (strategy_legacy, strategy_grounded, strategy_gated, strategy_production,
+              strategy_keyed_top, strategy_editorial)

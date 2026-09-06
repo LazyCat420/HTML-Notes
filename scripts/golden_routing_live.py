@@ -58,11 +58,13 @@ def run_row(host, row, canvas, timeout):
     # pre-populated canvas (which is what made the finance-canvas "hello" row
     # read as -2 and FAIL while the app had done the right thing).
     if not html:
-        return (debug or {}).get("path"), (debug or {}).get("id_prefix"), 0, elapsed, " ".join(chunks)[:80], False
+        return ((debug or {}).get("path"), (debug or {}).get("id_prefix"), 0, elapsed,
+                " ".join(chunks)[:80], False, (debug or {}).get("news_category"))
     widgets = html.count('class="widget-container') + html.count("class='widget-container")
     got_path = (debug or {}).get("path")
     got_prefix = (debug or {}).get("id_prefix")
-    return got_path, got_prefix, widgets, elapsed, " ".join(chunks)[:80], True
+    return (got_path, got_prefix, widgets, elapsed, " ".join(chunks)[:80], True,
+            (debug or {}).get("news_category"))
 
 
 def main():
@@ -83,14 +85,23 @@ def main():
     print("-" * 110)
     for row in rows:
         try:
-            got_path, got_prefix, widgets, el, reply, painted = run_row(args.host, row, canvas, args.timeout)
+            got_path, got_prefix, widgets, el, reply, painted, got_category = run_row(args.host, row, canvas, args.timeout)
         except Exception as e:
             print(f"{row.message[:44]:44s} {row.path+'/'+str(row.id_prefix):22s} ERROR {type(e).__name__}")
             fails += 1
             continue
         expect = f"{row.path}/{row.id_prefix}"
         got = f"{got_path}/{got_prefix}"
+        if row.category:
+            expect += f"[{row.category}]"
+            got += f"[{got_category or '-'}]"
         ok = (got_path == row.path) and (row.id_prefix is None or got_prefix == row.id_prefix)
+        # The SECTION the builder was handed. "world news" and "top stories"
+        # produce identical path/id_prefix frames while making completely
+        # different requests, so without this the gate cannot see a section
+        # regression at all.
+        if row.category is not None:
+            ok = ok and (got_category or "") == row.category
         if row.widgets is not None:
             # A populated canvas carries its own widgets: when a frame WAS
             # painted count only the delta; when none was, nothing changed.

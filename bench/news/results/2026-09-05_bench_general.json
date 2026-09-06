@@ -1,0 +1,515 @@
+{
+ "controls": {
+  "positive": 0.6666666666666666,
+  "negative": 0.0,
+  "feeds": 8,
+  "ok": true,
+  "floor": 0.4
+ },
+ "rows": [
+  {
+   "ask": "whats going on in the news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.8,
+   "overall": 5.0,
+   "on_topic": 5.0,
+   "titles": [
+    "U.S. military says it hit 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Is Work Starting for Trump\u2019s Arch? It Depends Who\u2019s Asking.",
+    "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Nepal Floods Buried a House. The Woman Inside Was Still Alive.",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Southern California Labor Day weekend forecast: 4 risks to watch for as Marie churns off the coast"
+   ]
+  },
+  {
+   "ask": "whats going on in the news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 3.0,
+   "on_topic": 3.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "top stories",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.8,
+   "overall": 5.0,
+   "on_topic": 4.0,
+   "titles": [
+    "U.S. military says it hit 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Is Work Starting for Trump\u2019s Arch? It Depends Who\u2019s Asking.",
+    "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Nepal Floods Buried a House. The Woman Inside Was Still Alive.",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Southern California Labor Day weekend forecast: 4 risks to watch for as Marie churns off the coast"
+   ]
+  },
+  {
+   "ask": "top stories",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 2.0,
+   "on_topic": 2.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "top news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.8,
+   "overall": 3.0,
+   "on_topic": 2.0,
+   "titles": [
+    "U.S. military says it hit 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Is Work Starting for Trump\u2019s Arch? It Depends Who\u2019s Asking.",
+    "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Nepal Floods Buried a House. The Woman Inside Was Still Alive.",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Southern California Labor Day weekend forecast: 4 risks to watch for as Marie churns off the coast"
+   ]
+  },
+  {
+   "ask": "top news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 3.0,
+   "on_topic": 2.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "give me the top stories",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.8,
+   "overall": 3.0,
+   "on_topic": 2.0,
+   "titles": [
+    "U.S. military says it hit 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Is Work Starting for Trump\u2019s Arch? It Depends Who\u2019s Asking.",
+    "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Nepal Floods Buried a House. The Woman Inside Was Still Alive.",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Southern California Labor Day weekend forecast: 4 risks to watch for as Marie churns off the coast"
+   ]
+  },
+  {
+   "ask": "give me the top stories",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 3.0,
+   "on_topic": 2.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "whats the top news today",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.8,
+   "overall": 4.0,
+   "on_topic": 3.0,
+   "titles": [
+    "U.S. military says it hit 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Is Work Starting for Trump\u2019s Arch? It Depends Who\u2019s Asking.",
+    "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Nepal Floods Buried a House. The Woman Inside Was Still Alive.",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Southern California Labor Day weekend forecast: 4 risks to watch for as Marie churns off the coast"
+   ]
+  },
+  {
+   "ask": "whats the top news today",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 5.0,
+   "on_topic": 1.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "world news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.7,
+   "overall": 7.0,
+   "on_topic": 8.0,
+   "titles": [
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "Families Turn to Symbolic Cremation After Nepal Floods",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest",
+    "Prince William to represent King Charles at funeral of Norway\u2019s King Harald V",
+    "Russia-Ukraine peace talks could begin next year, ex-MI6 chief says",
+    "Whatever happened to the floating schools of Bangladesh?",
+    "Laura Loomer Claims She Found Out \u2018Real Reason\u2019 Why Pete Hegseth Vanished From Fox News",
+    "Chinese national rescued from Nepal tunnel 10 days after flash flood",
+    "Fighter jet crashes at air show, killing 2 pilots with thousands of spectators watching"
+   ]
+  },
+  {
+   "ask": "world news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 1.0,
+   "on_topic": 1.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "us news today",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 2.0,
+   "on_topic": 2.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "us news today",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.7,
+   "overall": 4.0,
+   "on_topic": 3.0,
+   "titles": [
+    "Russia\u2019s Putin and US envoys discuss Trump proposal to end Ukraine war",
+    "U.S. military says it hit 3 Iranian tankers after Navy ships targeted",
+    "Fundraiser for Lindsay Clancy\u2019s Parents Raises Over $1.1 Million After Mistrial",
+    "A Sympathetic Defendant and Well-Crafted Defense Dominated Clancy Trial",
+    "Judge reinforces order halting immediate work on Trump\u2019s 250-foot arch",
+    "Icons Dolly Parton and Gloria Steinem never officially retired\u2014why that's a choice for some and requirement for others",
+    "Southern California Labor Day weekend forecast: 4 risks to watch for as Marie churns off the coast",
+    "Judge again halts Postal Service mail ballot plan as Trump administration seeks Supreme Court relief",
+    "Trump calls the Iran war \u2014 which has left 18 U.S. service members dead \u2014 'small potatoes'",
+    "Flock cameras draw opposition from across the political spectrum"
+   ]
+  },
+  {
+   "ask": "business news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 0.0,
+   "on_topic": 0.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "business news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 3.0,
+   "on_topic": 4.0,
+   "titles": [
+    "Seattle is the No. 1 Labor Day destination in the U.S. Here\u2019s what travelers need to know",
+    "OpenAI acknowledges 'wiki incident' and need for more transparency around unintended AI behavior",
+    "Oliver Blume\u2019s VW jobs victory leaves power questions untouched",
+    "Unruly Passenger Is Restrained With Duct Tape During a Flight",
+    "'Can't Message That Away': GOP Frets as Trump Administration Desperately Spins Record-High Diesel Prices",
+    "Trump turns up the heat on Warsh as Fed rate hike looms",
+    "These industries will lead hiring in the next decade, with just one sector accounting for more than a third of all new jobs",
+    "Tesla\u2019s Cybercab has been deployed, and it\u2019s already under investigation",
+    "Wall Street ends lower as solid jobs data fuels hawkish Fed bets",
+    "List of Countries and Funds Reducing US Treasuries Around the World"
+   ]
+  },
+  {
+   "ask": "tech news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.0,
+   "overall": 4.0,
+   "on_topic": 5.0,
+   "titles": [
+    "There May Not Be an iPhone 18 This Year",
+    "IFA 2026: the biggest tech and gadget announcements",
+    "Miami Police Release New Official Statement Ahead of GTA 6's Release",
+    "NBA 2K27 predicts the season: LeBron's shocking start with 76ers, a new MVP and an NBA Finals rematch",
+    "Rumor: New Smash Bros. game on the way, Nintendogs returning, more",
+    "HP\u2019s latest OmniBooks get RTX Spark, 128 GB LPDDR5X RAM and 3K OLED displays",
+    "No, Sony isn't cutting PlayStation disc production by 90 percent, just 10",
+    "14 Predictions for the September 2026 Nintendo Direct and Zelda 40th Anniversary Direct",
+    "Microsoft\u2019s latest moves suggest Xbox Cloud Gaming is slipping out of the spotlight \u2014 and the strategy shift feels impossible to ignore",
+    "This Hiking Exoskeleton May Actually Help Your Bad Knees, Finally"
+   ]
+  },
+  {
+   "ask": "tech news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 0.0,
+   "on_topic": 0.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "sports news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 6.0,
+   "on_topic": 7.0,
+   "titles": [
+    "'One of the best' - boxing world reacts to Taylor's farewell win",
+    "Michigan football stuns WMU with miracle Hail Mary after game seemed over",
+    "LSU sets new kickoff time for season opener vs. Clemson after weather delay. Check it out.",
+    "Salahdine Parnasse knocks out Dan Hooker in UFC debut",
+    "College football Week 1: Live updates, schedule, scores, highlights",
+    "Instant Reactions: How concerned should you be after Oregon's close win over Boise State",
+    "Husker Report Card: Grading Nebraska's performance in win over Ohio",
+    "Proof Points From Ohio State\u2019s Dominant Win Over Ball State in the Season Opener, Presented by High Bank Distillery",
+    "Arch Manning throws for 305 yards and 4 touchdowns against overmatched Texas State",
+    "Georgia football-Tennessee State instant observations as Bulldogs thrive in heat"
+   ]
+  },
+  {
+   "ask": "sports news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 1.0,
+   "on_topic": 1.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "science news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.0,
+   "overall": 8.0,
+   "on_topic": 10.0,
+   "titles": [
+    "Scientists Detect Strange New Structures Deep Inside the Earth",
+    "NASA launches its Roman Space Telescope to explore the hidden universe",
+    "Have scientists discovered a dark matter particle?",
+    "Is There Alien Debris on the Moon? Some Scientists Plan to Find Out.",
+    "BepiColombo sheds its ride and starts the final glide to Mercury",
+    "Here\u2019s where a massive solar storm could take down the US power grid",
+    "What the Heck? Another Perfect Geometric Shape Has Been Detected on Saturn",
+    "Rescue satellite gets close to NASA\u2019s doomed telescope, even if it can\u2019t save it",
+    "Massive study reveals how much personality comes from DNA",
+    "Second complete map of a fruit fly brain completed"
+   ]
+  },
+  {
+   "ask": "science news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 0.0,
+   "on_topic": 0.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  },
+  {
+   "ask": "health news",
+   "strategy": "T editorial",
+   "n": 10,
+   "front_page": 0.0,
+   "overall": 7.0,
+   "on_topic": 7.0,
+   "titles": [
+    "Chimpanzees once used for vaccine research get health checks as part of long-term care",
+    "RFK Jr. accepts PA child died of measles, says Shapiro hastily \u2018politicized\u2019 death",
+    "Landmark pancreatic cancer drug shows potential against lung cancer too",
+    "Top US doctors offer updated flu and COVID vaccine recommendations, aiming to ease confusion",
+    "Alcohol-related cancer deaths in US have more than doubled over three decades",
+    "Prostate Cancer: Cases Rising 3% Annually as Experts Urge Screening",
+    "Inside the fight against mosquitoes spreading dengue fever in Florida",
+    "Burlington mom speaks out after teen dies from rare brain-eating amoeba",
+    "Nearly 300 people exposed to goats with rabies at mobile petting zoo",
+    "2 people hospitalized in Albany with West Nile virus; hospital urges precautions"
+   ]
+  },
+  {
+   "ask": "health news",
+   "strategy": "P keyed-top",
+   "n": 10,
+   "front_page": 0.1,
+   "overall": 0.0,
+   "on_topic": 0.0,
+   "titles": [
+    "Astronomy Picture of the Day",
+    "Trump-backed group announces $10m ad spend for midterm Senate race in Texas",
+    "German voters head to polls as far-right AfD party eyes historic state win",
+    "Pooran and Narine lead TKR to victory in low-scoring clash",
+    "Search for 2 teens in Fresno shooting",
+    "Varlas: Huff to Memphis: Thank you. And come again.",
+    "How to watch Northwestern State vs Louisiana Tech: Live stream NCAA College Football ...",
+    "HFD rescuers help lost hikers on Kaaawa trail | Honolulu Star-Advertiser",
+    "Recently awakened. What now?",
+    "Fuel tanker blast in western Iran kills at least 10"
+   ]
+  }
+ ],
+ "aggregate": {
+  "T editorial": {
+   "on_topic": 5.0,
+   "not_ad": 9.667,
+   "substance": 6.0,
+   "overall": 4.917,
+   "lat": 94.333,
+   "calls": 0,
+   "empty": 0,
+   "fp": 0.467,
+   "n": 10.0
+  },
+  "P keyed-top": {
+   "on_topic": 1.167,
+   "not_ad": 9.833,
+   "substance": 3.75,
+   "overall": 1.667,
+   "lat": 508.417,
+   "calls": 0,
+   "empty": 0,
+   "fp": 0.1,
+   "n": 10.0
+  }
+ }
+}
