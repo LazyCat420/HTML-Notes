@@ -53,10 +53,16 @@ def run_row(host, row, canvas, timeout):
                 elif t == "chunk":
                     chunks.append(ev.get("content") or "")
     elapsed = time.time() - t0
+    # No component frame at all means the canvas was left exactly as it was —
+    # a reply or a no-op. Report that as 0 NEW widgets rather than counting the
+    # pre-populated canvas (which is what made the finance-canvas "hello" row
+    # read as -2 and FAIL while the app had done the right thing).
+    if not html:
+        return (debug or {}).get("path"), (debug or {}).get("id_prefix"), 0, elapsed, " ".join(chunks)[:80], False
     widgets = html.count('class="widget-container') + html.count("class='widget-container")
     got_path = (debug or {}).get("path")
     got_prefix = (debug or {}).get("id_prefix")
-    return got_path, got_prefix, widgets, elapsed, " ".join(chunks)[:80]
+    return got_path, got_prefix, widgets, elapsed, " ".join(chunks)[:80], True
 
 
 def main():
@@ -77,7 +83,7 @@ def main():
     print("-" * 110)
     for row in rows:
         try:
-            got_path, got_prefix, widgets, el, reply = run_row(args.host, row, canvas, args.timeout)
+            got_path, got_prefix, widgets, el, reply, painted = run_row(args.host, row, canvas, args.timeout)
         except Exception as e:
             print(f"{row.message[:44]:44s} {row.path+'/'+str(row.id_prefix):22s} ERROR {type(e).__name__}")
             fails += 1
@@ -86,8 +92,9 @@ def main():
         got = f"{got_path}/{got_prefix}"
         ok = (got_path == row.path) and (row.id_prefix is None or got_prefix == row.id_prefix)
         if row.widgets is not None:
-            # a populated canvas carries its own widgets; count only the delta
-            base = 2 if args.canvas_finance else 0
+            # A populated canvas carries its own widgets: when a frame WAS
+            # painted count only the delta; when none was, nothing changed.
+            base = (2 if args.canvas_finance else 0) if painted else 0
             ok = ok and (widgets - base) == row.widgets
         fails += 0 if ok else 1
         tail = f"  reply={reply!r}" if got_prefix == "reply" else (f"  {row.note}" if not ok and row.note else "")
