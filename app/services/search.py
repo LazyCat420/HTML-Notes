@@ -229,15 +229,28 @@ async def _gdelt_news(topic: str, limit: int) -> list:
     return items
 
 
-async def _google_news_rss(topic: str, limit: int) -> list:
+_GOOGLE_SECTION = {
+    "us": "NATION", "world": "WORLD", "business": "BUSINESS",
+    "technology": "TECHNOLOGY", "science": "SCIENCE", "health": "HEALTH",
+    "sports": "SPORTS", "entertainment": "ENTERTAINMENT",
+}
+
+
+async def _google_news_rss(topic: str, limit: int, category: str = "",
+                           country: str = "") -> list:
     """Fallback headlines from Google News RSS. Real and dated, but the links are
     Google redirects that don't resolve to the article, so there is no article
     photo — the publisher favicon is used as a thumbnail instead."""
+    gl = (country or "us").upper()
+    loc = f"hl=en-{gl}&gl={gl}&ceid={gl}:en"
     if topic and topic.strip():
         url = ("https://news.google.com/rss/search?q="
-               + urllib.parse.quote(topic.strip()) + "&hl=en-US&gl=US&ceid=US:en")
+               + urllib.parse.quote(topic.strip()) + f"&{loc}")
+    elif _GOOGLE_SECTION.get(category):
+        url = ("https://news.google.com/rss/headlines/section/topic/"
+               f"{_GOOGLE_SECTION[category]}?{loc}")
     else:
-        url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
+        url = f"https://news.google.com/rss?{loc}"
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": _BROWSER_UA})
@@ -329,7 +342,25 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
     as the summary."""
     stats = {"ok": 0, "fail": 0}
 
+    def _worth_fetching(item: dict) -> bool:
+        """Two fetches per card were wasted, and one of them could never work.
+
+        A news.google.com/rss/articles/CBMi... link does NOT resolve
+        server-side — it 200s with a JS-driven body — and the og:image it
+        serves is Google's own News logo, the same picture for every story.
+        And an item that already has a photo and a real summary has nothing to
+        gain. This fetch is the dominant latency term on the news path: a
+        general ask measured 31.2s, almost all of it here.
+        """
+        url = item.get("url") or ""
+        if item.get("stub") or "news.google.com" in url:
+            return False
+        has_desc = bool(item.get("snippet")) and not _is_generic_news_desc(item.get("snippet", ""))
+        return not (has_desc and item.get("image"))
+
     async def one(client: httpx.AsyncClient, item: dict) -> None:
+        if not _worth_fetching(item):
+            return
         try:
             resp = await client.get(item["url"], headers={"User-Agent": _BROWSER_UA})
             html = resp.text
@@ -370,7 +401,8 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
                     f"({stats['fail']} fetch failures)")
 
 
-async def _shared_news_search(topic: str, limit: int) -> list:
+async def _shared_news_search(topic: str, limit: int, category: str = "",
+                              country: str = "") -> list:
     """The shared multi-provider news tool in lazy-tool-service.
 
     PRIMARY source, ahead of the Google News RSS path below, because it returns
@@ -385,11 +417,20 @@ async def _shared_news_search(topic: str, limit: int) -> list:
     # STORIES highlighted by Us for September 4": the phrase WAS the match.
     # news_search now treats "" as "use your top-headlines endpoint".
     clean_topic = (topic or "").strip()
+    # A SECTION, for the top-headlines path only. Sending it with a keyword
+    # search would be meaningless, and an empty string is not the same as an
+    # absent key to a provider that might read it as a filter.
+    body = {"topic": clean_topic, "limit": limit}
+    if not clean_topic:
+        if category:
+            body["category"] = category
+        if country:
+            body["country"] = country
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(
                 f"{LAZY_TOOL_SERVICE_URL}/execute/news_search",
-                json={"topic": clean_topic, "limit": limit},
+                json=body,
             )
         if resp.status_code != 200:
             logger.warning(f"[news] shared news_search HTTP {resp.status_code}")
@@ -406,6 +447,13 @@ async def _shared_news_search(topic: str, limit: int) -> list:
         if not isinstance(r, dict) or not r.get("title") or not r.get("url"):
             continue
         items.append({
+            # The gateway's top-headlines rows carry three extra fields: which
+            # section the story is in, how many independent newsrooms led with
+            # it, and whether the link is a Google redirect stub (unscrapeable,
+            # no article photo). All three are load-bearing downstream.
+            "category": str(r.get("category", "") or ""),
+            "consensus": r.get("consensus"),
+            "stub": bool(r.get("stub")),
             "title": str(r.get("title", "")).strip(),
             "url": str(r.get("url", "")).strip(),
             # A real article photo. _enrich_news only fills what is MISSING, so
@@ -429,7 +477,7 @@ async def _scraper_service_news(topic: str, limit: int = 6) -> list:
         async with client_cls(timeout=12.0) as client:
             resp = await client.post(
                 f"{SCRAPER_SERVICE_URL}/collect",
-                json={"source": "duckduckgo", "query": f"{topic} news" if topic else "news top stories", "limit": limit},
+                json={"source": "duckduckgo", "query": f"{topic} news", "limit": limit},
             )
             payload = resp.json()
         items = []
@@ -451,26 +499,41 @@ async def _scraper_service_news(topic: str, limit: int = 6) -> list:
         return []
 
 
-async def news_search(topic: str, limit: int = 6) -> list:
+async def news_search(topic: str, limit: int = 6, category: str = "",
+                      country: str = "") -> list:
     """Current headlines with real photos and summaries. Returns
-    [{title, url, image, meta, snippet, date}].
+    [{title, url, image, meta, snippet, date, category?, consensus?, stub?}].
 
-    Order:
+    An EMPTY topic means "today's top headlines" and is a valid request, not a
+    missing argument. `category` narrows that to a section (world, business,
+    technology...) and is meaningless for a keyword search.
+
+    Order for a TOPIC:
     1. The SHARED news_search tool in lazy-tool-service (~1s).
     2. Google News RSS (~0.1s, reliable, keyless).
     3. scraper-service news/DDG collector.
     4. GDELT (keyless).
     5. Generic web search.
+
+    Order for the TOP STORIES: tiers 1 and 2 only. Tiers 3-5 have no concept of
+    a headline — they are keyword searches, and the only way to use them for a
+    general ask is to invent a query. That is precisely the defect this path
+    was fixed for once already: the scraper tier searched the literal words
+    "news top stories" and the web tier "top news headlines", both of which
+    keyword-match roundup pages CONTAINING the phrase rather than returning the
+    news. They were fixed in tier 1 and left in place here, where they fire
+    only in the degraded state — the moment quality matters most. An empty
+    result is now the honest answer.
     """
-    items, source = await _shared_news_search(topic, limit), "lazy-tool"
+    items, source = await _shared_news_search(topic, limit, category, country), "lazy-tool"
     if not items:
-        items, source = await _google_news_rss(topic, limit), "google-news"
-    if not items:
+        items, source = await _google_news_rss(topic, limit, category, country), "google-news"
+    if not items and topic:
         items, source = await _scraper_service_news(topic, limit), "scraper-news"
-    if not items:
+    if not items and topic:
         items, source = await _gdelt_news(topic, limit), "gdelt"
-    if not items:
-        raw = await web_search(f"{topic} news" if topic else "top news headlines", limit)
+    if not items and topic:
+        raw = await web_search(f"{topic} news", limit)
         items = [{"title": r.get("title", ""), "url": r.get("url", ""), "image": "",
                   "meta": _host_of(r.get("url", "")), "snippet": r.get("snippet", ""),
                   "date": ""} for r in raw]
@@ -486,7 +549,8 @@ async def news_search(topic: str, limit: int = 6) -> list:
             if not it.get("image") and it.get("favicon"):
                 it["image"] = it["favicon"]
             it.pop("favicon", None)
-    logger.info(f"[NEWS] {topic!r} → {len(items)} items via {source}")
+    logger.info(f"[NEWS] {topic!r}{f' [{category}]' if category else ''} → "
+                f"{len(items)} items via {source}")
     return items
 
 

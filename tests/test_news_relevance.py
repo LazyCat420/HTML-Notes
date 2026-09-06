@@ -51,7 +51,7 @@ async def test_news_query_keeps_the_words_that_carry_the_subject(ask, must_keep,
 
     seen = {}
 
-    async def fake_news(topic, limit=6):
+    async def fake_news(topic, limit=6, **kw):
         seen["topic"] = topic
         return []
 
@@ -73,7 +73,7 @@ async def test_news_query_drops_the_question_scaffolding(patch_server):
 
     seen = {}
 
-    async def fake_news(topic, limit=6):
+    async def fake_news(topic, limit=6, **kw):
         seen["topic"] = topic
         return []
 
@@ -100,7 +100,7 @@ async def test_a_general_ask_still_means_top_stories(patch_server):
 
     seen = {}
 
-    async def fake_news(topic, limit=6):
+    async def fake_news(topic, limit=6, **kw):
         seen["topic"] = topic
         return []
 
@@ -177,7 +177,7 @@ async def test_relevance_gate_is_wired_into_the_news_card(patch_server):
                 "negatives": ["stock promotion"], "freshness": "",
                 "ambiguous": False, "clarify": ""}
 
-    async def fake_news(topic, limit=6):
+    async def fake_news(topic, limit=6, **kw):
         return [dict(i, image="", meta="x", date="") for i in ITEMS]
 
     async def fake_gate(subject, negatives, items, **kw):

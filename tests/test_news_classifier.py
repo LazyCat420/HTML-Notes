@@ -57,6 +57,67 @@ ROWS = [
      dict(finance=False, general=False, depth="card", kind="news", id_prefix="news")),
     ("bitcoin news",
      dict(finance=True, general=False, depth="card", kind="news", id_prefix="stock-news")),
+    # ── the owner's own top-stories asks ────────────────────────────────────
+    # None of these was in any test before 2026-09-05. "top stories" is claimed
+    # by a DIFFERENT predicate (_GENERAL_NEWS_RE) than the one tested row
+    # "whats going on in the news" (NEWS_ASK_RE), so that row never covered it.
+    ("top stories",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="")),
+    ("top news",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="")),
+    ("give me the top stories",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="")),
+    ("whats the top news today",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="")),
+    # ── a section is a section, not filler ──────────────────────────────────
+    # "world", "us" and "global" were general-ask FILLER, so "world news" and
+    # "us news today" made the same undifferentiated call as "top stories" and
+    # returned the same three stories. "business"/"tech" left a residual and
+    # became a literal keyword search for the word: "business news" returned a
+    # Flipboard page about street flooding hurting a nearby business.
+    ("world news",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="world")),
+    ("us news today",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="us")),
+    ("business news",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="business")),
+    ("tech news",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="technology")),
+    ("science news",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="science")),
+    ("health news",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="health")),
+    ("entertainment news",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="entertainment")),
+    ("whats going on in the world",
+     dict(finance=False, general=True, depth="card", kind="news", id_prefix="news",
+          category="world")),
+    # ── a section WORD inside a real subject is not a section ask ───────────
+    ("give me news about small business tax updates",
+     dict(finance=False, general=False, depth="card", kind="news", id_prefix="news",
+          category="")),
+    ("latest news on the world cup qualifiers",
+     dict(finance=False, general=False, depth="card", kind="news", id_prefix="news",
+          category="")),
+    ("news about the new apple health study",
+     dict(finance=False, general=False, depth="card", kind="news", id_prefix="news",
+          category="")),
+    # A market ask keeps its own builder and takes no section: the finance card
+    # is a different shape from a front page.
+    ("stock market news",
+     dict(finance=True, general=True, depth="card", kind="news", id_prefix="stock-news",
+          category="")),
 ]
 
 
@@ -69,7 +130,31 @@ def test_classify_news_ask(message, expected):
     assert got is not None, f"{message!r} was NOT claimed as news"
     actual = dict(finance=got.finance, general=got.general, depth=got.depth,
                   kind=got.kind, id_prefix=got.id_prefix)
+    if "category" in expected:
+        actual["category"] = got.category
     assert actual == expected
+
+
+def test_every_category_word_reaches_its_section():
+    """Derived from the map itself, not transcribed beside it.
+
+    A hand-written table of expectations agrees with itself while drifting from
+    the code; this fails the moment a word is added to the map without working.
+    """
+    for word, category in m._NEWS_CATEGORY_WORDS.items():
+        got = m.classify_news_ask(f"{word} news")
+        assert got is not None, f"{word!r} news was not claimed as a news ask"
+        assert got.general, f"{word!r} news left a residual instead of being a section ask"
+        assert got.category == category, (
+            f"{word!r} news -> category {got.category!r}, expected {category!r}")
+
+
+def test_a_section_is_only_ever_one_of_the_gateways_own():
+    """The gateway ignores an unknown category and silently serves the front
+    page instead, so a typo here would look like a working section ask."""
+    allowed = {"", "top", "us", "world", "business", "technology",
+               "science", "health", "sports", "entertainment"}
+    assert set(m._NEWS_CATEGORY_WORDS.values()) <= allowed
 
 
 def test_exclusion_flags_win():

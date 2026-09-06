@@ -181,7 +181,7 @@ async def test_non_news_question_never_falls_back_to_news_search(patch_server):
         used.append("web")
         return [{"title": "Guide", "url": "https://coffee.example/g", "snippet": "s"}]
 
-    async def fake_news(query, limit=5):
+    async def fake_news(query, limit=5, **kw):
         used.append("news")
         return [{"title": "Article", "url": "https://news.google.com/rss/x", "snippet": ""}]
 
@@ -206,7 +206,7 @@ async def test_a_genuine_news_ask_still_uses_the_news_wire(patch_server):
         used.append("web")
         return []
 
-    async def fake_news(query, limit=5):
+    async def fake_news(query, limit=5, **kw):
         used.append("news")
         return [{"title": "Story", "url": "https://ap.example/s", "snippet": "s"}]
 

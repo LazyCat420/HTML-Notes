@@ -2057,6 +2057,49 @@ _NEWS_GENERAL_WORDS = frozenset({
     "us", "usa", "america", "american", "morning", "evening", "tonight",
     "feed", "stories", "story", "summary", "brief", "please", "pls",
 })
+# A SECTION is not filler. "world", "us", "global" and "top" all sat in
+# _NEWS_GENERAL_WORDS, so "world news" and "us news today" made exactly the same
+# undifferentiated call as "top stories" and came back with the same three
+# stories. "business", "tech", "sports", "science" and "health" were not in any
+# list, so they left a residual and became a LITERAL KEYWORD SEARCH for the
+# word: measured 2026-09-05, "business news" returned a Flipboard page about
+# street flooding hurting a nearby business, and "tech news" a Nike Air Max post.
+#
+# Values are the gateway's own section names (news_search's `category` enum).
+# An entry here must be a word that, standing alone beside "news", can only mean
+# the section — which is why "market" is absent (a market ask has its own
+# builder) and why matching is word-boundary exact rather than by prefix.
+_NEWS_CATEGORY_WORDS = {
+    "world": "world", "global": "world", "international": "world",
+    "foreign": "world", "abroad": "world",
+    "us": "us", "usa": "us", "america": "us", "american": "us",
+    "national": "us", "domestic": "us",
+    "business": "business", "economy": "business", "economic": "business",
+    "tech": "technology", "technology": "technology",
+    "science": "science", "scientific": "science",
+    "health": "health", "healthcare": "health", "medical": "health",
+    "sports": "sports", "sport": "sports",
+    "entertainment": "entertainment", "celebrity": "entertainment",
+    "showbiz": "entertainment", "hollywood": "entertainment",
+}
+
+
+def _news_category(text: str) -> str:
+    """Which section a general news ask is about, "" for the front page.
+
+    First match in the order the words were TYPED, so "world business news"
+    reads as world news rather than as whichever key the dict happens to hold
+    first. Only ever consulted for an ask already judged general — inside a real
+    subject ("small business tax updates", "world cup qualifiers") these words
+    are part of the subject, not a section.
+    """
+    for word in re.findall(r"[a-z]+", (text or "").lower()):
+        section = _NEWS_CATEGORY_WORDS.get(word)
+        if section:
+            return section
+    return ""
+
+
 _MARKETY_WORDS = frozenset({
     "stock", "stocks", "market", "markets", "share", "shares", "price",
     "prices", "ticker", "tickers", "equities", "equity", "finance",
@@ -2114,6 +2157,9 @@ class NewsAsk:
     depth: str            # "card" | "brief"
     kind: str             # "news" | "stock_report"
     subject_hint: str
+    # Section for a general ask: "" (front page) | world | us | business | ...
+    # Defaulted last so every existing construction keeps working.
+    category: str = ""
 
     @property
     def id_prefix(self) -> str:
@@ -2171,6 +2217,7 @@ def classify_news_ask(raw: str, *, wants_removal: bool = False,
     general = (not ticker) and _is_general_news_ask(for_general, finance=finance)
     residual = " ".join(w for w in re.findall(r"[a-z0-9&]+", text)
                         if w not in _NEWS_SCAFFOLDING and w not in _NEWS_GENERAL_WORDS
+                        and w not in _NEWS_CATEGORY_WORDS
                         and w not in _NEWSY and (not finance or w not in _MARKETY_WORDS))
 
     news_word = bool(NEWS_ASK_RE.search(text))
@@ -2189,8 +2236,12 @@ def classify_news_ask(raw: str, *, wants_removal: bool = False,
 
     depth = "brief" if _DEPTH_RE.search(text) else "card"
     kind = "stock_report" if (STOCK_REPORT_RE.search(text) and finance and not general) else "news"
+    # A section only applies to a general, non-finance ask. A market ask has its
+    # own builder and a different card shape; a subject ask already has a
+    # subject, and "the world cup qualifiers" is not world news.
+    category = _news_category(text) if (general and not finance) else ""
     return NewsAsk(finance=finance, general=general, depth=depth, kind=kind,
-                   subject_hint=residual.strip())
+                   subject_hint=residual.strip(), category=category)
 
 
 _CONJUNCTION_RE = re.compile(r"\b(and|also|plus|along with|both|as well as|with)\b")
@@ -2245,7 +2296,13 @@ def _is_general_news_ask(message: str, *, finance: bool = False) -> bool:
     grounding pass — ground_query will happily invent a subject for "hello".
     """
     words = re.findall(r"[a-z0-9]+", (message or "").lower())
-    filler = _NEWS_SCAFFOLDING | _NEWS_GENERAL_WORDS | (_MARKETY_WORDS if finance else frozenset())
+    # A section word is filler for the purpose of "does this name a subject":
+    # "business news" names a SECTION, not a company, and before this it left a
+    # residual and was keyword-searched. The section itself is recovered
+    # separately by _news_category.
+    filler = (_NEWS_SCAFFOLDING | _NEWS_GENERAL_WORDS
+              | frozenset(_NEWS_CATEGORY_WORDS)
+              | (_MARKETY_WORDS if finance else frozenset()))
     residual = [w for w in words if w not in filler and w not in _NEWSY]
     # Two letters is a subject: "AI", "EU", "UK", "AMD". ("us" is filler and
     # already gone.) Requiring three silently turned "news about AI" into a

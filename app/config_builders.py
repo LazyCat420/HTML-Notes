@@ -435,10 +435,18 @@ async def build_notes_config(message: str) -> dict:
     }
 
 
+_SECTION_LABEL = {
+    "": "Top Stories", "top": "Top Stories", "us": "US", "world": "World",
+    "business": "Business", "technology": "Technology", "science": "Science",
+    "health": "Health", "sports": "Sports", "entertainment": "Entertainment",
+}
+
+
 async def build_news_card(message: str, *, finance: bool = False,
                           general: Optional[bool] = None,
                           depth: str = "card",
-                          subject_hint: str = "") -> dict:
+                          subject_hint: str = "",
+                          category: str = "") -> dict:
     """THE news pipeline. Every news-like ask — general headlines, a topic,
     market/stock news, the agent's `news_topic` / `stock_news_query` injectors,
     the router's `news` / `stock_news` types — ends up here.
@@ -486,9 +494,11 @@ async def build_news_card(message: str, *, finance: bool = False,
     #    where the bare subject scores 4/6 (measured on "US China trade talks").
     if general:
         topic = "stock market" if finance else ""
-        display = "the market" if finance else "top stories"
+        section = "" if finance else (category or "")
+        display = "the market" if finance else _SECTION_LABEL.get(section, "Top Stories")
     else:
         topic = subject
+        section = ""
         display = subject
 
     # 3. FETCH — the shared region-aware provider (top headlines on ""); finance
@@ -496,7 +506,12 @@ async def build_news_card(message: str, *, finance: bool = False,
     #    stories. Yahoo's headline-only search is a FALLBACK, never a parallel
     #    tier (its rows have no snippets and one source).
     news_fn = getattr(main, "news_search", None) or news_search
-    tasks = [news_fn(topic, limit=8)]
+    # Over-fetch on a general ask. The card keeps ten rather than six (a front
+    # page that shows six stories cannot span a day), the editor is allowed to
+    # drop press releases, and duplicates still collapse — so the request has
+    # to start wider than the card.
+    tasks = [news_fn(topic, limit=14 if (general and not finance) else 8,
+                     category=section, country="us" if general else "")]
     if finance:
         finnews_fn = getattr(main, "_finnews_articles", None) or _finnews_articles
         tasks.append(finnews_fn(query=topic, limit=8))
@@ -546,16 +561,28 @@ async def build_news_card(message: str, *, finance: bool = False,
                                     min_keep=0, hyde=g.get("hyde") or "")
         items = vetted
 
-    title = (("Market News" if general else f"Market News: {display}") if finance
-             else f"News: {display}").title()[:60]
+    if finance:
+        title = ("Market News" if general else f"Market News: {display}").title()[:60]
+    elif general:
+        # "Top Stories", "News: World" — never "News: Top Stories".
+        title = (display if section in ("", "top") else f"News: {display}")[:60]
+    else:
+        title = f"News: {display}".title()[:60]
     icon = "trending_up" if finance else "newspaper"
     if not items:
-        return {"title": title, "icon": icon,
-                "answer": (f"No recent coverage specifically about {display} came "
-                           "back from the news providers just now."),
+        # "No recent coverage specifically about top stories" reads as though
+        # the user had asked about an obscure subject. A general ask that comes
+        # back empty means the sources are down, and should say so.
+        answer = (f"No headlines came back from the news sources just now."
+                  if (general and not finance)
+                  else f"No recent coverage specifically about {display} came "
+                       "back from the news providers just now.")
+        return {"title": title, "icon": icon, "answer": answer,
                 "subtitle": "0 stories", "items": []}
 
-    items = items[:6]
+    # Six was the cap for every ask. The owner's complaint was a card of FOUR
+    # stories standing for a whole day's news; a front page needs room.
+    items = items[:10 if (general and not finance) else 6]
 
     def _meta_line(it: dict) -> str:
         return " · ".join(x for x in (it.get("meta"), it.get("date")) if x)
@@ -571,7 +598,13 @@ async def build_news_card(message: str, *, finance: bool = False,
                 "url": it["url"],
                 "image": it.get("image", ""),
                 "meta": _meta_line(it),
-                "badge": (tickers[:24] or "Markets") if finance else "News",
+                # The badge carries the SECTION on a general card, so a
+                # mixed front page reads as a front page — World next to
+                # Business next to Technology — instead of ten rows all
+                # labelled "News".
+                "badge": ((tickers[:24] or "Markets") if finance
+                          else (_SECTION_LABEL.get(it.get("category") or "", "News")
+                                if general else "News")),
             })
         return out
 
@@ -593,6 +626,8 @@ async def build_news_card(message: str, *, finance: bool = False,
         tickers = ", ".join(it.get("related_tickers") or [])
         if tickers:
             head += f" [tickers: {tickers}]"
+        if general and not finance and it.get("category"):
+            head += f" [section: {_SECTION_LABEL.get(it['category'], it['category'])}]"
         body = (it.get("snippet") or "")[:600]
         source_lines.append(head + ("\n" + body if body else ""))
     editor = "financial news editor" if finance else "news editor"
@@ -606,8 +641,9 @@ async def build_news_card(message: str, *, finance: bool = False,
         '"items": [{"index": <the [N] number of the source>, '
         '"title": "<tightened headline>", '
         '"summary": "<2-3 sentences: what happened and why it matters>"}]}\n'
-        f'Topic: "{display}"\n\n'
-        "RULES FOR EVERY FIELD, INCLUDING overview:\n"
+        + (f'Brief: today\'s {display.lower()} headlines, for a reader catching up.\n\n'
+           if (general and not finance) else f'Topic: "{display}"\n\n')
+        + "RULES FOR EVERY FIELD, INCLUDING overview:\n"
         "- Ground every claim in a listed source and cite it by [N]. Never invent "
         "a fact, name, figure or move that is not in the sources.\n"
         "- Be concrete: name the actual companies, tickers, people, places and "
@@ -617,11 +653,29 @@ async def build_news_card(message: str, *, finance: bool = False,
         "from the sources.\n"
         "- Base each summary ONLY on that source's text. If a source is only a "
         "headline, keep its summary to a faithful one-line restatement.\n"
-        "- OMIT a source entirely rather than write it up if it is not about the "
-        "topic, is a press release or advertisement, or mentions the topic only "
-        "in passing. Returning FEWER, on-topic entries is correct and expected.\n\n"
-        "SOURCES:\n" + "\n\n".join(source_lines),
-        max_tokens=1000,
+        + ((
+            # A general ask has no topic to be off, so the subject-relevance
+            # omit rule below does not apply — and applied anyway it cost
+            # stories: the owner's card showed FOUR because the editor was told
+            # that returning fewer entries is correct. Here the ONLY reason to
+            # drop a source is that it is not news.
+            "- These are today's headlines: every genuine news story here "
+            "belongs in the write-up. Do NOT drop a story for being about a "
+            "different subject from the others - a front page is meant to be "
+            "varied. OMIT a source ONLY if it is a press release, an "
+            "advertisement, a shopping or deals post, or a listings page.\n"
+            "- Keep the sources in the order given; they are ranked by how many "
+            "newsrooms led with them.\n"
+            "- The overview is a two-sentence catch-up naming the biggest two or "
+            "three stories, not a description of the news in general.\n\n"
+        ) if (general and not finance) else (
+            "- OMIT a source entirely rather than write it up if it is not about "
+            "the topic, is a press release or advertisement, or mentions the "
+            "topic only in passing. Returning FEWER, on-topic entries is correct "
+            "and expected.\n\n"
+        ))
+        + "SOURCES:\n" + "\n\n".join(source_lines),
+        max_tokens=1500 if (general and not finance) else 1000,
     )
 
     strip_cites = getattr(main, "_strip_citation_markers", None) or _strip_citation_markers

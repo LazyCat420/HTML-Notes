@@ -527,7 +527,7 @@ async def test_build_map_config_prompts_when_no_location(monkeypatch, patch_serv
 async def test_general_news_uses_top_stories(patch_server):
     import app.main as m
     captured = {}
-    async def fake_news_search(topic, limit=6):
+    async def fake_news_search(topic, limit=6, **kw):
         captured["topic"] = topic
         return []  # short-circuits the rest of build_news_config
     patch_server("news_search", fake_news_search)
@@ -689,7 +689,7 @@ async def test_build_router_widget_clock_and_traffic(patch_server):
 async def test_resolve_ticker(patch_server):
     import app.main as m
     assert await m._resolve_ticker("TSLA") == "TSLA"      # bare symbol passes through
-    async def fake_news(q, limit=8):
+    async def fake_news(q, limit=8, **kw):
         return {"news": [], "matches": [{"symbol": "AAPL", "name": "Apple Inc."}]}
     patch_server("stock_news", fake_news)
     assert await m._resolve_ticker("Apple") == "AAPL"     # name resolves via matches
