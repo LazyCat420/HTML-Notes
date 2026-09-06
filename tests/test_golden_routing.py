@@ -29,6 +29,9 @@ class Row:
     widgets: Optional[int]    # expected .widget-container count; None = don't care
     offline: bool = True      # can the offline harness drive it without a network?
     note: str = ""
+    # Expected `news_category` in the debug frame. None = do not care (the row
+    # is not a news row); "" = the front page, explicitly.
+    category: Optional[str] = None
 
 
 GOLDEN = [
@@ -43,6 +46,24 @@ GOLDEN = [
     Row("stock market news for the day please.", "fast-path", "stock-news", 1),
     Row("news about nvidia earnings", "fast-path", "stock-news", 1),
     Row("whats going on in the news", "fast-path", "news", 1, note="searched the words 'top stories' live"),
+    # The owner's own top-stories asks. None of them was in this table when a
+    # whole day of news fixes shipped against it — "top stories" is claimed by a
+    # different predicate than the row above, so that row never covered it.
+    Row("top stories", "fast-path", "news", 1, category="",
+        note="4 random items: a college football recap, Lindsay Clancy, clean water"),
+    Row("top news", "fast-path", "news", 1, category=""),
+    Row("give me the top stories", "fast-path", "news", 1, category=""),
+    Row("whats the top news today", "fast-path", "news", 1, category=""),
+    # Sections. "world"/"us" were filler, so these made the same call as the
+    # rows above and returned the same three stories; "business"/"tech" left a
+    # residual and became a keyword search for the word.
+    Row("world news", "fast-path", "news", 1, category="world"),
+    Row("us news today", "fast-path", "news", 1, category="us"),
+    Row("business news", "fast-path", "news", 1, category="business",
+        note="a Flipboard page about flooding hurting a nearby business"),
+    Row("tech news", "fast-path", "news", 1, category="technology",
+        note="a Nike Air Max sneaker post"),
+    Row("sports news", "fast-path", "news", 1, category="sports"),
     Row("latest news on the israel hamas ceasefire", "fast-path", "news", 1, note="1 article live"),
     # ── other words own these (offline harness cannot fake their builders) ──
     Row("bloomberg live news", "fast-path", "live", 1, offline=False),
@@ -107,7 +128,8 @@ def _drive(message, canvas, patch_server):
         return {"reply": "Hey. Ask me for news, weather, a stock, or a map.",
                 "reason": "greeting", "checks": {"wants": "converse"}}
 
-    async def fake_card(message_, *, finance=False, general=None, depth="card", subject_hint=""):
+    async def fake_card(message_, *, finance=False, general=None, depth="card",
+                        subject_hint="", category=""):
         return {"title": "News: Test", "answer": "Something specific happened [0].",
                 "subtitle": "1 stories · Reuters",
                 "items": [{"title": "A story", "description": "d", "url": "https://r.com/a",
@@ -143,6 +165,14 @@ def test_golden_offline(row, patch_server):
         + (f"  ({row.note})" if row.note else ""))
     if row.widgets is not None:
         assert _widget_count(sse) == row.widgets, f"{row.message!r} widget count"
+    if row.category is not None:
+        # The SECTION the builder was handed. Without it, "world news" and
+        # "top stories" produce identical debug frames while making completely
+        # different requests — which is how they went on returning the same
+        # three stories with nothing to show for it.
+        assert debug[0].get("news_category") == row.category, (
+            f"{row.message!r} -> section {debug[0].get('news_category')!r}, "
+            f"expected {row.category!r}")
 
 
 def test_hello_on_a_finance_canvas_is_still_a_reply(patch_server):

@@ -18,7 +18,13 @@ from app.services import search as S
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """asyncio.run, not get_event_loop.
+
+    `get_event_loop()` passed when this file ran alone and raised "There is no
+    current event loop" once another module had run first — a harness failure
+    that reads exactly like the code under test being broken.
+    """
+    return asyncio.run(coro)
 
 
 # ── 1. a general ask never becomes a keyword search, at ANY tier ────────────

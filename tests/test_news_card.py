@@ -40,7 +40,7 @@ async def _none(*a, **k):
 
 @pytest.mark.asyncio
 async def test_normalises_every_provider_spelling_and_shows_the_publisher(patch_server):
-    async def news(topic, limit=8): return list(SHARED[:2])
+    async def news(topic, limit=8, **kw): return list(SHARED[:2])
     async def fin(query="", tickers=None, limit=8): return list(FINNEWS)
     seen = {}
     async def llm(instruction, max_tokens=400):
@@ -63,7 +63,7 @@ async def test_normalises_every_provider_spelling_and_shows_the_publisher(patch_
 @pytest.mark.asyncio
 async def test_ad_filter_runs_on_the_primary_tier(patch_server):
     """The old stock builder filtered only its Yahoo fallback."""
-    async def news(topic, limit=8): return list(SHARED)   # includes the listicle
+    async def news(topic, limit=8, **kw): return list(SHARED)   # includes the listicle
     patch_server("news_search", news); patch_server("_finnews_articles", _none)
     patch_server("fast_llm_json", _llm("The Fed held at 5.25% while Nvidia slid on guidance.", 2))
     cfg = await cb.build_news_card("stock market news", finance=True, general=True)
@@ -74,7 +74,7 @@ async def test_ad_filter_runs_on_the_primary_tier(patch_server):
 @pytest.mark.asyncio
 async def test_all_rejected_escalates_to_web_search_instead_of_reinstating(patch_server):
     calls = {"gate": 0, "web": 0}
-    async def news(topic, limit=8): return list(SHARED[:2])
+    async def news(topic, limit=8, **kw): return list(SHARED[:2])
     async def gate(subject, negatives, items, **kw):
         calls["gate"] += 1
         return [] if calls["gate"] == 1 else items          # first set junk, retry good
@@ -98,18 +98,21 @@ async def test_all_rejected_escalates_to_web_search_instead_of_reinstating(patch
 async def test_general_ask_never_grounds(patch_server):
     async def boom(message):
         raise AssertionError("ground_query ran for a general ask")
-    async def news(topic, limit=8):
+    async def news(topic, limit=8, **kw):
         assert topic == "", f"general news must fetch top headlines, got {topic!r}"
         return list(SHARED[:2])
     patch_server("ground_query", boom); patch_server("news_search", news)
     patch_server("fast_llm_json", _llm("The Fed held rates at 5.25%; Nvidia fell 4%.", 2))
     cfg = await cb.build_news_card("whats going on in the news")
-    assert cfg["title"] == "News: Top Stories"
+    # "News: Top Stories" said the same thing twice. A section ask still gets
+    # the prefix that distinguishes it ("News: World"); the front page does not
+    # need one.
+    assert cfg["title"] == "Top Stories"
 
 
 @pytest.mark.asyncio
 async def test_generic_overview_is_replaced_with_a_grounded_sentence(patch_server):
-    async def news(topic, limit=8): return list(SHARED[:2])
+    async def news(topic, limit=8, **kw): return list(SHARED[:2])
     patch_server("news_search", news); patch_server("_finnews_articles", _none)
     patch_server("fast_llm_json", _llm(
         "Market focus centers on biotech catalysts and semiconductor rotations as earnings season progresses.", 2))
@@ -120,7 +123,7 @@ async def test_generic_overview_is_replaced_with_a_grounded_sentence(patch_serve
 
 @pytest.mark.asyncio
 async def test_subtitle_is_provenance_not_the_overview(patch_server):
-    async def news(topic, limit=8): return list(SHARED[:2])
+    async def news(topic, limit=8, **kw): return list(SHARED[:2])
     patch_server("news_search", news); patch_server("_finnews_articles", _none)
     patch_server("fast_llm_json", _llm("The Fed held at 5.25% and Nvidia fell 4%.", 2))
     cfg = await cb.build_news_card("stock market news", finance=True, general=True)
@@ -130,7 +133,7 @@ async def test_subtitle_is_provenance_not_the_overview(patch_server):
 
 @pytest.mark.asyncio
 async def test_fails_open_when_the_editor_pass_dies(patch_server):
-    async def news(topic, limit=8): return list(SHARED[:2])
+    async def news(topic, limit=8, **kw): return list(SHARED[:2])
     patch_server("news_search", news); patch_server("_finnews_articles", _none)
     patch_server("fast_llm_json", lambda *a, **k: _none())
     cfg = await cb.build_news_card("stock market news", finance=True, general=True)
@@ -141,7 +144,7 @@ async def test_fails_open_when_the_editor_pass_dies(patch_server):
 @pytest.mark.asyncio
 async def test_honest_empty_card_when_nothing_survives(patch_server):
     async def gate(subject, negatives, items, **kw): return []
-    async def news(topic, limit=8): return list(SHARED[:2])
+    async def news(topic, limit=8, **kw): return list(SHARED[:2])
     patch_server("ground_query", _ground("quantum llamas"))
     patch_server("news_search", news); patch_server("_finnews_articles", _none)
     patch_server("filter_items_by_relevance", gate); patch_server("web_search", _none)

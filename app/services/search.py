@@ -525,9 +525,16 @@ async def news_search(topic: str, limit: int = 6, category: str = "",
     only in the degraded state — the moment quality matters most. An empty
     result is now the honest answer.
     """
-    items, source = await _shared_news_search(topic, limit, category, country), "lazy-tool"
+    # Passed by KEYWORD, deliberately. These two arrived late in the life of
+    # this call and several stubs and callers still take (topic, limit); a
+    # positional third argument turns those into a TypeError that surfaces two
+    # layers away, inside an `asyncio.gather(..., return_exceptions=True)` that
+    # silently converts it into "no news".
+    items, source = await _shared_news_search(
+        topic, limit, category=category, country=country), "lazy-tool"
     if not items:
-        items, source = await _google_news_rss(topic, limit, category, country), "google-news"
+        items, source = await _google_news_rss(
+            topic, limit, category=category, country=country), "google-news"
     if not items and topic:
         items, source = await _scraper_service_news(topic, limit), "scraper-news"
     if not items and topic:

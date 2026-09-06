@@ -71,7 +71,7 @@ async def test_fast_llm_json_extracts_from_reasoning_models():
 
 @pytest.mark.asyncio
 async def test_build_stock_news_config_prioritizes_shared_news(patch_server):
-    async def mock_shared(query, limit=6):
+    async def mock_shared(query, limit=6, **kw):
         return [
             {"title": "Tech Stocks Rally on AI Demand", "url": "https://seekingalpha.com/article1", "source": "Seeking Alpha", "snippet": "AI chips surge."}
         ]
@@ -83,7 +83,17 @@ async def test_build_stock_news_config_prioritizes_shared_news(patch_server):
             "items": [{"index": 0, "title": "Tech Stocks Rally on AI Demand", "summary": "AI chips surge."}]
         }
 
+    # _finnews_articles is the OTHER half of a finance fetch and was never
+    # stubbed here, so this test made a live network call on every run. It only
+    # became visible when the mock above stopped matching the call signature:
+    # the live call answered instead, and the assertion failed against a real
+    # Indian markets article — which reads as a routing bug and is a hole in the
+    # harness.
+    async def _no_finnews(*a, **k):
+        return []
+
     patch_server("_shared_news_search", mock_shared)
+    patch_server("_finnews_articles", _no_finnews)
     patch_server("stock_news", mock_stock_news_fail)
     patch_server("_fetch_news_page_text", lambda n: "")
     patch_server("fast_llm_json", mock_llm_json)

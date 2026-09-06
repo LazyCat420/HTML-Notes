@@ -85,7 +85,7 @@ async def send_message(req: MessageRequest):
 
         def spawn_widget_stream(widget_type: str, id_prefix: str, config: dict = None,
                                 config_builder=None, status: str = None,
-                                widget_id: str = None):
+                                widget_id: str = None, debug_extra: dict = None):
             """Heuristic fast-path: append a prebuilt widget to the CURRENT canvas
             and stream back the full canvas — same contract as the agent path, so
             existing widgets always survive.
@@ -100,9 +100,14 @@ async def send_message(req: MessageRequest):
                 # Debug breadcrumb for the browser console: which route fired and
                 # what widget it chose. The client console.logs this so a misroute
                 # ("grocery list" → map) is visible in DevTools without server logs.
+                # `id_prefix` is the one instrument that says which builder ran;
+                # `debug_extra` carries what the builder was told, so a routing
+                # claim can be checked from outside the process instead of being
+                # inferred from the card.
                 yield ('data: ' + json.dumps({
                     "type": "debug", "path": "fast-path", "widget_type": widget_type,
-                    "id_prefix": id_prefix, "query": req.message}) + '\n\n')
+                    "id_prefix": id_prefix, "query": req.message,
+                    **(debug_extra or {})}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": message})}\n\n'
 
                 widget_config = dict(config or {})
@@ -835,14 +840,20 @@ async def send_message(req: MessageRequest):
                     config_builder=lambda: build_stock_report_config(req.message),
                     status="building a full report — quotes, news, and analyst commentary...")
             _fin, _gen, _depth = news_ask.finance, news_ask.general, news_ask.depth
+            _cat = news_ask.category
             logger.info(f"[NEWS ASK] {news_ask.id_prefix} finance={_fin} general={_gen} "
-                        f"depth={_depth} hint={news_ask.subject_hint[:40]!r}")
+                        f"depth={_depth} category={_cat!r} "
+                        f"hint={news_ask.subject_hint[:40]!r}")
             return spawn_widget_stream(
                 "data_card", news_ask.id_prefix,
                 config_builder=lambda: build_news_card(
-                    req.message, finance=_fin, general=_gen, depth=_depth),
+                    req.message, finance=_fin, general=_gen, depth=_depth,
+                    category=_cat),
+                debug_extra={"news_category": _cat},
                 status=("researching and writing your brief — this takes a minute..."
-                        if _depth == "brief" else "gathering and summarizing the news..."))
+                        if _depth == "brief"
+                        else ("gathering today's headlines..." if _gen
+                              else "gathering and summarizing the news...")))
 
         # use_lazy_agent defaults to TRUE (main.py MessageRequest), and the
         # browser deliberately does not send it — so for every real turn this
