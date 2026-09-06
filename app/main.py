@@ -1982,6 +1982,98 @@ async def filter_images_by_relevance(subject: str, negatives: list, items: list,
     return survivors[:keep] if keep else survivors
 
 
+# Headline/publisher signatures for paid placement and stock-promo listicles.
+# Kept next to the text relevance gate because they answer the same question from
+# the other side: the gate asks "is this about the subject", this asks "is this an
+# article at all".
+_PR_SPAM_SIGNATURES = (
+    "paid press release", "press release distributor", "globenewswire",
+    "pr newswire", "prnewswire", "business wire", "businesswire",
+    "accesswire", "stocks we like better", "motley fool", "zacks",
+    "sponsored content", "advertorial", "partner content",
+)
+_PR_SPAM_TITLE_RE = re.compile(
+    r"\b\d+\s+(?:best|top|stocks?|things|reasons|ways)\b.*\b(?:to\s+buy|you\s+should|right\s+now)\b",
+    re.I)
+
+
+def _drop_pr_spam(items: list) -> list:
+    """Remove paid-placement and stock-promo rows.
+
+    Returns the FILTERED list even when that is empty. The previous version
+    ended `filtered or raw_yahoo`, which reinstated every ad in exactly the case
+    the filter existed for — an all-spam page came back in full. An empty news
+    card is a truthful "nothing worth showing"; a card full of ads is not.
+    """
+    out = []
+    for it in items or []:
+        blob = " ".join(str(it.get(k) or "") for k in
+                        ("title", "meta", "publisher", "source", "url")).lower()
+        if any(sig in blob for sig in _PR_SPAM_SIGNATURES):
+            continue
+        if _PR_SPAM_TITLE_RE.search(str(it.get("title") or "")):
+            continue
+        out.append(it)
+    return out
+
+
+async def filter_items_by_relevance(subject: str, negatives: list, items: list,
+                                    keep: int = 0, min_keep: int = 1,
+                                    hyde: str = "") -> list:
+    """Text relevance gate: drop articles that are not about `subject`.
+
+    The text analogue of filter_images_by_relevance, and it exists because the
+    news path had NO relevance check of any kind — news_search returns the first
+    non-empty provider tier, the shared provider returns the first non-empty of
+    five APIs, and the summarising pass was told to write one entry per story, so
+    an off-topic article got a confident, well-written summary. That is precisely
+    why the junk read as deliberate rather than as an error.
+
+    Same two safety properties as the vision gate, for the same reasons:
+      * FAILS OPEN — a model outage or an unparseable reply keeps every item, so
+        grading can never be the reason a card is empty.
+      * `min_keep` floor — if the model rejects everything, return the original
+        list. A blank card is a worse answer than a loose one.
+    """
+    rows = [it for it in (items or []) if (it.get("title") or "").strip()]
+    if len(rows) <= 1:
+        return items
+    judged = rows[:10]
+    listing = "\n".join(
+        f'[{i}] {(it.get("title") or "")[:140]}\n'
+        f'    {(it.get("snippet") or it.get("description") or "")[:200]}\n'
+        f'    source: {it.get("meta") or it.get("source") or _host_of(it.get("url", ""))}'
+        for i, it in enumerate(judged))
+    neg_txt = "; ".join(n for n in (negatives or []) if n)
+    data = await fast_llm_json(
+        "You are a STRICT relevance filter for news search results. The user "
+        f'asked about: "{subject}".\n'
+        + (f"An ideal result: {hyde}.\n" if hyde else "")
+        + (f"REJECT anything that is instead about: {neg_txt}.\n" if neg_txt else "")
+        + "Also REJECT: press releases and paid placement, stock-promotion "
+          "listicles ('5 stocks to buy now'), pure advertising, and articles that "
+          "merely mention the subject in passing while being about something "
+          "else.\n\nReturn ONLY JSON, no prose: "
+          '{"keep": [<indices of the articles that are GENUINELY about what the '
+          'user asked>]}\n\nARTICLES:\n' + listing,
+        max_tokens=300)
+    keep_set = None
+    if isinstance(data, dict) and isinstance(data.get("keep"), list):
+        keep_set = {i for i in data["keep"] if isinstance(i, int)}
+    if keep_set is None:
+        return items                      # model failed → keep all (fail open)
+    survivors = [it for i, it in enumerate(judged) if i in keep_set]
+    survivors += rows[len(judged):]       # anything past the judged window passes
+    if len(survivors) < max(min_keep, 1):
+        logger.info(f"[NEWS GATE] {subject!r}: model rejected all "
+                    f"{len(judged)} — keeping unfiltered rather than an empty card")
+        return items
+    if len(survivors) < len(rows):
+        logger.info(f"[NEWS GATE] {subject!r}: kept {len(survivors)}/{len(rows)} "
+                    f"(dropped {len(rows) - len(survivors)} off-subject)")
+    return survivors[:keep] if keep else survivors
+
+
 # Place name → IANA timezone, so "time in Tokyo" resolves server-side instead of
 # depending on the LLM to emit "Asia/Tokyo" (it usually didn't, so the clock
 # silently showed LOCAL time labelled as the city).
