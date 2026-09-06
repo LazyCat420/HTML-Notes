@@ -552,27 +552,32 @@ async def send_message(req: MessageRequest):
                     # One spoken line covering everything this turn placed. The
                     # router can commit several widgets at once ("weather + map"),
                     # and reading a sentence per widget aloud would be worse than
-                    # silence — so join at most two and stop.
                     try:
-                        # One chunk PER WIDGET, each tagged with its own id, rather
-                        # than one joined blob. The client reveals each widget as
-                        # its own sentence is spoken, so "weather + map" shows the
-                        # weather card on the weather sentence and the map on the
-                        # map sentence. Joining them threw that pairing away.
-                        # Still capped at two: more than that read aloud is worse
-                        # than silence.
                         spoken_any = 0
-                        for (rid_, wt_, wc_) in placed:
-                            if spoken_any >= 2:
-                                break
-                            ln = _spoken_summary(wt_, wc_, req.message)
-                            if not ln:
-                                continue
-                            yield (f'data: {json.dumps({"type": "chunk", "content": ln, "widget_id": rid_})}'
-                                   f'\n\n')
-                            spoken_any += 1
+                        # Multi-query synthesis: for compound / multi-widget asks, synthesize an editorial takeaway across all placed cards
+                        if len(placed) >= 2:
+                            try:
+                                from app.content_quality import synthesize_multi_widget_takeaway
+                                synth = synthesize_multi_widget_takeaway(placed, req.message)
+                                if synth:
+                                    yield (f'data: {json.dumps({"type": "chunk", "content": synth, "widget_id": placed[0][0]})}\n\n')
+                                    spoken_any = 999  # Editorial synthesis takes precedence over reciting individual widgets
+                            except Exception as syn_e:
+                                logger.warning(f"[SYNTHESIS] multi-query editorial synthesis failed: {syn_e}")
+
+                        if spoken_any == 0:
+                            for (rid_, wt_, wc_) in placed:
+                                if spoken_any >= 2:
+                                    break
+                                ln = _spoken_summary(wt_, wc_, req.message)
+                                if not ln:
+                                    continue
+                                yield (f'data: {json.dumps({"type": "chunk", "content": ln, "widget_id": rid_})}'
+                                       f'\n\n')
+                                spoken_any += 1
                     except Exception as e:
                         logger.warning(f"[TTS] router spoken summary failed: {e}")
+
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
@@ -1379,6 +1384,7 @@ async def send_message(req: MessageRequest):
             "3. Fetch the data before you render it. The config you pass IS the finished content: it renders server-side, so never write 'Loading...' and never write JavaScript that fetches.\n"
             "4. Stop when the widget is up. canvas_add_widget returning success means it is already on the user's screen — do not call it again, do not verify with canvas_read_dom, do not re-plan.\n"
             "5. Then write ONE sentence (max 25 words) that ANSWERS the question — the single most useful thing you found, with the specific number, name or verdict in it. That sentence is the only prose you write all turn, and it is READ ALOUD, so it must stand on its own to someone not looking at the screen.\n"
+            "   EDITORIAL AGENCY: Your value-add is editorial judgement — what matters, what is noise, and what the user should focus on. Never blindly parrot headlines or list titles. When multiple queries or news topics are requested at once, lead with an editorial synthesis: \"Here's the data. From what we pulled, this is what I think you should be focusing on: <actionable focus>.\" Distinguish high-signal facts from tabloid gossip, filler, and disguised brand ads.\n"
             "   Say the finding, never the filing. 'Traffic to San Jose is clear, about 35 minutes via 880.' NOT 'Added a traffic map.' 'The Seattle Rain Hat wins on waterproofing; the Sunday Afternoons is cheaper.' NOT 'Here is a card comparing hats.'\n"
             "   Never mention widgets, cards, canvas, or that you added anything — the user can see the screen. If you genuinely found nothing, say what you couldn't find and why, in one sentence.\n"
             "   When the ask was a JUDGEMENT with numbers in it, that sentence carries the verdict AND the number: 'About 6 more minutes — pull it at 165F.' NOT 'Cooking times depend on thickness.' Answer the question that was asked.\n"
@@ -1386,7 +1392,9 @@ async def send_message(req: MessageRequest):
             "6. EVERY turn ends in a canvas mutation. You have NOT finished until canvas_add_widget (or canvas_modify_dom) has succeeded. Never end a turn having only searched, read or reasoned — if a tool fails, render what you already have rather than retrying forever or giving up silently.\n"
             "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
+            "- content quality profile, trusted sources, burned sources, learning status → canvas_add_widget(widget_type='quality_profile', config={})\n"
             "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
+
             "- COMPARE tickers ('NVDA vs SPY vs TSM', 'which performed better') → ONE widget, never a stock_card per ticker: canvas_add_widget(widget_type='chart', config={'compare_symbols': ['NVDA','SPY','TSM'], 'range': '6mo'}). The server fetches every ticker and draws a single normalized %-change chart with a legend. Ranges: 1d,5d,1mo,3mo,6mo,1y,5y,10y,max. To add a ticker to an existing comparison, call it again with the SAME widget_id and the full new symbol list.\n"
             "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → RESEARCH IT, same discipline as general news:\n"
             "    1. mcp__lazy-tool-service__html_notes_stock_news(query='<company or ticker>') — its 'matches' array also gives you tickers to feed into html_notes_stock_history.\n"

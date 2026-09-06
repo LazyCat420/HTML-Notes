@@ -561,6 +561,13 @@ async def build_news_card(message: str, *, finance: bool = False,
                                     min_keep=0, hyde=g.get("hyde") or "")
         items = vetted
 
+    # 6b. CONTENT QUALITY SCORING & PAROLE FILTER (Wallgarden pattern)
+    try:
+        from app.content_quality import rank_and_filter_content_items
+        items = rank_and_filter_content_items(items)
+    except Exception as e:
+        logger.warning(f"[NEWS] content quality ranking failed, failing open: {e}")
+
     if finance:
         title = ("Market News" if general else f"Market News: {display}").title()[:60]
     elif general:
@@ -605,8 +612,12 @@ async def build_news_card(message: str, *, finance: bool = False,
                 "badge": ((tickers[:24] or "Markets") if finance
                           else (_SECTION_LABEL.get(it.get("category") or "", "News")
                                 if general else "News")),
+                "_quality_score": it.get("_quality_score", 0.0),
+                "_quality_class": it.get("_quality_class", "GENUINE"),
+                "_quality_flags": it.get("_quality_flags", []),
             })
         return out
+
 
     # 7. NO SCRAPING on the card path. The old stock builder read six article
     #    pages (up to 14s) and the snippets the providers already supply are
@@ -882,7 +893,13 @@ async def build_news_brief_config(message: str, finance: bool = False) -> dict:
     # so it was the one route where a press release or a stock-promo listicle
     # could still be cited as a "Source". Same filter, same place in the flow.
     items = (getattr(main, "_drop_pr_spam", None) or _drop_pr_spam)(items)
+    try:
+        from app.content_quality import rank_and_filter_content_items
+        items = rank_and_filter_content_items(items)
+    except Exception as e:
+        logger.warning(f"[NEWS-BRIEF] content quality ranking failed, failing open: {e}")
     logger.info(f"[NEWS-BRIEF] synthesized brief ({len(brief.get('answer',''))} chars, "
+
                 f"{len(items)} sources)")
     return {
         "title": (brief.get("title") or "News Brief").title()[:60],

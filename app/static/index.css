@@ -1504,9 +1504,76 @@ textarea::placeholder {
 .line-clamp-2 {
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
+
+/* Content Quality & Voting System (Wallgarden pattern) */
+.content-vote-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0.65;
+    transition: opacity 0.2s ease;
+}
+.data-card-item:hover .content-vote-actions {
+    opacity: 1;
+}
+.vote-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.vote-btn:hover {
+    transform: scale(1.15);
+}
+.vote-btn:active {
+    transform: scale(0.9);
+}
+.vote-btn.voted-up {
+    color: #34d399 !important;
+    background: rgba(16, 185, 129, 0.2) !important;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+.vote-btn.voted-down {
+    color: #f87171 !important;
+    background: rgba(239, 68, 68, 0.2) !important;
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+}
+.quality-flag-badge {
+    display: inline-flex;
+    align-items: center;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.item-downvoted-slight {
+    opacity: 0.45;
+    text-decoration: line-through;
+    text-decoration-color: rgba(239, 68, 68, 0.6);
+    transform: scale(0.98);
+    transition: all 0.3s ease;
+}
+.item-upvoted-highlight {
+    background: rgba(16, 185, 129, 0.08) !important;
+    border-color: rgba(16, 185, 129, 0.25) !important;
+    transition: all 0.3s ease;
+}
+.quality-toast {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    z-index: 9999;
+    font-family: 'Share Tech Mono', monospace, monospace;
+}
+
 
 .image-widget figure img {
     transition: transform 0.35s ease;

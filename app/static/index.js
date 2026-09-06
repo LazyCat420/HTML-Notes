@@ -879,7 +879,98 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    // ─── CONTENT QUALITY & VOTING HANDLER (Wallgarden pattern) ──
+    function showQualityToast(message, type = "info") {
+        const toast = document.createElement("div");
+        toast.className = `quality-toast fixed bottom-6 right-6 z-50 flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold shadow-2xl backdrop-blur-md transition-all duration-300 transform translate-y-2 opacity-0`;
+        if (type === "warning" || type === "burned") {
+            toast.classList.add("bg-rose-950/90", "text-rose-200", "border", "border-rose-500/40");
+        } else if (type === "success") {
+            toast.classList.add("bg-emerald-950/90", "text-emerald-200", "border", "border-emerald-500/40");
+        } else {
+            toast.classList.add("bg-slate-900/90", "text-slate-200", "border", "border-white/20");
+        }
+        toast.innerHTML = `<span>${message}</span>`;
+        document.body.appendChild(toast);
+        requestAnimationFrame(() => {
+            toast.classList.remove("translate-y-2", "opacity-0");
+        });
+        setTimeout(() => {
+            toast.classList.add("translate-y-2", "opacity-0");
+            setTimeout(() => toast.remove(), 300);
+        }, 3500);
+    }
+    window.HN = window.HN || {};
+    window.HN.showQualityToast = showQualityToast;
+
+    window.HN.voteContent = async function (url, title, publisher, vote) {
+        try {
+            const res = await fetch("/quality/vote", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    url: url || "",
+                    title: title || "",
+                    publisher: publisher || "",
+                    vote: vote >= 0 ? 1 : -1
+                })
+            });
+            const data = await res.json();
+            if (data && data.reputation) {
+                const rep = data.reputation;
+                if (rep.is_burned) {
+                    showQualityToast(`🔥 ${rep.domain} has been burned on parole (repeated downvotes). Future news pulls will filter it.`, "burned");
+                } else if (vote >= 0) {
+                    showQualityToast(`👍 Upvoted ${rep.domain}. Source reputation increased (+${rep.upvotes}).`, "success");
+                } else {
+                    showQualityToast(`👎 Downvoted ${rep.domain}. Source reputation decreased (-${rep.downvotes}).`, "info");
+                }
+            }
+            return data;
+        } catch (err) {
+            console.warn("[QUALITY] Vote recording failed:", err);
+            return null;
+        }
+    };
+
+    document.addEventListener("click", async (e) => {
+        const voteBtn = e.target.closest(".vote-up-btn, .vote-down-btn");
+        if (!voteBtn) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const isUp = voteBtn.classList.contains("vote-up-btn");
+        const actionsContainer = voteBtn.closest(".content-vote-actions");
+        if (!actionsContainer) return;
+
+        const url = actionsContainer.getAttribute("data-vote-url") || "";
+        const title = actionsContainer.getAttribute("data-vote-title") || "";
+        const publisher = actionsContainer.getAttribute("data-vote-publisher") || "";
+        const cardItem = actionsContainer.closest(".data-card-item");
+
+        const alreadyVoted = voteBtn.classList.contains(isUp ? "voted-up" : "voted-down");
+        actionsContainer.querySelectorAll(".vote-btn").forEach(b => b.classList.remove("voted-up", "voted-down"));
+        if (!alreadyVoted) {
+            voteBtn.classList.add(isUp ? "voted-up" : "voted-down");
+        }
+
+        if (cardItem) {
+            if (!alreadyVoted && !isUp) {
+                cardItem.classList.add("item-downvoted-slight");
+                cardItem.classList.remove("item-upvoted-highlight");
+            } else if (!alreadyVoted && isUp) {
+                cardItem.classList.add("item-upvoted-highlight");
+                cardItem.classList.remove("item-downvoted-slight");
+            } else {
+                cardItem.classList.remove("item-downvoted-slight", "item-upvoted-highlight");
+            }
+        }
+
+        await window.HN.voteContent(url, title, publisher, isUp ? 1 : -1);
+    });
+
     // ─── RECORDING LOGIC ───────────────────────────────────────
+
     async function toggleRecording() {
         if (state.isRecording) {
             stopRecording();
@@ -1695,11 +1786,15 @@ document.addEventListener("DOMContentLoaded", () => {
         // change-flash animations) are transient for the same reason and would
         // bake in identically — nothing ever removes a class from
         // server-persisted markup.
-        temp.querySelectorAll('.crt-on, .crt-off, .is-focused, .is-entering, .is-updating')
+        temp.querySelectorAll('.crt-on, .crt-off, .is-focused, .is-entering, .is-updating, .item-downvoted-slight, .item-upvoted-highlight, .voted-up, .voted-down')
             .forEach(el => {
                 el.classList.remove('crt-on', 'crt-off', 'is-focused',
-                                    'is-entering', 'is-updating');
+                                    'is-entering', 'is-updating',
+                                    'item-downvoted-slight', 'item-upvoted-highlight',
+                                    'voted-up', 'voted-down');
             });
+        temp.querySelectorAll('.quality-toast').forEach(el => el.remove());
+
 
         // Legacy: the word-span reveal that preceded the glitch could leave
         // span.tw-word in a canvas saved while it was live. Nothing produces them

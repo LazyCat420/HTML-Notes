@@ -380,22 +380,59 @@ def render_data_card(widget_id: str, config: dict) -> str:
             if i_url else ""
         )
 
+        # Quality score indicators (Wallgarden pattern)
+        q_flags = item.get("_quality_flags") or []
+        q_class = item.get("_quality_class") or ""
+        warning_badge = ""
+        dimmed_class = ""
+        if "tabloid_source" in q_flags or q_class == "TABLOID":
+            warning_badge = '<span class="quality-flag-badge text-[0.6rem] font-medium px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0" title="Tabloid publication signal">⚠ Tabloid</span>'
+            dimmed_class = "opacity-75"
+        elif "clickbait_phrasing" in q_flags or q_class == "CLICKBAIT":
+            warning_badge = '<span class="quality-flag-badge text-[0.6rem] font-medium px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 shrink-0" title="Sensational / clickbait phrasing">⚠ Clickbait</span>'
+            dimmed_class = "opacity-80"
+        elif "burned_source" in q_flags:
+            warning_badge = '<span class="quality-flag-badge text-[0.6rem] font-medium px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 shrink-0" title="Source on active parole burn">🔥 Burned</span>'
+            dimmed_class = "opacity-60"
+        elif "liked_source" in q_flags or "user_upvoted" in q_flags:
+            warning_badge = '<span class="quality-flag-badge text-[0.6rem] font-medium px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0" title="Trusted source">★ Trusted</span>'
+
+        # Per-item vote affordance (+1 upvote / -1 downvote)
+        vote_buttons_html = ""
+        if i_url or i_title:
+            vote_buttons_html = (
+                f'<div class="content-vote-actions flex items-center gap-1 shrink-0 ml-auto" '
+                f'data-vote-url="{esc(i_url)}" data-vote-title="{esc(i_title)}" data-vote-publisher="{esc(i_meta or _host_of(i_url))}">'
+                f'<button type="button" class="vote-btn vote-up-btn p-1 rounded text-slate-400 hover:text-emerald-400 hover:bg-white/10 transition-colors" title="Upvote this source (+1 signal)" aria-label="Upvote">'
+                f'<span class="material-symbols-outlined text-[0.8rem] pointer-events-none">thumb_up</span>'
+                f'</button>'
+                f'<button type="button" class="vote-btn vote-down-btn p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-white/10 transition-colors" title="Downvote this source (demotes & burns junk)" aria-label="Downvote">'
+                f'<span class="material-symbols-outlined text-[0.8rem] pointer-events-none">thumb_down</span>'
+                f'</button>'
+                f'</div>'
+            )
+
         rendered_items.append(f"""
-            <li class="data-card-item flex items-start gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/10">
+            <li class="data-card-item flex items-start gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/10 {dimmed_class}">
                 {thumb}
                 <div class="flex-grow min-w-0">
                     <div class="flex items-center justify-between gap-2">
                         {title_html}
-                        {badge_html}
+                        <div class="flex items-center gap-1.5 shrink-0">
+                            {warning_badge}
+                            {badge_html}
+                        </div>
                     </div>
                     {desc_html}
                     <div class="flex items-center gap-2 mt-1 min-w-0">
                         {meta_html}
                         {source_html}
+                        {vote_buttons_html}
                     </div>
                 </div>
             </li>
         """)
+
 
     # A synthesised answer is the primary content; sources are supporting evidence
     # shown beneath it. This is the "summary with links as sources" shape — not a
@@ -2467,6 +2504,109 @@ def render_action_confirm(widget_id: str, config: dict) -> str:
     """
 
 
+def render_quality_profile(widget_id: str, config: dict) -> str:
+    """Renders the learned content quality profile (Wallgarden algorithm view).
+    Shows:
+    - Trusted sources (most upvoted domains)
+    - Burned sources & parole duration (6 months * 2^(strikes-1))
+    - Recent votes
+    """
+    try:
+        from app.content_quality import get_quality_profile
+        profile = config.get("profile") or get_quality_profile()
+    except Exception:
+        profile = {"total_votes": 0, "trusted_sources": [], "burned_sources": [], "recent_votes": []}
+
+    trusted = profile.get("trusted_sources") or []
+    burned = profile.get("burned_sources") or []
+    total_votes = profile.get("total_votes", 0)
+
+    trusted_rows = ""
+    if trusted:
+        for t in trusted[:8]:
+            d = esc(t.get("domain", ""))
+            up = t.get("upvotes", 0)
+            down = t.get("downvotes", 0)
+            sc = t.get("score", 0.0)
+            trusted_rows += f"""
+                <li class="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="material-symbols-outlined text-emerald-400 text-sm">verified</span>
+                        <span class="text-sm font-medium text-white truncate">{d}</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs">
+                        <span class="text-emerald-300 font-semibold">+{up}</span>
+                        <span class="text-slate-500">/</span>
+                        <span class="text-rose-300">-{down}</span>
+                        <span class="text-[0.65rem] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">score {sc:+.1f}</span>
+                    </div>
+                </li>
+            """
+    else:
+        trusted_rows = '<li class="text-xs text-slate-400 italic p-2">No upvoted sources yet. Vote up articles with 👍 to train the algorithm!</li>'
+
+    burned_rows = ""
+    if burned:
+        for b in burned[:8]:
+            d = esc(b.get("domain", ""))
+            strikes = b.get("burn_strikes", 1)
+            days = b.get("remaining_days", 0)
+            burned_rows += f"""
+                <li class="flex items-center justify-between p-2 rounded-lg bg-rose-500/10 border border-rose-500/20">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="material-symbols-outlined text-rose-400 text-sm">local_fire_department</span>
+                        <span class="text-sm font-medium text-rose-200 truncate">{d}</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs">
+                        <span class="text-[0.65rem] px-1.5 py-0.5 rounded bg-rose-500/30 text-rose-200 border border-rose-400/40">Strike {strikes} ({days}d parole)</span>
+                    </div>
+                </li>
+            """
+    else:
+        burned_rows = '<li class="text-xs text-slate-400 italic p-2">No burned sources currently on parole. Downvoting a source 3x burns it.</li>'
+
+    body = f"""
+        <div class="quality-profile-body p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+            <div class="grid grid-cols-3 gap-2">
+                <div class="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
+                    <div class="text-xl font-bold text-white">{total_votes}</div>
+                    <div class="text-[0.65rem] text-slate-400 uppercase tracking-wider">Total Votes</div>
+                </div>
+                <div class="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
+                    <div class="text-xl font-bold text-emerald-400">{len(trusted)}</div>
+                    <div class="text-[0.65rem] text-slate-400 uppercase tracking-wider">Trusted</div>
+                </div>
+                <div class="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
+                    <div class="text-xl font-bold text-rose-400">{len(burned)}</div>
+                    <div class="text-[0.65rem] text-slate-400 uppercase tracking-wider">Burned</div>
+                </div>
+            </div>
+
+            <div>
+                <h4 class="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-emerald-400 text-sm">thumb_up</span>
+                    Top Trusted Sources
+                </h4>
+                <ul class="flex flex-col gap-1.5">{trusted_rows}</ul>
+            </div>
+
+            <div>
+                <h4 class="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-rose-400 text-sm">block</span>
+                    Burned Sources & Parole
+                </h4>
+                <ul class="flex flex-col gap-1.5">{burned_rows}</ul>
+            </div>
+        </div>
+    """
+    return f"""
+        <div id="{widget_id}" class="widget-container glass-card rounded-2xl flex flex-col overflow-hidden border border-white/10 bg-slate-900/80 shadow-2xl backdrop-blur-xl" data-widget-type="quality_profile">
+            {widget_header("Content Quality Profile", "verified", "Learned source reputation")}
+            {body}
+        </div>
+    """
+
+
 WIDGET_RENDERERS = {
     "checklist": render_checklist,
     "scoreboard": render_scoreboard,
@@ -2489,6 +2629,7 @@ WIDGET_RENDERERS = {
     "reminder": render_reminder,
     "app_grid": render_app_grid,
     "action_confirm": render_action_confirm,
+    "quality_profile": render_quality_profile,
     # Widget-pack additions (2026-07-21): dense data, comparison and composite
     # display shapes the audit found inexpressible with the original set.
     "table": render_table,
@@ -2502,6 +2643,7 @@ WIDGET_RENDERERS = {
     # comparison emitted as 'multi_chart' can never be coerced away.
     "multi_chart": render_chart,
 }
+
 
 def _content_sig(widget_type: str, config: dict) -> str:
     """A stable fingerprint of what a widget DISPLAYS, from its type + config.

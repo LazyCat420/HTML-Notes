@@ -2402,6 +2402,16 @@ def _drop_pr_spam(items: list) -> list:
     return out
 
 
+def _classify_content_quality(item: dict) -> dict:
+    """Evaluate quality heuristics (tabloid, gossip, clickbait, PR spam)."""
+    try:
+        from app.content_quality import classify_content_quality
+        return classify_content_quality(item)
+    except Exception:
+        return {"quality_class": "GENUINE", "flags": [], "penalty": 0.0}
+
+
+
 async def filter_items_by_relevance(subject: str, negatives: list, items: list,
                                     keep: int = 0, min_keep: int = 1,
                                     hyde: str = "") -> list:
@@ -3579,3 +3589,6 @@ from app.routes.api import router as api_router
 app.include_router(api_router)
 from app.routes.internal import router as internal_router, internal_tool_execute, InternalToolRequest
 app.include_router(internal_router)
+from app.routes.quality import router as quality_router
+app.include_router(quality_router)
+
