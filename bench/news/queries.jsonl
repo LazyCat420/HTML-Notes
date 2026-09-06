@@ -1,0 +1,15 @@
+{"message": "news about track and field world championships", "subject_notes": "athletics: track AND field events, championship meets. NOT farming fields, not music tracks.", "trap": "'track' is in the music stopword list and was deleted"}
+{"message": "latest news on the player transfer window", "subject_notes": "football/soccer transfer market: clubs signing players. NOT media players or software.", "trap": "'player' is in the music stopword list and was deleted"}
+{"message": "latest news on us china trade talks", "subject_notes": "trade negotiations between the United States and China: tariffs, delegations, agreements.", "trap": "'us' was deleted, changing whose trade talks these are"}
+{"message": "show me news about the search for the missing submarine", "subject_notes": "a search-and-rescue operation for a lost submersible.", "trap": "'search' is in the stopword list and was deleted"}
+{"message": "what is the latest news on the israel hamas ceasefire", "subject_notes": "the ceasefire between Israel and Hamas: truce terms, violations, negotiations, aid.", "trap": "'what is' survived the strip and got keyword-matched; returned 1 item live"}
+{"message": "give me news about small business tax updates", "subject_notes": "tax rules and filing changes affecting small businesses.", "trap": "'small' and 'updates' were deleted"}
+{"message": "news on the new apple vision pro", "subject_notes": "Apple's Vision Pro headset: launches, reviews, sales, features.", "trap": "'new' deleted; brand name must survive"}
+{"message": "whats the latest news on openai", "subject_notes": "OpenAI the company: releases, funding, leadership, policy.", "trap": "'whats' survived into the keyword query"}
+{"message": "news about the fed interest rate decision", "subject_notes": "US Federal Reserve monetary policy: rate decisions, FOMC, Powell.", "trap": "generic finance words attract stock-promo listicles"}
+{"message": "latest news on the ukraine peace negotiations", "subject_notes": "diplomatic efforts to end the war in Ukraine.", "trap": "adjacent war coverage is not the same as negotiations"}
+{"message": "news about climate change policy in the eu", "subject_notes": "European Union climate legislation and targets.", "trap": "'eu' is short and easily dropped or globbed"}
+{"message": "whats going on in the news", "subject_notes": "GENERAL ask: any current top stories are correct. Do not penalise breadth here.", "general": true, "trap": "must still resolve to top stories, not a literal search"}
+{"message": "news about nvidia earnings", "subject_notes": "NVIDIA quarterly results: revenue, guidance, data-centre demand.", "trap": "a magnet for 'stocks to buy now' listicle spam"}
+{"message": "latest news on the world cup qualifiers", "subject_notes": "football World Cup qualifying matches and results.", "trap": "'world' is in the general-ask word set"}
+{"message": "news about the writers strike negotiations", "subject_notes": "labour negotiations in the entertainment industry.", "trap": "'strike' collides with sports and military senses"}

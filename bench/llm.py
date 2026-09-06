@@ -10,7 +10,17 @@ from typing import Optional
 
 import httpx
 
-VLLM_URL = os.getenv("VLLM_URL", "http://10.0.0.141:8000")
+# The Jetson, matching the app's own default. This used to point at Gold Spark
+# (10.0.0.141), which as of 2026-09-05 serves GLM behind a head-of-line-blocked
+# queue: /v1/models answers instantly while chat completions never get prefilled,
+# so a bench run against it hangs rather than failing.
+VLLM_URL = os.getenv("VLLM_URL", "http://10.0.0.30:8000")
+
+# nemotron35 spends its whole token budget on a reasoning trace and returns
+# EMPTY content unless this is set — see app/llm.py NO_THINKING for the measured
+# table. A judge that returns nothing scores every strategy 0 equally, which
+# looks like a tie rather than like a broken instrument.
+NO_THINKING = {"enable_thinking": False, "thinking": False}
 
 _model: dict = {"name": os.getenv("BENCH_MODEL")}
 # Cumulative token usage across a run, so run_bench can price each strategy.
@@ -37,6 +47,7 @@ async def chat(prompt: str, max_tokens: int = 512, temperature: float = 0.3,
             resp = await client.post(f"{VLLM_URL}/v1/chat/completions", json={
                 "model": model, "temperature": temperature,
                 "max_tokens": max_tokens, "messages": messages,
+                "chat_template_kwargs": dict(NO_THINKING),
             })
             data = resp.json()
             u = data.get("usage", {})
