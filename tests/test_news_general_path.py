@@ -337,3 +337,56 @@ def test_the_empty_card_does_not_say_specifically_about_top_stories(monkeypatch)
     answer = (cfg.get("answer") or "") + (cfg.get("subtitle") or "")
     assert "specifically about top stories" not in answer.lower()
     assert cfg["items"] == []
+
+
+def test_the_editor_writes_but_does_not_select_on_a_general_ask(monkeypatch):
+    """Ten sources in, ten stories out — whatever the model chose to write up.
+
+    Measured live: the same request produced 10 items, then 6, then 4, because
+    the editor silently omitted sources. A card of four standing for a whole
+    day's news is the complaint this work started from, arriving from the
+    summariser instead of from the provider.
+    """
+    async def fake_news(topic, limit=6, category="", country=""):
+        return [{"title": f"Story {i}", "url": f"https://ex.com/{i}", "image": "",
+                 "meta": "Reuters", "snippet": f"Provider snippet {i}", "date": "",
+                 "category": "us", "consensus": 3} for i in range(10)]
+
+    async def lazy_editor(prompt, **kw):
+        # Wrote up only three of the ten.
+        return {"overview": "Story 0 and Story 1 happened.",
+                "items": [{"index": i, "title": f"Story {i}", "summary": "written"}
+                          for i in (0, 1, 2)]}
+
+    monkeypatch.setattr(m, "news_search", fake_news, raising=False)
+    monkeypatch.setattr(m, "fast_llm_json", lazy_editor, raising=False)
+
+    cfg = run(cb.build_news_card("top stories", finance=False, general=True))
+    assert len(cfg["items"]) == 10, "the editor's omissions silently shrank the card"
+    # The three it wrote keep their prose; the rest fall back to the provider's.
+    assert cfg["items"][0]["description"] == "written"
+    assert cfg["items"][9]["description"] == "Provider snippet 9"
+
+
+def test_a_subject_ask_still_lets_the_editor_drop_off_topic_sources(monkeypatch):
+    """The rule above must not disarm the one gate that needs a model.
+
+    On a subject ask the editor's omission IS the relevance judgement — only it
+    can tell a story about the subject from a story that merely mentions it.
+    """
+    async def fake_news(topic, limit=6, category="", country=""):
+        return [{"title": f"Story {i}", "url": f"https://ex.com/{i}", "image": "",
+                 "meta": "Reuters", "snippet": "s", "date": ""} for i in range(6)]
+
+    async def picky_editor(prompt, **kw):
+        return {"overview": "Story 0 happened.",
+                "items": [{"index": 0, "title": "Story 0", "summary": "written"}]}
+
+    monkeypatch.setattr(m, "news_search", fake_news, raising=False)
+    monkeypatch.setattr(m, "fast_llm_json", picky_editor, raising=False)
+    monkeypatch.setattr(m, "ground_query", None, raising=False)
+    monkeypatch.setattr(m, "filter_items_by_relevance", None, raising=False)
+
+    cfg = run(cb.build_news_card("news about the apple vision pro",
+                                 finance=False, general=False))
+    assert len(cfg["items"]) == 1

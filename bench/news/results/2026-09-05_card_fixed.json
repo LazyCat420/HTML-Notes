@@ -1,0 +1,108 @@
+{
+ "controls": {
+  "positive": 0.5833333333333334,
+  "negative": 0.0,
+  "feeds": 8,
+  "ok": true,
+  "floor": 0.4
+ },
+ "rows": [
+  {
+   "ask": "top stories",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.9,
+   "front_page2": 0.8,
+   "secs": 11.8,
+   "titles": [
+    "U.S. military hits 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Trump weighs in on Lindsay Clancy murder trial dubbed 'kangaroo court' by GOP leaders",
+    "Judge reinforces order halting immediate work on Trump's 250-foot arch",
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "Sympathetic defense dominates Clancy murder trial",
+    "Families turn to symbolic cremation after Nepal floods",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Gloria Steinem, pioneering feminist legend, passes away at 92",
+    "Severe weather to impact parts of US over Labor Day weekend"
+   ]
+  },
+  {
+   "ask": "top news",
+   "id_prefix": "news",
+   "n": 4,
+   "front_page": 0.75,
+   "front_page2": 0.75,
+   "secs": 5.9,
+   "titles": [
+    "U.S. military hits 3 Iranian tankers after Navy ships targeted",
+    "US envoys set for Ukraine talks after meeting Putin in Moscow",
+    "Judge reinforces order halting immediate work on Trump's 250-foot arch",
+    "Philippines Vice President Sara Duterte posts bail after arrest"
+   ]
+  },
+  {
+   "ask": "world news",
+   "id_prefix": "news",
+   "n": 4,
+   "front_page": 0.75,
+   "front_page2": 0.25,
+   "secs": 5.2,
+   "titles": [
+    "Philippines Vice President Sara Duterte posts bail after arrest",
+    "Families Turn to Symbolic Cremation After Nepal Floods",
+    "TV presenter among 11 sentenced to death in Egypt drugs case",
+    "Masked men block traffic to UK\u2019s Port of Dover in apparent anti-immigrant protest"
+   ]
+  },
+  {
+   "ask": "us news today",
+   "id_prefix": "news",
+   "n": 10,
+   "front_page": 0.8,
+   "front_page2": 0.5,
+   "secs": 8.9,
+   "titles": [
+    "Putin pauses strikes on Kyiv ahead of Trump envoy meeting",
+    "U.S. hits Iranian tankers after missiles strike Navy ships",
+    "Fundraiser for Lindsay Clancy\u2019s parents raises over $1.1 million after mistrial",
+    "Defense dominates Clancy trial with mental health focus",
+    "Judge allows Trump arch construction to proceed over two weeks",
+    "Gloria Steinem, feminist icon and activist, passes away at 92",
+    "Severe thunderstorms target Southeast over Labor Day weekend",
+    "Judge extends block on Postal Service mail ballot rules",
+    "Trump calls Iran war 'small potatoes' despite 18 U.S. deaths",
+    "Flock cameras draw opposition from across political spectrum"
+   ]
+  },
+  {
+   "ask": "business news",
+   "id_prefix": "news",
+   "n": 5,
+   "front_page": 0.2,
+   "front_page2": 0.0,
+   "secs": 8.9,
+   "titles": [
+    "Unruly Passenger Is Restrained With Duct Tape During a Flight",
+    "Trump turns up the heat on Warsh as Fed rate hike looms",
+    "These industries will lead hiring in the next decade, with just one sector accounting for more than a third of all new jobs",
+    "Tesla\u2019s Cybercab has been deployed, and it\u2019s already under investigation",
+    "Wall Street ends lower as solid jobs data fuels hawkish Fed bets"
+   ]
+  },
+  {
+   "ask": "tech news",
+   "id_prefix": "news",
+   "n": 4,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 9.9,
+   "titles": [
+    "IFA 2026 showcases major gadget announcements across Europe",
+    "Miami Police issue statement ahead of GTA 6 release",
+    "Nintendo rumors hint at new Smash Bros. game and Nintendogs return",
+    "HP OmniBooks debut with RTX Spark graphics and 3K OLED displays"
+   ]
+  }
+ ]
+}

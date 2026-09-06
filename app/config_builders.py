@@ -675,7 +675,7 @@ async def build_news_card(message: str, *, finance: bool = False,
             "and expected.\n\n"
         ))
         + "SOURCES:\n" + "\n\n".join(source_lines),
-        max_tokens=1500 if (general and not finance) else 1000,
+        max_tokens=2400 if (general and not finance) else 1000,
     )
 
     strip_cites = getattr(main, "_strip_citation_markers", None) or _strip_citation_markers
@@ -690,10 +690,27 @@ async def build_news_card(message: str, *, finance: bool = False,
         titles = {it.get("index"): (it.get("title") or "").strip()
                   for it in data["items"] if isinstance(it.get("index"), int)}
         out_items = raw_items(summaries, titles)
-        # The editor may OMIT sources; keep only the ones it wrote up, in order.
-        kept = [i for i in sorted(summaries) if 0 <= i < len(out_items)]
-        if kept:
-            out_items = [out_items[i] for i in kept]
+        # THE EDITOR WRITES; IT DOES NOT SELECT — for a general ask.
+        #
+        # Ten sources went in and it returned ten, then six, then four, for the
+        # same request on the same minute: "top stories" rendered 10 stories and
+        # "top news" rendered 4. Which is exactly the shape of the original
+        # complaint — a card of four items standing for a whole day of news —
+        # arriving now from the summariser rather than from the provider.
+        #
+        # For a front page there is nothing for the model to select ON: the
+        # stories are already ranked by how many newsrooms led with them, ads
+        # and press releases are already filtered upstream, and "is this one of
+        # today's top stories" is the question the ranking answered. A source it
+        # declined to write up keeps its provider snippet instead of vanishing.
+        #
+        # A SUBJECT ask is different — there the model is the only thing that
+        # can tell an off-subject story from an on-subject one, so its omissions
+        # are the gate and are still honoured.
+        if not (general and not finance):
+            kept = [i for i in sorted(summaries) if 0 <= i < len(out_items)]
+            if kept:
+                out_items = [out_items[i] for i in kept]
 
     overview = strip_cites((data or {}).get("overview") or "").strip() if data else ""
     if not overview or not grounded_fn(overview, out_items):
