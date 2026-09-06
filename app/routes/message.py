@@ -203,6 +203,10 @@ async def send_message(req: MessageRequest):
             the agent, which can only remove one widget per iteration and stops
             after the first mutation — so it could never close them all."""
             async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path",
+                    "widget_type": "clear_all", "id_prefix": "clear",
+                    "query": req.message}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": status})}\n\n'
 
                 def _clear(soup):
@@ -332,6 +336,48 @@ async def send_message(req: MessageRequest):
                     role="assistant",
                     content=text)
                 yield 'data: {"type": "done"}\n\n'
+
+            # This helper defined stream() and then fell off the end — an
+            # ambiguous app-open returned None, i.e. an empty HTTP body.
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
+                media_type="text/event-stream",
+            )
+
+        def _stream_reply(text: str, kind: str = "reply"):
+            """A conversational turn: one chat bubble, spoken, NO widget.
+
+            This is the outcome the stack never had. Every tier's outputs were
+            "which widget" or "defer to the agent", and the agent's own first rule
+            was "call the tool immediately" — so a greeting had no legal answer
+            except a widget. The router's reply verdict lands here."""
+            text = (text or "").strip()
+
+            async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path",
+                    "widget_type": "reply", "id_prefix": "reply", "kind": kind,
+                    "query": req.message}) + '\n\n')
+                yield f'data: {json.dumps({"type": "chunk", "content": text})}\n\n'
+                database.save_chat_message(
+                    message_id=f"msg_{uuid.uuid4().hex[:8]}",
+                    session_id=req.session_id,
+                    role="assistant",
+                    content=text)
+                # The ledger records an honest "(no widget)" turn, so the NEXT
+                # turn's router is not biased toward whatever dashboard is up.
+                _rt = getattr(main, "record_turn", None)
+                if _rt:
+                    try:
+                        _rt(req.session_id, req.message, "reply", [])
+                    except Exception:
+                        pass
+                yield 'data: {"type": "done"}\n\n'
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
+                media_type="text/event-stream",
+            )
 
         def _stream_no_url_app(app: dict):
             """Container matched but has no public web port to open."""
@@ -1237,6 +1283,13 @@ async def send_message(req: MessageRequest):
         if not wants_removal:
             router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
             router_checks = (router_plan or {}).get("checks") or {}
+            if router_plan and router_plan.get("reply"):
+                # The model decided nothing needs fetching or building. Answer
+                # in a bubble and stop — no widget, no agent.
+                router_status = "reply"
+                logger.info(f"[ROUTER] reply, no widget — {router_plan.get('reason','')!r}: "
+                            f"{router_plan['reply'][:70]!r}")
+                return _stream_reply(router_plan["reply"])
             if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
                 widgets = router_plan["widgets"]
                 research = [w["type"] for w in widgets if w["type"] in _AGENT_RESEARCH_TYPES]
@@ -1303,7 +1356,7 @@ async def send_message(req: MessageRequest):
         SYSTEM_PROMPT = (
             "You run a live dashboard canvas. You act by calling tools. You never describe what you would do.\n\n"
             "HOW TO ACT\n"
-            "1. Call the tool immediately. Write no preamble, no plan, no 'let me...' before a tool call.\n"
+            "1. Decide first whether the ask needs a tool at all. If it does, call it immediately — no preamble, no plan, no 'let me...' before the call. If it does not (a greeting, thanks, a reaction, or a question you can answer from this conversation), answer in one or two sentences and stop; do not build anything.\n"
             "2. Never ask for clarification. Take the most reasonable reading and go — 'pull up a video' with no topic means pick one and search.\n"
             "3. Fetch the data before you render it. The config you pass IS the finished content: it renders server-side, so never write 'Loading...' and never write JavaScript that fetches.\n"
             "4. Stop when the widget is up. canvas_add_widget returning success means it is already on the user's screen — do not call it again, do not verify with canvas_read_dom, do not re-plan.\n"

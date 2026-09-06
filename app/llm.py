@@ -231,8 +231,11 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
     router can recognise a follow-up and target the widget it refines. Returns:
       {"widgets": [{"type", "query", "modifiers", "target"}], "reason"} to
         build+spawn (target = a canvas widget id to UPDATE in place, or omitted), or
+      {"reply": "<sentence>"} when the ask needs nothing fetched or built —
+        a greeting, thanks, a reaction, a question answerable from context —
+        streamed as a chat bubble, no widget, or
       {"defer": true} to hand off to the full agent (removals, edits, note
-      dictation, custom widgets, small talk), or
+      dictation, custom widgets), or
       None on any model failure — the caller then falls back to the agent, so the
     router is a pure latency/quality optimization and never a hard gate.
 
@@ -250,10 +253,20 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         '{"widgets": [{"type": "<type>", "query": "<query>", "modifiers": {}, '
         '"target": "<canvas widget id or omit>"}], "reason": "<=8 words", '
         '"checks": {"is_arithmetic": <bool>, "needs_fresh_data": <bool>, '
-        '"wants": "<answer|watch|listen|see|track|compute|remember|ui-control>", '
+        '"wants": "<converse|answer|watch|listen|see|track|compute|remember|ui-control>", '
         '"subject": "<the real subject, disambiguated>", '
         '"unknowns": ["<what you would still have to look up>"]}}\n'
         "Rules:\n"
+        # THE FIRST QUESTION. Every tier used to have exactly two outputs —
+        # which widget, or defer to the agent — so a greeting had no legal
+        # outcome except a widget, and with a finance canvas as context "hello"
+        # became "lead with news + trending stocks". Reply is now a verdict.
+        "- FIRST decide whether this ask needs anything fetched or built at all. "
+        "If it does NOT — a greeting, thanks, a reaction, small talk, or a question "
+        "you can answer from RECENT TURNS or from what is on the canvas — return "
+        '{"reply": "<one or two natural sentences>", "reason": "<=8 words"} and '
+        "NOTHING else: no widgets, no defer. Only an ask that needs data or a "
+        "widget goes on to the rules below.\n"
         "- Match the widgets to the ask. A NARROW single-intent ask (a forecast, a "
         "ticker, a timer) is ONE widget. A BROAD or rich ask should COMPOSE the "
         "modalities that together serve it — lead with the explanation/answer, then "
@@ -304,6 +317,12 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
     if not isinstance(data, dict):
         return None
     checks = _clean_preflight_checks(data.get("checks"))
+    reply = data.get("reply")
+    if isinstance(reply, str) and reply.strip():
+        # A conversational turn. The caller streams this as a chat bubble and
+        # builds nothing — the model decided no tool was warranted.
+        return {"reply": reply.strip()[:400], "reason": str(data.get("reason", ""))[:80],
+                "checks": checks}
     if data.get("defer"):
         return {"defer": True, "reason": data.get("reason", ""), "checks": checks}
     widgets = data.get("widgets")
