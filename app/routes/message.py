@@ -771,6 +771,33 @@ async def send_message(req: MessageRequest):
                 if c_cfg:
                     return spawn_widget_stream("crypto_card", "crypto", config=c_cfg)
 
+        # ── PRE-ROUTER: news ─────────────────────────────────────────────────
+        # One deterministic classification replaces five cascade branches
+        # (market research, stock report, news brief, market news, news). It
+        # runs BEFORE the cascade and before the LLM router, independent of the
+        # mode flag, and hands ONE builder an explicit verdict. The router used
+        # to receive "stock market for the day please" and compose three
+        # widgets including a chart of five random trending tickers; now that
+        # ask is a market-news card, deterministically.
+        news_ask = classify_news_ask(req.message, wants_removal=wants_removal,
+                                     is_video_ask=is_video_ask,
+                                     wants_music=wants_music, league=league)
+        if news_ask:
+            if news_ask.kind == "stock_report":
+                return spawn_widget_stream(
+                    "data_card", "stock-report",
+                    config_builder=lambda: build_stock_report_config(req.message),
+                    status="building a full report — quotes, news, and analyst commentary...")
+            _fin, _gen, _depth = news_ask.finance, news_ask.general, news_ask.depth
+            logger.info(f"[NEWS ASK] {news_ask.id_prefix} finance={_fin} general={_gen} "
+                        f"depth={_depth} hint={news_ask.subject_hint[:40]!r}")
+            return spawn_widget_stream(
+                "data_card", news_ask.id_prefix,
+                config_builder=lambda: build_news_card(
+                    req.message, finance=_fin, general=_gen, depth=_depth),
+                status=("researching and writing your brief — this takes a minute..."
+                        if _depth == "brief" else "gathering and summarizing the news..."))
+
         # PRISM MODE (default): everything below is the "go around prism to
         # save latency" fast-path cascade. It is SKIPPED so every content ask
         # runs through the prism agent + lazy-tool-service MCP tools. The
@@ -935,101 +962,8 @@ async def send_message(req: MessageRequest):
                         widget_id=find_existing_widget(req.session_id, "weather"))
                 # An unresolved place falls through to the agent instead of a dead card.
 
-            # 5-pre0. COMPREHENSIVE STOCK REPORT — "full report on NVDA", "deep dive
-            #    tesla stock", "analyze apple stock". Synthesizes quotes+fundamentals+
-            #    technicals+full-text news+finnews+YouTube-transcript commentary into
-            #    one report card. Gated on a stock context (stock word OR an all-caps
-            #    ticker token) so "analyze this photo" or "full breakdown of the plot"
-            #    don't hijack it. Checked BEFORE the news/price branches so "report"
-            #    wins over "news"/"stock".
-            # (Crypto / on-chain intercepts run ABOVE the prism-mode guard — they
-            #  are deterministic and must work even when the LLM classifier is down.)
-
-            # 4-pre. DEEP MARKET RESEARCH — "research the market", "deep dive on the
-            #   stock market", "in-depth market analysis". Drives the shared
-            #   DEEP_RESEARCH agent (lazy-tool-service) to fan out across sources and
-            #   synthesize a brief, via the lazycat.research SDK helper. Gated to the
-            #   GENERAL market: fires only when a research word + a market word are
-            #   present AND no specific company/ticker is named — so "deep dive on
-            #   NVDA" still falls through to the single-ticker report below.
-            if (MARKET_RESEARCH_RE.search(text_clean)
-                    and (MARKET_WORD_RE.search(text_clean) or STOCK_WORD_RE.search(text_clean))
-                    and not wants_removal and not is_video_ask
-                    and not re.search(r'\b[A-Z]{2,5}\b', req.message)):
-                # Strip research/market filler; if no specific subject remains, it's a
-                # general-market ask. A leftover noun ("apple") → let stock-report
-                # resolve it as a single-ticker deep dive instead.
-                _subj = re.sub(
-                    r'\b(deep|dive|research|depth|in|full|report|analysis|analyz\w*|'
-                    r'comprehensive|thorough\w*|breakdown|rundown|picture|overview|dig|'
-                    r'into|what\'?s?|going|happening|moving|on|of|the|a|an|about|for|me|'
-                    r'please|give|do|can|you|show|get|tell|today\w*|now|current\w*|'
-                    r'latest|recent\w*|stock\w*|market\w*|share\w*|equit\w*|wall|street|'
-                    r'econom\w*|trading|financ\w*|sector\w*|news|update\w*|'
-                    # common stopwords so a trailing "and whats moving it" doesn't read
-                    # as a specific subject and drop the ask to the single-ticker path.
-                    r'and|or|it|its|us|why|how|are|is|was|to|with|whats?|going|right)\b',
-                    ' ', text_clean, flags=re.I)
-                if not re.search(r'[a-z]{3,}', _subj):
-                    return spawn_widget_stream(
-                        "data_card", "market-research",
-                        config_builder=lambda: build_market_research_config(req.message),
-                        status="researching the market across multiple sources — this takes a minute...")
-
-            if (STOCK_REPORT_RE.search(text_clean) and not wants_removal and not is_video_ask
-                    and (STOCK_WORD_RE.search(text_clean) or MARKET_WORD_RE.search(text_clean)
-                         or re.search(r'\b[A-Z]{2,5}\b', req.message))):
-                return spawn_widget_stream(
-                    "data_card", "stock-report",
-                    config_builder=lambda: build_stock_report_config(req.message),
-                    status="building a full report — quotes, news, and analyst commentary...")
-
-            # 5-pre2. SYNTHESIZED NEWS BRIEF — informational framing on a news ask
-            #    ("tell me about the stock market news", "what's happening in the
-            #    markets", "summarize today's news", "catch me up") wants a WRITTEN
-            #    brief, not a wall of headline links. Route to grounded_research
-            #    synthesis (finance or general) — an `answer` card with real content +
-            #    sources. MUST come before the link-list news branches below, which
-            #    otherwise grab any query containing "news" first. A plain "stock market
-            #    news" (no informational framing) still gets the fast link card.
-            # Also catches "what's happening in the markets" (informational + a general
-            # MARKET word, no specific ticker) even without the literal word "news".
-            # Gated to markets?/stock market + no ticker so it never steals a single-
-            # ticker ask ("what's happening with AAPL" -> stock card, handled elsewhere).
-            _market_general = bool(re.search(r'\b(stock )?markets?\b', text_clean)
-                                   and not re.search(r'\b[A-Z]{2,5}\b', req.message))
-            if (_NEWS_SYNTH_RE.search(text_clean)
-                    and (NEWS_ASK_RE.search(text_clean) or _market_general)
-                    and not wants_removal and not is_video_ask and not LIVE_ASK_RE.search(text_clean)):
-                _finance = bool(STOCK_WORD_RE.search(text_clean) or MARKET_WORD_RE.search(text_clean))
-                return spawn_widget_stream(
-                    "data_card", "news-brief",
-                    config_builder=lambda: build_news_brief_config(req.message, finance=_finance),
-                    status="researching and writing your news brief...")
-
-            # 5-pre. STOCK/MARKET NEWS — branch 5 deliberately excludes stock words,
-            #    which used to drop these asks to the agent, whose stock_news tool
-            #    returns bare title+publisher rows → a wall of links. Same
-            #    gather→summarize treatment as general news, sourced from Yahoo
-            #    finance search instead of GDELT.
-            if (NEWS_ASK_RE.search(text_clean)
-                    and (STOCK_WORD_RE.search(text_clean) or MARKET_WORD_RE.search(text_clean))
-                    and not wants_removal and not is_video_ask):
-                return spawn_widget_stream(
-                    "data_card", "stock-news",
-                    config_builder=lambda: build_stock_news_config(req.message),
-                    status="gathering and summarizing market news...")
-
-            # 5. NEWS — "news about X", "latest headlines". Search + one summarizing
-            #    LLM pass so each item reads as a story, not a bare link. Stock news
-            #    keeps its own dedicated path.
-            if (NEWS_ASK_RE.search(text_clean) and not wants_removal
-                    and not is_video_ask and not STOCK_WORD_RE.search(text_clean)
-                    and not LIVE_ASK_RE.search(text_clean)):
-                return spawn_widget_stream(
-                    "data_card", "news",
-                    config_builder=lambda: build_news_config(req.message),
-                    status="gathering and summarizing the news...")
+            # News, market news, stock reports and briefs are all claimed by the
+            # PRE-ROUTER stage above (classify_news_ask), before this cascade.
 
             # 5a. WIKIPEDIA — "open a random wikipedia page", "wikipedia about X".
             #     Rendered as a data_card from the REST summary API, NOT an iframe:

@@ -1,4 +1,5 @@
 import base64
+from dataclasses import dataclass
 import difflib
 import html as html_lib
 import httpx
@@ -1564,11 +1565,6 @@ STOCK_REPORT_RE = re.compile(
 # company/ticker, means "research the market broadly" rather than the single-
 # ticker report (STOCK_REPORT_RE + a resolvable company) or the fast news card.
 # Routed to the shared DEEP_RESEARCH agent (multi-source fan-out + synthesis).
-MARKET_RESEARCH_RE = re.compile(
-    r'\b(deep[\s-]?dive|deep research|in[\s-]?depth|research|comprehensive|'
-    r'full (?:report|analysis|breakdown|rundown|picture)|analyz[e]|'
-    r'thorough(?:ly)?|dig into|dig in|what\'?s (?:going on|happening|moving))\b',
-    re.I)
 
 # TRIP planning — "plan a trip to Japan", "3 days in Rome", "Kyoto itinerary",
 # "things to do in Lisbon". High-precision: requires an explicit trip/itinerary word
@@ -1795,11 +1791,6 @@ COMPOSE_ASK_RE = re.compile(
 # answer + sources), not a wall of headline links. "tell me about the stock market
 # news", "what's happening in the markets", "summarize today's news", "catch me up".
 # Checked BEFORE the news link-list branches so the synthesis wins.
-_NEWS_SYNTH_RE = re.compile(
-    r'\b(tell me about|what\'?s (happening|going on|new|the latest)|'
-    r'whats (happening|going on|new|the latest)|summar(y|ize|ise)|brief me|'
-    r'catch me up|get me up to speed|fill me in|whats going on|'
-    r'give me the (rundown|scoop|latest|breakdown))\b', re.I)
 # A geo/location query that wants a MAP with markers, not a text answer. Checked
 # before ANSWER so "where are the fires in California" pulls up a map. Kept to
 # strong geo signals so a conceptual "why is X" never gets a map.
@@ -2071,6 +2062,135 @@ _MARKETY_WORDS = frozenset({
     "prices", "ticker", "tickers", "equities", "equity", "finance",
     "financial", "trading", "the", "wall", "street",
 })
+
+
+# ── the news classifier ──────────────────────────────────────────────────────
+# One deterministic decision replaces five cascade branches that each had their
+# own regex, their own precedence quirks and their own builder:
+#   MARKET_RESEARCH_RE (matched "what's going on" unconditionally, so one extra
+#   word sent an ask down a 60-90s grounded-research path), STOCK_REPORT_RE,
+#   _NEWS_SYNTH_RE, the stock/market-news branch and the general news branch.
+# Two of them also keyed on a raw `[A-Z]{2,5}` token, so the SAME intent routed
+# differently depending on whether the user capitalised a word.
+#
+# The classifier answers four questions from the message alone — is this news
+# at all, is it finance, does it name a subject, does it want depth — and hands
+# ONE builder an explicit verdict. It never guesses from the raw text again
+# downstream: build_news_card receives `general` as a bool, so "hello" can no
+# longer be grounded into "hello (greeting)".
+
+_FINANCE_NEWS_RE = re.compile(
+    r"\b(wall street|s&p|dow jones|the fed|fomc|treasur(?:y|ies)|bond yields?|"
+    r"earnings|ipo|nasdaq|nyse|premarket|after[- ]hours|"
+    r"bitcoin|ethereum|solana|dogecoin|crypto(?:currency)?|altcoins?)\b", re.I)
+_GENERAL_NEWS_RE = re.compile(
+    r"\b(what'?s (?:going on|happening|new)|whats (?:going on|happening|new)|"
+    r"catch me up|current events|top stories|fill me in|"
+    r"get me up to speed|the rundown|the scoop)\b", re.I)
+_DEPTH_RE = re.compile(
+    r"\b(deep[\s-]?dive|in[\s-]?depth|deep research|comprehensive|thorough(?:ly)?|"
+    r"full (?:report|analysis|breakdown|rundown)|brief me|write (?:me )?a brief|"
+    r"summar(?:y|ize|ise))\b", re.I)
+_PRICE_SHAPE_RE = re.compile(r"\b(chart|charts|price|prices|quote|ticker)\b", re.I)
+_MARKET_SHAPE_RE = re.compile(r"\b(?:stock )?markets?\b|\bwall street\b", re.I)
+_MARKET_FILLER_RE = re.compile(
+    r"\b(deep|dive|research|depth|in|full|report|analysis|analyz\w*|comprehensive|"
+    r"thorough\w*|breakdown|rundown|picture|overview|dig|into|what'?s?|going|"
+    r"happening|moving|on|of|the|a|an|about|for|me|please|give|do|can|you|show|"
+    r"get|tell|today\w*|now|current\w*|latest|recent\w*|stock\w*|market\w*|"
+    r"share\w*|equit\w*|wall|street|econom\w*|trading|financ\w*|sector\w*|"
+    r"news|update\w*|and|or|it|its|us|why|how|are|is|was|to|with|whats?|right|"
+    r"day|days|week|this)\b", re.I)
+_KNOWN_TICKER_WORDS = frozenset({
+    "nvda", "tsla", "aapl", "msft", "googl", "goog", "amzn", "meta", "amd",
+    "intc", "nflx", "spy", "qqq", "btc", "eth",
+})
+
+
+@dataclass
+class NewsAsk:
+    finance: bool
+    general: bool
+    depth: str            # "card" | "brief"
+    kind: str             # "news" | "stock_report"
+    subject_hint: str
+
+    @property
+    def id_prefix(self) -> str:
+        if self.kind == "stock_report":
+            return "stock-report"
+        return "stock-news" if self.finance else "news"
+
+
+def _has_ticker_token(raw: str) -> bool:
+    """A specific ticker/company mention. An ALL-CAPS token counts only when the
+    message is not itself all-caps and the token is not filler — the old
+    branches keyed on a raw `[A-Z]{2,5}` and routed "STOCK MARKET NEWS" and
+    "Deep dive on the US market" differently from their lowercase twins."""
+    raw = raw or ""
+    if CASHTAG_RE.search(raw):
+        return True
+    low = raw.lower()
+    if any(w in _KNOWN_TICKER_WORDS for w in re.findall(r"[a-z]+", low)):
+        return True
+    if raw.isupper():
+        return False
+    filler = _NEWS_SCAFFOLDING | _NEWS_GENERAL_WORDS | _MARKETY_WORDS
+    # Three to five letters. Two-letter caps are initialisms far more often
+    # than tickers — "AI", "EU", "UK", "UN" — and "news about AI" is a general
+    # subject, not a C3.ai ask. A real two-letter ticker still routes via a
+    # cashtag ("$GM") or a stock word ("GM stock").
+    for tok in re.findall(r"\b[A-Z]{3,5}\b", raw):
+        if tok.lower() not in filler:
+            return True
+    return False
+
+
+def classify_news_ask(raw: str, *, wants_removal: bool = False,
+                      is_video_ask: bool = False, wants_music: bool = False,
+                      league: Optional[str] = None) -> Optional["NewsAsk"]:
+    """Deterministic: is this a news ask, and of what shape? None = not news.
+
+    Exclusions reproduce the cascade's existing precedence — removal, video,
+    live streams, music, sports scores, weather, wikipedia all own their word.
+    """
+    text = (raw or "").strip().lower()
+    if not text or wants_removal or is_video_ask or wants_music:
+        return None
+    if LIVE_ASK_RE.search(text) or WEATHER_ASK_RE.search(text) or WIKI_ASK_RE.search(text):
+        return None
+    if league and SCORE_ASK_RE.search(text):
+        return None
+
+    ticker = _has_ticker_token(raw)
+    finance = bool(ticker or STOCK_WORD_RE.search(text) or MARKET_WORD_RE.search(text)
+                   or _FINANCE_NEWS_RE.search(text))
+    # "deep dive on the stock market" names no subject once the depth and
+    # research filler is gone — decide `general` on the residual, not the raw.
+    for_general = _MARKET_FILLER_RE.sub(" ", _DEPTH_RE.sub(" ", text))
+    general = (not ticker) and _is_general_news_ask(for_general, finance=finance)
+    residual = " ".join(w for w in re.findall(r"[a-z0-9&]+", text)
+                        if w not in _NEWS_SCAFFOLDING and w not in _NEWS_GENERAL_WORDS
+                        and w not in _NEWSY and (not finance or w not in _MARKETY_WORDS))
+
+    news_word = bool(NEWS_ASK_RE.search(text))
+    general_phrase = general and bool(_GENERAL_NEWS_RE.search(text))
+    # "stock market for the day please" — a general-market ask with no news
+    # word, no price/chart word and no trending word. The router used to turn
+    # this into a trending-stocks chart of five random tickers.
+    market_shape = (finance and general and bool(_MARKET_SHAPE_RE.search(text))
+                    and not _PRICE_SHAPE_RE.search(text)
+                    and not TRENDING_STOCK_RE.search(text))
+    # A report/deep-dive ask on a stock or the market is news-shaped even with
+    # no "news" word: "nvda deep dive", "full report on tesla".
+    report_shape = finance and bool(STOCK_REPORT_RE.search(text))
+    if not (news_word or general_phrase or market_shape or report_shape):
+        return None
+
+    depth = "brief" if _DEPTH_RE.search(text) else "card"
+    kind = "stock_report" if (STOCK_REPORT_RE.search(text) and finance and not general) else "news"
+    return NewsAsk(finance=finance, general=general, depth=depth, kind=kind,
+                   subject_hint=residual.strip())
 
 
 def _is_general_news_ask(message: str, *, finance: bool = False) -> bool:
