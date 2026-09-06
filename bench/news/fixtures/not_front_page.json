@@ -1,0 +1,18 @@
+{
+  "note": "The NEGATIVE control for the front_page metric. Real headlines, none of which is a top story of any day: evergreen how-tos, listings, local colour, product pages, and a dated story from a previous year. A calibrated matcher must score this set at or near 0.0. If it does not, the metric is matching on shared vocabulary rather than on shared stories, and every number it produces is inflated.",
+  "captured": "2026-09-05, from the currentsapi /latest-news response html-notes was serving, plus hand-written evergreen headlines",
+  "titles": [
+    "How to get a Confluence table into Excel",
+    "Michael J Thomas (Solo Show) @Ruth's Chris - Northwest Florida Daily News Events",
+    "Ohio's Charming Midwest City On Lake Erie Offers A Day Trip With Trails, Tasty Eats, And A Waterfront",
+    "Top Local News - Thurston County - September 5, 2026 - ThurstonTalk",
+    "Letters | Bid-rigging isn't new. Hong Kong must revisit old complaints",
+    "10 best air fryers we tested this year",
+    "The 25 greatest guitar solos of all time, ranked",
+    "A 228-year-old restaurant is still serving the same chowder recipe",
+    "Mechanicsburg Patriot News",
+    "Best cordless vacuum deals for the long weekend",
+    "How to reset your router when the wifi drops",
+    "Local library announces autumn reading programme for children"
+  ]
+}

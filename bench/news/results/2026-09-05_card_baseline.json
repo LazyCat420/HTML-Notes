@@ -1,0 +1,85 @@
+{
+ "controls": {
+  "positive": 0.5833333333333334,
+  "negative": 0.0,
+  "feeds": 8,
+  "ok": true,
+  "floor": 0.4
+ },
+ "rows": [
+  {
+   "ask": "top stories",
+   "id_prefix": "news",
+   "n": 3,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 5.6,
+   "titles": [
+    "No. 14 BYU cruises past Utah Tech, 63-7 in season opener",
+    "Buddhist monks receive Utah Senate recognition for peace efforts",
+    "10,000 Maniacs perform at Reg Lenna Center as part of 45th anniversary show"
+   ]
+  },
+  {
+   "ask": "top news",
+   "id_prefix": "news",
+   "n": 3,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 5.3,
+   "titles": [
+    "BYU cruises past Utah Tech, 63-7 in season opener",
+    "Buddhist monks receive Utah Senate recognition for peace efforts",
+    "10,000 Maniacs perform at Reg Lenna Center for 45th anniversary show"
+   ]
+  },
+  {
+   "ask": "world news",
+   "id_prefix": "news",
+   "n": 3,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 5.3,
+   "titles": [
+    "No. 14 BYU cruises past Utah Tech, 63-7 in season opener",
+    "Buddhist monks receive Utah Senate recognition for peace efforts",
+    "10,000 Maniacs perform at Reg Lenna Center for 45th anniversary show"
+   ]
+  },
+  {
+   "ask": "us news today",
+   "id_prefix": "news",
+   "n": 3,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 5.5,
+   "titles": [
+    "No. 14 BYU cruises past Utah Tech, 63-7 in season opener",
+    "Utah Senate recognizes Buddhist monks for peace efforts",
+    "10,000 Maniacs perform 45th anniversary show at Reg Lenna Center"
+   ]
+  },
+  {
+   "ask": "business news",
+   "id_prefix": "news",
+   "n": 1,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 3.3,
+   "titles": [
+    "Street flooding in Carrollton hurts a nearby business | Flipboard"
+   ]
+  },
+  {
+   "ask": "tech news",
+   "id_prefix": "news",
+   "n": 1,
+   "front_page": 0.0,
+   "front_page2": 0.0,
+   "secs": 3.6,
+   "titles": [
+    "Wagyu Serves Up a Blacked-Out Nike Air Max 90"
+   ]
+  }
+ ]
+}
