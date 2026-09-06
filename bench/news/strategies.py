@@ -53,7 +53,7 @@ def legacy_topic(message: str) -> str:
     return topic
 
 
-async def strategy_legacy(message: str) -> Pick:
+async def strategy_legacy(message: str, **_) -> Pick:
     t = time.time()
     q = legacy_topic(message)
     items = await _fetch(q)
@@ -62,7 +62,7 @@ async def strategy_legacy(message: str) -> Pick:
 
 # ── B: grounded subject, no gate ─────────────────────────────────────────────
 
-async def strategy_grounded(message: str) -> Pick:
+async def strategy_grounded(message: str, **_) -> Pick:
     t = time.time()
     g = await m.ground_query(message)
     q = (g.get("subject") or "").strip() or m._strip_news_scaffolding(message)
@@ -74,7 +74,7 @@ async def strategy_grounded(message: str) -> Pick:
 
 # ── C: grounded subject + PR-spam drop + relevance gate ─────────────────────
 
-async def strategy_gated(message: str) -> Pick:
+async def strategy_gated(message: str, **_) -> Pick:
     t = time.time()
     g = await m.ground_query(message)
     subject = (g.get("subject") or "").strip()
@@ -107,4 +107,22 @@ async def strategy_gated(message: str) -> Pick:
     return Pick("C gated", q, items, int((time.time() - t) * 1000), calls, note)
 
 
-STRATEGIES = (strategy_legacy, strategy_grounded, strategy_gated)
+# ── D: what actually ships ───────────────────────────────────────────────────
+
+async def strategy_production(message: str, finance: bool = False, general=None, **_) -> Pick:
+    """The real builder, build_news_card. A, B and C are hand-rolled parallels;
+    on 2026-09-06 the bench scored 4.80/10 for C while the app's market-news
+    path — which C never touched — still shipped a generic overview over an
+    analyst-promo piece. Only this row measures the product."""
+    import app.config_builders as cb
+    t = time.time()
+    cfg = await cb.build_news_card(message, finance=finance, general=general)
+    items = [{"title": it.get("title", ""), "url": it.get("url", ""),
+              "snippet": it.get("description", ""), "meta": it.get("meta", "")}
+             for it in (cfg.get("items") or [])]
+    return Pick("D production", cfg.get("title", ""), items,
+                int((time.time() - t) * 1000), 3,
+                note=(cfg.get("answer") or "")[:80])
+
+
+STRATEGIES = (strategy_legacy, strategy_grounded, strategy_gated, strategy_production)

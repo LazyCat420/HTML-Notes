@@ -39,14 +39,14 @@ than any individual feature below.
 
 ## Phase 1 — Kill the seams (highest leverage)
 
-- [ ] **1.1 Golden routing suite** — table of `utterance → expected intent`,
+- [x] **1.1 Golden routing suite** *(2026-09-06: `tests/test_golden_routing.py` + `scripts/golden_routing_live.py`, seeded with the owner's own asks; the live script is the acceptance gate)* — table of `utterance → expected intent`,
       seeded with every failure from this session (`close everything`→clear_all,
       `cnn live news`→video(live), `live nba scores`→sports, `what about cheaper
       ones`→followup_refine, `sandals`→products, `5 minute timer`→timer).
       Deterministic rows assert exactly; classifier rows tolerate marked
       ambiguity. **Do this FIRST** — it locks current behaviour and becomes the
       safety net for 1.2.
-- [ ] **1.2 Single intent registry** — one table: name, tier, deterministic
+- [ ] **1.2 Single intent registry** *(partial, 2026-09-06: the priority order is now structural for news — `classify_news_ask` → cascade → `route_with_llm` (reply | one widget | compose only if broad) → agent — and the golden suite pins it. The full registry across the ~20 non-news regexes remains open.)* — one table: name, tier, deterministic
       triggers, exclusions, handler. Router walks it in priority order
       (control → media → lookup → research). Ordering and guards become
       *structural* instead of hand-maintained, which is what the AST ordering

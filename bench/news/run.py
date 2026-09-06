@@ -45,7 +45,7 @@ async def main():
     rows = load(args.limit)
     strategies = [s for s in STRATEGIES
                   if not args.only or s.__name__.endswith(
-                      {"A": "legacy", "B": "grounded", "C": "gated"}[args.only.upper()])]
+                      {"A": "legacy", "B": "grounded", "C": "gated", "D": "production"}[args.only.upper()])]
 
     agg = {}
     for i, row in enumerate(rows, 1):
@@ -55,7 +55,8 @@ async def main():
         picks = []
         for fn in strategies:
             try:
-                picks.append(await fn(row["message"]))
+                picks.append(await fn(row["message"], finance=bool(row.get("finance")),
+                                      general=row.get("general")))
             except Exception as e:
                 print(f"    {fn.__name__} ERROR {type(e).__name__}: {e}")
         # Judge in random order so a judge with any positional bias cannot
