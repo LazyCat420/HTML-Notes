@@ -1474,7 +1474,8 @@ def build_location_prompt_config(query: str) -> dict:
     }
 
 
-async def build_traffic_widget(message: str, force_traffic: bool = False) -> tuple[str, Optional[dict]]:
+async def build_traffic_widget(message: str, force_traffic: bool = False,
+                               default_place: str = "") -> tuple[str, Optional[dict]]:
     """A traffic/directions ask → (widget_type, config) for the best widget we can
     actually deliver.
 
@@ -1488,7 +1489,10 @@ async def build_traffic_widget(message: str, force_traffic: bool = False) -> tup
     is missing or geocoding misses, and to (type, None) when no place can be
     pulled out, so the caller falls back to the travel-time answer card."""
     msg = (message or "").strip()
-    city = (database.get_user_facts().get("location") or "").strip()
+    # The newest place on the canvas (context bus) beats the remembered home
+    # city: "traffic" right after a Seattle weather widget means Seattle.
+    city = ((default_place or "").strip()
+            or (database.get_user_facts().get("location") or "").strip())
     # `force_traffic` is for callers that ALREADY established traffic intent. The
     # router classifies "map of traffic in the east bay" as type='traffic' and
     # hands us query='east bay' — the place, with the word "traffic" stripped into
@@ -1950,7 +1954,8 @@ async def build_app_grid_config(query: str = "") -> dict:
     }
 
 
-async def build_router_widget(spec: dict, session_id: str, message: str) -> Optional[tuple]:
+async def build_router_widget(spec: dict, session_id: str, message: str,
+                              defaults: Optional[dict] = None) -> Optional[tuple]:
     """One router widget spec -> (widget_type, id_prefix, config) ready to spawn,
     by calling the same builders the fast lane uses. Returns None when the spec
     can't be built (unknown type, or a data pull came back empty) so the caller
@@ -1960,8 +1965,10 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
     mods = spec.get("modifiers") or {}
     id_prefix = ROUTER_WIDGETS.get(wtype, (wtype, ""))[0]
     try:
+        _dflt = defaults or {}
         if wtype == "weather":
-            w = await get_weather(extract_location(query or message))
+            w = await get_weather(extract_location(query or message,
+                                                   default=_dflt.get("place", "")))
             return None if w.get("is_error") else ("weather", "weather", w)
 
         if wtype in TOOLSVC_KINDS:
@@ -2054,7 +2061,10 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             return None if snap.get("is_error") else ("stock_card", "stock", snap)
 
         if wtype == "sports":
-            board = await sports_scores(resolve_league(query) or query or message)
+            # A bare "any scores?" with a league already on the canvas means
+            # that league (context bus); the message is the last resort.
+            board = await sports_scores(resolve_league(query) or query
+                                        or _dflt.get("league") or message)
             # Off-season / empty → a synthesized answer card, never an empty board.
             if board.get("is_error"):
                 return ("data_card", "sports-answer", await build_answer_config(query or message))
@@ -2069,7 +2079,8 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
 
         if wtype == "traffic":
             # wtype IS the intent — the classifier already decided this is traffic.
-            twtype, tcfg = await build_traffic_widget(query or message, force_traffic=True)
+            twtype, tcfg = await build_traffic_widget(query or message, force_traffic=True,
+                                                     default_place=_dflt.get("place", ""))
             if not tcfg:
                 # No place named and none remembered. Returning None here meant
                 # the router built NOTHING — a bare "how is the traffic" produced

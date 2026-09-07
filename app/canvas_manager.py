@@ -1,3 +1,4 @@
+import html as html_module
 import re
 import sys
 import app.main as main
@@ -354,6 +355,108 @@ def find_reuse_target(session_id: str, widget_type: str,
     if _is_refining_followup(message) and len(_subject_tokens(message)) < 2:
         return candidates[-1][2]
     return None
+
+
+# ── The context bus: subjects ───────────────────────────────────────────────
+# What is each widget ABOUT? A typed {kind, value} — place / ticker / league /
+# coin / person / topic — remembered per session (recency-ordered) and stamped
+# on the widget root, so a builder that is handed no subject can default to
+# the newest one of the right kind ("weather" after a Seattle traffic map means
+# Seattle), and "compare these" / "same for X" have something to resolve.
+_SUBJECT_KEYS = {
+    "weather": ("place", "location"),
+    "scoreboard": ("league", "league"),
+    "stock_card": ("ticker", "symbol"),
+    "crypto_card": ("coin", "name"),
+    "profile_card": ("person", "title"),
+}
+
+
+def derive_widget_subject(widget_type: str, config: dict) -> Optional[dict]:
+    """The widget's typed subject: an explicit config['subject'] {kind, value}
+    when a builder set one, else derived from the type's identity key, else
+    None (prose, media, utilities)."""
+    if not isinstance(config, dict):
+        return None
+    explicit = config.get("subject")
+    if isinstance(explicit, dict):
+        kind = str(explicit.get("kind") or "").strip().lower()
+        value = str(explicit.get("value") or "").strip()
+        if kind in SUBJECT_KINDS and value:
+            return {"kind": kind, "value": value}
+    entry = _SUBJECT_KEYS.get(widget_type)
+    if not entry:
+        return None
+    kind, key = entry
+    value = str(config.get(key) or "").strip()
+    if widget_type == "crypto_card" and not value:
+        value = str(config.get("coin_id") or config.get("symbol") or "").strip()
+    return {"kind": kind, "value": value} if value else None
+
+
+def remember_widget_subject(session_id: str, widget_id: str, widget_type: str,
+                            config: dict) -> Optional[dict]:
+    """Record what `widget_id` is about; newest last (re-remembering moves it)."""
+    if not (session_id and widget_id):
+        return None
+    subj = derive_widget_subject(widget_type, config)
+    if not subj:
+        return None
+    store = _session_widget_subjects.setdefault(session_id, {})
+    store.pop(widget_id, None)
+    store[widget_id] = {**subj, "type": widget_type}
+    return subj
+
+
+def _iter_canvas_subjects(html: str):
+    """(widget_id, kind, value, widget_type) from the DOM stamps, DOM order —
+    the restart-proof half of the store."""
+    if not html or not html.strip():
+        return
+    soup = BeautifulSoup(html, "html.parser")
+    for card in soup.select(".widget-container[data-subject-kind], .glass-card[data-subject-kind]"):
+        kind = (card.get("data-subject-kind") or "").strip()
+        value = html_module.unescape((card.get("data-subject-value") or "").strip())
+        if kind and value:
+            yield card.get("id") or "", kind, value, (card.get("data-widget-type") or "").strip()
+
+
+def canvas_subjects(session_id: str, canvas_html: str = "") -> list:
+    """[{id, kind, value, type}] for every widget still on the canvas, NEWEST
+    FIRST. Memory is authoritative for order; the DOM stamps fill in anything
+    memory lost (a restart) in DOM order after it."""
+    html = get_session_canvas(session_id) or canvas_html or ""
+    ids_on_canvas = set(re.findall(r'\bid="([^"]+)"', html))
+    out, seen = [], set()
+    for wid, rec in reversed(list(_session_widget_subjects.get(session_id, {}).items())):
+        if wid in ids_on_canvas and wid not in seen:
+            out.append({"id": wid, "kind": rec["kind"], "value": rec["value"], "type": rec.get("type", "")})
+            seen.add(wid)
+    try:
+        for wid, kind, value, wtype in _iter_canvas_subjects(html):
+            if wid and wid not in seen:
+                out.append({"id": wid, "kind": kind, "value": value, "type": wtype})
+                seen.add(wid)
+    except Exception as e:
+        logger.warning(f"canvas_subjects DOM fallback failed: {e}")
+    return out
+
+
+def canvas_defaults(session_id: str, canvas_html: str = "") -> dict:
+    """{kind: newest value} — what a builder handed no subject should assume."""
+    out = {}
+    for s in canvas_subjects(session_id, canvas_html):
+        out.setdefault(s["kind"], s["value"])
+    return out
+
+
+def recent_subjects(session_id: str, n: int = 2, kind: Optional[str] = None,
+                    canvas_html: str = "") -> list:
+    """The n most recent subjects (newest first), optionally of one kind."""
+    subs = canvas_subjects(session_id, canvas_html)
+    if kind:
+        subs = [s for s in subs if s["kind"] == kind]
+    return subs[:n]
 
 
 # ── Live widgets: recipes ───────────────────────────────────────────────────
@@ -798,6 +901,16 @@ def build_turn_context(session_id: str, current_canvas: str = "") -> dict:
     today = datetime.date.today()
     block = (f"TODAY: {today.isoformat()} ({today:%A})\n\n"
              "CURRENT CANVAS:\n" + inventory)
+    # The context bus, one line: what the widgets are ABOUT, newest first, so
+    # the router and the agent can default a bare ask to the subject on screen
+    # and resolve "compare these". Sits inside the router's 1200-char window.
+    try:
+        subs = canvas_subjects(session_id, canvas_html)[:6]
+    except Exception:
+        subs = []
+    if subs:
+        block += ("\n\nSUBJECTS ON CANVAS (newest first): "
+                  + " · ".join(f'{s["kind"]} {s["value"]} (#{s["id"]})' for s in subs))
     if ledger_text:
         block += ("\n\nRECENT TURNS (oldest first — reuse these widget ids for "
                   "follow-ups):\n" + ledger_text)
@@ -949,7 +1062,9 @@ async def _drop_offsubject_widgets(message: str, good: list) -> list:
     lines = []
     for i, (wtype, _p, wcfg, _t) in enumerate(good):
         cfg = wcfg or {}
-        subj = cfg.get("title") or cfg.get("subtitle") or cfg.get("subject") or wtype
+        _sub = cfg.get("subject")
+        _sub = _sub.get("value") if isinstance(_sub, dict) else _sub
+        subj = cfg.get("title") or cfg.get("subtitle") or _sub or wtype
         lines.append(f'[{i}] {wtype}: {str(subj)[:90]}')
     data = await fast_llm_json(
         "A live dashboard built these widgets for ONE user ask. Some may be "

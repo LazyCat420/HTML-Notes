@@ -967,6 +967,13 @@ _session_widget_configs: Dict[str, Dict[str, dict]] = {}
 # turn. Mirrored to sqlite (widget_state 'recipe:<session>:<id>') so a
 # refresh still works after a restart. See canvas_manager.remember_widget_recipe.
 _session_widget_recipes: Dict[str, Dict[str, dict]] = {}
+# {session_id: {widget_id: {"kind": place|ticker|league|coin|person|topic,
+# "value": str, "type": widget_type}}} — insertion order = recency (a
+# re-remembered widget is moved to the end). The context bus: what each
+# widget on the canvas is ABOUT, so sibling builders can default to it. The
+# same subject is stamped on the widget root (data-subject-kind/-value) so it
+# survives a restart. See canvas_manager.remember_widget_subject.
+_session_widget_subjects: Dict[str, Dict[str, dict]] = {}
 _STACK_WORD_BUDGET = 800     # user-tuned: "500-1000 words" — split the range
 _STACK_MIN_KEEP = 60         # don't bother stacking a stub smaller than this
 
@@ -1321,6 +1328,10 @@ class MessageRequest(BaseModel):
     # (the last `component` version it painted, or the seed from history load).
     # Lets _run_turn refuse a snapshot taken before another turn's commit.
     canvas_version: Optional[int] = None
+    # Set when send_message re-enters itself with a rewritten message ("same
+    # for tokyo" → "weather in tokyo"); the anaphora lane skips a request that
+    # carries it, so a rewrite can never loop.
+    rewritten_from: Optional[str] = None
     # False (default) = PRISM MODE: the agent runs on prism-service (:7777) with the
     # lazy-tool-service MCP research tools/harnesses, AND research/content asks
     # (products, general answers, images) are routed to that agent instead of being
@@ -1901,6 +1912,11 @@ BUILD_ASK_RE = re.compile(
     r"\b(?:widget|box|panel|tracker|counter|gadget|tool|dashboard)\b"
     r"|\badd\s+(?:a|an|another)\s+(?:custom\s+|new\s+|simple\s+)?[\w-]*\s?"
     r"(?:widget|box|panel|tracker|counter|gadget)\b", re.I)
+# Anaphora the CANVAS can resolve (context bus): "compare these (two)",
+# "same (thing) for tokyo". Anchored and short on purpose — the follow-up
+# machinery owns "what about X"; these two are the shapes it could not.
+COMPARE_THESE_RE = re.compile(r"^\s*compare\s+(?:these|them|those|both)(?:\s+two)?\s*[?.!]*\s*$", re.I)
+SAME_FOR_RE = re.compile(r"^\s*(?:the\s+)?same(?:\s+thing)?\s+(?:for|with|in|about)\s+(.+?)\s*$", re.I)
 # The words that name a FETCH. DATA_ASK_RE also carries the bare word "stock",
 # which is as often a TOPIC ("what is a stock split") as a lookup; the answer
 # lane yields only to these.
@@ -3256,6 +3272,9 @@ def extract_bare_app_name(text: str) -> Optional[str]:
 # this module's dict.
 from app.services.toolsvc import (TOOLSVC_KINDS, build_toolsvc_config,  # noqa: E402
                                   toolsvc_get, toolsvc_kind_for)
+
+# The subject kinds a widget can be ABOUT (the context bus).
+SUBJECT_KINDS = ("place", "ticker", "league", "coin", "person", "topic")
 
 ROUTER_WIDGETS = {
     "weather":    ("weather",   'current conditions / forecast. query = the place ("Tokyo")'),

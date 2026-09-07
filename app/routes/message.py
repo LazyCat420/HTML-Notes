@@ -170,6 +170,7 @@ async def send_message(req: MessageRequest):
                 event = await commit_canvas(req.session_id, _append)
                 if event:
                     remember_widget_recipe(req.session_id, resolved_id, widget_type, widget_config)
+                    remember_widget_subject(req.session_id, resolved_id, widget_type, widget_config)
                     record_turn(req.session_id, req.message, f"fast-path:{widget_type}",
                                 [(resolved_id, widget_type,
                                   widget_config.get("title", "") or req.message,
@@ -480,8 +481,10 @@ async def send_message(req: MessageRequest):
                          if len(specs) > 1 else (specs[0].get("type", "widget") if specs else "widget"))
                 yield f'data: {json.dumps({"type": "status", "message": f"building {label}..."})}\n\n'
 
+                _defaults = canvas_defaults(req.session_id, req.current_canvas or "")
                 built = await asyncio.gather(
-                    *[build_router_widget(s, req.session_id, req.message) for s in specs],
+                    *[build_router_widget(s, req.session_id, req.message, defaults=_defaults)
+                      for s in specs],
                     return_exceptions=True)
                 # A spec builds to one widget (tuple) OR several (list of tuples, e.g.
                 # a trip → itinerary card + map). Flatten both shapes, carrying the
@@ -542,6 +545,7 @@ async def send_message(req: MessageRequest):
                 if event:
                     for (rid, wt, wc) in placed:
                         remember_widget_recipe(req.session_id, rid, wt, wc)
+                        remember_widget_subject(req.session_id, rid, wt, wc)
                     record_turn(req.session_id, req.message, "router",
                                 [(rid, wt, (wc.get("title", "") or req.message),
                                   _widget_detail(wc)) for (rid, wt, wc) in placed])
@@ -1026,7 +1030,9 @@ async def send_message(req: MessageRequest):
             #    A real Open-Meteo pull (keyless) rendered as the dedicated weather
             #    widget, not a text card of search results about weather.
             if WEATHER_ASK_RE.search(text_clean) and not wants_removal and not is_video_ask:
-                weather = await get_weather(extract_location(req.message))
+                weather = await get_weather(extract_location(
+                    req.message,
+                    default=canvas_defaults(req.session_id, req.current_canvas or "").get("place", "")))
                 if not weather.get("is_error"):
                     return spawn_widget_stream(
                         "weather", "weather", weather,
@@ -1335,6 +1341,41 @@ async def send_message(req: MessageRequest):
         router_plan: Optional[dict] = None
         router_specs: list = []          # the plan handed to the agent as a prior
         router_checks: dict = {}         # the pre-flight self-check answers
+        # ── ANAPHORA the canvas can resolve (context bus) ─────────────────
+        # "compare these" → the two most recent subjects of one kind; "same for
+        # X" → the previous ask with its subject swapped for X, re-entered
+        # through this same handler (rewritten_from guards against a loop).
+        if not wants_removal and not req.rewritten_from:
+            if COMPARE_THESE_RE.search(text_clean):
+                _pair = recent_subjects(req.session_id, n=2, canvas_html=req.current_canvas or "")
+                if len(_pair) == 2 and _pair[0]["kind"] == _pair[1]["kind"]:
+                    _older, _newer = _pair[1]["value"], _pair[0]["value"]
+                    if _pair[0]["kind"] == "ticker":
+                        logger.info(f"[CONTEXT BUS] compare these → {_older} vs {_newer}")
+                        return spawn_router_stream([{"type": "stock", "query": f"{_older} vs {_newer}"}],
+                                                   reason="compare-anaphora")
+                    if _pair[0]["kind"] == "place":
+                        logger.info(f"[CONTEXT BUS] compare these → weather {_older} + {_newer}")
+                        return spawn_router_stream([{"type": "weather", "query": _older},
+                                                    {"type": "weather", "query": _newer}],
+                                                   reason="compare-anaphora")
+            _same = SAME_FOR_RE.match(text_clean)
+            if _same:
+                _led = _session_turn_ledger.get(req.session_id, [])
+                _prev = (_led[-1].get("message") if _led else "") or ""
+                _last = recent_subjects(req.session_id, n=1, canvas_html=req.current_canvas or "")
+                _new_value = _same.group(1).strip(" ?.!")
+                if _prev and _last and _new_value:
+                    _old_value = _last[0]["value"]
+                    if _old_value.lower() in _prev.lower():
+                        _rewritten = re.sub(re.escape(_old_value), _new_value, _prev, count=1, flags=re.I)
+                    else:
+                        _rewritten = f"{_prev} {_new_value}"
+                    if _rewritten.strip().lower() != _prev.strip().lower():
+                        logger.info(f"[CONTEXT BUS] same for → {_rewritten!r}")
+                        return await send_message(req.model_copy(update={
+                            "message": _rewritten, "rewritten_from": req.message}))
+
         router_status = "skipped-removal"   # local | deferred | defer | none | build
         is_build_ask = bool(BUILD_ASK_RE.search(text_clean))
         if is_build_ask and not wants_removal:
@@ -2488,6 +2529,7 @@ async def send_message(req: MessageRequest):
                             _updating_in_place)
                         _remember_widget_config(req.session_id, widget_id, config)
                         remember_widget_recipe(req.session_id, widget_id, widget_type, config)
+                        remember_widget_subject(req.session_id, widget_id, widget_type, config)
 
                         def _add(soup):
                             replaced = False

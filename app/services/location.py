@@ -118,10 +118,11 @@ async def get_weather(location: str, units: str = "fahrenheit") -> dict:
     }
 
 
-def extract_location(message: str) -> str:
+def extract_location(message: str, default: str = "") -> str:
     """Pull a place name out of a weather ask. 'weather in San Francisco' → 'San
-    Francisco'; 'tokyo weather' → 'tokyo'; bare 'weather' → the user's remembered
-    city, else 'New York'."""
+    Francisco'; 'tokyo weather' → 'tokyo'; bare 'weather' → `default` (the
+    newest place on the canvas, from the context bus), else the user's
+    remembered city, else 'New York'."""
     m = (message or "").strip()
     match = re.search(r'\b(?:in|for|at|near)\s+([A-Za-zÀ-ɏ .,\'-]+)', m, re.IGNORECASE)
     if match:
@@ -133,6 +134,8 @@ def extract_location(message: str) -> str:
     remaining = " ".join(words).strip()
     if remaining:
         return remaining
+    if (default or "").strip():
+        return default.strip()
     return database.get_user_facts().get("location") or "New York"
 
 

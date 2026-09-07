@@ -2848,6 +2848,17 @@ def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
              f' data-widget-title="{label}"')
     if subtitle:
         attrs += f' data-widget-subtitle="{subtitle}"'
+    # The context bus stamp: what this widget is ABOUT, so subjects survive a
+    # restart (the in-memory store does not). Derived the same way the server
+    # remembers it, so DOM and memory can never disagree.
+    try:
+        from app.canvas_manager import derive_widget_subject as _dws
+        _subj = _dws(widget_type, config)
+    except Exception:
+        _subj = None
+    if _subj:
+        attrs += (f' data-subject-kind="{esc(_subj["kind"])}"'
+                  f' data-subject-value="{esc(_subj["value"][:120])}"')
     # A provisional widget is real fetched data committed BEFORE the agent
     # finishes composing (e.g. news articles pushed the moment the tool
     # returns). The attribute drives a "composing…" badge client-side and is
