@@ -37,6 +37,23 @@ async def api_actions_cancel(request: Request):
     return {"success": True}
 
 
+@router.post("/api/widget/{session_id}/{widget_id}/refresh")
+async def api_widget_refresh(session_id: str, widget_id: str):
+    """Re-pull and re-render ONE live widget in place — no agent turn, no
+    chat message. The liveWidget chrome (widgets.js) calls this on its TTL
+    and on the ⟳ button; the client paints the returned canvas through the
+    normal versioned reconciler, so only the changed widget's node moves."""
+    from app import canvas_manager as _cm
+    if not _cm.get_widget_recipe(session_id, widget_id):
+        raise HTTPException(status_code=404, detail="no recipe for this widget")
+    try:
+        return await _cm.refresh_widget(session_id, widget_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="no recipe for this widget")
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/api/services")
 async def api_services(include_hidden: bool = False):
     """The curated PortalApp list (portal-service inventory ⊕ registry file ⊕

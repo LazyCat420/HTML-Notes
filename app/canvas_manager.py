@@ -1,3 +1,4 @@
+import re
 import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
@@ -353,6 +354,117 @@ def find_reuse_target(session_id: str, widget_type: str,
     if _is_refining_followup(message) and len(_subject_tokens(message)) < 2:
         return candidates[-1][2]
     return None
+
+
+# ── Live widgets: recipes ───────────────────────────────────────────────────
+# A scoreboard, a forecast or a stock card is only true at the moment it
+# rendered. Each committed one remembers the ROUTER SPEC that rebuilds it —
+# the same build_router_widget the fast lane and the LLM router use — so
+# POST /api/widget/<session>/<id>/refresh can re-pull and re-render it in
+# place with no agent turn. Media and prose widgets have no recipe.
+_LIVE_RECIPE_KEYS = {
+    "weather": ("weather", "location"),
+    "scoreboard": ("sports", "league"),
+    "stock_card": ("stock", "symbol"),
+    "crypto_card": ("crypto", "coin_id"),
+}
+
+
+def derive_widget_recipe(widget_type: str, config: dict) -> Optional[dict]:
+    """The router spec that rebuilds this widget, or None for a type that is
+    not live (data_card, players, notes…)."""
+    entry = _LIVE_RECIPE_KEYS.get(widget_type)
+    if not entry or not isinstance(config, dict):
+        return None
+    router_type, key = entry
+    query = str(config.get(key) or "").strip()
+    if not query:
+        return None
+    return {"type": router_type, "query": query}
+
+
+def remember_widget_recipe(session_id: str, widget_id: str, widget_type: str,
+                           config: dict, spec: Optional[dict] = None) -> Optional[dict]:
+    """Record (in memory + sqlite) how to rebuild `widget_id`. Returns the
+    recipe, or None when the type has none."""
+    if not (session_id and widget_id):
+        return None
+    spec = spec or derive_widget_recipe(widget_type, config)
+    if not spec:
+        return None
+    recipe = {"spec": spec, "widget_type": widget_type}
+    _session_widget_recipes.setdefault(session_id, {})[widget_id] = recipe
+    try:
+        database.set_widget_state(f"recipe:{session_id}:{widget_id}", json.dumps(recipe))
+    except Exception as e:  # never let bookkeeping break a commit
+        logger.warning(f"[LIVE] could not persist recipe for #{widget_id}: {e}")
+    return recipe
+
+
+def get_widget_recipe(session_id: str, widget_id: str) -> Optional[dict]:
+    """Memory first, then sqlite (a restart empties the dict, not the DB)."""
+    recipe = _session_widget_recipes.get(session_id, {}).get(widget_id)
+    if recipe:
+        return recipe
+    try:
+        raw = database.get_widget_state(f"recipe:{session_id}:{widget_id}")
+        recipe = json.loads(raw) if raw else None
+    except Exception:
+        recipe = None
+    if isinstance(recipe, dict) and recipe.get("spec"):
+        _session_widget_recipes.setdefault(session_id, {})[widget_id] = recipe
+        return recipe
+    return None
+
+
+_SIG_RE = re.compile(r'data-sig="([^"]+)"')
+
+
+async def refresh_widget(session_id: str, widget_id: str) -> dict:
+    """Re-pull a live widget's data and re-render it IN PLACE.
+
+    Raises KeyError when nothing is known about the widget and RuntimeError
+    when its source is down. Returns {changed, version, content, widget_id};
+    `changed` is False (and nothing is committed) when the fresh render has
+    the same content signature — so a poll never churns the canvas."""
+    recipe = get_widget_recipe(session_id, widget_id)
+    if not recipe:
+        raise KeyError(widget_id)
+    spec = dict(recipe["spec"])
+    # Late lookup so a test's patch_server (which patches every module that
+    # carries the name) is honoured, and so this module never needs the
+    # builders at import time.
+    import app.main as _main
+    built = await _main.build_router_widget(spec, session_id, spec.get("query") or "")
+    if not (isinstance(built, tuple) and len(built) == 3):
+        raise RuntimeError("the data source did not answer")
+    wtype, _prefix, cfg = built
+    if wtype != recipe.get("widget_type"):
+        # e.g. sports off-season degrades to an answer card — that is not a
+        # refresh of the scoreboard, leave what is on screen alone.
+        raise RuntimeError(f"source returned a {wtype}, not a {recipe.get('widget_type')}")
+    new_html = render_widget(wtype, widget_id, cfg or {})
+    m = _SIG_RE.search(new_html)
+    new_sig = m.group(1) if m else None
+    outcome = {"changed": False}
+
+    def _replace(soup):
+        node = soup.find(id=widget_id)
+        if node is None:
+            return False
+        if new_sig and node.get("data-sig") == new_sig:
+            return False
+        node.replace_with(BeautifulSoup(new_html, 'html.parser'))
+        outcome["changed"] = True
+
+    await commit_canvas(session_id, _replace)
+    if outcome["changed"]:
+        _remember_widget_config(session_id, widget_id, cfg or {})
+        remember_widget_recipe(session_id, widget_id, wtype, cfg or {}, spec=spec)
+    return {"changed": outcome["changed"],
+            "version": _session_canvas_version.get(session_id),
+            "content": get_session_canvas(session_id) or "",
+            "widget_id": widget_id}
 
 
 def _remember_widget_config(session_id: str, widget_id: str, config: dict) -> None:

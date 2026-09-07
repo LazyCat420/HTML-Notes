@@ -962,6 +962,11 @@ def _ledger_details(session_id: str) -> Dict[str, str]:
 # card reaches a word budget — then the oldest text rolls off the bottom.
 # In-memory per session, same lifetime as the turn ledger.
 _session_widget_configs: Dict[str, Dict[str, dict]] = {}
+# {session_id: {widget_id: {"spec": <router spec>, "widget_type": str}}} — how
+# to REBUILD a live widget (scoreboard/weather/stock/crypto) without an agent
+# turn. Mirrored to sqlite (widget_state 'recipe:<session>:<id>') so a
+# refresh still works after a restart. See canvas_manager.remember_widget_recipe.
+_session_widget_recipes: Dict[str, Dict[str, dict]] = {}
 _STACK_WORD_BUDGET = 800     # user-tuned: "500-1000 words" — split the range
 _STACK_MIN_KEEP = 60         # don't bother stacking a stub smaller than this
 

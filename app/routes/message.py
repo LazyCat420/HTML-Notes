@@ -169,6 +169,7 @@ async def send_message(req: MessageRequest):
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
+                    remember_widget_recipe(req.session_id, resolved_id, widget_type, widget_config)
                     record_turn(req.session_id, req.message, f"fast-path:{widget_type}",
                                 [(resolved_id, widget_type,
                                   widget_config.get("title", "") or req.message,
@@ -539,6 +540,8 @@ async def send_message(req: MessageRequest):
 
                 event = await commit_canvas(req.session_id, _append)
                 if event:
+                    for (rid, wt, wc) in placed:
+                        remember_widget_recipe(req.session_id, rid, wt, wc)
                     record_turn(req.session_id, req.message, "router",
                                 [(rid, wt, (wc.get("title", "") or req.message),
                                   _widget_detail(wc)) for (rid, wt, wc) in placed])
@@ -2446,6 +2449,7 @@ async def send_message(req: MessageRequest):
                             req.session_id, widget_id, widget_type, config,
                             _updating_in_place)
                         _remember_widget_config(req.session_id, widget_id, config)
+                        remember_widget_recipe(req.session_id, widget_id, widget_type, config)
 
                         def _add(soup):
                             replaced = False

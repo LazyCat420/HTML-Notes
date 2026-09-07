@@ -2259,6 +2259,33 @@ document.addEventListener("DOMContentLoaded", () => {
     // click that triggered this landed INSIDE a widget, and letting it ride as
     // focus_widget_id would invite the server to edit that widget in place
     // instead of spawning the asked-for one.
+    // Paint a server canvas through the SAME versioned path a turn's
+    // component event uses (monotonic version guard + reconcile + Alpine
+    // init), so a refresh can never repaint an older canvas over a newer one.
+    window.HN.paintCanvas = function (content, version) {
+        if (!content) return false;
+        const painted = renderContent("", content, version);
+        if (painted) renderDynamicComponents(elements.liveCanvas);
+        return painted;
+    };
+
+    // Re-pull ONE live widget (see liveWidget in widgets.js). No chat message,
+    // no agent turn; an unchanged widget commits nothing server-side.
+    window.HN.refreshWidget = async function (widgetId) {
+        if (!widgetId || !state.sessionId) return { ok: false };
+        try {
+            const res = await fetch(
+                `/api/widget/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(widgetId)}/refresh`,
+                { method: "POST" });
+            if (!res.ok) return { ok: false, status: res.status };
+            const data = await res.json();
+            if (data && data.changed && data.content) HN.paintCanvas(data.content, data.version);
+            return { ok: true, changed: Boolean(data && data.changed) };
+        } catch (e) {
+            return { ok: false };
+        }
+    };
+
     window.HN.ask = function (text, opts) {
         opts = opts || {};
         text = String(text || "").trim();

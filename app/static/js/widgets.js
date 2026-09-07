@@ -1847,6 +1847,76 @@ document.addEventListener('alpine:init', () => {
     // immediately); a 45s poll of /api/services refreshes status dots and picks
     // up newly registered services IN PLACE — Alpine state only, never a canvas
     // repaint, so live media elsewhere on the canvas is untouched.
+    // Live widget chrome (scoreboard, weather, stock, crypto): a ⟳ button, an
+    // auto toggle and "updated Ns ago". On its TTL it asks the server to
+    // re-pull and re-render THIS widget in place (HN.refreshWidget → POST
+    // /api/widget/<session>/<id>/refresh); the reply is painted through the
+    // normal versioned reconciler, so only a changed widget's node moves and
+    // a playing video elsewhere never stutters. Paused while the tab is hidden.
+    // A nested x-data scope: it lives inside widgets that have their own.
+    Alpine.data('liveWidget', (opts) => ({
+        ttl: Math.max(15, Number(opts && opts.ttl) || 0),
+        auto: true,
+        busy: false,
+        updatedAt: Date.now(),
+        ago: 'just now',
+        _timer: null,
+        _tick: null,
+        _onVis: null,
+
+        init() {
+            this._tick = setInterval(() => this._updateAgo(), 5000);
+            this._arm();
+            this._onVis = () => {
+                if (document.hidden) { this._disarm(); return; }
+                this._arm();
+                if (this.auto && Date.now() - this.updatedAt > this.ttl * 1000) this.refresh();
+            };
+            document.addEventListener('visibilitychange', this._onVis);
+        },
+
+        destroy() {
+            this._disarm();
+            if (this._tick) { clearInterval(this._tick); this._tick = null; }
+            if (this._onVis) document.removeEventListener('visibilitychange', this._onVis);
+        },
+
+        _arm() {
+            this._disarm();
+            if (this.auto && this.ttl > 0) {
+                this._timer = setInterval(() => { if (!document.hidden) this.refresh(); }, this.ttl * 1000);
+            }
+        },
+
+        _disarm() {
+            if (this._timer) { clearInterval(this._timer); this._timer = null; }
+        },
+
+        toggle() {
+            this.auto = !this.auto;
+            this._arm();
+        },
+
+        _updateAgo() {
+            const s = Math.round((Date.now() - this.updatedAt) / 1000);
+            this.ago = s < 10 ? 'just now' : s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
+        },
+
+        async refresh() {
+            if (this.busy) return;
+            const w = this.$el.closest('.widget-container');
+            if (!w || !w.id || !window.HN || !HN.refreshWidget) return;
+            this.busy = true;
+            try {
+                const r = await HN.refreshWidget(w.id);
+                if (r && r.ok) this.updatedAt = Date.now();
+            } finally {
+                this.busy = false;
+                this._updateAgo();
+            }
+        },
+    }));
+
     Alpine.data('appGridWidget', (initial) => ({
         apps: (initial && initial.apps) || [],
         stale: Boolean(initial && initial.stale),

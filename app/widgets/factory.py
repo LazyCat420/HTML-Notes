@@ -14,7 +14,59 @@ def esc(val: Any) -> str:
 
 # Widget chrome shared by every server-rendered widget: a header bar with an
 # icon, a title and a close button that works with or without Alpine.
-def widget_header(title: str, icon: str = "widgets", subtitle: str = "", ask: str = "") -> str:
+def _us_market_open_now() -> bool:
+    """Regular NYSE hours, Mon-Fri 09:30-16:00 America/New_York. Holidays are
+    ignored — a closed-day poll every 60 s is cheap and harmless."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return False
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 + 30 <= minutes < 16 * 60
+
+
+def live_ttl(widget_type: str, config: dict) -> int:
+    """Seconds between automatic refreshes for a LIVE widget; 0 = never.
+
+    Media and prose never refresh (a reload would restart the player or
+    re-run a search). The scoreboard polls fast only while a game is in
+    progress; a stock card only in market hours."""
+    config = config if isinstance(config, dict) else {}
+    if widget_type == "scoreboard":
+        events = config.get("events") or []
+        in_play = any(isinstance(e, dict) and e.get("state") == "in" for e in events)
+        return 30 if in_play else 300
+    if widget_type == "weather":
+        return 600
+    if widget_type == "crypto_card":
+        return 60
+    if widget_type == "stock_card":
+        return 60 if _us_market_open_now() else 900
+    return 0
+
+
+def live_chrome(ttl: int) -> str:
+    """The ⟳ / auto / 'updated Ns ago' cluster. A NESTED x-data scope, so it
+    sits inside a widget that has its own x-data (stock_card) untouched."""
+    if not ttl:
+        return ""
+    return (
+        f'<span x-data="liveWidget({{ttl: {int(ttl)}}})" class="live-chrome flex items-center gap-1.5 shrink-0 self-center text-[0.6rem] text-slate-400">'
+        f'<span x-text="ago" title="last updated"></span>'
+        f'<button type="button" @click="toggle()" :class="auto ? \'text-emerald-300\' : \'text-white/40\'" '
+        f':title="auto ? \'Auto-refresh on\' : \'Auto-refresh off\'" class="uppercase tracking-wider hover:text-white">auto</button>'
+        f'<button type="button" @click="refresh()" title="Refresh now" class="text-white/50 hover:text-white flex" :class="busy ? \'animate-spin\' : \'\'">'
+        f'<span class="material-symbols-outlined text-[0.95rem]">refresh</span></button>'
+        f'</span>'
+    )
+
+
+def widget_header(title: str, icon: str = "widgets", subtitle: str = "", ask: str = "",
+                  live: int = 0) -> str:
     # Single row: the subtitle sits inline after the title rather than stacking a
     # second line under it, so the bar stays one line tall (~30px instead of ~44px)
     # and gives the space back to the widget body.
@@ -29,9 +81,12 @@ def widget_header(title: str, icon: str = "widgets", subtitle: str = "", ask: st
                 <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight shrink-0"{f' data-ask="{esc(ask)}" title="Ask about this"' if ask else ''}>{esc(title)}</h3>
                 {subtitle_html}
             </div>
-            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors shrink-0 ml-2 self-center">
-                <span class="material-symbols-outlined text-[1.1rem]">close</span>
-            </button>
+            <div class="flex items-center gap-2 shrink-0 ml-2">
+                {live_chrome(live)}
+                <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors shrink-0 self-center">
+                    <span class="material-symbols-outlined text-[1.1rem]">close</span>
+                </button>
+            </div>
         </div>
     """
 
@@ -1352,6 +1407,7 @@ def render_stock_card(widget_id: str, config: dict) -> str:
     return f"""
     <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[620px] group"
          x-data="stockCardWidget({json_escape(snapshot)})">
+        <div class="absolute top-4 right-12 z-20 opacity-60 group-hover:opacity-100 transition-opacity">{live_chrome(live_ttl("stock_card", config))}</div>
         <button title="Close Widget" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
         </button>
@@ -1487,6 +1543,7 @@ def render_crypto_card(widget_id: str, config: dict) -> str:
     return f"""
     <div id="{widget_id}" class="widget-container crypto-card col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col h-[560px] group"
          x-data="cryptoCardWidget({json_escape(snapshot)})">
+        <div class="absolute top-4 right-12 z-20 opacity-60 group-hover:opacity-100 transition-opacity">{live_chrome(live_ttl("crypto_card", config))}</div>
         <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn absolute top-4 right-4 text-white/40 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity z-20">
             <span class="material-symbols-outlined text-[1.2rem]">close</span>
         </button>
@@ -1756,7 +1813,7 @@ def render_scoreboard(widget_id: str, config: dict) -> str:
 
     return f"""
     <div id="{widget_id}" x-data="{{}}" class="widget-container scoreboard col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
-        {widget_header(title, "sports_soccer", subtitle)}
+        {widget_header(title, "sports_soccer", subtitle, live=live_ttl("scoreboard", config))}
         <ul class="flex flex-col gap-1.5 p-3 overflow-y-auto flex-grow custom-scrollbar">
             {body}
         </ul>
@@ -1807,7 +1864,7 @@ def render_weather(widget_id: str, config: dict) -> str:
 
     return f"""
     <div id="{widget_id}" x-data="{{}}" class="widget-container weather-widget col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-sky-900/70 via-slate-900/70 to-indigo-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[380px] group">
-        {widget_header(location, "partly_cloudy_day", condition)}
+        {widget_header(location, "partly_cloudy_day", condition, live=live_ttl("weather", config))}
         <div class="flex items-center justify-between px-6 pt-5 pb-2">
             <div class="flex flex-col">
                 <span class="text-6xl font-extralight tracking-tighter leading-none">{esc(temp) if temp is not None else '—'}<span class="text-3xl align-top text-slate-300 ml-0.5">{esc(unit)}</span></span>
