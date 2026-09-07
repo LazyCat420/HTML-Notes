@@ -113,3 +113,28 @@ def test_use_lazy_agent_default_and_comments_agree():
     assert "PRISM MODE (default)" not in MESSAGE_SRC
     js = (pathlib.Path(__file__).resolve().parent.parent / "app" / "static" / "index.js").read_text()
     assert "defaults it to False = PRISM MODE" not in js
+
+
+# ─── wants_multiple: keep the agent loop open only for a real compound ask ──
+# Observed at HEAD: the agent path kept its loop open after the first widget
+# whenever the ask contained a bare ',' or 'then' — "weather in tokyo, please"
+# counted as a multi-widget ask and the turn ran on to the iteration cap.
+
+@pytest.mark.parametrize("text", [
+    "weather in tokyo, please",
+    "clock then",
+    "set a timer, 5 minutes",
+    "what happened next, then?",
+])
+def test_punctuation_alone_is_not_a_multi_widget_ask(text):
+    assert m.wants_multiple_widgets(text, is_compound_ask=False) is False
+
+
+@pytest.mark.parametrize("text,compound", [
+    ("a clock and a chart", False),
+    ("tesla stock and news", True),
+    ("weather and also a map of seattle", False),
+    ("tell me everything about black holes", False),
+])
+def test_real_compound_asks_keep_the_loop_open(text, compound):
+    assert m.wants_multiple_widgets(text, is_compound_ask=compound) is True

@@ -298,3 +298,16 @@ def test_converter_is_not_deferred_to_the_agent():
     """Pins WHY the builder guard above must exist: a router converter pick is
     built locally and shipped, so the agent never sees it."""
     assert "converter" not in m._AGENT_RESEARCH_TYPES
+
+
+# ─── prompt rules 1 and 6 must not contradict ──────────────────────────────
+# Rule 1 says a greeting is answered in a sentence and nothing is built; rule 6
+# said EVERY turn ends in a canvas mutation. A model can only obey one of them.
+
+def test_prompt_rule_six_only_binds_after_a_tool_call():
+    assert "EVERY turn ends in a canvas mutation" not in SRC
+    assert "6. Once you have called ANY tool, the turn ends in a canvas mutation" in SRC
+
+
+def test_prompt_rule_one_still_allows_a_tool_free_answer():
+    assert "answer in one or two sentences and stop; do not build anything" in SRC

@@ -1391,7 +1391,7 @@ async def send_message(req: MessageRequest):
             "   Never mention widgets, cards, canvas, or that you added anything — the user can see the screen. If you genuinely found nothing, say what you couldn't find and why, in one sentence.\n"
             "   When the ask was a JUDGEMENT with numbers in it, that sentence carries the verdict AND the number: 'About 6 more minutes — pull it at 165F.' NOT 'Cooking times depend on thickness.' Answer the question that was asked.\n"
             "   Everything you write BEFORE your first tool call is discarded, so do your deciding there freely — but the user only ever sees the sentence you write AFTER the widget is up. Make that one count.\n"
-            "6. EVERY turn ends in a canvas mutation. You have NOT finished until canvas_add_widget (or canvas_modify_dom) has succeeded. Never end a turn having only searched, read or reasoned — if a tool fails, render what you already have rather than retrying forever or giving up silently.\n"
+            "6. Once you have called ANY tool, the turn ends in a canvas mutation. You have NOT finished until canvas_add_widget (or canvas_modify_dom) has succeeded. Never end a turn having only searched, read or reasoned — if a tool fails, render what you already have rather than retrying forever or giving up silently. (A tool-free answer under rule 1 is the one exception.)\n"
             "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
             "- content quality profile, trusted sources, burned sources, learning status → canvas_add_widget(widget_type='quality_profile', config={})\n"
@@ -1804,8 +1804,7 @@ async def send_message(req: MessageRequest):
             # me about X") where an explanation + supporting media serve it better than
             # a lone card. Those keep the loop open — but a hard cap stops a runaway
             # model from stacking widgets forever.
-            wants_multiple = bool(re.search(r'\band\b|\balso\b|,|\bthen\b', text_clean)) \
-                or bool(COMPOSE_ASK_RE.search(text_clean))
+            wants_multiple = wants_multiple_widgets(text_clean, is_compound_ask)
             _MAX_AGENT_WIDGETS = 4
             widgets_committed = 0
             # What the most recent commit actually rendered, recorded by

@@ -1884,6 +1884,24 @@ COMPOSE_ASK_RE = re.compile(
     r'(rundown|overview|breakdown|primer|picture)\b|teach me about|walk me through|'
     r'introduce me to|overview of|(a|an) (overview|introduction|primer) (on|of|to)|'
     r'what should i know about|get me up to speed on|brief me on)\b', re.I)
+# A conjunction that actually joins a SECOND thing to build: "a clock and a
+# chart", "weather and also a map". A bare comma or "then" is not that — "weather
+# in tokyo, please" used to keep the agent loop open past its first widget.
+_MULTI_WIDGET_RE = re.compile(
+    r"\b(?:and|also|plus|as well as)\s+(?:also\s+)?(?:a|an|another|some|the)\b", re.I)
+
+
+def wants_multiple_widgets(text_clean: str, is_compound_ask: bool) -> bool:
+    """Should the agent loop stay open after its first committed widget?
+
+    True only for a real compound ask: two detected intents joined by a
+    conjunction (`is_compound_ask`, computed in send_message), a conjunction
+    introducing a second noun phrase, or an explicit "whole picture" framing."""
+    if is_compound_ask:
+        return True
+    return bool(_MULTI_WIDGET_RE.search(text_clean) or COMPOSE_ASK_RE.search(text_clean))
+
+
 # Informational framing on a NEWS ask that wants a SYNTHESIZED brief (a written
 # answer + sources), not a wall of headline links. "tell me about the stock market
 # news", "what's happening in the markets", "summarize today's news", "catch me up".
