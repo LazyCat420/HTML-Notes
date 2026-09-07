@@ -37,6 +37,44 @@ async def api_actions_cancel(request: Request):
     return {"success": True}
 
 
+@router.get("/session/{session_id}/events")
+async def session_events(session_id: str):
+    """The idle-tab channel: SSE lines pushed between turns (a watch firing,
+    a refresh). Keepalive comments every 25 s; unsubscribes on disconnect."""
+    from app import canvas_manager as _cm
+    q = _cm.subscribe_session_events(session_id)
+
+    async def stream():
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    line = await asyncio.wait_for(q.get(), timeout=25.0)
+                    yield line
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            _cm.unsubscribe_session_events(session_id, q)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache, no-transform",
+                                      "X-Accel-Buffering": "no"})
+
+
+@router.get("/api/watches")
+async def api_watches(session_id: str = ""):
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    return {"watches": database.list_watches(session_id)}
+
+
+@router.delete("/api/watches/{watch_id}")
+async def api_watch_delete(watch_id: str, session_id: str = ""):
+    if not session_id or not database.delete_watch(watch_id, session_id):
+        raise HTTPException(status_code=404, detail="no such watch for this session")
+    return {"ok": True, "id": watch_id}
+
+
 @router.post("/api/widget/{session_id}/{widget_id}/refresh")
 async def api_widget_refresh(session_id: str, widget_id: str):
     """Re-pull and re-render ONE live widget in place — no agent turn, no

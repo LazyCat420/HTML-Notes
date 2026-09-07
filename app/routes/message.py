@@ -748,6 +748,28 @@ async def send_message(req: MessageRequest):
                         and (_explicit or not _has_widget_noun)):
                     return _stream_open_candidates(_open_cands)
 
+        # WATCH — a standing ask ("tell me when NVDA drops 3%", "watch the
+        # lakers game", "top stories every morning at 8", "keep this updated").
+        # Before the reminder lane ("every morning" is a briefing only WITH a
+        # briefing noun; parse_watch returns None otherwise and the reminder
+        # lane gets its turn) and before the video lanes ("watch the game" is
+        # not a video). Nothing here reaches the agent.
+        if WATCH_INTENT_RE.search(text_clean) and not wants_removal:
+            _wdefaults = canvas_defaults(req.session_id, req.current_canvas or "")
+            _wspec = await parse_watch(req.message, _wdefaults, focus_widget_id=req.focus_widget_id or "")
+            if _wspec:
+                _wrow = create_watch(req.session_id, _wspec["kind"], _wspec["spec"],
+                                     label=_wspec["label"], interval_s=_wspec.get("interval_s"))
+                if _wrow is None:
+                    return _stream_reply("You already have the maximum number of watches — "
+                                         "cancel one from the Watches card first.")
+                logger.info(f"[WATCH] created {_wrow['kind']} {_wrow['id']}: {_wrow['label']!r}")
+                return spawn_widget_stream(
+                    "watch", "watch", config=build_watch_list_config(req.session_id),
+                    status=f"watching: {_wrow['label']}...",
+                    widget_id=find_existing_widget(req.session_id, "watch"),
+                    debug_extra={"watch": _wrow["kind"]})
+
         # REMINDER / alarm — checked before the converter (a reminder can carry
         # a time that looks numeric) and before the clock timer branch.
         if REMINDER_INTENT_RE.search(text_clean):

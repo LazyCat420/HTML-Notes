@@ -838,6 +838,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Load history
     loadHistory();
+    if (window.HN && HN.openEventStream) HN.openEventStream();
 
     // Mute control, shared by the command-bar button AND the settings widget so
     // both stay in sync. Exposed on window.HN for the settings panel.
@@ -2285,6 +2286,47 @@ document.addEventListener("DOMContentLoaded", () => {
             return { ok: false };
         }
     };
+
+    // ─── THE IDLE-TAB CHANNEL ───────────────────────────────────────────────
+    // A watch fires between messages (see app/services/watches.py). This
+    // stream carries the exact `component` line the server committed — painted
+    // through the same versioned path as a turn — plus `notify` lines. Closed
+    // while the tab is hidden (nothing to paint), reopened on return; the
+    // browser's EventSource reconnects on its own after a drop.
+    let eventStream = null;
+    function openEventStream() {
+        if (eventStream || !state.sessionId || typeof EventSource === "undefined") return;
+        try {
+            eventStream = new EventSource(`/session/${encodeURIComponent(state.sessionId)}/events`);
+        } catch (e) { eventStream = null; return; }
+        eventStream.onmessage = (ev) => {
+            let d = null;
+            try { d = JSON.parse(ev.data); } catch (e) { return; }
+            if (!d) return;
+            if (d.type === "component" && d.content) {
+                HN.paintCanvas(d.content, d.version);
+                window.dispatchEvent(new CustomEvent("hn:watches"));
+            } else if (d.type === "notify") {
+                const title = String(d.title || "Canvas");
+                const body = String(d.body || "");
+                if (window.HN && HN.toast) HN.toast(`${title}: ${body}`);
+                try {
+                    if (window.Notification && Notification.permission === "granted") {
+                        new Notification(title, { body, silent: false });
+                    }
+                } catch (e) { /* notifications are a courtesy */ }
+                window.dispatchEvent(new CustomEvent("hn:watches"));
+            }
+        };
+        eventStream.onerror = () => { /* EventSource retries by itself */ };
+    }
+    function closeEventStream() {
+        if (eventStream) { try { eventStream.close(); } catch (e) {} eventStream = null; }
+    }
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) closeEventStream(); else openEventStream();
+    });
+    window.HN.openEventStream = openEventStream;
 
     window.HN.ask = function (text, opts) {
         opts = opts || {};

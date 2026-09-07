@@ -1184,10 +1184,14 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
 async def _lifespan(_app: FastAPI):
     await _warn_if_research_is_down()
     watchdog = asyncio.create_task(_mcp_watchdog())
+    # Standing asks (watches) — the one thing that puts a widget on the canvas
+    # without a message. Bounded builders only; see app/services/watches.py.
+    watch_task = asyncio.create_task(_watch_scheduler())
     try:
         yield
     finally:
         watchdog.cancel()
+        watch_task.cancel()
 
 
 app = FastAPI(
@@ -3272,6 +3276,8 @@ def extract_bare_app_name(text: str) -> Optional[str]:
 # this module's dict.
 from app.services.toolsvc import (TOOLSVC_KINDS, build_toolsvc_config,  # noqa: E402
                                   toolsvc_get, toolsvc_kind_for)
+from app.services.watches import (WATCH_INTENT_RE, WATCH_KINDS, build_watch_list_config,  # noqa: E402
+                                  create_watch, fire_watch, parse_watch, _watch_scheduler)
 
 # The subject kinds a widget can be ABOUT (the context bus).
 SUBJECT_KINDS = ("place", "ticker", "league", "coin", "person", "topic")

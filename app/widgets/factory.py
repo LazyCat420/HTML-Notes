@@ -1087,6 +1087,37 @@ def render_reminder(widget_id: str, config: dict) -> str:
     """
 
 
+def render_watch_list(widget_id: str, config: dict) -> str:
+    """The session's standing asks, with cancel. Rows come from the watches
+    table; the Alpine half (watchListWidget) removes a row on DELETE and
+    re-lists on the session event stream."""
+    watches = [w for w in (config.get("watches") or []) if isinstance(w, dict)]
+    rows = [{"id": str(w.get("id") or ""), "kind": str(w.get("kind") or ""),
+             "label": str(w.get("label") or w.get("kind") or ""),
+             "interval_s": int(w.get("interval_s") or 0), "fire_count": int(w.get("fire_count") or 0)}
+            for w in watches]
+    return f"""
+    <div id="{widget_id}" class="widget-container col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[280px] group"
+         x-data="watchListWidget({json_escape(rows)})">
+        {widget_header("Watches", "visibility", "standing asks")}
+        <div class="flex-grow overflow-y-auto p-3 space-y-2">
+            <template x-for="w in watches" :key="w.id">
+                <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10">
+                    <div class="min-w-0">
+                        <div class="text-sm text-white truncate" x-text="w.label"></div>
+                        <div class="text-[0.65rem] text-slate-400" x-text="cadence(w)"></div>
+                    </div>
+                    <button @click="cancel(w.id)" title="Cancel this watch" class="text-white/40 hover:text-red-400 transition-colors shrink-0">
+                        <span class="material-symbols-outlined text-[1.1rem]">close</span>
+                    </button>
+                </div>
+            </template>
+            <div x-show="!watches.length" class="text-xs text-slate-500 text-center py-6" style="display:none">No watches. Try "tell me when NVDA drops 3%".</div>
+        </div>
+    </div>
+    """
+
+
 def render_notes(widget_id: str, config: dict) -> str:
     """Markdown notes: edit ⇄ preview, interactive checklists, tables, tags, and
     Save-to-vault (writes a .md with frontmatter to the Obsidian vault). Typing
@@ -2781,6 +2812,7 @@ WIDGET_RENDERERS = {
     "reminder": render_reminder,
     "app_grid": render_app_grid,
     "custom": render_custom,
+    "watch": render_watch_list,
     "action_confirm": render_action_confirm,
     "quality_profile": render_quality_profile,
     # Widget-pack additions (2026-07-21): dense data, comparison and composite

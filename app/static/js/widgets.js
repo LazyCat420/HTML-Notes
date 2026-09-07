@@ -1847,6 +1847,41 @@ document.addEventListener('alpine:init', () => {
     // immediately); a 45s poll of /api/services refreshes status dots and picks
     // up newly registered services IN PLACE — Alpine state only, never a canvas
     // repaint, so live media elsewhere on the canvas is untouched.
+    // The session's standing asks (watches). Cancel is a session-scoped
+    // DELETE; the list re-syncs from /api/watches when the event stream says
+    // a watch fired or was removed.
+    Alpine.data('watchListWidget', (initial) => ({
+        watches: Array.isArray(initial) ? initial : [],
+        init() {
+            this._onSync = () => this.resync();
+            window.addEventListener('hn:watches', this._onSync);
+        },
+        destroy() {
+            if (this._onSync) window.removeEventListener('hn:watches', this._onSync);
+        },
+        cadence(w) {
+            const s = Number(w.interval_s || 0);
+            const every = s >= 3600 ? `${Math.round(s / 3600)}h` : s >= 60 ? `${Math.round(s / 60)}m` : `${s}s`;
+            return `${w.kind.replace('_', ' ')} · every ${every}` + (w.fire_count ? ` · fired ${w.fire_count}×` : '');
+        },
+        _session() {
+            try { return localStorage.getItem('html_notes_session_id') || ''; } catch (e) { return ''; }
+        },
+        async resync() {
+            try {
+                const res = await fetch(`/api/watches?session_id=${encodeURIComponent(this._session())}`);
+                if (res.ok) { const d = await res.json(); if (d && Array.isArray(d.watches)) this.watches = d.watches; }
+            } catch (e) { /* keep what we have */ }
+        },
+        async cancel(id) {
+            this.watches = this.watches.filter(w => w.id !== id);   // optimistic
+            try {
+                await fetch(`/api/watches/${encodeURIComponent(id)}?session_id=${encodeURIComponent(this._session())}`,
+                            { method: 'DELETE' });
+            } catch (e) { this.resync(); }
+        },
+    }));
+
     // Live widget chrome (scoreboard, weather, stock, crypto): a ⟳ button, an
     // auto toggle and "updated Ns ago". On its TTL it asks the server to
     // re-pull and re-render THIS widget in place (HN.refreshWidget → POST

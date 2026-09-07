@@ -176,7 +176,7 @@ def test_compose_lane_is_reachable_with_a_data_word(patch_server):
                 {"type": "image", "query": "gold bars"}]
     patch_server("build_composition_plan", fake_plan)
 
-    async def fake_build(spec, session_id, message_):
+    async def fake_build(spec, session_id, message_, defaults=None):
         return ("data_card", spec["type"], {"title": spec["type"], "answer": "x", "items": []})
     patch_server("build_router_widget", fake_build)
 

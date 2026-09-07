@@ -1,3 +1,4 @@
+import asyncio
 import html as html_module
 import re
 import sys
@@ -355,6 +356,43 @@ def find_reuse_target(session_id: str, widget_type: str,
     if _is_refining_followup(message) and len(_subject_tokens(message)) < 2:
         return candidates[-1][2]
     return None
+
+
+# ── Session event stream: push without a turn ───────────────────────────────
+# A watch fires between messages, so the browser needs a channel that is open
+# while it is idle. GET /session/{id}/events wraps one of these queues; the
+# scheduler pushes the exact `component` line commit_canvas returned (so the
+# client's canvasVersion advances and the stale-snapshot guard stays happy)
+# plus a `notify` line.
+_session_event_queues: Dict[str, set] = {}
+
+
+def subscribe_session_events(session_id: str) -> "asyncio.Queue":
+    q: asyncio.Queue = asyncio.Queue(maxsize=64)
+    _session_event_queues.setdefault(session_id, set()).add(q)
+    return q
+
+
+def unsubscribe_session_events(session_id: str, q: "asyncio.Queue") -> None:
+    subs = _session_event_queues.get(session_id)
+    if subs:
+        subs.discard(q)
+        if not subs:
+            _session_event_queues.pop(session_id, None)
+
+
+def push_session_event(session_id: str, sse_line: str) -> int:
+    """Deliver one SSE line to every open stream for the session. Returns the
+    number of subscribers reached (0 when no tab is open — that is fine, the
+    canvas is already committed and history will show it on the next load)."""
+    n = 0
+    for q in list(_session_event_queues.get(session_id, ())):
+        try:
+            q.put_nowait(sse_line)
+            n += 1
+        except asyncio.QueueFull:
+            logger.warning(f"[EVENTS] dropping event for a slow subscriber session={session_id[:8]}")
+    return n
 
 
 # ── The context bus: subjects ───────────────────────────────────────────────

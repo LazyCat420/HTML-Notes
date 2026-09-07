@@ -1,4 +1,5 @@
 import sqlite3
+import time
 import json
 import os
 from typing import List, Dict, Any, Optional
@@ -75,6 +76,24 @@ def init_db():
     # "this one sucks, find another" / "this channel sucks" are remembered
     # forever. Kept generic (category + key + JSON value) so future preferences
     # and remembered facts can reuse it instead of growing one table per feature.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS watches (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        spec TEXT NOT NULL,
+        label TEXT,
+        interval_s INTEGER NOT NULL,
+        next_run REAL NOT NULL,
+        expires REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        last_fired REAL,
+        fire_count INTEGER DEFAULT 0,
+        last_fp TEXT,
+        active INTEGER DEFAULT 1
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS watches_due ON watches(active, next_run)")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS agent_memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,5 +573,91 @@ def wipe_user_facts() -> int:
     cursor.execute("DELETE FROM agent_memory WHERE category = ?", (_USER_PROFILE_CAT,))
     n = cursor.rowcount
     conn.commit()
+    conn.close()
+    return n
+
+
+# ── Watches (standing asks) — see app/services/watches.py ──────────────────
+
+def _watch_row(r) -> Dict[str, Any]:
+    d = dict(r)
+    try:
+        d["spec"] = json.loads(d.get("spec") or "{}")
+    except Exception:
+        d["spec"] = {}
+    return d
+
+
+def create_watch(row: Dict[str, Any]) -> None:
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO watches (id, session_id, kind, spec, label, interval_s, next_run, expires,
+                                created_at, fire_count, active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)""",
+        (row["id"], row["session_id"], row["kind"], json.dumps(row.get("spec") or {}),
+         row.get("label") or "", int(row["interval_s"]), float(row["next_run"]),
+         float(row["expires"]), datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_watch(watch_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    r = conn.execute("SELECT * FROM watches WHERE id = ?", (watch_id,)).fetchone()
+    conn.close()
+    return _watch_row(r) if r else None
+
+
+def list_watches(session_id: str) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM watches WHERE session_id = ? AND active = 1 ORDER BY created_at",
+                        (session_id,)).fetchall()
+    conn.close()
+    return [_watch_row(r) for r in rows]
+
+
+def count_watches() -> int:
+    conn = get_connection()
+    n = conn.execute("SELECT COUNT(*) FROM watches WHERE active = 1").fetchone()[0]
+    conn.close()
+    return int(n or 0)
+
+
+def due_watches(now: float) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM watches WHERE active = 1 AND next_run <= ? AND expires > ? "
+                        "ORDER BY next_run", (float(now), float(now))).fetchall()
+    conn.close()
+    return [_watch_row(r) for r in rows]
+
+
+def mark_watch_run(watch_id: str, next_run: float, last_fp: Optional[str], fired: bool) -> None:
+    conn = get_connection()
+    if fired:
+        conn.execute("UPDATE watches SET next_run = ?, last_fp = ?, last_fired = ?, "
+                     "fire_count = fire_count + 1 WHERE id = ?",
+                     (float(next_run), last_fp, time.time(), watch_id))
+    else:
+        conn.execute("UPDATE watches SET next_run = ?, last_fp = ? WHERE id = ?",
+                     (float(next_run), last_fp, watch_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_watch(watch_id: str, session_id: str) -> bool:
+    """Session-scoped: a watch can only be cancelled by the session that owns it."""
+    conn = get_connection()
+    cur = conn.execute("DELETE FROM watches WHERE id = ? AND session_id = ?", (watch_id, session_id))
+    conn.commit()
+    n = cur.rowcount
+    conn.close()
+    return n > 0
+
+
+def expire_watches(now: float) -> int:
+    conn = get_connection()
+    cur = conn.execute("DELETE FROM watches WHERE expires <= ?", (float(now),))
+    conn.commit()
+    n = cur.rowcount
     conn.close()
     return n

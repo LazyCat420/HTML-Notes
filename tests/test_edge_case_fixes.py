@@ -671,7 +671,7 @@ async def test_build_router_widget_clock_and_traffic(patch_server):
     assert cfg["mode"] == "countdown" and cfg["duration_seconds"] == 300
     # traffic delegates to build_traffic_widget's (type, cfg) contract
     seen = {}
-    async def fake_traffic(msg, force_traffic=False):
+    async def fake_traffic(msg, force_traffic=False, **_kw):
         seen["force_traffic"] = force_traffic
         return "iframe_app", {"url": "https://maps.google.com/maps?q=x&output=embed"}
     patch_server("build_traffic_widget", fake_traffic)
