@@ -577,6 +577,25 @@ async def widget_map(d: str = ""):
                         headers={"Cache-Control": "public, max-age=3600"})
 
 
+@router.get("/widgets/custom/{widget_id}", include_in_schema=False)
+async def widget_custom(widget_id: str):
+    """The document behind a `custom` widget's sandboxed iframe. The model's
+    {title, html, css, js} was persisted under widget_state 'custom:<id>' by
+    the create_widget injector (so it survives a restart and a canvas
+    round-trip); an unknown id is a 404, never an empty document. no-store:
+    update_widget rewrites the stored doc and the iframe must see it."""
+    from app.widgets.factory import custom_document_html
+    raw = database.get_widget_state(f"custom:{widget_id}")
+    if not raw:
+        raise HTTPException(status_code=404, detail="no such custom widget")
+    try:
+        cfg = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=404, detail="corrupt custom widget")
+    return HTMLResponse(custom_document_html(widget_id, cfg),
+                        headers={"Cache-Control": "no-store"})
+
+
 @router.get("/widgets/map/traffic/{z}/{x}/{y}.png", include_in_schema=False)
 async def widget_traffic_tile(z: int, x: int, y: int):
     """Server-side proxy for TomTom traffic-flow tiles. Holds the key so it never

@@ -1449,7 +1449,8 @@ async def send_message(req: MessageRequest):
             "- APPEARANCE / theme / colors ('dark mode', 'forest theme', 'make it pastel', 'egg colors'), OR settings/preferences → canvas_add_widget(widget_type='settings', config={'theme':'<what the user asked — e.g. dark, forest, pastel, egg, sunset, purple>'}). The server picks the CLOSEST palette from what you pass and applies it; omit 'theme' to just open settings without changing the look. This is the ONLY way to change the theme — never hand-edit colors. It's a singleton, so it updates in place.\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- EDIT an existing widget (change a timer's duration, a clock's timezone, a chart's data, swap the stock) → call canvas_add_widget AGAIN with the SAME widget_id from CURRENT CANVAS and the full updated config. It re-renders that widget in place — no duplicate. This is the ONLY way to change a clock/timer/stock/scoreboard/chart: canvas_modify_dom CANNOT rebuild these (they are server-rendered) and will break them. Example: to set the timer #clock-1 to 30s → canvas_add_widget(widget_type='clock', widget_id='clock-1', config={'mode':'countdown','duration_seconds':30}).\n"
-            "- REMOVE something, or tweak a hand-built custom widget → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove'|'replace') using an id from CURRENT CANVAS\n\n"
+            "- BUILD something that is not in the catalog ('build me a widget that…', 'add an audio box', a counter, a tracker, a tiny game) → mcp__lazy-tool-service__plan_widget(widgetType='custom', title, description) FIRST, then mcp__lazy-tool-service__create_widget(widgetType='custom', title, htmlContent, cssContent, jsContent). Your HTML+JS run inside a sandboxed frame of their own: `container` is the root element, style it dark-on-transparent, keep state in JS variables, no external scripts, no fetch. To change it later call mcp__lazy-tool-service__update_widget(widgetId='<its id from CURRENT CANVAS>', …) with only the fields that change.\n"
+            "- REMOVE something → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove') using an id from CURRENT CANVAS\n\n"
             "ANSWER FROM DATA, NEVER FROM MEMORY\n"
             "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first.\n"
             "For a data_card, prefer the search_query path above: pass config={'search_query': '<query>'} and let the server write the summarised answer with sources. Only hand-build config.items when you have specific structured rows that no search summary would capture — and then every item still needs a 'description' with the real information, never just a title and a link.\n\n"
@@ -2495,72 +2496,26 @@ async def send_message(req: MessageRequest):
 
                         logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
                     elif tool_name == "mcp__lazy-tool-service__create_widget":
-                        widget_type = tool_args.get("widgetType", "custom")
-                        title = tool_args.get("title", "Widget")
-                        html_content = tool_args.get("htmlContent", "")
-                        css_content = tool_args.get("cssContent", "")
-                        js_content = tool_args.get("jsContent", "")
-
-                        # Guardrails on the one path that used to interpolate
-                        # model output RAW into live markup + a live <script>.
-                        # Title is plain text — escape it (a title like
-                        # '</div><script>…' broke out of the header). htmlContent
-                        # goes through the same audit the notes path has always
-                        # had (html_notes_create_note → audit_html_fragment);
-                        # a fragment that fails the audit is rendered as escaped
-                        # text instead of markup. jsContent still executes (it IS
-                        # the custom-widget feature) but it stays inside the
-                        # audited container and can no longer be smuggled in via
-                        # title/htmlContent breakouts.
-                        title = html_lib.escape(str(title or "Widget"))
-                        if html_content:
-                            try:
-                                from app.agents.auditor import audit_html_fragment
-                                audit_res = audit_html_fragment(html_content)
-                                if not audit_res.get("is_valid"):
-                                    logger.warning(
-                                        f"[WIDGET INJECTOR] create_widget htmlContent failed audit "
-                                        f"({audit_res.get('errors')}) — rendering as text")
-                                    html_content = (
-                                        f'<pre style="white-space:pre-wrap">'
-                                        f'{html_lib.escape(str(html_content))}</pre>')
-                            except Exception as ae:
-                                logger.warning(f"[WIDGET INJECTOR] htmlContent audit unavailable: {ae}")
-                        
-                        # Generate widget ID
+                        # A model-built widget is a FACTORY widget now: its
+                        # {title, html, css, js} is persisted and rendered as
+                        # chrome around a sandboxed iframe (render_custom /
+                        # GET /widgets/custom/<id>). The old path interpolated
+                        # htmlContent and a live <script> straight into the
+                        # canvas, where the JS ran with the page's own origin.
+                        cfg = {
+                            "kind": str(tool_args.get("widgetType") or "custom"),
+                            "title": str(tool_args.get("title") or "Widget"),
+                            "html": str(tool_args.get("htmlContent") or ""),
+                            "css": str(tool_args.get("cssContent") or ""),
+                            "js": str(tool_args.get("jsContent") or ""),
+                        }
                         widget_id = f"widget-{uuid.uuid4().hex[:8]}"
-                        
-                        # Scope CSS
-                        scoped_css = ""
-                        if css_content:
-                            rules = []
-                            for rule in css_content.split("}"):
-                                if "{" in rule:
-                                    sel, body = rule.split("{", 1)
-                                    sel = sel.strip()
-                                    if sel and not sel.startswith("@"):
-                                        scoped_sel = ", ".join([f"#{widget_id} {s.strip()}" for s in sel.split(",")])
-                                        rules.append(f"{scoped_sel} {{{body}}}")
-                                    else:
-                                        rules.append(rule + "}")
-                            scoped_css = "\n".join(rules)
-                            
-                        # Wrap content
-                        html_snippet = f"""
-<div id="{widget_id}" class="glass-card canvas-widget" data-widget-type="{widget_type}">
-    <div class="glass-card-title">{title}</div>
-    <style>{scoped_css}</style>
-    <div class="widget-body">{html_content}</div>
-    <script>
-    (function() {{
-        const container = document.getElementById('{widget_id}');
-        {js_content}
-    }})();
-    </script>
-</div>
-"""
+                        database.set_widget_state(f"custom:{widget_id}", json.dumps(cfg))
+                        _remember_widget_config(req.session_id, widget_id, cfg)
+                        rendered = render_widget("custom", widget_id, cfg)
+
                         def _create(soup):
-                            snippet = BeautifulSoup(html_snippet, 'html.parser')
+                            snippet = BeautifulSoup(rendered, 'html.parser')
                             target = soup.select_one('#dashboard-grid')
                             if target:
                                 target.insert(0, snippet)
@@ -2570,7 +2525,7 @@ async def send_message(req: MessageRequest):
                         event = await emit(_create)
                         if event:
                             yield event
-                        logger.info(f"[WIDGET INJECTOR] Created and appended new {widget_type} widget")
+                        logger.info(f"[WIDGET INJECTOR] created sandboxed custom widget #{widget_id} ({cfg['kind']})")
                         logger.info("[FAST LOOP] Terminating early after create_widget to save latency")
                     elif tool_name == "mcp__lazy-tool-service__update_widget":
                         widget_id = tool_args.get("widgetId")
@@ -2595,6 +2550,30 @@ async def send_message(req: MessageRequest):
                             # Reject factory types outright and track whether
                             # anything matched.
                             stamped = (widget_div.get("data-widget-type") or "").strip()
+                            if stamped == "custom":
+                                # The sandboxed kind: merge the fields the model
+                                # sent into the stored document and re-render
+                                # through the factory. A new content hash ⇒ a
+                                # new data-sig ⇒ the client replaces the node
+                                # and the iframe reloads the updated document.
+                                try:
+                                    cfg = json.loads(database.get_widget_state(f"custom:{widget_id}") or "{}")
+                                except Exception:
+                                    cfg = {}
+                                changed = False
+                                for key, val in (("title", title), ("html", html_content),
+                                                 ("css", css_content), ("js", js_content)):
+                                    if val is not None:
+                                        cfg[key] = str(val)
+                                        changed = True
+                                if not changed:
+                                    logger.warning(f"[WIDGET INJECTOR] update_widget #{widget_id}: nothing to update — aborting")
+                                    return False
+                                database.set_widget_state(f"custom:{widget_id}", json.dumps(cfg))
+                                _remember_widget_config(req.session_id, widget_id, cfg)
+                                widget_div.replace_with(BeautifulSoup(
+                                    render_widget("custom", widget_id, cfg), 'html.parser'))
+                                return None
                             from app.widgets.factory import WIDGET_RENDERERS as _WR
                             if stamped in _WR:
                                 logger.warning(

@@ -2386,6 +2386,75 @@ def render_progress(widget_id: str, config: dict) -> str:
     """
 
 
+_CLOSER_RE = _re.compile(r"</(script|style)", _re.I)
+
+
+def _defang_closers(text: str) -> str:
+    """A model-written `</script>` inside jsContent (or `</style>` inside
+    cssContent) would end OUR element early and start a new one. `<\/script`
+    is a no-op inside a JS string and a broken tag everywhere else."""
+    return _CLOSER_RE.sub(lambda m: "<\\/" + m.group(1), str(text or "")).replace("<!--", "<\\!--")
+
+
+def custom_document_html(widget_id: str, config: dict) -> str:
+    """The standalone document a `custom` widget's iframe loads. It is served
+    by GET /widgets/custom/<id> inside sandbox="allow-scripts" (never
+    allow-same-origin), so the model's JS runs with an opaque origin: no
+    cookies, no localStorage of the app, no fetch as the user. That sandbox
+    is the guard — which is why the notes auditor is NOT applied here (it
+    forbids <button> and id=, i.e. the whole point of a custom widget).
+
+    The root div carries the widget id and is handed to the script as
+    `container`, matching what the old inline injector exposed."""
+    title = esc(config.get("title") or "Widget")
+    body = str(config.get("html") or "")
+    css = _defang_closers(config.get("css") or "")
+    js = _defang_closers(config.get("js") or "")
+    safe_id = _re.sub(r"[^A-Za-z0-9_-]", "", str(widget_id))
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+html,body{{margin:0;padding:0;background:transparent;color:#e2e8f0;font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}}
+*{{box-sizing:border-box}}
+.widget-body{{padding:12px;min-height:100vh}}
+button{{cursor:pointer;font:inherit;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:inherit}}
+button:hover{{background:rgba(255,255,255,.16)}}
+input,select,textarea{{font:inherit;color:inherit;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:4px 8px}}
+a{{color:#7dd3fc}}
+{css}
+</style></head>
+<body><div id="{safe_id}" class="widget-body">{body}</div>
+<script>
+(function() {{
+  const container = document.getElementById('{safe_id}');
+  const widget = container;
+  try {{
+{js}
+  }} catch (e) {{ console.error('custom widget error', e); }}
+}})();
+</script></body></html>"""
+
+
+def render_custom(widget_id: str, config: dict) -> str:
+    """A model-built widget: chrome around a sandboxed iframe that loads
+    /widgets/custom/<id>. The `?v=` rides the content hash so an
+    update_widget re-render (new data-sig ⇒ node replaced) also reloads the
+    document instead of serving the browser's cached copy."""
+    title = config.get("title") or "Widget"
+    subtitle = config.get("subtitle") or ""
+    content_hash = hashlib.md5(json.dumps(
+        {k: config.get(k) for k in ("title", "html", "css", "js")},
+        sort_keys=True, default=str).encode("utf-8")).hexdigest()[:10]
+    src = f"/widgets/custom/{urllib.parse.quote(str(widget_id), safe='')}?v={content_hash}"
+    return f"""
+    <div id="{widget_id}" class="widget-container relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[320px] group">
+        {widget_header(title, "extension", subtitle)}
+        <iframe src="{esc(src)}" title="{esc(title)}" class="w-full flex-grow border-none bg-transparent" sandbox="allow-scripts"></iframe>
+    </div>
+    """
+
+
 def render_app_grid(widget_id: str, config: dict) -> str:
     """The App Hub: a launcher grid of every service portal-service knows about.
     One singleton per canvas. Entirely Alpine-driven (like stock_card): the
@@ -2628,6 +2697,7 @@ WIDGET_RENDERERS = {
     "converter": render_converter,
     "reminder": render_reminder,
     "app_grid": render_app_grid,
+    "custom": render_custom,
     "action_confirm": render_action_confirm,
     "quality_profile": render_quality_profile,
     # Widget-pack additions (2026-07-21): dense data, comparison and composite

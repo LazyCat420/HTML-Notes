@@ -311,3 +311,14 @@ def test_prompt_rule_six_only_binds_after_a_tool_call():
 
 def test_prompt_rule_one_still_allows_a_tool_free_answer():
     assert "answer in one or two sentences and stop; do not build anything" in SRC
+
+
+# ─── the build route: plan_widget → create_widget, edits via update_widget ──
+
+def test_prompt_routes_builds_through_plan_then_create_widget():
+    i_plan = SRC.index("mcp__lazy-tool-service__plan_widget(widgetType='custom'")
+    i_create = SRC.index("mcp__lazy-tool-service__create_widget(widgetType='custom'")
+    assert i_plan < i_create, "plan_widget must be taught before create_widget"
+    assert "sandboxed frame" in SRC
+    assert "mcp__lazy-tool-service__update_widget(widgetId=" in SRC
+    assert "tweak a hand-built custom widget → mcp__lazy-tool-service__canvas_modify_dom" not in SRC
