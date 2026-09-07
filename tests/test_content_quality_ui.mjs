@@ -33,7 +33,7 @@ test('index.js implements voteContent handler with delegation', () => {
     assert(INDEX_JS.includes('/quality/vote'), 'API call to /quality/vote missing');
 });
 
-test('index.html references bumped v3.4 script and v3.3 css for cache busting', () => {
-    assert(INDEX_HTML.includes('index.css?v=3.3'), 'index.css version not updated');
-    assert(INDEX_HTML.includes('index.js?v=3.4'), 'index.js version not updated');
+test('index.html references bumped v3.5 script and v3.4 css for cache busting', () => {
+    assert(INDEX_HTML.includes('index.css?v=3.4'), 'index.css version not updated');
+    assert(INDEX_HTML.includes('index.js?v=3.5'), 'index.js version not updated');
 });

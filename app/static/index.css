@@ -2686,3 +2686,9 @@ body.has-rail .live-canvas { padding-left: calc(52px + 1.5rem); }
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
     border: 1px solid rgba(255, 255, 255, 0.14);
 }
+
+/* ── data-ask: the canvas as an input device ─────────────────────────────── */
+/* Anything stamped data-ask is a one-click follow-up (see index.js
+   delegateAsks). Quiet until hovered, so cards do not read as link soup. */
+.widget-container [data-ask] { cursor: pointer; }
+.widget-container [data-ask]:hover { text-decoration: underline dotted; text-underline-offset: 3px; }

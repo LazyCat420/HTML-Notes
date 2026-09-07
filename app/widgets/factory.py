@@ -14,7 +14,7 @@ def esc(val: Any) -> str:
 
 # Widget chrome shared by every server-rendered widget: a header bar with an
 # icon, a title and a close button that works with or without Alpine.
-def widget_header(title: str, icon: str = "widgets", subtitle: str = "") -> str:
+def widget_header(title: str, icon: str = "widgets", subtitle: str = "", ask: str = "") -> str:
     # Single row: the subtitle sits inline after the title rather than stacking a
     # second line under it, so the bar stays one line tall (~30px instead of ~44px)
     # and gives the space back to the widget body.
@@ -26,7 +26,7 @@ def widget_header(title: str, icon: str = "widgets", subtitle: str = "") -> str:
         <div class="widget-header flex items-center justify-between bg-black/30 px-3 py-1.5 border-b border-white/10 relative z-20 shrink-0">
             <div class="flex items-baseline gap-2 min-w-0">
                 <span class="material-symbols-outlined text-[1rem] text-purple-300 self-center shrink-0">{esc(icon)}</span>
-                <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight shrink-0">{esc(title)}</h3>
+                <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight shrink-0"{f' data-ask="{esc(ask)}" title="Ask about this"' if ask else ''}>{esc(title)}</h3>
                 {subtitle_html}
             </div>
             <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors shrink-0 ml-2 self-center">
@@ -372,7 +372,11 @@ def render_data_card(widget_id: str, config: dict) -> str:
         # affordance below it. When an item arrives with no description, a linked
         # title collapses the whole card into a row of naked hyperlinks, which is
         # exactly the thing the user has to click to get the information back.
-        title_html = f'<span class="text-sm font-semibold text-white leading-snug">{esc(i_title)}</span>'
+        # data-ask: one click = "tell me more about <headline>"; data-ask-focus
+        # keeps this card as the follow-up target so the answer lands IN it.
+        title_html = (f'<span class="text-sm font-semibold text-white leading-snug" '
+                      f'data-ask="tell me more about {esc(i_title)}" data-ask-focus="1" '
+                      f'title="Ask about this">{esc(i_title)}</span>')
         source_html = (
             f'<a href="{esc(i_url)}" target="_blank" rel="noopener" '
             f'class="item-source text-[0.65rem] text-purple-300/70 hover:text-purple-200 hover:underline truncate">'
@@ -633,7 +637,7 @@ def render_products(widget_id: str, config: dict) -> str:
                 {media}
                 <div class="flex flex-col gap-1 min-w-0 flex-grow">
                     <div class="flex items-start justify-between gap-2">
-                        <span class="text-sm font-semibold text-white leading-snug line-clamp-2">{esc(i_title)}</span>
+                        <span class="text-sm font-semibold text-white leading-snug line-clamp-2" data-ask="more about {esc(i_title)}" title="Ask about this">{esc(i_title)}</span>
                         {price_html}
                     </div>
                     {f'<div class="text-xs text-slate-300 leading-relaxed line-clamp-3">{esc(i_desc)}</div>' if i_desc else ''}
@@ -1217,7 +1221,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                     <span class="material-symbols-outlined text-[0.9rem] text-purple-300/60 shrink-0">music_note</span>
                     <div class="min-w-0 flex-grow">
                         <div class="truncate text-white/90" x-text="item.t.title"></div>
-                        <div class="truncate text-purple-300/70 text-[10px]" x-text="item.t.artist"></div>
+                        <div class="truncate text-purple-300/70 text-[10px] hover:text-purple-200" x-text="item.t.artist" :data-ask="'who is ' + item.t.artist" title="Ask about this artist"></div>
                     </div>
                     <button @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
                         <span class="material-symbols-outlined text-[0.9rem]">close</span>
@@ -1706,7 +1710,7 @@ def render_scoreboard(widget_id: str, config: dict) -> str:
             <div class="flex items-center justify-between gap-2 py-0.5">
                 <div class="flex items-center gap-2 min-w-0">
                     {badge}
-                    <span class="text-[0.8rem] truncate {name_cls}">{name}</span>
+                    <span class="text-[0.8rem] truncate {name_cls}" data-ask="{esc((side.get("name") or "TBD") + " news")}" title="Ask about this team">{name}</span>
                     {record_html}
                 </div>
                 <span class="text-sm tabular-nums shrink-0 {score_cls}">{esc(score if score not in (None, "") else "—")}</span>
@@ -1887,6 +1891,7 @@ def map_document_html(payload: dict, traffic_tiles_url: str = "") -> str:
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>html,body,#map{height:100%;margin:0;background:#0f172a}.leaflet-popup-content{font:13px system-ui}
+.hn-ask-row{margin-top:6px;display:flex;gap:6px}.hn-ask{cursor:pointer;font:12px system-ui;padding:2px 8px;border-radius:999px;border:1px solid #94a3b8;background:#1e293b;color:#e2e8f0}.hn-ask:hover{background:#334155}
 .emoji-pin{display:flex;align-items:center;justify-content:center;width:32px;height:32px;font-size:20px;line-height:1;
   background:rgba(15,23,42,0.92);border:2px solid var(--pc,#f97316);border-radius:50% 50% 50% 0;
   transform:rotate(-45deg);box-shadow:0 2px 6px rgba(0,0,0,0.5)}
@@ -1908,11 +1913,27 @@ var pts=[];
   }else{
     mk=L.circleMarker([m.lat,m.lon],{radius:8,color:c,fillColor:c,fillOpacity:0.65,weight:2}).addTo(map);
   }
-  mk.bindPopup('<b>'+(m.label||'')+'</b>'+(m.detail?'<br>'+m.detail:''));
+  // Popup built as DOM so a label can never inject markup; the two buttons
+  // hand the ask to the parent page (this frame is sandboxed, origin null).
+  var pop=document.createElement('div');
+  pop.innerHTML='<b>'+(m.label||'')+'</b>'+(m.detail?'<br>'+m.detail:'');
+  if(m.label){
+    var row=document.createElement('div'); row.className='hn-ask-row';
+    [['Ask ↗','tell me about '+m.label],['Weather','weather in '+m.label]].forEach(function(b){
+      var btn=document.createElement('button'); btn.className='hn-ask'; btn.type='button';
+      btn.textContent=b[0]; btn.setAttribute('data-q',b[1]); row.appendChild(btn);
+    });
+    pop.appendChild(row);
+  }
+  mk.bindPopup(pop);
   if(m.label){mk.bindTooltip(m.label,{direction:'top'});}
   pts.push([m.lat,m.lon]);
 });
 if(pts.length>1){try{map.fitBounds(pts,{padding:[25,25],maxZoom:12});}catch(e){}}
+document.addEventListener('click',function(e){
+  var b=e.target&&e.target.closest?e.target.closest('.hn-ask'):null; if(!b)return;
+  e.preventDefault(); parent.postMessage({type:'hn-ask',text:b.getAttribute('data-q')||''},'*');
+});
 </script></body></html>"""
     return body.replace("__DATA__", data_json).replace("__TRAFFIC_LAYER__", traffic_js)
 
@@ -2052,8 +2073,12 @@ def render_table(widget_id: str, config: dict) -> str:
     head = "".join(
         f'<th class="{"text-right" if c["numeric"] else "text-left"} font-semibold text-white px-2.5 py-1.5 '
         f'border-b border-white/15 whitespace-nowrap">{esc(c["label"])}</th>' for c in cols)
+    def _row_ask(r):
+        v = r.get(cols[0]["key"]) if cols else None
+        v = "" if v is None else str(v).strip()
+        return f' data-ask="{esc(v)}"' if v and not cols[0]["numeric"] else ""
     body = "".join(
-        "<tr class='hover:bg-white/5 transition-colors'>" + "".join(
+        f"<tr class='hover:bg-white/5 transition-colors'{_row_ask(r)}>" + "".join(
             f'<td class="px-2.5 py-1.5 border-b border-white/5 align-top text-sm '
             f'{"text-right tabular-nums" if c["numeric"] else "text-left"}">{_cell(c, r.get(c["key"]))}</td>'
             for c in cols) + "</tr>"
@@ -2324,7 +2349,7 @@ def render_profile_card(widget_id: str, config: dict) -> str:
 
     return f"""
     <div id="{widget_id}" x-data="{{}}" class="widget-container profile-widget col-span-1 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[460px] group">
-        {widget_header(title, "person", subtitle)}
+        {widget_header(title, "person", subtitle, ask=f"{title} news")}
         <div class="flex flex-col gap-3 p-4 overflow-y-auto flex-grow custom-scrollbar">
             {visual}
             {facts_html}
@@ -2494,6 +2519,7 @@ def render_app_grid(widget_id: str, config: dict) -> str:
                             </span>
                             <span class="text-[0.7rem] font-semibold text-white text-center leading-tight line-clamp-2"
                                   x-text="app.name"></span>
+                            <span class="hn-ask-chip text-[0.6rem] text-white/40 hover:text-white/90 ml-1" :data-ask="'tell me about ' + app.name" title="Ask about this app">?</span>
                             <span class="text-[0.55rem] text-slate-400" x-show="app.pinned">📌</span>
                         </a>
                         <div class="absolute top-1 right-1 hidden group-hover/tile:flex gap-0.5">

@@ -627,6 +627,43 @@ document.addEventListener("DOMContentLoaded", () => {
         canvas.addEventListener("focusin", remember, true);
     })();
 
+    // ─── THE CANVAS AS AN INPUT DEVICE ──────────────────────────────────────
+    // Any element carrying data-ask="<utterance>" is a one-click follow-up:
+    // a headline, a team, a table row, a person, a queued artist. ONE
+    // delegated capture-phase handler (so it survives reconcileCanvas
+    // replacing nodes, and wins over a wrapping <a>'s navigation) turns the
+    // click into HN.ask(). data-ask-focus keeps the clicked widget as the
+    // follow-up target so the answer lands in it. Modifier-clicks are left
+    // alone so a link inside can still be opened in a new tab.
+    (function delegateAsks() {
+        const canvas = document.getElementById("live-canvas");
+        if (!canvas) return;
+        canvas.addEventListener("click", (e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+            const t = e.target.closest?.("[data-ask]");
+            if (!t || !canvas.contains(t)) return;
+            const text = t.getAttribute("data-ask");
+            if (!text) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (window.HN && HN.ask) HN.ask(text, { keepFocus: t.hasAttribute("data-ask-focus") });
+        }, true);
+        // A sandboxed iframe (the map) cannot reach the parent DOM; it posts
+        // {type:"hn-ask"}. Accept it ONLY from a frame that is on the canvas
+        // (source check) and sandboxed (opaque origin, serialised as "null").
+        window.addEventListener("message", (e) => {
+            const d = e.data;
+            if (!d || d.type !== "hn-ask" || typeof d.text !== "string") return;
+            if (e.origin !== "null") return;
+            let fromCanvas = false;
+            canvas.querySelectorAll("iframe").forEach(f => {
+                if (f.contentWindow === e.source) fromCanvas = true;
+            });
+            if (!fromCanvas) return;
+            if (window.HN && HN.ask) HN.ask(d.text.slice(0, 300));
+        });
+    })();
+
     // Broken-image gate. Widget images come from third-party og:image / thumbnail
     // URLs that frequently hotlink-block or 404, and an <img> that fails shows a
     // broken-frame icon. Inline onerror handlers get stripped by the canvas
@@ -1575,7 +1612,10 @@ document.addEventListener("DOMContentLoaded", () => {
             'x-transition', 'x-cloak', 'x-init', 'x-ref', 'x-for', ':class',
             ':style', 'id', 'placeholder', 'value', 'x-if', ':src', ':key',
             ':disabled', 'allow', 'allowfullscreen', 'sandbox',
-            'target', 'rel', 'loading'
+            'target', 'rel', 'loading',
+            // data-ask itself is a data-* attr (allowed by default); the
+            // Alpine-BOUND form on x-for rows needs listing.
+            ':data-ask'
         ],
         FORCE_BODY: true
     };
@@ -2219,10 +2259,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // click that triggered this landed INSIDE a widget, and letting it ride as
     // focus_widget_id would invite the server to edit that widget in place
     // instead of spawning the asked-for one.
-    window.HN.ask = function (text) {
+    window.HN.ask = function (text, opts) {
+        opts = opts || {};
         text = String(text || "").trim();
         if (!text) return;
-        state.focusWidgetId = null;
+        // keepFocus: a data-ask-focus target (a headline inside a card) WANTS
+        // the answer to land in that card, so the focus the pointerdown just
+        // stamped is the right hint. Every other chrome-driven ask clears it.
+        if (!opts.keepFocus) state.focusWidgetId = null;
         appendChatMessageToHistory("user", text);
         chatQueue.push(text);
         updateQueueIndicator();
