@@ -58,6 +58,25 @@ PAYLOADS = {
          "changePercent": 8.32, "unit": "USD/barrel"}], "losers": [
         {"ticker": "NEAR-USD", "name": "NEAR Protocol", "price": 2.34, "change": -0.09,
          "changePercent": -3.77, "unit": "USD"}]},
+    "http://10.0.0.16:8801/api/status": {
+        "comfy_head": {"active": False, "enabled": False, "queue": None},
+        "deepseek": {"desired": True, "phase": "running", "id": "GLM-5.3-Flash-EXL3", "health": "Up 39 hours",
+                     "activity": {"running": 1, "waiting": 0, "tok_s": 22.9, "kv_pct": 13.4,
+                                  "prefix_hit_pct": 68.9, "ttft_avg_s": 45.55}}},
+    "http://10.0.0.16:8888/api/v1/portfolio/performance": {
+        "bot_id": "test_bot", "current_value": 103809.38, "cash": 24432.39, "pnl": 3809.38, "pnl_pct": 3.81,
+        "realized_pnl": 2257.54, "win_rate": 28.57, "total_trades": 59, "open_positions": 27},
+    "http://10.0.0.16:8888/api/v1/portfolio": {"total_value": 103809.38, "positions": [
+        {"ticker": "ALLY", "qty": 157.99, "avg_entry_price": 45.59, "current_price": 43.73, "sector": None},
+        {"ticker": "AMD", "qty": 0.74, "avg_entry_price": 477.6, "current_price": 500.0, "sector": "Information Technology"}]},
+    "http://10.0.0.16:8888/api/v1/watchlist": [
+        {"ticker": "SCHD", "source": "portfolio_nav", "added_at": "2026-09-06T05:31:06", "health_score": 50}],
+    "http://10.0.0.16:8888/api/v1/sectors/market-regime": {"regime": {
+        "date": "2026-09-07T00:00:00", "breadth_sp500": 50.0, "dollar_change_5d": -0.55, "dollar_index": 99.12,
+        "regime_label": "Neutral", "vix_signal": "Normal", "vix_term_signal": "Normal", "yield_signal": "Normal",
+        "yield_2y10y_spread": 0.0}},
+    "http://10.0.0.16:5050/api/dashboard/stats": {"active_pests": 0, "active_plants": 3, "pending_tasks": 2,
+                                                  "recent_harvests": 1, "tasks_due_soon": 1},
     "/trend/trends": {"count": 2, "trends": [
         {"name": "Small thing", "source": "mastodon", "volume": 12, "url": "https://m/1"},
         {"name": "Killing of the Clancy children", "source": "wikipedia", "volume": 466193,
@@ -134,6 +153,43 @@ async def test_flares_commodities_and_trends_are_tables(fake_toolsvc):
 
 
 @pytest.mark.asyncio
+async def test_the_users_own_services_render_as_kpi_rows_and_tables(fake_toolsvc):
+    wtype, prefix, cfg = await m.build_toolsvc_config("spark")
+    assert (wtype, prefix) == ("kpi_row", "spark")
+    assert any("tok/s" in x["label"] for x in cfg["metrics"]) and "GLM-5.3-Flash-EXL3" in cfg["subtitle"]
+    wtype, prefix, cfg = await m.build_toolsvc_config("portfolio")
+    assert wtype == "kpi_row" and any(x["label"] == "P&L" and x["delta"] == "+3.81%" for x in cfg["metrics"])
+    wtype, prefix, cfg = await m.build_toolsvc_config("positions")
+    assert wtype == "table" and cfg["rows"][0]["ticker"] == "ALLY" and cfg["rows"][1]["pnl_pct"] == 4.69
+    wtype, prefix, cfg = await m.build_toolsvc_config("watchlist")
+    assert wtype == "table" and cfg["rows"][0]["ticker"] == "SCHD"
+    wtype, prefix, cfg = await m.build_toolsvc_config("market_regime")
+    assert wtype == "kpi_row" and cfg["metrics"][0]["value"] == "Neutral"
+    wtype, prefix, cfg = await m.build_toolsvc_config("garden")
+    assert wtype == "kpi_row" and cfg["metrics"][0]["value"] == "3"
+
+
+@pytest.mark.asyncio
+async def test_absolute_urls_bypass_the_tools_service_base(monkeypatch):
+    seen = []
+
+    class _Resp:
+        status_code = 200
+        def json(self): return {"ok": True}
+
+    class _Client:
+        def __init__(self, timeout=None): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def get(self, url, params=None):
+            seen.append(url); return _Resp()
+    monkeypatch.setattr(toolsvc.httpx, "AsyncClient", _Client)
+    await toolsvc.toolsvc_get("http://10.0.0.16:8801/api/status")
+    await toolsvc.toolsvc_get("/weather/iss")
+    assert seen == ["http://10.0.0.16:8801/api/status", f"{toolsvc.TOOLS_SERVICE_URL}/weather/iss"]
+
+
+@pytest.mark.asyncio
 async def test_apod_with_no_data_is_an_honest_card_not_a_broken_image(fake_toolsvc):
     wtype, prefix, cfg = await m.build_toolsvc_config("apod")
     assert wtype == "data_card" and "not published" in cfg["answer"].lower()
@@ -165,6 +221,15 @@ async def test_a_dead_source_builds_nothing(patch_server):
     ("commodities today", "commodities"),
     ("what's trending right now", "trends"),
     ("trending topics", "trends"),
+    ("how are the sparks doing", "spark"),
+    ("gpu status", "spark"),
+    ("my portfolio", "portfolio"),
+    ("how's the bot doing", "portfolio"),
+    ("what am I holding", "positions"),
+    ("my open positions", "positions"),
+    ("show my watchlist", "watchlist"),
+    ("are we risk-on or risk-off", "market_regime"),
+    ("how's my garden", "garden"),
 ])
 def test_ask_table_maps_phrasings_to_kinds(text, kind):
     assert m.toolsvc_kind_for(text) == kind
@@ -177,6 +242,8 @@ def test_ask_table_maps_phrasings_to_kinds(text, kind):
     "weather in tokyo",
     "add a chart of nvidia",
     "moon by pink floyd",
+    "watch the lakers game",          # a watch, not the watchlist
+    "tell me when NVDA drops 3%",
 ])
 def test_ask_table_leaves_neighbouring_asks_alone(text):
     assert m.toolsvc_kind_for(text) is None
@@ -296,8 +363,8 @@ def test_agent_can_ask_for_a_kind_and_the_server_fills_the_widget(fake_toolsvc, 
 
 def test_action_registry_exposes_every_kind_read_only():
     reg = json.load(open(os.path.join(os.path.dirname(m.__file__), "app_actions.json")))
-    block = reg["actions"].get("tools-service") or {}
     for kind, spec in toolsvc.TOOLSVC_KINDS.items():
+        block = reg["actions"].get(spec.get("app_id", "tools-service")) or {}
         assert kind in block, f"{kind} missing from app_actions.json"
         assert block[kind]["method"] == "GET" and block[kind]["destructive"] is False
         assert block[kind]["url"].endswith(spec["path"])

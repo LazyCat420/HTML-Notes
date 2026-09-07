@@ -50,6 +50,25 @@ TOOLSVC_KINDS = {
                     "catalog": 'COMMODITY / index / crypto MOVERS — biggest gainers and losers (oil, gold, indices). query ignored'},
     "trends": {"path": "/trend/trends", "widget": "table", "prefix": "trends",
                "catalog": "WHAT'S TRENDING right now across Google, Wikipedia, HN, Mastodon, Bluesky, GitHub, TV. NOT for trending STOCKS (that is stock_trending). query ignored"},
+    # ── the user's OWN services (absolute URLs; app_id = where the action is filed) ──
+    "spark": {"path": "http://10.0.0.16:8801/api/status", "widget": "kpi_row", "prefix": "spark",
+              "app_id": "spark-console",
+              "catalog": "the DGX Spark GPU boxes right now — which model is up, tokens/s, queue, KV cache, TTFT. Use for \"how are the sparks doing\", \"gpu status\", \"is vllm busy\". query ignored"},
+    "portfolio": {"path": "http://10.0.0.16:8888/api/v1/portfolio/performance", "widget": "kpi_row", "prefix": "portfolio",
+                  "app_id": "trading-client",
+                  "catalog": "the trading bot's PORTFOLIO headline numbers — value, P&L, win rate, open positions, cash. Use for \"my portfolio\", \"how is the bot doing\". query ignored"},
+    "positions": {"path": "http://10.0.0.16:8888/api/v1/portfolio", "widget": "table", "prefix": "positions",
+                  "app_id": "trading-client",
+                  "catalog": "the trading bot's OPEN POSITIONS as a table (ticker, qty, entry, price, P&L%, sector). Use for \"my positions\", \"what am I holding\". query ignored"},
+    "watchlist": {"path": "http://10.0.0.16:8888/api/v1/watchlist", "widget": "table", "prefix": "watchlist",
+                  "app_id": "trading-client",
+                  "catalog": "the trading bot's WATCHLIST. Use for \"my watchlist\". query ignored"},
+    "market_regime": {"path": "http://10.0.0.16:8888/api/v1/sectors/market-regime", "widget": "kpi_row", "prefix": "regime",
+                      "app_id": "trading-client",
+                      "catalog": "the MARKET REGIME read — risk-on/off label, breadth, dollar, VIX and yield signals. Use for \"market regime\", \"risk on or off\". query ignored"},
+    "garden": {"path": "http://10.0.0.16:5050/api/dashboard/stats", "widget": "kpi_row", "prefix": "garden",
+               "app_id": "smartgarden",
+               "catalog": "the SmartGarden dashboard — active plants, pending tasks, tasks due soon, pests, recent harvests. Use for \"my garden\", \"my plants\". query ignored"},
 }
 
 # Deterministic asks, matched in this order. Each pattern is deliberately
@@ -69,6 +88,12 @@ _ASK_TABLE = [
     ("commodities", re.compile(r"\b(commodit(y|ies)|crude oil|brent|wti|oil prices?)\b", re.I)),
     ("trends", re.compile(r"(\b(what'?s|whats|what is) trending\b(?!\s+(in\s+)?(stocks?|tickers?|shares?|crypto|coins?|tokens?)))|"
                           r"\btrending (topics|now|today|right now|on the (internet|web))\b|\btop trends\b", re.I)),
+    ("spark", re.compile(r"\b(?:how (?:are|is) the (?:sparks?|gpus?|dgx|vllm)\b|(?:sparks?|gpus?|dgx|vllm) (?:status|load|health|doing|busy)\b|gpu status|spark status)", re.I)),
+    ("positions", re.compile(r"\b(?:my |open |current )?positions\b|\bwhat (?:do i|am i) hold(?:ing)?\b", re.I)),
+    ("watchlist", re.compile(r"\b(?:my )?watch ?list\b", re.I)),
+    ("portfolio", re.compile(r"\b(?:my )?portfolio\b|\bhow(?:\s+is|'s) the (?:trading )?bot doing\b", re.I)),
+    ("market_regime", re.compile(r"\bmarket regime\b|\brisk[- ]?(?:on|off)\b|\bmarket breadth\b", re.I)),
+    ("garden", re.compile(r"\b(?:smart ?garden|my garden|the garden|my plants)\b", re.I)),
 ]
 
 
@@ -86,7 +111,7 @@ def toolsvc_kind_for(text: str) -> Optional[str]:
 async def toolsvc_get(path: str, params: Optional[dict] = None, timeout: float = 8.0) -> Any:
     """GET one tools-service route. Returns the parsed JSON, or
     {"is_error": True, "error": ...} — never raises."""
-    url = f"{TOOLS_SERVICE_URL}{path}"
+    url = path if path.startswith("http") else f"{TOOLS_SERVICE_URL}{path}"
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(url, params=params or None)
@@ -307,7 +332,114 @@ def _map_trends(d: Any):
         "rows": rows, "subject": _subject("trending topics")})
 
 
+def _map_spark(d: Any):
+    d = d or {}
+    metrics, subtitle = [], []
+    for name, box in d.items():
+        if not isinstance(box, dict):
+            continue
+        act = box.get("activity") if isinstance(box.get("activity"), dict) else None
+        if act:
+            model = str(box.get("id") or name)
+            metrics.append({"label": f"{model[:22]} tok/s", "value": f"{_num(act.get('tok_s')):.1f}", "unit": "tok/s", "good": "up"})
+            metrics.append({"label": "Running / waiting", "value": f"{int(_num(act.get('running')))} / {int(_num(act.get('waiting')))}"})
+            metrics.append({"label": "KV cache", "value": f"{_num(act.get('kv_pct')):.0f}", "unit": "%"})
+            metrics.append({"label": "Prefix hit", "value": f"{_num(act.get('prefix_hit_pct')):.0f}", "unit": "%", "good": "up"})
+            metrics.append({"label": "TTFT", "value": f"{_num(act.get('ttft_avg_s')):.1f}", "unit": "s", "good": "down"})
+            subtitle.append(f"{model} {box.get('phase') or ''} · {box.get('health') or ''}".strip(" ·"))
+        elif name.startswith("comfy"):
+            q = box.get("queue")
+            metrics.append({"label": name.replace("_", " "), "value": "on" if box.get("active") else "off",
+                            "delta": f"queue {q}" if q is not None else ""})
+    if not metrics:
+        return None
+    return ("kpi_row", "spark", {"title": "DGX Sparks", "subtitle": " · ".join(subtitle)[:140],
+                                 "metrics": metrics[:8], "subject": _subject("the sparks")})
+
+
+def _map_portfolio(d: Any):
+    d = d or {}
+    if d.get("current_value") is None:
+        return None
+    pnl = _num(d.get("pnl")); pct = _num(d.get("pnl_pct"))
+    return ("kpi_row", "portfolio", {
+        "title": "Portfolio", "subtitle": f"bot {d.get('bot_id') or ''} · {int(_num(d.get('total_trades')))} trades",
+        "metrics": [
+            {"label": "Value", "value": f"{_num(d.get('current_value')):,.0f}", "unit": "$"},
+            {"label": "P&L", "value": f"{pnl:+,.0f}", "unit": "$", "delta": f"{pct:+.2f}%", "good": "up"},
+            {"label": "Realized", "value": f"{_num(d.get('realized_pnl')):+,.0f}", "unit": "$", "good": "up"},
+            {"label": "Win rate", "value": f"{_num(d.get('win_rate')):.0f}", "unit": "%", "good": "up"},
+            {"label": "Open positions", "value": f"{int(_num(d.get('open_positions')))}"},
+            {"label": "Cash", "value": f"{_num(d.get('cash')):,.0f}", "unit": "$"},
+        ], "subject": _subject("my portfolio")})
+
+
+def _map_positions(d: Any):
+    rows = []
+    for p in ((d or {}).get("positions") or []):
+        if not isinstance(p, dict):
+            continue
+        entry, cur = _num(p.get("avg_entry_price")), _num(p.get("current_price"))
+        pnl_pct = ((cur - entry) / entry * 100.0) if entry else 0.0
+        rows.append({"ticker": p.get("ticker") or "", "qty": round(_num(p.get("qty")), 2),
+                     "entry": round(entry, 2), "price": round(cur, 2), "pnl_pct": round(pnl_pct, 2),
+                     "sector": p.get("sector") or "—"})
+    if not rows:
+        return None
+    return ("table", "positions", {
+        "title": "Open positions", "subtitle": f"{len(rows)} positions · ${_num((d or {}).get('total_value')):,.0f} total",
+        "columns": [{"key": "ticker", "label": "Ticker"}, {"key": "qty", "label": "Qty", "format": "number"},
+                    {"key": "entry", "label": "Entry", "format": "currency"}, {"key": "price", "label": "Price", "format": "currency"},
+                    {"key": "pnl_pct", "label": "P&L", "format": "percent"}, {"key": "sector", "label": "Sector"}],
+        "rows": rows, "sort": {"key": "pnl_pct", "dir": "desc"}, "subject": _subject("my positions")})
+
+
+def _map_watchlist(d: Any):
+    rows = [{"ticker": w.get("ticker") or "", "source": w.get("source") or "",
+             "added": str(w.get("added_at") or "")[:10], "health": w.get("health_score")}
+            for w in (d if isinstance(d, list) else []) if isinstance(w, dict)]
+    if not rows:
+        return None
+    return ("table", "watchlist", {
+        "title": "Watchlist", "subtitle": f"{len(rows)} tickers",
+        "columns": [{"key": "ticker", "label": "Ticker"}, {"key": "source", "label": "Source"},
+                    {"key": "added", "label": "Added"}, {"key": "health", "label": "Health", "format": "number"}],
+        "rows": rows, "subject": _subject("my watchlist")})
+
+
+def _map_market_regime(d: Any):
+    r = (d or {}).get("regime") or {}
+    if not r.get("regime_label"):
+        return None
+    return ("kpi_row", "regime", {
+        "title": "Market regime", "subtitle": f"as of {str(r.get('date') or '')[:10]}",
+        "metrics": [
+            {"label": "Regime", "value": str(r.get("regime_label"))},
+            {"label": "S&P breadth", "value": f"{_num(r.get('breadth_sp500')):.0f}", "unit": "%"},
+            {"label": "Dollar index", "value": f"{_num(r.get('dollar_index')):.2f}", "delta": f"{_num(r.get('dollar_change_5d')):+.2f}% 5d"},
+            {"label": "VIX", "value": str(r.get("vix_signal") or "—"), "delta": f"term {r.get('vix_term_signal') or '—'}"},
+            {"label": "Yields", "value": str(r.get("yield_signal") or "—"), "delta": f"2y10y {_num(r.get('yield_2y10y_spread')):+.2f}"},
+        ], "subject": _subject("the market regime")})
+
+
+def _map_garden(d: Any):
+    d = d or {}
+    if "active_plants" not in d:
+        return None
+    return ("kpi_row", "garden", {
+        "title": "SmartGarden",
+        "metrics": [
+            {"label": "Active plants", "value": f"{int(_num(d.get('active_plants')))}"},
+            {"label": "Pending tasks", "value": f"{int(_num(d.get('pending_tasks')))}", "good": "down"},
+            {"label": "Due soon", "value": f"{int(_num(d.get('tasks_due_soon')))}", "good": "down"},
+            {"label": "Active pests", "value": f"{int(_num(d.get('active_pests')))}", "good": "down"},
+            {"label": "Recent harvests", "value": f"{int(_num(d.get('recent_harvests')))}", "good": "up"},
+        ], "subject": _subject("my garden")})
+
+
 _MAPPERS = {
+    "spark": _map_spark, "portfolio": _map_portfolio, "positions": _map_positions,
+    "watchlist": _map_watchlist, "market_regime": _map_market_regime, "garden": _map_garden,
     "earthquakes": _map_earthquakes, "wildfires": _map_wildfires, "iss": _map_iss,
     "launches": _map_launches, "apod": _map_apod, "moon": _map_moon, "tides": _map_tides,
     "space_weather": _map_space_weather, "commodities": _map_commodities, "trends": _map_trends,

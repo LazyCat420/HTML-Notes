@@ -45,6 +45,38 @@
         "destructive": true,
         "description": "Ask the running trading cycle to stop at the next safe point.",
         "params": {}
+      },
+      "portfolio": {
+        "method": "GET",
+        "url": "http://10.0.0.16:8888/api/v1/portfolio/performance",
+        "destructive": false,
+        "timeout": 15,
+        "description": "the trading bot's PORTFOLIO headline numbers — value, P&L, win rate, open positions, cash. Use for \"my portfolio\", \"how is the bot doing\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'portfolio'}) renders.",
+        "params": {}
+      },
+      "positions": {
+        "method": "GET",
+        "url": "http://10.0.0.16:8888/api/v1/portfolio",
+        "destructive": false,
+        "timeout": 15,
+        "description": "the trading bot's OPEN POSITIONS as a table (ticker, qty, entry, price, P&L%, sector). Use for \"my positions\", \"what am I holding\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'positions'}) renders.",
+        "params": {}
+      },
+      "watchlist": {
+        "method": "GET",
+        "url": "http://10.0.0.16:8888/api/v1/watchlist",
+        "destructive": false,
+        "timeout": 15,
+        "description": "the trading bot's WATCHLIST. Use for \"my watchlist\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'watchlist'}) renders.",
+        "params": {}
+      },
+      "market_regime": {
+        "method": "GET",
+        "url": "http://10.0.0.16:8888/api/v1/sectors/market-regime",
+        "destructive": false,
+        "timeout": 15,
+        "description": "the MARKET REGIME read — risk-on/off label, breadth, dollar, VIX and yield signals. Use for \"market regime\", \"risk on or off\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'market_regime'}) renders.",
+        "params": {}
       }
     },
     "youtube-wallgarden": {
@@ -203,6 +235,26 @@
         "destructive": false,
         "timeout": 15,
         "description": "WHAT'S TRENDING right now across Google, Wikipedia, HN, Mastodon, Bluesky, GitHub, TV. NOT for trending STOCKS (that is stock_trending). query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'trends'}) renders.",
+        "params": {}
+      }
+    },
+    "spark-console": {
+      "spark": {
+        "method": "GET",
+        "url": "http://10.0.0.16:8801/api/status",
+        "destructive": false,
+        "timeout": 15,
+        "description": "the DGX Spark GPU boxes right now — which model is up, tokens/s, queue, KV cache, TTFT. Use for \"how are the sparks doing\", \"gpu status\", \"is vllm busy\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'spark'}) renders.",
+        "params": {}
+      }
+    },
+    "smartgarden": {
+      "garden": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5050/api/dashboard/stats",
+        "destructive": false,
+        "timeout": 15,
+        "description": "the SmartGarden dashboard — active plants, pending tasks, tasks due soon, pests, recent harvests. Use for \"my garden\", \"my plants\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'garden'}) renders.",
         "params": {}
       }
     }
