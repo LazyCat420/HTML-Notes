@@ -80,6 +80,13 @@ GOLDEN = [
         note="'stock' is a topic here, not a lookup"),
     Row("tell me everything about the price of gold", "router", None, None, offline=False,
         note="compose lane, plans its own modalities"),
+    # ── tools-service pack: deterministic, before the web-search map lane ──
+    Row("recent earthquakes", "fast-path", "earthquakes", 1, offline=False,
+        note="MAP_ASK_RE used to claim this for a web-search map"),
+    Row("where is the iss", "fast-path", "iss", 1, offline=False),
+    Row("upcoming rocket launches", "fast-path", "launches", 1, offline=False),
+    Row("what's trending right now", "fast-path", "trends", 1, offline=False,
+        note="not stock_trending — no stock word"),
 ]
 
 client = TestClient(app)

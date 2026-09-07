@@ -1964,6 +1964,12 @@ async def build_router_widget(spec: dict, session_id: str, message: str) -> Opti
             w = await get_weather(extract_location(query or message))
             return None if w.get("is_error") else ("weather", "weather", w)
 
+        if wtype in TOOLSVC_KINDS:
+            # earthquakes / wildfires / iss / launches / apod / moon / tides /
+            # space_weather / commodities / trends — keyless, cached on :5590,
+            # rendered as existing widget types. None when the source is down.
+            return await build_toolsvc_config(wtype)
+
         if wtype == "app_grid":
             return ("app_grid", "app-hub", await build_app_grid_config(query or message))
 

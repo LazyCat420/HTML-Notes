@@ -3251,8 +3251,17 @@ def extract_bare_app_name(text: str) -> Optional[str]:
 
 # type → (id_prefix, one-line spec for the classify prompt). The prompt text is
 # what the model sees; the id_prefix is the widget id stem we spawn with.
+# Standalone (no app.main import), so it can sit up here where ROUTER_WIDGETS
+# needs it — the other services are imported at the bottom because they copy
+# this module's dict.
+from app.services.toolsvc import (TOOLSVC_KINDS, build_toolsvc_config,  # noqa: E402
+                                  toolsvc_get, toolsvc_kind_for)
+
 ROUTER_WIDGETS = {
     "weather":    ("weather",   'current conditions / forecast. query = the place ("Tokyo")'),
+    # tools-service pack (app/services/toolsvc.py): one router type per kind,
+    # each renders as an EXISTING widget type. query is ignored by all of them.
+    **{_k: (_v["prefix"], _v["catalog"]) for _k, _v in TOOLSVC_KINDS.items()},
     "news":       ("news",      'general current headlines. query = the topic (empty for top stories)'),
     "stock_news": ("stock-news", 'stock / market / company NEWS. query = the ticker or company (e.g. "TSLA", "Apple"), or the market itself for a broad market-news ask. ONLY for a genuine finance/markets ask.'),
     "stock":      ("stock",     'a ticker\'s price + chart + technicals. query = company or symbol ("Apple", "TSLA")'),

@@ -1100,6 +1100,25 @@ async def send_message(req: MessageRequest):
                     config_builder=lambda: build_products_config(req.message),
                     status="finding recommendations with photos...")
 
+            # 5e. WORLD / SPACE / MARKETS from tools-service (:5590) — keyless and
+            #     already cached there: earthquakes, wildfires, the ISS, rocket
+            #     launches, NASA's picture of the day, the moon, tides, solar
+            #     flares, commodity movers, what's trending. Sits BEFORE the map
+            #     lane because MAP_ASK_RE claims "earthquakes|wildfires" for the
+            #     web-search map. Resolved before returning so a dead source
+            #     falls through to the next tier instead of rendering a dead card.
+            _tsk = toolsvc_kind_for(text_clean)
+            if _tsk and not wants_removal and not is_video_ask:
+                _built = await build_toolsvc_config(_tsk)
+                if _built:
+                    _wt, _pfx, _cfg = _built
+                    return spawn_widget_stream(
+                        _wt, _pfx, _cfg,
+                        status=f"pulling {_tsk.replace('_', ' ')}...",
+                        widget_id=find_existing_widget_by_id_prefix(req.session_id, _pfx),
+                        debug_extra={"toolsvc": _tsk})
+                logger.info(f"[TOOLSVC] {_tsk} source did not answer — falling through")
+
             # 6. MAP — geo/location queries, and business/POI asks ("coffee shops in
             #    Seattle") which have NO map/where token so MAP_ASK_RE misses them and
             #    they fell through to the agent (a wall-of-links data_card). Pulled OUT
@@ -1452,6 +1471,7 @@ async def send_message(req: MessageRequest):
             "- APPEARANCE / theme / colors ('dark mode', 'forest theme', 'make it pastel', 'egg colors'), OR settings/preferences → canvas_add_widget(widget_type='settings', config={'theme':'<what the user asked — e.g. dark, forest, pastel, egg, sunset, purple>'}). The server picks the CLOSEST palette from what you pass and applies it; omit 'theme' to just open settings without changing the look. This is the ONLY way to change the theme — never hand-edit colors. It's a singleton, so it updates in place.\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- EDIT an existing widget (change a timer's duration, a clock's timezone, a chart's data, swap the stock) → call canvas_add_widget AGAIN with the SAME widget_id from CURRENT CANVAS and the full updated config. It re-renders that widget in place — no duplicate. This is the ONLY way to change a clock/timer/stock/scoreboard/chart: canvas_modify_dom CANNOT rebuild these (they are server-rendered) and will break them. Example: to set the timer #clock-1 to 30s → canvas_add_widget(widget_type='clock', widget_id='clock-1', config={'mode':'countdown','duration_seconds':30}).\n"
+            "- earthquakes, wildfires, the ISS, rocket launches, NASA's picture of the day, the moon, tides, solar flares, commodity movers, what's trending → canvas_add_widget(widget_type='map', config={'toolsvc': '<earthquakes|wildfires|iss|launches|apod|moon|tides|space_weather|commodities|trends>'}) — JUST the kind; the server fetches from tools-service, fills the widget and picks the right widget_type for it. To quote a number in your sentence first, mcp__lazy-tool-service__html_notes_app_action(app_id='tools-service', action='<the same kind>').\n"
             "- BUILD something that is not in the catalog ('build me a widget that…', 'add an audio box', a counter, a tracker, a tiny game) → mcp__lazy-tool-service__plan_widget(widgetType='custom', title, description) FIRST, then mcp__lazy-tool-service__create_widget(widgetType='custom', title, htmlContent, cssContent, jsContent). Your HTML+JS run inside a sandboxed frame of their own: `container` is the root element, style it dark-on-transparent, keep state in JS variables, no external scripts, no fetch. To change it later call mcp__lazy-tool-service__update_widget(widgetId='<its id from CURRENT CANVAS>', …) with only the fields that change.\n"
             "- REMOVE something → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove') using an id from CURRENT CANVAS\n\n"
             "ANSWER FROM DATA, NEVER FROM MEMORY\n"
@@ -2117,6 +2137,24 @@ async def send_message(req: MessageRequest):
                             # the widget is right and the spoken line still describes
                             # a converter.
                             nonlocal_last_committed["v"] = (widget_type, config, widget_id)
+
+                        # tools-service kinds: the model names the KIND and the
+                        # server fetches, maps and even corrects the widget_type
+                        # (a model that asked for a data_card of the ISS gets the
+                        # map the kind renders as). Nothing typed by the model
+                        # survives — no coordinates, no numbers.
+                        _tsk = str((config or {}).get("toolsvc") or "").strip().lower()
+                        if _tsk in TOOLSVC_KINDS:
+                            _built = await build_toolsvc_config(_tsk)
+                            if _built:
+                                widget_type, _tpfx, config = _built
+                                if not _widget_on_canvas(req.session_id, widget_id, widget_type):
+                                    widget_id = (find_existing_widget_by_id_prefix(req.session_id, _tpfx)
+                                                 or f"{_tpfx}-{uuid.uuid4().hex[:8]}")
+                                nonlocal_last_committed["v"] = (widget_type, config, widget_id)
+                                logger.info(f"[WIDGET INJECTOR] toolsvc {_tsk} -> {widget_type} #{widget_id}")
+                            else:
+                                logger.warning(f"[WIDGET INJECTOR] toolsvc {_tsk}: source did not answer")
 
                         # Rehydrate data-heavy widgets from the tool result the
                         # model just fetched. It only has to name the subject —

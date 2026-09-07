@@ -123,6 +123,88 @@
         "description": "Kick off strain-database enrichment. Heavy background job; self-guards with 409 when one is already running.",
         "params": {}
       }
+    },
+    "tools-service": {
+      "earthquakes": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/earthquakes",
+        "destructive": false,
+        "timeout": 15,
+        "description": "recent EARTHQUAKES on a map (USGS). Use for \"earthquakes\", \"quakes\", \"seismic activity\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'earthquakes'}) renders.",
+        "params": {}
+      },
+      "wildfires": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/wildfires",
+        "destructive": false,
+        "timeout": 15,
+        "description": "active WILDFIRES on a map (NASA EONET). query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'wildfires'}) renders.",
+        "params": {}
+      },
+      "iss": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/iss",
+        "destructive": false,
+        "timeout": 15,
+        "description": "where the International Space Station is RIGHT NOW + who is in space. query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'iss'}) renders.",
+        "params": {}
+      },
+      "launches": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/launches",
+        "destructive": false,
+        "timeout": 15,
+        "description": "upcoming / recent ROCKET LAUNCHES with photos (Launch Library). query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'launches'}) renders.",
+        "params": {}
+      },
+      "apod": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/apod",
+        "destructive": false,
+        "timeout": 15,
+        "description": "NASA's Astronomy Picture of the Day. query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'apod'}) renders.",
+        "params": {}
+      },
+      "moon": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/moon-phase",
+        "destructive": false,
+        "timeout": 15,
+        "description": "the MOON tonight — phase, illumination, next new/full moon. query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'moon'}) renders.",
+        "params": {}
+      },
+      "tides": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/tides",
+        "destructive": false,
+        "timeout": 15,
+        "description": "today's TIDES (NOAA, San Francisco station). query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'tides'}) renders.",
+        "params": {}
+      },
+      "space_weather": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/weather/space-weather",
+        "destructive": false,
+        "timeout": 15,
+        "description": "SPACE WEATHER — recent solar flares (NASA DONKI). Use for \"solar flares\", \"geomagnetic storm\", \"aurora forecast\". query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'space_weather'}) renders.",
+        "params": {}
+      },
+      "commodities": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/market/commodities/summary",
+        "destructive": false,
+        "timeout": 15,
+        "description": "COMMODITY / index / crypto MOVERS — biggest gainers and losers (oil, gold, indices). query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'commodities'}) renders.",
+        "params": {}
+      },
+      "trends": {
+        "method": "GET",
+        "url": "http://10.0.0.16:5590/trend/trends",
+        "destructive": false,
+        "timeout": 15,
+        "description": "WHAT'S TRENDING right now across Google, Wikipedia, HN, Mastodon, Bluesky, GitHub, TV. NOT for trending STOCKS (that is stock_trending). query ignored Read-only; the same data canvas_add_widget(config={'toolsvc': 'trends'}) renders.",
+        "params": {}
+      }
     }
   }
 }
