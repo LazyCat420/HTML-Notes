@@ -1814,6 +1814,12 @@ async def send_message(req: MessageRequest):
             # tool args are not a reliable source for it.
             last_committed = None
             canvas_settled = False
+            # Set by the runaway / research-budget guards. Their `break` only
+            # escapes the inner line loop; the outer chunk loop must test THIS
+            # flag too, or the "cutting the turn short" log lies and the
+            # stream is drained to the end. Kept separate from canvas_settled
+            # because that flag also selects the spoken-summary branch.
+            stream_cut = False
             # Tool names prism handed the model that we have no canvas handler for.
             # Collected so a turn that commits nothing can say WHY in the logs.
             unhandled_tools: List[str] = []
@@ -2698,7 +2704,7 @@ async def send_message(req: MessageRequest):
                                 if not line.startswith("data: "):
                                     continue
 
-                                if canvas_settled:
+                                if canvas_settled or stream_cut:
                                     break
 
                                 try:
@@ -2947,6 +2953,7 @@ async def send_message(req: MessageRequest):
                                                 f"certainly failing while telling the model "
                                                 f"to retry; check /health/app search status.")
                                             yield f'data: {json.dumps({"type": "status", "message": "search is repeating itself — building from what I have", "phase": _PHASE_COMPOSING})}\n\n'
+                                            stream_cut = True
                                             break
                                         if research_calls >= _MAX_RESEARCH_CALLS:
                                             logger.warning(
@@ -2954,6 +2961,7 @@ async def send_message(req: MessageRequest):
                                                 f"({research_calls} calls) — cutting the turn "
                                                 f"short and rendering what we have")
                                             yield f'data: {json.dumps({"type": "status", "message": "enough research — building the card", "phase": _PHASE_COMPOSING})}\n\n'
+                                            stream_cut = True
                                             break
 
                                 elif event_type == "status":
@@ -2988,7 +2996,7 @@ async def send_message(req: MessageRequest):
                             # The `break` above only escapes the inner line loop —
                             # without this the outer chunk loop keeps pulling the
                             # agent's stream and the turn runs to completion anyway.
-                            if canvas_settled:
+                            if canvas_settled or stream_cut:
                                 break
 
             except Exception as e:
