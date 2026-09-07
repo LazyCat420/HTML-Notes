@@ -1199,33 +1199,42 @@ async def send_message(req: MessageRequest):
 
                 # (MAP now runs earlier, outside the is_data_ask gate — see above.)
 
-                # 6.9 COMPOSE — a BROAD "tell me about X / give me the rundown on X" ask
-                #     deserves the whole picture: an explanation PLUS supporting media
-                #     (image, video, recent news), not a lone text card. Plan the
-                #     modalities and fan them out as ONE atomic multi-widget commit.
-                #     Falls through to the single-widget answer/router when planning
-                #     yields <2 modalities (i.e. it's really a narrow ask).
-                if (req.use_lazy_agent and (COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
-                        and not wants_removal):
-                    plan = await build_composition_plan(req.message)
-                    if len(plan) >= 2:
-                        logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
-                                    f"{[w['type'] for w in plan]}")
-                        return spawn_router_stream(plan, reason="composed answer")
 
-                # 7. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
-                #    Synthesised into a readable answer card (Markdown answer + demoted
-                #    sources) instead of dumping the user into the ~30-60s agent loop
-                #    that returns a wall of links.
-                if req.use_lazy_agent and ANSWER_ASK_RE.search(text_clean):
-                    # PRISM MODE skips this too: a fact/how-to/definition ask is research —
-                    # the prism agent searches + reads pages + synthesises, rather than the
-                    # local one-shot answer builder.
-                    return spawn_widget_stream(
-                        "data_card", "answer",
-                        config_builder=lambda: build_answer_config(req.message),
-                        status="researching and writing your answer...",
-                    )
+            # ── Lanes 6.9 and 7 sit OUTSIDE the `not is_data_ask` gate (H9). ──
+            # The gate protects clock/music/list/notes from substring hits like
+            # "clock for video"; it made compose/answer unreachable for any ask
+            # containing a data word — "what is a stock split" fell through to
+            # the LLM router. Compose plans its own modalities; answer yields
+            # only to a word that names a FETCH (LIVE_LOOKUP_RE), not to "stock".
+            # 6.9 COMPOSE — a BROAD "tell me about X / give me the rundown on X" ask
+            #     deserves the whole picture: an explanation PLUS supporting media
+            #     (image, video, recent news), not a lone text card. Plan the
+            #     modalities and fan them out as ONE atomic multi-widget commit.
+            #     Falls through to the single-widget answer/router when planning
+            #     yields <2 modalities (i.e. it's really a narrow ask).
+            if (req.use_lazy_agent and (COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
+                    and not wants_removal and not is_video_ask):
+                plan = await build_composition_plan(req.message)
+                if len(plan) >= 2:
+                    logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
+                                f"{[w['type'] for w in plan]}")
+                    return spawn_router_stream(plan, reason="composed answer")
+
+            # 7. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
+            #    Synthesised into a readable answer card (Markdown answer + demoted
+            #    sources) instead of dumping the user into the ~30-60s agent loop
+            #    that returns a wall of links.
+            if (req.use_lazy_agent and ANSWER_ASK_RE.search(text_clean)
+                    and not wants_removal and not is_video_ask
+                    and not LIVE_LOOKUP_RE.search(text_clean)):
+                # PRISM MODE skips this too: a fact/how-to/definition ask is research —
+                # the prism agent searches + reads pages + synthesises, rather than the
+                # local one-shot answer builder.
+                return spawn_widget_stream(
+                    "data_card", "answer",
+                    config_builder=lambda: build_answer_config(req.message),
+                    status="researching and writing your answer...",
+                )
 
         # Adopting the client's snapshot is _run_turn's job now (it only does so
         # when no other turn is in flight, so a concurrent turn's stale snapshot
@@ -1304,8 +1313,15 @@ async def send_message(req: MessageRequest):
         router_plan: Optional[dict] = None
         router_specs: list = []          # the plan handed to the agent as a prior
         router_checks: dict = {}         # the pre-flight self-check answers
-        router_status = "skipped-removal"   # local | deferred | defer | none
-        if not wants_removal:
+        router_status = "skipped-removal"   # local | deferred | defer | none | build
+        is_build_ask = bool(BUILD_ASK_RE.search(text_clean))
+        if is_build_ask and not wants_removal:
+            # An imperative build goes straight to the agent (H8): the router's
+            # reply verdict used to answer "build me a custom widget" with an
+            # offer to build it, and nothing ever reached create_widget.
+            router_status = "build"
+            logger.info(f"[ROUTER] build ask — skipping the classifier: {req.message[:70]!r}")
+        elif not wants_removal:
             router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
             router_checks = (router_plan or {}).get("checks") or {}
             if router_plan and router_plan.get("reply"):

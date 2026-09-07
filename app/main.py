@@ -1884,6 +1884,25 @@ COMPOSE_ASK_RE = re.compile(
     r'(rundown|overview|breakdown|primer|picture)\b|teach me about|walk me through|'
     r'introduce me to|overview of|(a|an) (overview|introduction|primer) (on|of|to)|'
     r'what should i know about|get me up to speed on|brief me on)\b', re.I)
+# An IMPERATIVE build: "build me a custom widget…", "add an audio box", "make me
+# a water tracker". The LLM router's reply verdict swallowed these (H8, battle
+# test 2026-09-06: 3/3 byte-identical replies, 0/7 multi-step asks reached the
+# agent), so a build ask skips the router and goes straight to the agent, which
+# owns create_widget. Nouns are the things one BUILDS; "add a chart of nvidia"
+# is a data ask and stays with its lane.
+BUILD_ASK_RE = re.compile(
+    r"\b(?:build|make|create|design|code|write)\s+(?:me\s+|us\s+)?(?:a|an|another|some|my)?\s*"
+    r"(?:custom\s+|new\s+|simple\s+|little\s+|small\s+)?[\w\s-]{0,40}?"
+    r"\b(?:widget|box|panel|tracker|counter|gadget|tool|dashboard)\b"
+    r"|\badd\s+(?:a|an|another)\s+(?:custom\s+|new\s+|simple\s+)?[\w-]*\s?"
+    r"(?:widget|box|panel|tracker|counter|gadget)\b", re.I)
+# The words that name a FETCH. DATA_ASK_RE also carries the bare word "stock",
+# which is as often a TOPIC ("what is a stock split") as a lookup; the answer
+# lane yields only to these.
+LIVE_LOOKUP_RE = re.compile(
+    r"\b(news|headlines|weather|forecast|price|prices|quote|chart|charts|graph|"
+    r"image|images|picture|pictures|photo|photos)\b", re.I)
+
 # A conjunction that actually joins a SECOND thing to build: "a clock and a
 # chart", "weather and also a map". A bare comma or "then" is not that — "weather
 # in tokyo, please" used to keep the agent loop open past its first widget.

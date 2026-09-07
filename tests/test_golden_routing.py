@@ -73,6 +73,13 @@ GOLDEN = [
     Row("close everything", "fast-path", "clear", 0),
     # ── the agent is still the right answer for a genuine build ─────────────
     Row("Add an audio box please", "agent", None, None, offline=False),
+    Row("build me a custom widget that counts my push-ups", "agent", None, None, offline=False,
+        note="H8: a fast REPLY offering to build it, 3/3 byte-identical"),
+    # ── H9: a data word inside an answer/compose ask must not hide the lane ──
+    Row("what is a stock split", "fast-path", "answer", 1, offline=False,
+        note="'stock' is a topic here, not a lookup"),
+    Row("tell me everything about the price of gold", "router", None, None, offline=False,
+        note="compose lane, plans its own modalities"),
 ]
 
 client = TestClient(app)

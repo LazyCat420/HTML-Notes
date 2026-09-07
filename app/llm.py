@@ -333,7 +333,9 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         is_question = any(msg_lower.endswith(q) for q in ("?", "??")) or any(
             msg_lower.startswith(w) for w in ("how", "why", "what", "can i", "should i", "do i", "is it", "so ", "even ")
         )
-        if wants in ("answer", "track", "research") or is_question or any(k in reason for k in ("recipe", "cook", "sausage", "boil")):
+        if (wants in ("answer", "track", "research", "ui-control") or is_question
+                or BUILD_ASK_RE.search(msg_lower)
+                or any(k in reason for k in ("recipe", "cook", "sausage", "boil"))):
             logger.info(f"[ROUTER] deferring substantive question to full agent: wants={wants}, reason={reason}, msg={message!r}")
             return {"defer": True, "reason": "conversational-followup", "checks": checks}
 
