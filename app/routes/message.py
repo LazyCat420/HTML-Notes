@@ -1090,8 +1090,12 @@ async def send_message(req: MessageRequest):
                 # card, which gives the actual minutes.
                 if TRAFFIC_MAP_RE.search(text_clean):
                     # Gated by TRAFFIC_MAP_RE above, so intent is already settled.
+                    # A bare "traffic" means the newest place on the canvas
+                    # (context bus) — the router branch already did this; the
+                    # fast lane must agree or the two tiers answer differently.
                     traffic_widget, traffic_cfg = await build_traffic_widget(
-                        req.message, force_traffic=True)
+                        req.message, force_traffic=True,
+                        default_place=canvas_defaults(req.session_id, req.current_canvas or "").get("place", ""))
                     if traffic_cfg:
                         # Reuse is handled centrally by the "traffic" id prefix —
                         # see SINGLETON_ROLE_PREFIXES — so both this fast path and

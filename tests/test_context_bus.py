@@ -229,3 +229,27 @@ def test_same_for_x_rewrites_the_previous_ask(patch_server):
             "session_id": SESSION, "message": "same for tokyo", "provider": "vllm",
             "model": "nemotron35", "current_canvas": canvas})
     assert res.status_code == 200 and seen == ["tokyo"], seen
+
+
+def test_bare_traffic_ask_defaults_to_the_place_on_canvas_in_the_fast_lane(patch_server):
+    """The router branch got the default first; the fast lane answered a bare
+    'traffic' with a 'couldn't find anything' card on the deployed box."""
+    _seed()
+    canvas = _canvas(("weather", "weather-1", {"location": "Seattle", "current": {}, "daily": []}))
+    cm.set_session_canvas(SESSION, canvas)
+    cm.remember_widget_subject(SESSION, "weather-1", "weather", {"location": "Seattle"})
+    seen = []
+
+    async def fake_traffic(message, force_traffic=False, default_place=""):
+        seen.append(default_place)
+        return ("map", {"title": f"Traffic · {default_place}", "markers": [], "traffic": True})
+    patch_server("build_traffic_widget", fake_traffic)
+
+    async def router_boom(*a, **k):
+        raise AssertionError("router ran")
+    patch_server("route_with_llm", router_boom)
+    with patch("httpx.AsyncClient.stream"):
+        res = client.post("/session/message", json={
+            "session_id": SESSION, "message": "traffic", "provider": "vllm",
+            "model": "nemotron35", "current_canvas": canvas})
+    assert res.status_code == 200 and seen == ["Seattle"], seen
