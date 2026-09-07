@@ -2503,7 +2503,7 @@ _CLOSER_RE = _re.compile(r"</(script|style)", _re.I)
 
 
 def _defang_closers(text: str) -> str:
-    """A model-written `</script>` inside jsContent (or `</style>` inside
+    r"""A model-written `</script>` inside jsContent (or `</style>` inside
     cssContent) would end OUR element early and start a new one. `<\/script`
     is a no-op inside a JS string and a broken tag everywhere else."""
     return _CLOSER_RE.sub(lambda m: "<\\/" + m.group(1), str(text or "")).replace("<!--", "<\\!--")
