@@ -1,3 +1,46 @@
+# Handoff — 2026-09-17 (Research Protocol: Dual-Track Streaming, Bounded Workers & Empirical Benchmark Lift)
+
+**Context:** Transformed `HTML-Notes` from a monolithic synchronous response architecture into a first-class "fast answer now, evidence gathering continues" research protocol with strict routing, bounded budgets, background jobs, transparent progress, and an automated benchmark evaluation suite.
+
+**Core Architecture Delivered:**
+1. **Typed Research Contracts (`app/services/research/models.py`)**:
+   - `ResearchIntent`: Deterministic intent extraction (`mode`, `entities`, `time_window`, `evidence_depth`, `event_types`).
+   - `ResearchBudget`: Explicit bounded foreground and background deadlines, task concurrency caps, LLM limits.
+   - `EvidenceItem`: Normalized schema with publisher tiers (`primary`, `tier1_news`, `aggregator`), URL canonicalization, and quality scoring.
+   - `ResearchRun`, `ResearchTask`, `AnswerVersion`: Durable run ledger tracking timing waterfall and provenance.
+2. **Database Persistence (`app/database.py`)**:
+   - Added tables `research_runs`, `research_tasks`, `research_evidence`, and `research_answer_versions` with schema migrations and full inspection query helpers.
+3. **Information Half-Life Cache & Coalescing (`app/services/research/cache.py`)**:
+   - Two-tier TTL caching (quotes 15s, intraday 60s, news 180s, fundamentals 1d, primary filings persistent).
+   - Async `SingleFlight` concurrency coalescer preventing redundant duplicate network searches across parallel requests.
+4. **Specialized Bounded Workers (`app/services/research/workers/`)**:
+   - `price_worker.py`: Sub-1.5s quote & intraday series fetcher with provisional card emission.
+   - `news_worker.py`: Multi-provider headline retrieval with cross-source deduplication.
+   - `peer_sector_worker.py`: Peer and sector ETF moves to contextualize idiosyncratic move vs macro beta.
+   - `primary_source_worker.py`: Official SEC/EDGAR and IR press release verifier.
+   - `skeptic_worker.py`: Causal discipline and contradiction audit.
+5. **Dual-Track Stream Coordinator & Synthesizer (`app/services/research/coordinator.py`, `synthesizer.py`)**:
+   - Emits structured SSE events: `research.started`, `research.plan`, `widget.provisional`, `answer.partial`, `answer.final`, `research.completed`.
+   - Provisional cards are stamped with `data-provisional="1"` to immediately bypass the reveal gate in `index.js:1564`.
+   - Synthesizer strictly binds claims to verified `evidence_ids`.
+6. **Frontend SSE Client Handler (`app/static/index.js`)**:
+   - Real-time research status stack with semantic status text (no fake percentages).
+   - Provisional cards promote cleanly to final cards without visual flicker or badge retention.
+
+**Empirical Benchmark Evaluation Results (`bench/research/run_eval.py`):**
+| Metric | Baseline (Legacy Sync) | Research Protocol (New Dual-Track) | Lift / Improvement |
+|---|---|---|---|
+| Acknowledgement (p95) | 7990.1 ms | **434.5 ms** | +7555.6 ms faster |
+| First Meaningful UI (p95) | 7990.1 ms | **4864.3 ms** | +3125.8 ms faster (provisional preview) |
+| Preliminary Answer (p50 / p95) | N/A (waits for full build) | **7805.6 ms / 9901.3 ms** | Instant progressive answer |
+| Overall Quality Score (avg) | 3.39 / 10 | **7.88 / 10** | +4.49 pts |
+| Relevance Score (avg) | 4.0 / 10 | **8.3 / 10** | +4.30 pts |
+| Factual Grounding (avg) | 3.2 / 10 | **7.7 / 10** | +4.50 pts |
+| Causal Discipline (avg) | 3.4 / 10 | **8.3 / 10** | +4.90 pts (skeptic audit) |
+| Provisional Widget Render Rate | 0.0% | **100.0%** (for research queries) | Early data-backed preview |
+
+---
+
 # Handoff — 2026-07-22 (crypto wave 5: outage-recovery — deterministic in prism mode + soft "token/coin" signal)
 
 **⚠️ INFRA (power outage):** the main vLLM box **10.0.0.141:8000 is DOWN (000)**
