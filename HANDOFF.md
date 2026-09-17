@@ -1,3 +1,38 @@
+# Handoff — 2026-09-17 (Deterministic Evidence-First News Pipeline)
+
+**Context:** Refactored HTML-Notes news retrieval from fragmented multi-builder/fallback routes into a single deterministic, evidence-first pipeline: `news request` -> `normalize request` -> `retrieve candidates` -> `validate + dedupe` -> `fetch/verify article evidence` -> `rank` -> `render`.
+
+**Core Guarantees Delivered:**
+1. **Unified Orchestrator (`app/services/news_pipeline.py`)**:
+   - Every general, topic, and market news request routes through `build_news_response(req)`.
+   - Strict typed contracts: `NewsRequest`, `CandidateArticle`, `VerifiedArticle`, `NewsTrace`, `NewsResponse`.
+   - Hard gate: Every rendered news item MUST originate from a `VerifiedArticle` with `verified=True`.
+2. **Deterministic Request Normalization**:
+   - Blank / general queries ("news", "headlines", "what's happening") normalize to `topic=None`, never synthetic `"news top stories"`.
+   - Default concrete locale (`locale="US"`), 24h default recency window for "today", 72h for "latest", 168h for background.
+   - Deterministic keyword and entity classification for finance mode.
+3. **Tier-1 Candidate Discovery (`lazy-agent-service`)**:
+   - `lazy-agent-service` native `news_search` acts strictly as discovery.
+   - Results are accepted only as candidates; malformed or missing title/URL rows are rejected immediately.
+4. **Evidence Verification (`scraper-service`)**:
+   - Promoted `scraper-service` from fallback tier 3 to active verification of the top candidate URLs.
+   - Requires content length $\ge 120$ chars, title overlap $\ge 0.35$ (or title inclusion in body), and entity presence.
+   - Rejects mismatched title/URL pairings and marks unverified candidates with `verified=False`.
+5. **Diversity & Locale Gates**:
+   - General news enforces $\ge 3$ distinct publishers in top 5, max 2 articles per publisher.
+   - `locale="US"` excludes irrelevant country-biased outlets (e.g. Indian English publishers for generic US queries).
+6. **Restricted Fast LLM Role**:
+   - `fast_llm_json` only ranks verified data and synthesizes overviews strictly from verified excerpts.
+   - Fast LLM cannot invent search queries, hallucinate article metadata, or select unverified articles.
+7. **Safe Degradation**:
+   - $\ge 5$ verified: Standard card.
+   - $1-4$ verified: Limited verified coverage card.
+   - $0$ verified: Honest unavailable state with 0 items; no synthetic headlines.
+8. **Comprehensive 10-Point Test Suite (`tests/test_news_pipeline.py`)**:
+   - All 10 gating tests passing 100%, 102/102 news tests passing.
+
+---
+
 # Handoff — 2026-09-17 (Research Protocol: Dual-Track Streaming, Bounded Workers & Empirical Benchmark Lift)
 
 **Context:** Transformed `HTML-Notes` from a monolithic synchronous response architecture into a first-class "fast answer now, evidence gathering continues" research protocol with strict routing, bounded budgets, background jobs, transparent progress, and an automated benchmark evaluation suite.

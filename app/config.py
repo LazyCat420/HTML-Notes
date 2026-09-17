@@ -41,6 +41,9 @@ PORTAL_SERVICE_URL = os.getenv("PORTAL_SERVICE_URL", "http://10.0.0.16:4001")
 VAULT_SERVICE_URL = os.getenv("VAULT_SERVICE_URL", "http://10.0.0.16:5599")
 VAULT_SERVICE_TOKEN = os.getenv("VAULT_SERVICE_TOKEN", "")
 
+# Deterministic evidence-first news pipeline toggle
+USE_DETERMINISTIC_NEWS_PIPELINE = os.getenv("USE_DETERMINISTIC_NEWS_PIPELINE", "false").lower() in ("true", "1", "yes")
+
 
 
 # Ensure the database directory exists

@@ -1,4 +1,5 @@
 import sys
+import app.config as config
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 
@@ -446,7 +447,8 @@ async def build_news_card(message: str, *, finance: bool = False,
                           general: Optional[bool] = None,
                           depth: str = "card",
                           subject_hint: str = "",
-                          category: str = "") -> dict:
+                          category: str = "",
+                          use_pipeline: Optional[bool] = None) -> dict:
     """THE news pipeline. Every news-like ask — general headlines, a topic,
     market/stock news, the agent's `news_topic` / `stock_news_query` injectors,
     the router's `news` / `stock_news` types — ends up here.
@@ -468,6 +470,20 @@ async def build_news_card(message: str, *, finance: bool = False,
         if finance:
             return await build_market_research_config(message)
         return await build_news_brief_config(message)
+
+    should_use_pipe = use_pipeline if use_pipeline is not None else getattr(config, "USE_DETERMINISTIC_NEWS_PIPELINE", False)
+    if should_use_pipe:
+        try:
+            from app.services.news_pipeline import build_news_response
+            resp = await build_news_response(
+                message,
+                finance=finance,
+                general=general,
+                category=category
+            )
+            return resp.card_config
+        except Exception as e:
+            logger.warning(f"[NEWS PIPELINE] deterministic pipeline error ({e}) — falling back to legacy card builder")
 
     # 1. GROUND — skipped for a general ask (nothing to disambiguate, and
     #    ground_query will invent a subject for anything: "hello" became
