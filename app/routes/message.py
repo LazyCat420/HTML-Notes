@@ -205,6 +205,27 @@ async def send_message(req: MessageRequest):
                 media_type="text/event-stream",
             )
 
+        def spawn_research_stream(intent, budget):
+            """Research Protocol dual-track stream:
+            Instant acknowledgement -> fast retrieval race & provisional widget ->
+            preliminary answer -> background workers -> final update delta."""
+            from app.services.research.coordinator import execute_research_stream
+            async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path", "widget_type": "research",
+                    "id_prefix": "research", "query": req.message,
+                    "research_mode": intent.mode,
+                }) + '\n\n')
+                async for event in execute_research_stream(
+                    req.session_id, str(uuid.uuid4().hex[:8]), intent, budget, req.message
+                ):
+                    yield event
+
+            return StreamingResponse(
+                _run_turn(req.session_id, req.current_canvas or "", stream, req.canvas_version),
+                media_type="text/event-stream",
+            )
+
         def _stream_clear_canvas(status: str = "closing everything..."):
             """Clear the ENTIRE canvas in one commit and stream it back. Bypasses
             the agent, which can only remove one widget per iteration and stops
@@ -890,6 +911,25 @@ async def send_message(req: MessageRequest):
                         if _depth == "brief"
                         else ("gathering today's headlines..." if _gen
                               else "gathering and summarizing the news...")))
+
+        # ── PRE-ROUTER: Research Protocol ────────────────────────────────────
+        # "Fast answer now, evidence gathering continues" dual-track execution.
+        # Handles single-stock catalysts ("why is NVDA down today?"), company event
+        # reports, peer comparisons, and deep bull/bear dossiers deterministically.
+        if not wants_removal and not is_video_ask and not wants_music:
+            from app.services.research.intent import classify_research_intent
+            from app.services.research.budget import calculate_research_budget
+
+            research_intent = classify_research_intent(req.message)
+            if research_intent and (
+                research_intent.mode in ("explain_move", "dossier", "comparison", "quant_signal")
+                or (research_intent.mode == "event_report" and not news_ask)
+            ):
+                budget = calculate_research_budget(research_intent)
+                logger.info(f"[RESEARCH PROTOCOL] mode={research_intent.mode} "
+                            f"entities={[e.symbol for e in research_intent.entities]} "
+                            f"deadline={budget.foreground_deadline_ms}ms")
+                return spawn_research_stream(research_intent, budget)
 
         # use_lazy_agent defaults to TRUE (main.py MessageRequest), and the
         # browser deliberately does not send it — so for every real turn this

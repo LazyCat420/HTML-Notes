@@ -2633,6 +2633,33 @@ document.addEventListener("DOMContentLoaded", () => {
                     renderError(data.message || "An error occurred.");
                     statusBar.finish("error", data.message || "An error occurred");
                     envelope.finish("error");
+                } else if (data.type === "research.started") {
+                    HN.log("research", "started", data.mode, data.summary);
+                    addLogStep(`Research protocol: <strong>${data.mode}</strong> — ${data.summary}`, "🔬");
+                    statusBar.stage(data.summary || "Researching...", 25);
+                } else if (data.type === "research.plan") {
+                    HN.log("research", "plan", data.tasks);
+                    const taskList = (data.tasks || []).join(", ");
+                    addLogStep(`Plan: [${taskList}] · deadline ${data.foreground_deadline_ms || 6500}ms`, "📋");
+                } else if (data.type === "research.source_batch") {
+                    HN.log("research", "sources", data.accepted, data.publishers);
+                    const pubs = (data.publishers || []).slice(0, 3).join(", ");
+                    addLogStep(`Verified ${data.accepted} sources (${pubs || "reputable sources"})`, "📰");
+                    statusBar.stage(`Sources verified (${data.accepted})`, 65);
+                } else if (data.type === "widget.provisional") {
+                    HN.log("research", "provisional_widget", data.widget_id);
+                    addLogStep(`Live data preview mounted (#${data.widget_id})`, "⚡");
+                    statusBar.stage("Live data preview ready…", 50);
+                } else if (data.type === "answer.partial") {
+                    HN.log("research", "answer.partial", `v${data.version}`);
+                    addLogStep(`Preliminary answer ready (v${data.version})`, "✍️");
+                } else if (data.type === "answer.final") {
+                    HN.log("research", "answer.final", `v${data.version}`, data.delta_summary);
+                    addLogStep(`Final verified update (v${data.version}): ${data.delta_summary || "Complete"}`, "✅");
+                    statusBar.stage("Research analysis verified", 95);
+                } else if (data.type === "research.completed") {
+                    HN.log("research", "completed", `${data.latency_ms}ms`);
+                    addLogStep(`Research completed in ${data.latency_ms}ms`, "🏁");
                 }
             };
 

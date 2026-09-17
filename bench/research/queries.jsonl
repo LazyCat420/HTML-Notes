@@ -1,0 +1,15 @@
+{"id": "q01", "query": "why is NVDA down today?", "mode": "explain_move", "entities": ["NVDA"], "expected_route": "explain_move", "notes": "Core single-ticker catalyst ask"}
+{"id": "q02", "query": "why did AMD drop today?", "mode": "explain_move", "entities": ["AMD"], "expected_route": "explain_move", "notes": "Peer semiconductor move"}
+{"id": "q03", "query": "what happened to Tesla stock today?", "mode": "explain_move", "entities": ["TSLA"], "expected_route": "explain_move", "notes": "EV leader intraday move"}
+{"id": "q04", "query": "stock market news", "mode": "fast_market_brief", "entities": [], "expected_route": "fast_market_brief", "notes": "Broad market overview"}
+{"id": "q05", "query": "market news today", "mode": "fast_market_brief", "entities": [], "expected_route": "fast_market_brief", "notes": "Broad market overview with temporal modifier"}
+{"id": "q06", "query": "how is the stock market doing", "mode": "fast_market_brief", "entities": [], "expected_route": "fast_market_brief", "notes": "Conversational market ask"}
+{"id": "q07", "query": "NVDA earnings summary", "mode": "event_report", "entities": ["NVDA"], "expected_route": "event_report", "notes": "Earnings catalyst ask"}
+{"id": "q08", "query": "Apple quarterly results and guidance", "mode": "event_report", "entities": ["AAPL"], "expected_route": "event_report", "notes": "Filing & guidance ask"}
+{"id": "q09", "query": "compare MSFT vs GOOGL AI exposure", "mode": "comparison", "entities": ["MSFT", "GOOGL"], "expected_route": "comparison", "notes": "Multi-company strategic comparison"}
+{"id": "q10", "query": "AMD vs NVDA valuation and growth", "mode": "comparison", "entities": ["AMD", "NVDA"], "expected_route": "comparison", "notes": "Head-to-head metric comparison"}
+{"id": "q11", "query": "research a bull/bear thesis on SOFI", "mode": "dossier", "entities": ["SOFI"], "expected_route": "dossier", "notes": "Deep dossier requiring skeptic review"}
+{"id": "q12", "query": "deep dive on Palantir", "mode": "dossier", "entities": ["PLTR"], "expected_route": "dossier", "notes": "Deep research ask"}
+{"id": "q13", "query": "track my watchlist today", "mode": "monitor", "entities": [], "expected_route": "monitor", "notes": "Watchlist monitoring ask"}
+{"id": "q14", "query": "hello", "mode": "conversational", "entities": [], "expected_route": "reply", "notes": "Control: greeting, zero research"}
+{"id": "q15", "query": "close everything", "mode": "canvas_control", "entities": [], "expected_route": "clear", "notes": "Control: canvas reset"}

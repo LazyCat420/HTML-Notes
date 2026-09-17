@@ -105,6 +105,79 @@ def init_db():
     );
     """)
 
+    # Research Protocol Ledger Tables
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS research_runs (
+        run_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        intent_json TEXT NOT NULL,
+        budget_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        foreground_deadline_at TEXT,
+        background_deadline_at TEXT,
+        completed_at TEXT,
+        metrics_json TEXT
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_research_runs_session ON research_runs(session_id, created_at);")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS research_tasks (
+        task_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        task_type TEXT NOT NULL,
+        worker_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        deadline_ms INTEGER,
+        cache_hit INTEGER DEFAULT 0,
+        evidence_ids TEXT,
+        error_class TEXT,
+        details_json TEXT,
+        FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_research_tasks_run ON research_tasks(run_id, state);")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS research_evidence (
+        evidence_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        canonical_url TEXT,
+        title TEXT NOT NULL,
+        publisher TEXT,
+        tier TEXT,
+        published_at TEXT,
+        extracted_text TEXT,
+        quality_score REAL,
+        freshness TEXT,
+        source_provider TEXT,
+        metadata_json TEXT,
+        FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_research_evidence_run ON research_evidence(run_id);")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS research_answer_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        text TEXT NOT NULL,
+        evidence_ids TEXT,
+        delta_summary TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES research_runs(run_id) ON DELETE CASCADE
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_research_answers_run ON research_answer_versions(run_id, version);")
+
     conn.commit()
     conn.close()
 
@@ -661,3 +734,166 @@ def expire_watches(now: float) -> int:
     n = cur.rowcount
     conn.close()
     return n
+
+
+# ── Research Protocol Ledger Helpers ─────────────────────────────────────────
+
+def save_research_run(run: Dict[str, Any]) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT OR REPLACE INTO research_runs (
+        run_id, session_id, message_id, mode, status, intent_json, budget_json,
+        created_at, foreground_deadline_at, background_deadline_at, completed_at, metrics_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        run["run_id"],
+        run["session_id"],
+        run["message_id"],
+        run["intent"]["mode"] if isinstance(run.get("intent"), dict) else str(run.get("mode", "")),
+        run.get("status", "foreground_running"),
+        json.dumps(run.get("intent", {})),
+        json.dumps(run.get("budget", {})),
+        run.get("created_at", datetime.utcnow().isoformat()),
+        run.get("foreground_deadline_at"),
+        run.get("background_deadline_at"),
+        run.get("completed_at"),
+        json.dumps(run.get("metrics", {}))
+    ))
+    conn.commit()
+    conn.close()
+
+
+def update_research_run_status(run_id: str, status: str, completed_at: Optional[str] = None,
+                               metrics: Optional[Dict[str, Any]] = None) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    if metrics:
+        cur.execute("""
+        UPDATE research_runs SET status = ?, completed_at = COALESCE(?, completed_at),
+        metrics_json = ? WHERE run_id = ?
+        """, (status, completed_at, json.dumps(metrics), run_id))
+    else:
+        cur.execute("""
+        UPDATE research_runs SET status = ?, completed_at = COALESCE(?, completed_at)
+        WHERE run_id = ?
+        """, (status, completed_at, run_id))
+    conn.commit()
+    conn.close()
+
+
+def save_research_task(task: Dict[str, Any], run_id: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT OR REPLACE INTO research_tasks (
+        task_id, run_id, task_type, worker_id, state, started_at, completed_at,
+        deadline_ms, cache_hit, evidence_ids, error_class, details_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        task["task_id"],
+        run_id,
+        task.get("task_type", ""),
+        task.get("worker_id", ""),
+        task.get("state", "pending"),
+        task.get("started_at"),
+        task.get("completed_at"),
+        task.get("deadline_ms", 5000),
+        1 if task.get("cache_hit") else 0,
+        json.dumps(task.get("evidence_ids", [])),
+        task.get("error_class"),
+        json.dumps(task.get("details", {}))
+    ))
+    conn.commit()
+    conn.close()
+
+
+def save_research_evidence(item: Dict[str, Any], run_id: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT OR REPLACE INTO research_evidence (
+        evidence_id, run_id, url, canonical_url, title, publisher, tier,
+        published_at, extracted_text, quality_score, freshness, source_provider, metadata_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        item["evidence_id"],
+        run_id,
+        item.get("url", ""),
+        item.get("canonical_url", ""),
+        item.get("title", ""),
+        item.get("publisher", ""),
+        item.get("tier", "secondary"),
+        item.get("published_at"),
+        item.get("extracted_text", ""),
+        float(item.get("quality_score", 1.0)),
+        item.get("freshness", "fresh"),
+        item.get("source_provider", ""),
+        json.dumps({
+            "age_seconds": item.get("age_seconds"),
+            "related_tickers": item.get("related_tickers", []),
+            "entity_relevance": item.get("entity_relevance", 1.0),
+        })
+    ))
+    conn.commit()
+    conn.close()
+
+
+def save_research_answer_version(answer: Dict[str, Any], run_id: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO research_answer_versions (
+        run_id, version, status, text, evidence_ids, delta_summary, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        run_id,
+        int(answer.get("version", 1)),
+        answer.get("status", "preliminary"),
+        answer.get("text", ""),
+        json.dumps(answer.get("evidence_ids", [])),
+        answer.get("delta_summary"),
+        answer.get("created_at", datetime.utcnow().isoformat())
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_research_run_full(run_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM research_runs WHERE run_id = ?", (run_id,))
+    run_row = cur.fetchone()
+    if not run_row:
+        conn.close()
+        return None
+
+    cur.execute("SELECT * FROM research_tasks WHERE run_id = ?", (run_id,))
+    task_rows = cur.fetchall()
+
+    cur.execute("SELECT * FROM research_evidence WHERE run_id = ?", (run_id,))
+    evidence_rows = cur.fetchall()
+
+    cur.execute("SELECT * FROM research_answer_versions WHERE run_id = ? ORDER BY version ASC", (run_id,))
+    answer_rows = cur.fetchall()
+
+    conn.close()
+
+    return {
+        "run_id": run_row["run_id"],
+        "session_id": run_row["session_id"],
+        "message_id": run_row["message_id"],
+        "mode": run_row["mode"],
+        "status": run_row["status"],
+        "intent": json.loads(run_row["intent_json"]),
+        "budget": json.loads(run_row["budget_json"]),
+        "created_at": run_row["created_at"],
+        "foreground_deadline_at": run_row["foreground_deadline_at"],
+        "background_deadline_at": run_row["background_deadline_at"],
+        "completed_at": run_row["completed_at"],
+        "metrics": json.loads(run_row["metrics_json"] or "{}"),
+        "tasks": [dict(t) for t in task_rows],
+        "evidence": [dict(e) for e in evidence_rows],
+        "answer_versions": [dict(a) for a in answer_rows],
+    }
+

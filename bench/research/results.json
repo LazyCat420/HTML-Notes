@@ -1,0 +1,366 @@
+{
+  "research": [
+    {
+      "query": "why is NVDA down today?",
+      "mode": "explain_move",
+      "t_ack_ms": 434.5,
+      "t_first_ui_ms": 968.4,
+      "t_partial_ms": 9823.3,
+      "t_total_ms": 16963.9,
+      "evidence_count": 6,
+      "provisional_rendered": true,
+      "answer": "NVDA declined 2.73% to $218.86 on 2026-09-17, tracking a sector-wide dip where SMH was flat (+0.27%) but peers AMD and I...",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "why did AMD drop today?",
+      "mode": "explain_move",
+      "t_ack_ms": 20.6,
+      "t_first_ui_ms": 363.6,
+      "t_partial_ms": 7648.7,
+      "t_total_ms": 12338.2,
+      "evidence_count": 3,
+      "provisional_rendered": true,
+      "answer": "AMD shares surged +8.55% to $549.28 on 2026-09-17, driven by a long-term strategic partnership expansion with Microsoft ...",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "what happened to Tesla stock today?",
+      "mode": "explain_move",
+      "t_ack_ms": 33.9,
+      "t_first_ui_ms": 492.0,
+      "t_partial_ms": 6988.0,
+      "t_total_ms": 17704.7,
+      "evidence_count": 3,
+      "provisional_rendered": true,
+      "answer": "Tesla (TSLA) surged +8.37% to $367.70 on 2026-09-17, significantly outperforming the XLY sector (-0.21%) and peers RIVN ...",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "stock market news",
+      "mode": "fast_market_brief",
+      "t_ack_ms": 21.1,
+      "t_first_ui_ms": 4233.3,
+      "t_partial_ms": 7805.6,
+      "t_total_ms": 8208.0,
+      "evidence_count": 2,
+      "provisional_rendered": true,
+      "answer": "Wall Street rallied on September 17th following Wednesday's Fed rate hike, with the Nasdaq leading gains (+1.61%) as chi...",
+      "scores": {
+        "relevance": 8.5,
+        "factual_grounding": 8.0,
+        "causal_discipline": 9.0,
+        "substance": 7.5,
+        "overall": 8.25
+      }
+    },
+    {
+      "query": "market news today",
+      "mode": "fast_market_brief",
+      "t_ack_ms": 10.6,
+      "t_first_ui_ms": 3530.6,
+      "t_partial_ms": 7139.4,
+      "t_total_ms": 7640.5,
+      "evidence_count": 2,
+      "provisional_rendered": true,
+      "answer": "Wall Street rallied on Thursday as chip stocks led a recovery from Wednesday's Fed rate hike selloff. The Nasdaq Composi...",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "how is the stock market doing",
+      "mode": "fast_market_brief",
+      "t_ack_ms": 20.4,
+      "t_first_ui_ms": 4864.3,
+      "t_partial_ms": 8723.6,
+      "t_total_ms": 9318.6,
+      "evidence_count": 4,
+      "provisional_rendered": true,
+      "answer": "The S&P 500 year-end target was revised downward to 7,900 by Ed Yardeni, reflecting increased downturn risks and broader...",
+      "scores": {
+        "relevance": 3.0,
+        "factual_grounding": 2.5,
+        "causal_discipline": 2.0,
+        "substance": 1.5,
+        "overall": 2.3
+      }
+    },
+    {
+      "query": "NVDA earnings summary",
+      "mode": "event_report",
+      "t_ack_ms": 13.7,
+      "t_first_ui_ms": 346.6,
+      "t_partial_ms": 8928.2,
+      "t_total_ms": 14768.7,
+      "evidence_count": 3,
+      "provisional_rendered": true,
+      "answer": "NVDA declined -2.72% to $218.9 as of 2026-09-17 16:44 UTC [ev_price_nvda_1789663464]. Despite the drop, the broader semi...",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "Apple quarterly results and guidance",
+      "mode": "event_report",
+      "t_ack_ms": 19.1,
+      "t_first_ui_ms": 461.0,
+      "t_partial_ms": 9901.3,
+      "t_total_ms": 17837.5,
+      "evidence_count": 6,
+      "provisional_rendered": true,
+      "answer": "Apple shares surged +9.89% to $335.8 on 2026-09-17, outpacing the XLK sector gain of +0.77% and peer MSFT (+0.10%) per [...",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "compare MSFT vs GOOGL AI exposure",
+      "mode": "comparison",
+      "t_ack_ms": 19.7,
+      "t_first_ui_ms": 344.6,
+      "t_partial_ms": 7496.3,
+      "t_total_ms": 12168.5,
+      "evidence_count": 3,
+      "provisional_rendered": true,
+      "answer": "MSFT traded at $495.845 (+3.23%) while GOOGL declined -0.12% on 2026-09-17, indicating relative strength. [ev_price_msft...",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "AMD vs NVDA valuation and growth",
+      "mode": "comparison",
+      "t_ack_ms": 23.5,
+      "t_first_ui_ms": 355.5,
+      "t_partial_ms": 7485.7,
+      "t_total_ms": 13408.4,
+      "evidence_count": 5,
+      "provisional_rendered": true,
+      "answer": "AMD shares surged +8.67% to $549.88 on 2026-09-17, outpacing the sector ETF SMH (+0.28%) and peer NVDA (+0.74%) [ev_pric...",
+      "scores": {
+        "relevance": 8.5,
+        "factual_grounding": 7.0,
+        "causal_discipline": 9.0,
+        "substance": 7.5,
+        "overall": 8.0
+      }
+    }
+  ],
+  "baseline": [
+    {
+      "query": "why is NVDA down today?",
+      "mode": "baseline_sync",
+      "t_ack_ms": 270.3,
+      "t_first_ui_ms": 270.3,
+      "t_partial_ms": 270.3,
+      "t_total_ms": 270.3,
+      "evidence_count": 1,
+      "provisional_rendered": false,
+      "answer": "NVDA quote: 218.875 (+0.73%)",
+      "scores": {
+        "relevance": 10.0,
+        "factual_grounding": 10.0,
+        "causal_discipline": 10.0,
+        "substance": 10.0,
+        "overall": 10.0
+      }
+    },
+    {
+      "query": "why did AMD drop today?",
+      "mode": "baseline_sync",
+      "t_ack_ms": 240.7,
+      "t_first_ui_ms": 240.7,
+      "t_partial_ms": 240.7,
+      "t_total_ms": 240.7,
+      "evidence_count": 1,
+      "provisional_rendered": false,
+      "answer": "AMD quote: 549.5 (+3.77%)",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "what happened to Tesla stock today?",
+      "mode": "baseline_sync",
+      "t_ack_ms": 173.0,
+      "t_first_ui_ms": 173.0,
+      "t_partial_ms": 173.0,
+      "t_total_ms": 173.0,
+      "evidence_count": 1,
+      "provisional_rendered": false,
+      "answer": "TSLA quote: 367.5 (-0.49%)",
+      "scores": {
+        "relevance": 9.0,
+        "factual_grounding": 8.5,
+        "causal_discipline": 9.0,
+        "substance": 8.0,
+        "overall": 8.6
+      }
+    },
+    {
+      "query": "stock market news",
+      "mode": "baseline_sync",
+      "t_ack_ms": 7659.3,
+      "t_first_ui_ms": 7659.3,
+      "t_partial_ms": 7659.3,
+      "t_total_ms": 7659.3,
+      "evidence_count": 2,
+      "provisional_rendered": false,
+      "answer": "Market News",
+      "scores": {
+        "relevance": 1.0,
+        "factual_grounding": 0.0,
+        "causal_discipline": 1.0,
+        "substance": 0.0,
+        "overall": 0.5
+      }
+    },
+    {
+      "query": "market news today",
+      "mode": "baseline_sync",
+      "t_ack_ms": 7990.1,
+      "t_first_ui_ms": 7990.1,
+      "t_partial_ms": 7990.1,
+      "t_total_ms": 7990.1,
+      "evidence_count": 2,
+      "provisional_rendered": false,
+      "answer": "Market News",
+      "scores": {
+        "relevance": 1.0,
+        "factual_grounding": 1.0,
+        "causal_discipline": 1.0,
+        "substance": 1.0,
+        "overall": 1.0
+      }
+    },
+    {
+      "query": "how is the stock market doing",
+      "mode": "baseline_sync",
+      "t_ack_ms": 0.1,
+      "t_first_ui_ms": 0.1,
+      "t_partial_ms": 0.1,
+      "t_total_ms": 0.1,
+      "evidence_count": 0,
+      "provisional_rendered": false,
+      "answer": "General response for how is the stock market doing",
+      "scores": {
+        "relevance": 5.0,
+        "factual_grounding": 0.0,
+        "causal_discipline": 0.0,
+        "substance": 0.0,
+        "overall": 1.25
+      }
+    },
+    {
+      "query": "NVDA earnings summary",
+      "mode": "baseline_sync",
+      "t_ack_ms": 233.8,
+      "t_first_ui_ms": 233.8,
+      "t_partial_ms": 233.8,
+      "t_total_ms": 233.8,
+      "evidence_count": 1,
+      "provisional_rendered": false,
+      "answer": "NVDA quote: 218.9 (+0.74%)",
+      "scores": {
+        "relevance": 1.0,
+        "factual_grounding": 1.0,
+        "causal_discipline": 1.0,
+        "substance": 1.0,
+        "overall": 1.0
+      }
+    },
+    {
+      "query": "Apple quarterly results and guidance",
+      "mode": "baseline_sync",
+      "t_ack_ms": 224.9,
+      "t_first_ui_ms": 224.9,
+      "t_partial_ms": 224.9,
+      "t_total_ms": 224.9,
+      "evidence_count": 1,
+      "provisional_rendered": false,
+      "answer": "AAPL quote: 335.85 (+0.99%)",
+      "scores": {
+        "relevance": 1.0,
+        "factual_grounding": 1.0,
+        "causal_discipline": 1.0,
+        "substance": 0.0,
+        "overall": 0.6
+      }
+    },
+    {
+      "query": "compare MSFT vs GOOGL AI exposure",
+      "mode": "baseline_sync",
+      "t_ack_ms": 211.3,
+      "t_first_ui_ms": 211.3,
+      "t_partial_ms": 211.3,
+      "t_total_ms": 211.3,
+      "evidence_count": 1,
+      "provisional_rendered": false,
+      "answer": "MSFT quote: 495.86 (+0.12%)",
+      "scores": {
+        "relevance": 1.0,
+        "factual_grounding": 1.0,
+        "causal_discipline": 1.0,
+        "substance": 1.0,
+        "overall": 1.0
+      }
+    },
+    {
+      "query": "AMD vs NVDA valuation and growth",
+      "mode": "baseline_sync",
+      "t_ack_ms": 209.9,
+      "t_first_ui_ms": 209.9,
+      "t_partial_ms": 209.9,
+      "t_total_ms": 209.9,
+      "evidence_count": 1,
+      "provisional_rendered": false,
+      "answer": "AMD quote: 549.57 (+3.78%)",
+      "scores": {
+        "relevance": 2.0,
+        "factual_grounding": 1.0,
+        "causal_discipline": 1.0,
+        "substance": 1.0,
+        "overall": 1.3
+      }
+    }
+  ]
+}
