@@ -136,5 +136,21 @@ class HTMLNotesManifestRegistry:
             return tool.get("resource_type")
         return None
 
+    def requires_authorization_receipt(self, name_or_id: str) -> bool:
+        tool = self.resolve_tool(name_or_id)
+        if tool:
+            if "requires_authorization_receipt" in tool:
+                return bool(tool.get("requires_authorization_receipt"))
+            return tool.get("effect") in ("write", "destructive")
+        return False
+
+    def requires_confirmation(self, name_or_id: str) -> bool:
+        tool = self.resolve_tool(name_or_id)
+        if tool:
+            if tool.get("effect") == "destructive":
+                return True
+            return bool(tool.get("requires_confirmation", False))
+        return False
+
 
 manifest_registry = HTMLNotesManifestRegistry()

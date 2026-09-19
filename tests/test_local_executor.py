@@ -1,10 +1,30 @@
+import uuid
+from datetime import datetime, timedelta, timezone
 import pytest
 from app.tooling.local_executor import local_tool_executor
+from app.adapters.runtime.models import LocalToolAuthorization
 from app import database
+
+
+def make_auth(tool_name: str, session_id: str, app_id: str = "html-notes") -> LocalToolAuthorization:
+    now = datetime.now(timezone.utc)
+    return LocalToolAuthorization(
+        run_id="run_test_local_executor",
+        tool_call_id=f"call_{uuid.uuid4().hex[:12]}",
+        canonical_tool_id=tool_name,
+        profile_id="html-notes-canvas-v1",
+        app_id=app_id,
+        session_id=session_id,
+        issued_at=now,
+        expires_at=now + timedelta(minutes=5),
+        nonce=f"nonce_{uuid.uuid4().hex[:12]}",
+        signature="sha256-valid-test-sig",
+    )
 
 
 @pytest.mark.asyncio
 async def test_local_executor_notes_crud():
+    session_id = "session_test_crud"
     # 1. Create note
     create_res = await local_tool_executor.execute(
         tool_name="html_notes.notes.create",
@@ -13,7 +33,8 @@ async def test_local_executor_notes_crud():
             "rendered_html": "<article><p>Hello from local executor test!</p></article>",
             "tags": ["unit-test", "executor"]
         },
-        session_id="session_test_crud"
+        session_id=session_id,
+        authorization=make_auth("html_notes.notes.create", session_id=session_id)
     )
     assert create_res["success"] is True
     assert "note_id" in create_res["result"]
@@ -23,7 +44,7 @@ async def test_local_executor_notes_crud():
     get_res = await local_tool_executor.execute(
         tool_name="html_notes.notes.get",
         args={"note_id": note_id},
-        session_id="session_test_crud"
+        session_id=session_id
     )
     assert get_res["success"] is True
     assert get_res["result"]["title"] == "Executor Unit Test Note"
@@ -36,7 +57,8 @@ async def test_local_executor_notes_crud():
             "title": "Updated Test Note Title",
             "rendered_html": "<article><p>Updated content</p></article>"
         },
-        session_id="session_test_crud"
+        session_id=session_id,
+        authorization=make_auth("html_notes.notes.update", session_id=session_id)
     )
     assert update_res["success"] is True
 
@@ -44,7 +66,7 @@ async def test_local_executor_notes_crud():
     search_res = await local_tool_executor.execute(
         tool_name="html_notes.notes.search",
         args={"query": "Updated Test Note"},
-        session_id="session_test_crud"
+        session_id=session_id
     )
     assert search_res["success"] is True
     assert any(n["id"] == note_id for n in search_res["result"]["results"])
@@ -59,7 +81,8 @@ async def test_note_update_rejects_cross_session_or_unauthorized_note():
             "title": "Session A Private Note",
             "rendered_html": "<article><p>Confidential</p></article>"
         },
-        session_id="session_A"
+        session_id="session_A",
+        authorization=make_auth("html_notes.notes.create", session_id="session_A")
     )
     assert create_res["success"] is True
     note_id = create_res["result"]["note_id"]
@@ -71,7 +94,8 @@ async def test_note_update_rejects_cross_session_or_unauthorized_note():
             "note_id": note_id,
             "title": "Compromised Title"
         },
-        session_id="session_B"
+        session_id="session_B",
+        authorization=make_auth("html_notes.notes.update", session_id="session_B")
     )
     assert bad_update["success"] is False
     assert bad_update["is_error"] is True
@@ -80,6 +104,7 @@ async def test_note_update_rejects_cross_session_or_unauthorized_note():
 
 @pytest.mark.asyncio
 async def test_local_executor_canvas_upsert_and_dom():
+    session_id = "session_canvas_1"
     # 1. Upsert widget (using canonical name)
     res = await local_tool_executor.execute(
         tool_name="html_notes.canvas.upsert_widget",
@@ -88,7 +113,8 @@ async def test_local_executor_canvas_upsert_and_dom():
             "widget_id": "clock_test_1",
             "config": {"mode": "clock", "timezone": "UTC"}
         },
-        session_id="session_canvas_1"
+        session_id=session_id,
+        authorization=make_auth("html_notes.canvas.upsert_widget", session_id=session_id)
     )
     assert res["success"] is True
     assert "clock_test_1" in res["result"]["html"]
@@ -101,7 +127,8 @@ async def test_local_executor_canvas_upsert_and_dom():
             "widget_id": "stock_aapl_1",
             "config": {"symbol": "AAPL"}
         },
-        session_id="session_canvas_1"
+        session_id=session_id,
+        authorization=make_auth("html_notes.canvas.upsert_widget", session_id=session_id)
     )
     assert res_legacy["success"] is True
     assert "stock_aapl_1" in res_legacy["result"]["html"]
@@ -112,7 +139,7 @@ async def test_local_executor_canvas_upsert_and_dom():
         tool_name="canvas_read_dom",
         args={},
         canvas_html=canvas_markup,
-        session_id="session_canvas_1"
+        session_id=session_id
     )
     assert read_res["success"] is True
     assert read_res["result"]["count"] == 1
@@ -126,7 +153,8 @@ async def test_local_executor_canvas_upsert_and_dom():
             "selector": "#w1"
         },
         canvas_html=canvas_markup,
-        session_id="session_canvas_1"
+        session_id=session_id,
+        authorization=make_auth("html_notes.canvas.mutate", session_id=session_id)
     )
     assert mod_res["success"] is True
     assert mod_res["result"]["removed"] == "w1"
@@ -141,7 +169,8 @@ async def test_widget_update_rejects_cross_session_widget_id():
             "widget_id": "session_x_clock",
             "config": {}
         },
-        session_id="session_X"
+        session_id="session_X",
+        authorization=make_auth("html_notes.canvas.upsert_widget", session_id="session_X")
     )
     assert res1["success"] is True
 
@@ -153,7 +182,8 @@ async def test_widget_update_rejects_cross_session_widget_id():
             "widget_id": "session_x_clock",
             "config": {}
         },
-        session_id="session_Y"
+        session_id="session_Y",
+        authorization=make_auth("html_notes.canvas.upsert_widget", session_id="session_Y")
     )
     assert res2["success"] is False
     assert res2["is_error"] is True
@@ -162,10 +192,12 @@ async def test_widget_update_rejects_cross_session_widget_id():
 
 @pytest.mark.asyncio
 async def test_widget_remove_rejects_ambiguous_selector():
+    session_id = "session_remove"
     res = await local_tool_executor.execute(
         tool_name="html_notes.canvas.remove_widget",
         args={"selector": ".widget-container"},
-        session_id="session_remove"
+        session_id=session_id,
+        authorization=make_auth("html_notes.canvas.remove_widget", session_id=session_id)
     )
     assert res["success"] is False
     assert "Ambiguous remove" in res["error"]
@@ -173,6 +205,7 @@ async def test_widget_remove_rejects_ambiguous_selector():
 
 @pytest.mark.asyncio
 async def test_widget_upsert_preserves_singleton_rule():
+    session_id = "session_singleton"
     res = await local_tool_executor.execute(
         tool_name="html_notes.canvas.upsert_widget",
         args={
@@ -180,7 +213,8 @@ async def test_widget_upsert_preserves_singleton_rule():
             "widget_id": "weather_test_1",
             "config": {"location": "Tokyo"}
         },
-        session_id="session_singleton"
+        session_id=session_id,
+        authorization=make_auth("html_notes.canvas.upsert_widget", session_id=session_id)
     )
     assert res["success"] is True
     assert res["result"]["is_singleton"] is True
@@ -188,6 +222,7 @@ async def test_widget_upsert_preserves_singleton_rule():
 
 @pytest.mark.asyncio
 async def test_weather_widget_singleton_updates_in_place():
+    session_id = "session_weather_in_place"
     canvas_html = '<div id="dashboard-grid"><div id="weather_primary" class="widget-container" data-widget-type="weather"></div></div>'
     res = await local_tool_executor.execute(
         tool_name="html_notes.canvas.upsert_widget",
@@ -196,8 +231,9 @@ async def test_weather_widget_singleton_updates_in_place():
             "widget_id": "weather_spawned_duplicate",
             "config": {"location": "London"}
         },
-        session_id="session_weather_in_place",
-        canvas_html=canvas_html
+        session_id=session_id,
+        canvas_html=canvas_html,
+        authorization=make_auth("html_notes.canvas.upsert_widget", session_id=session_id)
     )
     assert res["success"] is True
     assert res["result"]["widget_id"] == "weather_primary"
@@ -206,6 +242,7 @@ async def test_weather_widget_singleton_updates_in_place():
 
 @pytest.mark.asyncio
 async def test_map_widget_singleton_updates_in_place():
+    session_id = "session_map_in_place"
     canvas_html = '<div id="dashboard-grid"><div id="map_primary" class="widget-container" data-widget-type="map"></div></div>'
     res = await local_tool_executor.execute(
         tool_name="html_notes.canvas.upsert_widget",
@@ -214,8 +251,9 @@ async def test_map_widget_singleton_updates_in_place():
             "widget_id": "map_spawned_duplicate",
             "config": {"map_query": "Paris"}
         },
-        session_id="session_map_in_place",
-        canvas_html=canvas_html
+        session_id=session_id,
+        canvas_html=canvas_html,
+        authorization=make_auth("html_notes.canvas.upsert_widget", session_id=session_id)
     )
     assert res["success"] is True
     assert res["result"]["widget_id"] == "map_primary"
@@ -231,11 +269,13 @@ async def test_watch_create_requires_session_and_expiry():
     assert res_no_session["success"] is False
     assert "requires session_id" in res_no_session["error"]
 
-    # With session_id -> success and valid expiry timestamp
+    # With session_id and valid authorization -> success and valid expiry timestamp
+    session_id = "session_watch_create"
     res = await local_tool_executor.execute(
         tool_name="html_notes.watches.create",
         args={"kind": "price_alert", "spec": {"symbol": "AAPL", "condition": {"field": "price", "op": ">=", "value": 200}}},
-        session_id="session_watch_create"
+        session_id=session_id,
+        authorization=make_auth("html_notes.watches.create", session_id=session_id)
     )
     assert res["success"] is True
     assert res["result"]["expires"] is not None
@@ -247,7 +287,8 @@ async def test_watch_cancel_rejects_foreign_watch():
     res = await local_tool_executor.execute(
         tool_name="html_notes.watches.create",
         args={"kind": "price_alert", "spec": {"symbol": "NVDA", "condition": {"field": "price", "op": ">=", "value": 150}}},
-        session_id="session_watch_1"
+        session_id="session_watch_1",
+        authorization=make_auth("html_notes.watches.create", session_id="session_watch_1")
     )
     assert res["success"] is True
     watch_id = res["result"]["watch_id"]
@@ -256,7 +297,8 @@ async def test_watch_cancel_rejects_foreign_watch():
     cancel_res = await local_tool_executor.execute(
         tool_name="html_notes.watches.cancel",
         args={"watch_id": watch_id},
-        session_id="session_watch_2"
+        session_id="session_watch_2",
+        authorization=make_auth("html_notes.watches.cancel", session_id="session_watch_2")
     )
     assert cancel_res["success"] is False
     assert "belongs to another session" in cancel_res["error"] or "Unauthorized" in cancel_res["error"]

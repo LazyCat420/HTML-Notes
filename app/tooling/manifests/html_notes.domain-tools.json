@@ -12,9 +12,14 @@
       "domain": "canvas",
       "effect": "read",
       "resource_type": "canvas_state",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["canvas_read_dom"],
+      "legacy_aliases": [
+        "canvas_read_dom"
+      ],
       "legacy_name": "canvas_read_dom",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -22,23 +27,39 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "selector": { "type": "string", "description": "Optional CSS selector to scope read" }
+          "selector": {
+            "type": "string",
+            "description": "Optional CSS selector to scope read"
+          }
         }
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "selector": { "type": "string", "description": "Optional CSS selector to scope read" }
+          "selector": {
+            "type": "string",
+            "description": "Optional CSS selector to scope read"
+          }
         }
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "count": { "type": "integer" },
-          "widgets": { "type": "array" },
-          "matched_html": { "type": ["string", "null"] }
+          "count": {
+            "type": "integer"
+          },
+          "widgets": {
+            "type": "array"
+          },
+          "matched_html": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.canvas.upsert_widget",
@@ -48,9 +69,15 @@
       "domain": "canvas",
       "effect": "write",
       "resource_type": "canvas_widget",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["canvas_add_widget", "mcp__lazy-tool-service__canvas_add_widget"],
+      "legacy_aliases": [
+        "canvas_add_widget",
+        "mcp__lazy-tool-service__canvas_add_widget"
+      ],
       "legacy_name": "canvas_add_widget",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -58,30 +85,63 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "widget_type": { "type": "string", "description": "Pre-built widget type from widget catalog" },
-          "widget_id": { "type": "string", "description": "Unique widget ID. Reuse to edit an existing widget" },
-          "config": { "type": "object", "description": "Widget-specific configuration payload" }
+          "widget_type": {
+            "type": "string",
+            "description": "Pre-built widget type from widget catalog"
+          },
+          "widget_id": {
+            "type": "string",
+            "description": "Unique widget ID. Reuse to edit an existing widget"
+          },
+          "config": {
+            "type": "object",
+            "description": "Widget-specific configuration payload"
+          }
         },
-        "required": ["widget_type", "widget_id"]
+        "required": [
+          "widget_type",
+          "widget_id"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "widget_type": { "type": "string", "description": "Pre-built widget type from widget catalog" },
-          "widget_id": { "type": "string", "description": "Unique widget ID. Reuse to edit an existing widget" },
-          "config": { "type": "object", "description": "Widget-specific configuration payload" }
+          "widget_type": {
+            "type": "string",
+            "description": "Pre-built widget type from widget catalog"
+          },
+          "widget_id": {
+            "type": "string",
+            "description": "Unique widget ID. Reuse to edit an existing widget"
+          },
+          "config": {
+            "type": "object",
+            "description": "Widget-specific configuration payload"
+          }
         },
-        "required": ["widget_type", "widget_id"]
+        "required": [
+          "widget_type",
+          "widget_id"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "widget_type": { "type": "string" },
-          "widget_id": { "type": "string" },
-          "html": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "widget_type": {
+            "type": "string"
+          },
+          "widget_id": {
+            "type": "string"
+          },
+          "html": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.canvas.remove_widget",
@@ -91,9 +151,14 @@
       "domain": "canvas",
       "effect": "write",
       "resource_type": "canvas_widget",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["canvas_remove_widget"],
+      "legacy_aliases": [
+        "canvas_remove_widget"
+      ],
       "legacy_name": "canvas_remove_widget",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -101,24 +166,41 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "widget_id": { "type": "string", "description": "Target widget ID" },
-          "selector": { "type": "string", "description": "Exact #id selector" }
+          "widget_id": {
+            "type": "string",
+            "description": "Target widget ID"
+          },
+          "selector": {
+            "type": "string",
+            "description": "Exact #id selector"
+          }
         }
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "widget_id": { "type": "string", "description": "Target widget ID" },
-          "selector": { "type": "string", "description": "Exact #id selector" }
+          "widget_id": {
+            "type": "string",
+            "description": "Target widget ID"
+          },
+          "selector": {
+            "type": "string",
+            "description": "Exact #id selector"
+          }
         }
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "removed": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "removed": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.canvas.mutate",
@@ -128,9 +210,15 @@
       "domain": "canvas",
       "effect": "write",
       "resource_type": "canvas_dom",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["canvas_modify_dom", "html_notes.canvas.modify_dom"],
+      "legacy_aliases": [
+        "canvas_modify_dom",
+        "html_notes.canvas.modify_dom"
+      ],
       "legacy_name": "canvas_modify_dom",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -138,30 +226,79 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "action": { "type": "string", "enum": ["append", "prepend", "replace", "remove", "insert_before", "insert_after"] },
-          "selector": { "type": "string", "description": "Exact #id selector" },
-          "html": { "type": "string", "description": "HTML fragment for insertion/replacement" },
-          "widget_id": { "type": "string", "description": "Target widget ID for scoped mutation" }
+          "action": {
+            "type": "string",
+            "enum": [
+              "append",
+              "prepend",
+              "replace",
+              "remove",
+              "insert_before",
+              "insert_after"
+            ]
+          },
+          "selector": {
+            "type": "string",
+            "description": "Exact #id selector"
+          },
+          "html": {
+            "type": "string",
+            "description": "HTML fragment for insertion/replacement"
+          },
+          "widget_id": {
+            "type": "string",
+            "description": "Target widget ID for scoped mutation"
+          }
         },
-        "required": ["action", "selector"]
+        "required": [
+          "action",
+          "selector"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "action": { "type": "string", "enum": ["append", "prepend", "replace", "remove", "insert_before", "insert_after"] },
-          "selector": { "type": "string", "description": "Exact #id selector" },
-          "html": { "type": "string", "description": "HTML fragment for insertion/replacement" },
-          "widget_id": { "type": "string", "description": "Target widget ID for scoped mutation" }
+          "action": {
+            "type": "string",
+            "enum": [
+              "append",
+              "prepend",
+              "replace",
+              "remove",
+              "insert_before",
+              "insert_after"
+            ]
+          },
+          "selector": {
+            "type": "string",
+            "description": "Exact #id selector"
+          },
+          "html": {
+            "type": "string",
+            "description": "HTML fragment for insertion/replacement"
+          },
+          "widget_id": {
+            "type": "string",
+            "description": "Target widget ID for scoped mutation"
+          }
         },
-        "required": ["action", "selector"]
+        "required": [
+          "action",
+          "selector"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "action": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "action": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.notes.create",
@@ -171,9 +308,14 @@
       "domain": "notes",
       "effect": "write",
       "resource_type": "note",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_create_note"],
+      "legacy_aliases": [
+        "html_notes_create_note"
+      ],
       "legacy_name": "html_notes_create_note",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -181,31 +323,80 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "title": { "type": "string", "description": "Title of the note" },
-          "rendered_html": { "type": "string", "description": "HTML note content using approved subset tags" },
-          "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for categorizing note" },
-          "links": { "type": "array", "items": { "type": "string" }, "description": "Target note IDs to link to" }
+          "title": {
+            "type": "string",
+            "description": "Title of the note"
+          },
+          "rendered_html": {
+            "type": "string",
+            "description": "HTML note content using approved subset tags"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tags for categorizing note"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Target note IDs to link to"
+          }
         },
-        "required": ["title", "rendered_html"]
+        "required": [
+          "title",
+          "rendered_html"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "title": { "type": "string", "description": "Title of the note" },
-          "rendered_html": { "type": "string", "description": "HTML note content using approved subset tags" },
-          "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for categorizing note" },
-          "links": { "type": "array", "items": { "type": "string" }, "description": "Target note IDs to link to" }
+          "title": {
+            "type": "string",
+            "description": "Title of the note"
+          },
+          "rendered_html": {
+            "type": "string",
+            "description": "HTML note content using approved subset tags"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tags for categorizing note"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Target note IDs to link to"
+          }
         },
-        "required": ["title", "rendered_html"]
+        "required": [
+          "title",
+          "rendered_html"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "note_id": { "type": "string" },
-          "title": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.notes.update",
@@ -215,9 +406,14 @@
       "domain": "notes",
       "effect": "write",
       "resource_type": "note",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_update_note"],
+      "legacy_aliases": [
+        "html_notes_update_note"
+      ],
       "legacy_name": "html_notes_update_note",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -225,32 +421,79 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "note_id": { "type": "string", "description": "ID of the note to update" },
-          "title": { "type": "string", "description": "Updated title" },
-          "rendered_html": { "type": "string", "description": "Updated HTML content" },
-          "tags": { "type": "array", "items": { "type": "string" } },
-          "links": { "type": "array", "items": { "type": "string" } }
+          "note_id": {
+            "type": "string",
+            "description": "ID of the note to update"
+          },
+          "title": {
+            "type": "string",
+            "description": "Updated title"
+          },
+          "rendered_html": {
+            "type": "string",
+            "description": "Updated HTML content"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
-        "required": ["note_id"]
+        "required": [
+          "note_id"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "note_id": { "type": "string", "description": "ID of the note to update" },
-          "title": { "type": "string", "description": "Updated title" },
-          "rendered_html": { "type": "string", "description": "Updated HTML content" },
-          "tags": { "type": "array", "items": { "type": "string" } },
-          "links": { "type": "array", "items": { "type": "string" } }
+          "note_id": {
+            "type": "string",
+            "description": "ID of the note to update"
+          },
+          "title": {
+            "type": "string",
+            "description": "Updated title"
+          },
+          "rendered_html": {
+            "type": "string",
+            "description": "Updated HTML content"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
-        "required": ["note_id"]
+        "required": [
+          "note_id"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "note_id": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "note_id": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.notes.get",
@@ -260,9 +503,14 @@
       "domain": "notes",
       "effect": "read",
       "resource_type": "note",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_get_note"],
+      "legacy_aliases": [
+        "html_notes_get_note"
+      ],
       "legacy_name": "html_notes_get_note",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -270,24 +518,39 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "note_id": { "type": "string", "description": "ID of the note to retrieve" }
+          "note_id": {
+            "type": "string",
+            "description": "ID of the note to retrieve"
+          }
         },
-        "required": ["note_id"]
+        "required": [
+          "note_id"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "note_id": { "type": "string", "description": "ID of the note to retrieve" }
+          "note_id": {
+            "type": "string",
+            "description": "ID of the note to retrieve"
+          }
         },
-        "required": ["note_id"]
+        "required": [
+          "note_id"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.notes.search",
@@ -297,9 +560,14 @@
       "domain": "notes",
       "effect": "read",
       "resource_type": "note",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_search_notes"],
+      "legacy_aliases": [
+        "html_notes_search_notes"
+      ],
       "legacy_name": "html_notes_search_notes",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -307,24 +575,39 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "description": "Search query terms" }
+          "query": {
+            "type": "string",
+            "description": "Search query terms"
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "description": "Search query terms" }
+          "query": {
+            "type": "string",
+            "description": "Search query terms"
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "results": { "type": "array" },
-          "count": { "type": "integer" }
+          "results": {
+            "type": "array"
+          },
+          "count": {
+            "type": "integer"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.notes.link",
@@ -334,9 +617,14 @@
       "domain": "notes",
       "effect": "write",
       "resource_type": "note_link",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_link_notes"],
+      "legacy_aliases": [
+        "html_notes_link_notes"
+      ],
       "legacy_name": "html_notes_link_notes",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -344,27 +632,48 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "source_note_id": { "type": "string" },
-          "target_note_id": { "type": "string" }
+          "source_note_id": {
+            "type": "string"
+          },
+          "target_note_id": {
+            "type": "string"
+          }
         },
-        "required": ["source_note_id", "target_note_id"]
+        "required": [
+          "source_note_id",
+          "target_note_id"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "source_note_id": { "type": "string" },
-          "target_note_id": { "type": "string" }
+          "source_note_id": {
+            "type": "string"
+          },
+          "target_note_id": {
+            "type": "string"
+          }
         },
-        "required": ["source_note_id", "target_note_id"]
+        "required": [
+          "source_note_id",
+          "target_note_id"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "source": { "type": "string" },
-          "target": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.apps.list",
@@ -374,9 +683,15 @@
       "domain": "apps",
       "effect": "read",
       "resource_type": "portal_app",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_list_services", "html_notes.portal.list_services"],
+      "legacy_aliases": [
+        "html_notes_list_services",
+        "html_notes.portal.list_services"
+      ],
       "legacy_name": "html_notes_list_services",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -384,26 +699,53 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" },
-          "status": { "type": "string", "enum": ["healthy", "unhealthy", "unknown"] },
-          "include_hidden": { "type": "boolean" }
+          "query": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "unhealthy",
+              "unknown"
+            ]
+          },
+          "include_hidden": {
+            "type": "boolean"
+          }
         }
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" },
-          "status": { "type": "string", "enum": ["healthy", "unhealthy", "unknown"] },
-          "include_hidden": { "type": "boolean" }
+          "query": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "unhealthy",
+              "unknown"
+            ]
+          },
+          "include_hidden": {
+            "type": "boolean"
+          }
         }
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "apps": { "type": "array" },
-          "count": { "type": "integer" }
+          "apps": {
+            "type": "array"
+          },
+          "count": {
+            "type": "integer"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.apps.open",
@@ -413,9 +755,15 @@
       "domain": "apps",
       "effect": "read",
       "resource_type": "portal_app",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_open_app", "html_notes.portal.open_app"],
+      "legacy_aliases": [
+        "html_notes_open_app",
+        "html_notes.portal.open_app"
+      ],
       "legacy_name": "html_notes_open_app",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -423,24 +771,37 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" },
-          "query": { "type": "string" }
+          "app_id": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
         }
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" },
-          "query": { "type": "string" }
+          "app_id": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
         }
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "opened": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "opened": {
+            "type": "object"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.apps.list_actions",
@@ -450,9 +811,15 @@
       "domain": "apps",
       "effect": "read",
       "resource_type": "portal_action",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_list_actions", "html_notes.portal.list_actions"],
+      "legacy_aliases": [
+        "html_notes_list_actions",
+        "html_notes.portal.list_actions"
+      ],
       "legacy_name": "html_notes_list_actions",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -460,21 +827,28 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" }
+          "app_id": {
+            "type": "string"
+          }
         }
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" }
+          "app_id": {
+            "type": "string"
+          }
         }
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "actions": { "type": "array" }
+          "actions": {
+            "type": "array"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.apps.execute_action",
@@ -484,9 +858,15 @@
       "domain": "apps",
       "effect": "destructive",
       "resource_type": "portal_action",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": true,
-      "legacy_aliases": ["html_notes_app_action", "html_notes.portal.execute_action"],
+      "legacy_aliases": [
+        "html_notes_app_action",
+        "html_notes.portal.execute_action"
+      ],
       "legacy_name": "html_notes_app_action",
       "timeout_ms": 15000,
       "audit_level": "high",
@@ -494,28 +874,51 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" },
-          "action": { "type": "string" },
-          "params": { "type": "object" }
+          "app_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          }
         },
-        "required": ["app_id", "action"]
+        "required": [
+          "app_id",
+          "action"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" },
-          "action": { "type": "string" },
-          "params": { "type": "object" }
+          "app_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          }
         },
-        "required": ["app_id", "action"]
+        "required": [
+          "app_id",
+          "action"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "confirmation_required": { "type": "boolean" }
+          "success": {
+            "type": "boolean"
+          },
+          "confirmation_required": {
+            "type": "boolean"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.apps.curate",
@@ -525,9 +928,15 @@
       "domain": "apps",
       "effect": "write",
       "resource_type": "portal_app",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_curate_app", "html_notes.portal.curate_app"],
+      "legacy_aliases": [
+        "html_notes_curate_app",
+        "html_notes.portal.curate_app"
+      ],
       "legacy_name": "html_notes_curate_app",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -535,28 +944,49 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" },
-          "hidden": { "type": "boolean" },
-          "pinned": { "type": "boolean" }
+          "app_id": {
+            "type": "string"
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "pinned": {
+            "type": "boolean"
+          }
         },
-        "required": ["app_id"]
+        "required": [
+          "app_id"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "app_id": { "type": "string" },
-          "hidden": { "type": "boolean" },
-          "pinned": { "type": "boolean" }
+          "app_id": {
+            "type": "string"
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "pinned": {
+            "type": "boolean"
+          }
         },
-        "required": ["app_id"]
+        "required": [
+          "app_id"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "app_id": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "app_id": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.watches.create",
@@ -566,9 +996,14 @@
       "domain": "watches",
       "effect": "write",
       "resource_type": "watch",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_create_watch"],
+      "legacy_aliases": [
+        "html_notes_create_watch"
+      ],
       "legacy_name": "html_notes_create_watch",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -576,31 +1011,72 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "kind": { "type": "string", "enum": ["price_alert", "game", "briefing", "refresh"] },
-          "spec": { "type": "object" },
-          "label": { "type": "string" },
-          "interval_s": { "type": "integer" }
+          "kind": {
+            "type": "string",
+            "enum": [
+              "price_alert",
+              "game",
+              "briefing",
+              "refresh"
+            ]
+          },
+          "spec": {
+            "type": "object"
+          },
+          "label": {
+            "type": "string"
+          },
+          "interval_s": {
+            "type": "integer"
+          }
         },
-        "required": ["kind", "spec"]
+        "required": [
+          "kind",
+          "spec"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "kind": { "type": "string", "enum": ["price_alert", "game", "briefing", "refresh"] },
-          "spec": { "type": "object" },
-          "label": { "type": "string" },
-          "interval_s": { "type": "integer" }
+          "kind": {
+            "type": "string",
+            "enum": [
+              "price_alert",
+              "game",
+              "briefing",
+              "refresh"
+            ]
+          },
+          "spec": {
+            "type": "object"
+          },
+          "label": {
+            "type": "string"
+          },
+          "interval_s": {
+            "type": "integer"
+          }
         },
-        "required": ["kind", "spec"]
+        "required": [
+          "kind",
+          "spec"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "watch_id": { "type": "string" },
-          "expires": { "type": "number" }
+          "success": {
+            "type": "boolean"
+          },
+          "watch_id": {
+            "type": "string"
+          },
+          "expires": {
+            "type": "number"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.watches.list",
@@ -610,9 +1086,14 @@
       "domain": "watches",
       "effect": "read",
       "resource_type": "watch",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_list_watches"],
+      "legacy_aliases": [
+        "html_notes_list_watches"
+      ],
       "legacy_name": "html_notes_list_watches",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -628,10 +1109,15 @@
       "result_schema": {
         "type": "object",
         "properties": {
-          "watches": { "type": "array" },
-          "count": { "type": "integer" }
+          "watches": {
+            "type": "array"
+          },
+          "count": {
+            "type": "integer"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.watches.cancel",
@@ -641,9 +1127,14 @@
       "domain": "watches",
       "effect": "write",
       "resource_type": "watch",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_cancel_watch"],
+      "legacy_aliases": [
+        "html_notes_cancel_watch"
+      ],
       "legacy_name": "html_notes_cancel_watch",
       "timeout_ms": 5000,
       "audit_level": "standard",
@@ -651,24 +1142,37 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "watch_id": { "type": "string" }
+          "watch_id": {
+            "type": "string"
+          }
         },
-        "required": ["watch_id"]
+        "required": [
+          "watch_id"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "watch_id": { "type": "string" }
+          "watch_id": {
+            "type": "string"
+          }
         },
-        "required": ["watch_id"]
+        "required": [
+          "watch_id"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "removed": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "removed": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.widgets.list_catalog",
@@ -678,9 +1182,15 @@
       "domain": "widgets",
       "effect": "read",
       "resource_type": "widget_catalog",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["list_widget_types", "html_notes.canvas.list_widget_types"],
+      "legacy_aliases": [
+        "list_widget_types",
+        "html_notes.canvas.list_widget_types"
+      ],
       "legacy_name": "list_widget_types",
       "timeout_ms": 3000,
       "audit_level": "standard",
@@ -696,9 +1206,12 @@
       "result_schema": {
         "type": "object",
         "properties": {
-          "widgets": { "type": "array" }
+          "widgets": {
+            "type": "array"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.weather.get",
@@ -708,9 +1221,14 @@
       "domain": "presentation_provider",
       "effect": "read",
       "resource_type": "presentation_data",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_get_weather"],
+      "legacy_aliases": [
+        "html_notes_get_weather"
+      ],
       "legacy_name": "html_notes_get_weather",
       "timeout_ms": 8000,
       "audit_level": "standard",
@@ -718,26 +1236,51 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "location": { "type": "string" },
-          "units": { "type": "string", "enum": ["fahrenheit", "celsius"] }
+          "location": {
+            "type": "string"
+          },
+          "units": {
+            "type": "string",
+            "enum": [
+              "fahrenheit",
+              "celsius"
+            ]
+          }
         },
-        "required": ["location"]
+        "required": [
+          "location"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "location": { "type": "string" },
-          "units": { "type": "string", "enum": ["fahrenheit", "celsius"] }
+          "location": {
+            "type": "string"
+          },
+          "units": {
+            "type": "string",
+            "enum": [
+              "fahrenheit",
+              "celsius"
+            ]
+          }
         },
-        "required": ["location"]
+        "required": [
+          "location"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "location": { "type": "string" },
-          "temp": { "type": "number" }
+          "location": {
+            "type": "string"
+          },
+          "temp": {
+            "type": "number"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.sports.scores",
@@ -747,9 +1290,14 @@
       "domain": "presentation_provider",
       "effect": "read",
       "resource_type": "presentation_data",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_sports_scores"],
+      "legacy_aliases": [
+        "html_notes_sports_scores"
+      ],
       "legacy_name": "html_notes_sports_scores",
       "timeout_ms": 8000,
       "audit_level": "standard",
@@ -757,24 +1305,37 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "league": { "type": "string" }
+          "league": {
+            "type": "string"
+          }
         },
-        "required": ["league"]
+        "required": [
+          "league"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "league": { "type": "string" }
+          "league": {
+            "type": "string"
+          }
         },
-        "required": ["league"]
+        "required": [
+          "league"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "league": { "type": "string" },
-          "events": { "type": "array" }
+          "league": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.finance.stock_history",
@@ -784,9 +1345,14 @@
       "domain": "presentation_provider",
       "effect": "read",
       "resource_type": "presentation_data",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_stock_history"],
+      "legacy_aliases": [
+        "html_notes_stock_history"
+      ],
       "legacy_name": "html_notes_stock_history",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -794,26 +1360,43 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "symbol": { "type": "string" },
-          "range": { "type": "string" }
+          "symbol": {
+            "type": "string"
+          },
+          "range": {
+            "type": "string"
+          }
         },
-        "required": ["symbol"]
+        "required": [
+          "symbol"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "symbol": { "type": "string" },
-          "range": { "type": "string" }
+          "symbol": {
+            "type": "string"
+          },
+          "range": {
+            "type": "string"
+          }
         },
-        "required": ["symbol"]
+        "required": [
+          "symbol"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "symbol": { "type": "string" },
-          "price": { "type": "number" }
+          "symbol": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.finance.stock_news",
@@ -823,9 +1406,14 @@
       "domain": "presentation_provider",
       "effect": "read",
       "resource_type": "presentation_data",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_stock_news"],
+      "legacy_aliases": [
+        "html_notes_stock_news"
+      ],
       "legacy_name": "html_notes_stock_news",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -833,25 +1421,40 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" },
-          "limit": { "type": "integer" }
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" },
-          "limit": { "type": "integer" }
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "articles": { "type": "array" }
+          "articles": {
+            "type": "array"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.news.get_news",
@@ -861,9 +1464,14 @@
       "domain": "presentation_provider",
       "effect": "read",
       "resource_type": "presentation_data",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_news"],
+      "legacy_aliases": [
+        "html_notes_news"
+      ],
       "legacy_name": "html_notes_news",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -871,23 +1479,34 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "topic": { "type": "string" },
-          "query": { "type": "string" }
+          "topic": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
         }
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "topic": { "type": "string" },
-          "query": { "type": "string" }
+          "topic": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
         }
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "items": { "type": "array" }
+          "items": {
+            "type": "array"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.media.youtube_search",
@@ -897,9 +1516,14 @@
       "domain": "presentation_provider",
       "effect": "read",
       "resource_type": "presentation_data",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": false
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["html_notes_youtube_search"],
+      "legacy_aliases": [
+        "html_notes_youtube_search"
+      ],
       "legacy_name": "html_notes_youtube_search",
       "timeout_ms": 10000,
       "audit_level": "standard",
@@ -907,27 +1531,54 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" },
-          "limit": { "type": "integer" },
-          "format": { "type": "string", "enum": ["all", "short"] }
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "all",
+              "short"
+            ]
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" },
-          "limit": { "type": "integer" },
-          "format": { "type": "string", "enum": ["all", "short"] }
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "all",
+              "short"
+            ]
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "videos": { "type": "array" }
+          "videos": {
+            "type": "array"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.canvas.create_custom_widget",
@@ -937,9 +1588,14 @@
       "domain": "canvas_custom_quarantined",
       "effect": "write",
       "resource_type": "custom_widget",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["create_widget"],
+      "legacy_aliases": [
+        "create_widget"
+      ],
       "legacy_name": "create_widget",
       "deprecated": true,
       "retired_after": "2026-09-01",
@@ -950,32 +1606,65 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "widgetType": { "type": "string" },
-          "title": { "type": "string" },
-          "htmlContent": { "type": "string" },
-          "cssContent": { "type": "string" },
-          "jsContent": { "type": "string" }
+          "widgetType": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "htmlContent": {
+            "type": "string"
+          },
+          "cssContent": {
+            "type": "string"
+          },
+          "jsContent": {
+            "type": "string"
+          }
         },
-        "required": ["widgetType", "title", "htmlContent"]
+        "required": [
+          "widgetType",
+          "title",
+          "htmlContent"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "widgetType": { "type": "string" },
-          "title": { "type": "string" },
-          "htmlContent": { "type": "string" },
-          "cssContent": { "type": "string" },
-          "jsContent": { "type": "string" }
+          "widgetType": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "htmlContent": {
+            "type": "string"
+          },
+          "cssContent": {
+            "type": "string"
+          },
+          "jsContent": {
+            "type": "string"
+          }
         },
-        "required": ["widgetType", "title", "htmlContent"]
+        "required": [
+          "widgetType",
+          "title",
+          "htmlContent"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "deprecated": { "type": "boolean" }
+          "success": {
+            "type": "boolean"
+          },
+          "deprecated": {
+            "type": "boolean"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     },
     {
       "id": "html_notes.canvas.plan_custom_widget",
@@ -985,9 +1674,14 @@
       "domain": "canvas_custom_quarantined",
       "effect": "read",
       "resource_type": "custom_widget",
-      "required_scope": ["app_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["plan_widget"],
+      "legacy_aliases": [
+        "plan_widget"
+      ],
       "legacy_name": "plan_widget",
       "deprecated": true,
       "retired_after": "2026-09-01",
@@ -998,28 +1692,51 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "widgetType": { "type": "string" },
-          "title": { "type": "string" },
-          "description": { "type": "string" }
+          "widgetType": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
         },
-        "required": ["widgetType", "title"]
+        "required": [
+          "widgetType",
+          "title"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "widgetType": { "type": "string" },
-          "title": { "type": "string" },
-          "description": { "type": "string" }
+          "widgetType": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
         },
-        "required": ["widgetType", "title"]
+        "required": [
+          "widgetType",
+          "title"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "deprecated": { "type": "boolean" }
+          "success": {
+            "type": "boolean"
+          },
+          "deprecated": {
+            "type": "boolean"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": false
     },
     {
       "id": "html_notes.canvas.update_custom_widget",
@@ -1029,9 +1746,14 @@
       "domain": "canvas_custom_quarantined",
       "effect": "write",
       "resource_type": "custom_widget",
-      "required_scope": ["app_id", "session_id"],
+      "required_scope": {
+        "app_id": true,
+        "session_id": true
+      },
       "requires_confirmation": false,
-      "legacy_aliases": ["update_widget"],
+      "legacy_aliases": [
+        "update_widget"
+      ],
       "legacy_name": "update_widget",
       "deprecated": true,
       "retired_after": "2026-09-01",
@@ -1042,32 +1764,61 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "widgetId": { "type": "string" },
-          "title": { "type": "string" },
-          "htmlContent": { "type": "string" },
-          "cssContent": { "type": "string" },
-          "jsContent": { "type": "string" }
+          "widgetId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "htmlContent": {
+            "type": "string"
+          },
+          "cssContent": {
+            "type": "string"
+          },
+          "jsContent": {
+            "type": "string"
+          }
         },
-        "required": ["widgetId"]
+        "required": [
+          "widgetId"
+        ]
       },
       "input_schema": {
         "type": "object",
         "properties": {
-          "widgetId": { "type": "string" },
-          "title": { "type": "string" },
-          "htmlContent": { "type": "string" },
-          "cssContent": { "type": "string" },
-          "jsContent": { "type": "string" }
+          "widgetId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "htmlContent": {
+            "type": "string"
+          },
+          "cssContent": {
+            "type": "string"
+          },
+          "jsContent": {
+            "type": "string"
+          }
         },
-        "required": ["widgetId"]
+        "required": [
+          "widgetId"
+        ]
       },
       "result_schema": {
         "type": "object",
         "properties": {
-          "success": { "type": "boolean" },
-          "deprecated": { "type": "boolean" }
+          "success": {
+            "type": "boolean"
+          },
+          "deprecated": {
+            "type": "boolean"
+          }
         }
-      }
+      },
+      "requires_authorization_receipt": true
     }
   ]
 }

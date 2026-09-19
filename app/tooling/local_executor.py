@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from app.tooling.html_notes_manifest import manifest_registry
 from app.tooling.policy import tool_policy
 from app.domain.notes.service import notes_service
@@ -10,6 +10,12 @@ from app.domain.apps.service import apps_hub_service
 from app.domain.watches.service import watches_service
 from app.adapters.providers.service import provider_adapter
 from app.presentation.widgets.catalog import widget_catalog
+from app.adapters.runtime.models import (
+    LocalToolAuthorization,
+    verify_local_authorization,
+    AuthorizationVerificationResult,
+    LocalExecutionContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +37,95 @@ class LocalToolExecutor:
         args: Dict[str, Any],
         session_id: Optional[str] = None,
         canvas_html: Optional[str] = None,
-        authorization: Optional[Dict[str, Any]] = None,
+        authorization: Optional[Union[LocalToolAuthorization, Dict[str, Any]]] = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
         context: Optional[Any] = None,
         allow_quarantined: bool = True,
+        confirmation: Optional[bool] = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
         """
-        Executes an application-owned domain tool call.
+        Executes an application-owned domain tool call through the mandatory admission pipeline:
+        1. Resolve alias to canonical ID (structured error if retired).
+        2. Load manifest entry (reject unknown).
+        3. Validate tool is local execution.
+        4. Validate admission whitelist.
+        5. Validate safety rules.
+        6. Validate argument schema.
+        7. Require correct scope (fails closed if missing).
+        8. Validate authorization receipt.
+        9. Enforce confirmation policy.
+        10. Dispatch to approved domain handler.
         """
-        # 1. Resolve context and authorization
+        # 1. Resolve alias to canonical tool ID & check retirement
+        canonical_id = self.registry.resolve_alias_to_canonical(tool_name) or tool_name
+        if self.registry.is_retired(tool_name) or self.registry.is_retired(canonical_id):
+            return {
+                "success": False,
+                "is_error": True,
+                "error": f"Tool alias '{tool_name}' has been retired and is no longer available",
+                "code": "TOOL_RETIRED",
+                "tool": tool_name
+            }
+
+        # 2. Load manifest entry
+        tool_spec = self.registry.resolve_tool(tool_name)
+        if not tool_spec and not tool_name.startswith("global."):
+            return {
+                "success": False,
+                "is_error": True,
+                "error": f"Tool '{tool_name}' is not permitted (unknown tool)",
+                "code": "UNKNOWN_TOOL",
+                "tool": tool_name
+            }
+
+        if tool_spec:
+            canonical_id = tool_spec.get("id", canonical_id)
+
+            # 3. Validate tool is local
+            if tool_spec.get("execution") != "local":
+                return {
+                    "success": False,
+                    "is_error": True,
+                    "error": f"Tool '{tool_name}' is not a local execution tool (execution={tool_spec.get('execution')})",
+                    "code": "NON_LOCAL_TOOL",
+                    "tool": tool_name
+                }
+
+        # 4. Check admission policy
+        admitted, admission_err = self.policy.check_admission(tool_name)
+        if not admitted:
+            return {
+                "success": False,
+                "is_error": True,
+                "error": admission_err,
+                "code": "ADMISSION_DENIED",
+                "tool": tool_name
+            }
+
+        # 5. Check safety rules (prevent arbitrary script injection)
+        safe, safety_err = self.policy.validate_safety(tool_name, args)
+        if not safe:
+            return {
+                "success": False,
+                "is_error": True,
+                "error": safety_err,
+                "code": "SAFETY_VIOLATION",
+                "tool": tool_name
+            }
+
+        # 6. Validate argument schema
+        valid, val_err = self.policy.validate_args(tool_name, args)
+        if not valid:
+            return {
+                "success": False,
+                "is_error": True,
+                "error": val_err,
+                "code": "INVALID_ARGUMENTS",
+                "tool": tool_name
+            }
+
+        # 7. Resolve context (app_id, session_id)
         app_id = "html-notes"
         if context:
             session_id = session_id or getattr(context, "session_id", None)
@@ -48,74 +134,58 @@ class LocalToolExecutor:
                 app_id = context.get("app_id", app_id)
             else:
                 app_id = getattr(context, "app_id", app_id)
+        if runtime_context:
+            app_id = runtime_context.get("app_id", app_id)
+            session_id = session_id or runtime_context.get("session_id")
 
-        if authorization:
-            req_scope = authorization.get("required_scope", {})
-            session_id = session_id or authorization.get("session_id") or req_scope.get("session_id")
-            app_id = authorization.get("app_id") or req_scope.get("app_id", app_id)
-            if authorization.get("expires_at") and authorization["expires_at"] < time.time():
-                return {
-                    "success": False,
-                    "is_error": True,
-                    "error": "Authorization receipt has expired",
-                    "tool": tool_name
-                }
-
-        # 2. Check admission policy first (reject unwhitelisted and retired tools)
-        admitted, admission_err = self.policy.check_admission(tool_name)
-        if not admitted:
-            return {
-                "success": False,
-                "is_error": True,
-                "error": admission_err,
-                "tool": tool_name
-            }
-
-        # 3. Normalize tool specification
-        tool_spec = self.registry.resolve_tool(tool_name)
-        if not tool_spec and not tool_name.startswith("global."):
-            return {
-                "success": False,
-                "is_error": True,
-                "error": f"Tool '{tool_name}' is not permitted (unknown tool)",
-                "tool": tool_name
-            }
-
-        canonical_id = tool_spec.get("id") if tool_spec else tool_name
-        is_quarantined = bool(tool_spec and tool_spec.get("deprecated"))
-
-        # 4. Check safety rules (prevent arbitrary script injection)
-        safe, safety_err = self.policy.validate_safety(tool_name, args)
-        if not safe:
-            return {
-                "success": False,
-                "is_error": True,
-                "error": safety_err,
-                "tool": tool_name
-            }
-
-        # 5. Validate arguments schema
-        valid, val_err = self.policy.validate_args(tool_name, args)
-        if not valid:
-            return {
-                "success": False,
-                "is_error": True,
-                "error": val_err,
-                "tool": tool_name
-            }
-
-        # 6. Validate scope requirements
+        # 8. Validate mandatory scope requirements (fails closed if missing)
         scope_ok, scope_err = self.policy.validate_scope(tool_name, session_id=session_id, app_id=app_id)
         if not scope_ok:
             return {
                 "success": False,
                 "is_error": True,
                 "error": scope_err,
+                "code": "SCOPE_VIOLATION",
                 "tool": tool_name
             }
 
-        # 7. Check confirmation requirement
+        # 9. Validate authorization receipt
+        requires_receipt = self.policy.requires_authorization_receipt(tool_name)
+        if requires_receipt or authorization is not None:
+            expected_profile = (runtime_context or {}).get("profile_id")
+            auth_res = verify_local_authorization(
+                authorization=authorization,
+                expected_tool_id=canonical_id,
+                expected_app_id=app_id,
+                expected_session_id=session_id or "",
+                expected_profile_id=expected_profile,
+            )
+            if not auth_res.valid:
+                return {
+                    "success": False,
+                    "is_error": True,
+                    "error": auth_res.error or "Authorization verification failed",
+                    "code": auth_res.code or "UNAUTHORIZED",
+                    "tool": tool_name
+                }
+
+        # 10. Check confirmation requirement
         if self.policy.requires_confirmation(tool_name, args):
+            is_confirmed = bool(
+                confirmation is True
+                or args.get("confirmed") is True
+                or (isinstance(authorization, dict) and authorization.get("confirmed") is True)
+                or (isinstance(authorization, LocalToolAuthorization) and (authorization.raw_receipt or {}).get("confirmed") is True)
+            )
+            if not is_confirmed:
+                return {
+                    "success": False,
+                    "is_error": True,
+                    "confirmation_required": True,
+                    "error": f"Tool '{tool_name}' is destructive and requires explicit user confirmation",
+                    "code": "CONFIRMATION_REQUIRED",
+                    "tool": tool_name
+                }
             if canonical_id in ("html_notes.apps.execute_action", "html_notes.portal.execute_action") or tool_name in ("html_notes_app_action", "execute_action"):
                 res = await apps_hub_service.execute_action(
                     app_id=args.get("app_id", ""),
@@ -129,7 +199,7 @@ class LocalToolExecutor:
                     "tool": tool_name
                 }
 
-        # 8. Dispatch execution to domain services
+        # 11. Dispatch execution to domain services
         try:
             result = await self._dispatch(canonical_id, tool_name, args, session_id, canvas_html)
             is_err = isinstance(result, dict) and bool(result.get("is_error"))

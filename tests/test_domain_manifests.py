@@ -42,7 +42,7 @@ def test_every_local_tool_has_owner_execution_effect_scope_and_version():
         assert t.get("owner") == "html-notes", f"{t['id']} owner is not html-notes"
         assert t.get("execution") == "local", f"{t['id']} execution is not local"
         assert t.get("effect") in ("read", "write", "destructive"), f"{t['id']} invalid effect"
-        assert isinstance(t.get("required_scope"), list) and len(t["required_scope"]) > 0, f"{t['id']} missing required_scope"
+        assert isinstance(t.get("required_scope"), (list, dict)) and len(t["required_scope"]) > 0, f"{t['id']} missing required_scope"
         assert t.get("version"), f"{t['id']} missing version"
 
 
@@ -50,7 +50,20 @@ def test_every_local_write_tool_requires_session_scope():
     tools = manifest_registry.get_domain_tools_manifest()["tools"]
     for t in tools:
         if t.get("effect") in ("write", "destructive"):
-            assert "session_id" in t.get("required_scope", []), f"Write tool {t['id']} missing session_id in required_scope"
+            scope = t.get("required_scope")
+            if isinstance(scope, dict):
+                assert scope.get("session_id") is True, f"Write tool {t['id']} missing session_id in required_scope"
+            else:
+                assert "session_id" in scope, f"Write tool {t['id']} missing session_id in required_scope"
+
+
+def test_all_local_manifest_tools_define_scope_and_receipt_policy():
+    tools = manifest_registry.get_domain_tools_manifest()["tools"]
+    for t in tools:
+        assert "required_scope" in t and len(t["required_scope"]) > 0, f"Tool {t['id']} missing required_scope"
+        assert "requires_authorization_receipt" in t, f"Tool {t['id']} missing requires_authorization_receipt"
+        if t.get("effect") in ("write", "destructive"):
+            assert t["requires_authorization_receipt"] is True, f"Write/destructive tool {t['id']} must require receipt"
 
 
 def test_every_destructive_tool_requires_confirmation():
