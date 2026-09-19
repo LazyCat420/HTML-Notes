@@ -525,7 +525,7 @@ async def test_adversarial_repeated_nonce_rejected_across_calls(executor):
     assert res2.get("code") == "REPLAYED_RECEIPT" or "Replayed authorization receipt" in res2.get("error", "")
 
 
-def test_adversarial_concurrent_claim_protection_via_http(clean_db):
+def test_adversarial_concurrent_claim_protection_via_http(clean_db, monkeypatch):
     """Adversarial: Concurrent claim operations on the same note permit only one winner (409 on second)."""
     from app.main import app
     from fastapi.testclient import TestClient
@@ -546,15 +546,22 @@ def test_adversarial_concurrent_claim_protection_via_http(clean_db):
     conn.commit()
     conn.close()
 
-    # Session 1 claims note
-    r1 = client.post("/notes/claim", json={"note_id": "concurrent-note", "session_id": "session_one"})
-    assert r1.status_code == 200
-    assert r1.json()["session_id"] == "session_one"
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    barrier = Barrier(2)
+    original_claim = database.claim_note
+    def racing_claim(*args, **kwargs):
+        barrier.wait(timeout=5)
+        return original_claim(*args, **kwargs)
+    monkeypatch.setattr(database, "claim_note", racing_claim)
+    def claim(session):
+        return TestClient(app).post("/notes/claim", json={"note_id": "concurrent-note", "session_id": session})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(claim, ["session_one", "session_two"]))
+    assert sorted(r.status_code for r in responses) == [200, 409]
+    winner = next(r.json()["session_id"] for r in responses if r.status_code == 200)
+    assert database.get_note_by_id("concurrent-note")["session_id"] == winner
 
-    # Session 2 attempts to claim note -> 409 Conflict
-    r2 = client.post("/notes/claim", json={"note_id": "concurrent-note", "session_id": "session_two"})
-    assert r2.status_code == 409
-    assert "already claimed" in r2.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

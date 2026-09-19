@@ -1,5 +1,7 @@
 # Integration & Release Report: Runtime Hardening (2026-09-19)
 
+> Historical report follows. The release follow-up and verified NAS evidence at the end supersede its earlier security and deployment claims.
+
 ## Executive Summary
 This release implements the **two-implementation-developer + one-integrator/release-developer** model to harden runtime tool admission, configuration readiness/preflight, receipt authentication/context binding, and legacy-note session ownership on `HTML-Notes` and `lazy-agent-service`.
 
@@ -78,9 +80,9 @@ git diff origin/main...HEAD -i -G"password\|secret\|token\|api_key\|credential"
 - **Fallback Guarantee**: Setting `USE_SHARED_RUNTIME=false` safely routes requests through the legacy pipeline without breaking changes.
 - **Rollback Procedure**:
   ```bash
-  export USE_SHARED_RUNTIME=false
-  # or revert commit on main
-  git revert HEAD -m 1
+  # Set USE_SHARED_RUNTIME=false in the staged deployment environment,
+  # then recreate the affected container through deploy-kit.
+  # A restart alone does not apply changed environment variables.
   ```
 
 
@@ -117,3 +119,44 @@ guaranteed delivery of a terminal frame.
 Validation and NAS release results are recorded below after integration.
 Replay state is process-local; this release assumes the existing single-worker
 container. It does not provide replay durability across a restart or replicas.
+
+
+## Final verified release evidence
+
+- HTML-Notes production code: `bd52cf6` (includes runtime changes at `6225cc3`).
+- lazy-agent-service production code: `68d8803`.
+- Both implementation batches were integrated into `main` and pushed.
+- Integrated Python gate: **175 passed** across the 12 runtime/security/ownership
+  suites, including startup preflight, internal HTTP ownership, and sessionless
+  creation. The claim HTTP test now synchronizes both database claim attempts
+  with a barrier; one request succeeds and the other returns 409. That replacement
+  was also validated independently.
+- Runtime TypeScript check: passed. Contract gate: **43 passed**. Deploy-kit ran
+  the broader runtime suite: **759 passed, 40 files**.
+- Secret review: newly added signing credentials are generated in memory for
+  tests; no static credentials were added. Git's POSIX regex rejects `(?i)`, so
+  the staged diff scan used equivalent case-insensitive character classes.
+- NAS deployment used `npm run deploy -- --only=lazy-tool-service,html-notes
+  --skip-pull --skip-deps`, followed by a targeted HTML-Notes redeploy for the
+  final creation guard. Image transfer, restart and HTTP availability verified.
+- A stale workspace `html-notes` symlink pointed to the obsolete
+  `wt-dev3-domain-cleanup` worktree. The first deployment briefly installed that
+  old HTML-Notes image; the alias was corrected to the primary `HTML-Notes`
+  checkout and the targeted deployment rerun. Final container revision checks
+  confirmed the production commits listed above.
+- `/health/agent`: HTTP 200, `runtime_ready=true`, `use_shared_runtime=true`,
+  profile `html-notes-canvas-v1`, contract `1.2.0`.
+- Controlled session `release-check-d8de19477d6c`: one canonical
+  `html_notes.canvas.upsert_widget` call, one component, exactly one terminal
+  `done`, no errors. Widget `release-probe-be6ded5ce0` was found in the assistant
+  row in `/app/data/notes.db`, restored through session history, and still present
+  after the final container restart. The upstream verification run completed.
+- Final live negative check: sessionless `POST /notes/create` returns HTTP 401.
+- Deploy-kit reported unrelated edge DNS reconciliation conflicts; both targeted
+  service deployments succeeded and the Caddyfile was unchanged. No DNS edits
+  were made to resolve those conflicts in this task.
+
+Remaining architectural limit: local execution has no acknowledgement channel
+back to the runtime yet. The runtime reports local admission, not successful
+application execution; success is established here from application SSE and
+persisted SQLite state. Replay durability remains limited as described above.
