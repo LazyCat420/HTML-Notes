@@ -270,7 +270,7 @@ async def test_watch_create_requires_session_and_expiry():
     assert "requires session_id" in res_no_session["error"]
 
     # With session_id and valid authorization -> success and valid expiry timestamp
-    session_id = "session_watch_create"
+    session_id = f"session_watch_create_{uuid.uuid4().hex[:8]}"
     res = await local_tool_executor.execute(
         tool_name="html_notes.watches.create",
         args={"kind": "price_alert", "spec": {"symbol": "AAPL", "condition": {"field": "price", "op": ">=", "value": 200}}},
@@ -284,11 +284,13 @@ async def test_watch_create_requires_session_and_expiry():
 @pytest.mark.asyncio
 async def test_watch_cancel_rejects_foreign_watch():
     # Create in session_1
+    s1 = f"session_watch_1_{uuid.uuid4().hex[:8]}"
+    s2 = f"session_watch_2_{uuid.uuid4().hex[:8]}"
     res = await local_tool_executor.execute(
         tool_name="html_notes.watches.create",
         args={"kind": "price_alert", "spec": {"symbol": "NVDA", "condition": {"field": "price", "op": ">=", "value": 150}}},
-        session_id="session_watch_1",
-        authorization=make_auth("html_notes.watches.create", session_id="session_watch_1")
+        session_id=s1,
+        authorization=make_auth("html_notes.watches.create", session_id=s1)
     )
     assert res["success"] is True
     watch_id = res["result"]["watch_id"]
@@ -297,8 +299,8 @@ async def test_watch_cancel_rejects_foreign_watch():
     cancel_res = await local_tool_executor.execute(
         tool_name="html_notes.watches.cancel",
         args={"watch_id": watch_id},
-        session_id="session_watch_2",
-        authorization=make_auth("html_notes.watches.cancel", session_id="session_watch_2")
+        session_id=s2,
+        authorization=make_auth("html_notes.watches.cancel", session_id=s2)
     )
     assert cancel_res["success"] is False
     assert "belongs to another session" in cancel_res["error"] or "Unauthorized" in cancel_res["error"]
