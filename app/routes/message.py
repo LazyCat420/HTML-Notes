@@ -2819,25 +2819,57 @@ async def send_message(req: MessageRequest):
                 import os
                 # Feature flag: USE_SHARED_RUNTIME defaults to false during migration until verified
                 use_shared_runtime = os.getenv("USE_SHARED_RUNTIME", "false").lower() in ("true", "1", "yes")
+                shared_runtime_error = False
                 if use_shared_runtime:
                     from app.services.runtime_chat_adapter import RuntimeChatAdapter
-                    adapter = RuntimeChatAdapter()
+                    from app.adapters.runtime.models import LocalExecutionContext
+                    from app.tooling.local_executor import local_tool_executor
+                    from app.presentation.sse.formatter import sse_formatter
 
+                    adapter = RuntimeChatAdapter()
                     cancel_event = asyncio.Event()
 
-                    async def local_mutation_bridge(tool_name: str, tool_args: dict):
+                    request_context = LocalExecutionContext(
+                        session_id=req.session_id,
+                        canvas_html=req.current_canvas or "",
+                        query=req.message,
+                        focus_widget_id=req.focus_widget_id or None,
+                    )
+
+                    async def execute_local_runtime_tool(
+                        tool_name: str,
+                        tool_args: dict,
+                        authorization: dict,
+                        context: LocalExecutionContext,
+                    ):
                         nonlocal last_committed, widgets_committed, canvas_settled
-                        failed_tool = tool_name
-                        async for evt in execute_mutation(tool_name, tool_args):
-                            yield evt
-                        if mutation_outcome["committed"]:
-                            last_committed = nonlocal_last_committed["v"]
-                            widgets_committed += 1
-                            if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
-                                canvas_settled = True
-                        else:
-                            logger.warning(f"[SHARED RUNTIME] {failed_tool} produced no canvas change")
-                            yield f'data: {json.dumps({"type": "status", "message": "that edit did not match anything on the canvas"})}\n\n'
+                        logger.info(
+                            f"[SHARED RUNTIME CUTOVER] Executing local tool '{tool_name}' through LocalToolExecutor"
+                        )
+                        result = await local_tool_executor.execute(
+                            tool_name=tool_name,
+                            args=tool_args,
+                            session_id=context.session_id,
+                            canvas_html=context.canvas_html,
+                        )
+                        async for frame in sse_formatter.from_local_result(result, session_id=context.session_id):
+                            yield frame
+
+                        if result.get("success") and not result.get("is_error"):
+                            payload = result.get("result")
+                            if isinstance(payload, dict) and "widget_type" in payload:
+                                wtype = payload.get("widget_type")
+                                wid = payload.get("widget_id")
+                                wcfg = payload.get("config", {})
+                                nonlocal_last_committed["v"] = (wtype, wcfg, wid)
+                                last_committed = (wtype, wcfg, wid)
+                                widgets_committed += 1
+                                if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
+                                    canvas_settled = True
+                            elif isinstance(payload, dict) and "action" in payload:
+                                widgets_committed += 1
+                                if not wants_multiple:
+                                    canvas_settled = True
 
                     saw_tool_call = False
                     pretool_buffer = ""
@@ -2846,13 +2878,10 @@ async def send_message(req: MessageRequest):
                         query=req.message,
                         session_id=req.session_id,
                         canvas_html=req.current_canvas or "",
-                        execute_mutation_cb=local_mutation_bridge,
+                        execute_local_tool_cb=execute_local_runtime_tool,
                         cancel_event=cancel_event,
+                        request_context=request_context,
                     ):
-                        if canvas_settled or stream_cut:
-                            cancel_event.set()
-                            break
-
                         frame_type = frame.get("type")
                         if frame_type == "raw_sse":
                             yield frame.get("frame", "")
@@ -2863,10 +2892,17 @@ async def send_message(req: MessageRequest):
                         elif frame_type == "tool_call":
                             saw_tool_call = True
                             yield f'data: {json.dumps(frame)}\n\n'
-                        elif frame_type in ("status", "receipt", "error"):
+                        elif frame_type == "error":
+                            shared_runtime_error = True
+                            yield f'data: {json.dumps(frame)}\n\n'
+                        elif frame_type in ("status", "receipt"):
                             yield f'data: {json.dumps(frame)}\n\n'
                         elif frame_type == "done":
                             pass  # Handled at turn completion
+
+                        if canvas_settled or stream_cut:
+                            cancel_event.set()
+                            break
                 else:
                     async with httpx.AsyncClient(timeout=600.0) as client:
                         async with client.stream(
@@ -3308,7 +3344,7 @@ async def send_message(req: MessageRequest):
             # runs it through _strip_agent_narration first.
             _fallback_text = final_text.strip() or pretool_buffer.strip()
             is_conversational_turn = bool(conversational_card_id) or bool(router_plan and router_plan.get("reason") == "conversational-followup")
-            if not canvas_settled and widgets_committed == 0 and _fallback_text and not is_conversational_turn:
+            if not canvas_settled and widgets_committed == 0 and _fallback_text and not is_conversational_turn and not shared_runtime_error:
                 try:
                     if not final_text.strip():
                         logger.info("[AGENT] no post-tool prose — falling back to the "
