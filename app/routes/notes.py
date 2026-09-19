@@ -3,6 +3,8 @@ import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 
+from app.domain.notes.service import notes_service
+
 router = APIRouter()
 
 @router.post("/notes/create")
@@ -27,7 +29,8 @@ async def api_create_note(req: CreateNoteRequest):
             links=req.links,
             source_messages=["api-manual-create"],
             canonical_blocks=req.canonical_blocks,
-            rendered_html=req.rendered_html
+            rendered_html=req.rendered_html,
+            session_id=req.session_id
         )
         return note
     except Exception as e:
@@ -36,48 +39,79 @@ async def api_create_note(req: CreateNoteRequest):
 
 @router.post("/notes/update")
 async def api_update_note(req: UpdateNoteRequest):
-    if req.rendered_html is not None:
-        from app.agents.auditor import audit_html_fragment
-        audit_res = audit_html_fragment(req.rendered_html)
-        if not audit_res["is_valid"]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"HTML content failed security audit: {', '.join(audit_res['errors'])}"
-            )
-            
-    try:
-        note = database.update_note(
-            note_id=req.note_id,
-            title=req.title,
-            tags=req.tags,
-            links=req.links,
-            canonical_blocks=req.canonical_blocks,
-            rendered_html=req.rendered_html,
-            source_message="api-manual-update"
-        )
-        if not note:
-            raise HTTPException(status_code=404, detail="Note not found")
-        return note
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if not req.session_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: session_id is required to update a note")
+
+    res = notes_service.update_note(
+        note_id=req.note_id,
+        session_id=req.session_id,
+        title=req.title,
+        tags=req.tags,
+        links=req.links,
+        canonical_blocks=req.canonical_blocks,
+        rendered_html=req.rendered_html,
+        source_message="api-manual-update"
+    )
+    if res.get("is_error"):
+        code = res.get("code")
+        if code in ("NOTE_UNCLAIMED", "NOTE_SESSION_MISMATCH"):
+            raise HTTPException(status_code=403, detail=res.get("error"))
+        if code == "SESSION_REQUIRED":
+            raise HTTPException(status_code=401, detail=res.get("error"))
+        if "not found" in res.get("error", "").lower():
+            raise HTTPException(status_code=404, detail=res.get("error"))
+        raise HTTPException(status_code=400, detail=res.get("error"))
+
+    note = database.get_note_by_id(req.note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return note
 
 
 @router.post("/notes/link")
 async def api_link_notes(req: LinkNotesRequest):
-    try:
-        note_a = database.get_note_by_id(req.source_note_id)
-        note_b = database.get_note_by_id(req.target_note_id)
-        if not note_a or not note_b:
-            raise HTTPException(status_code=404, detail="One or both notes not found")
-            
-        links = note_a.get("links", [])
-        if req.target_note_id not in links:
-            links.append(req.target_note_id)
-            database.update_note(note_id=req.source_note_id, links=links)
-            
-        return {"status": "success", "detail": f"Linked {req.source_note_id} to {req.target_note_id}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if not req.session_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: session_id is required to link notes")
+
+    res = notes_service.link_notes(
+        source_note_id=req.source_note_id,
+        target_note_id=req.target_note_id,
+        session_id=req.session_id
+    )
+    if res.get("is_error"):
+        code = res.get("code")
+        if code in ("NOTE_UNCLAIMED", "NOTE_SESSION_MISMATCH"):
+            raise HTTPException(status_code=403, detail=res.get("error"))
+        if code == "SESSION_REQUIRED":
+            raise HTTPException(status_code=401, detail=res.get("error"))
+        if "not found" in res.get("error", "").lower():
+            raise HTTPException(status_code=404, detail=res.get("error"))
+        raise HTTPException(status_code=400, detail=res.get("error"))
+
+    return {"status": "success", "detail": f"Linked {req.source_note_id} to {req.target_note_id}"}
+
+
+@router.post("/notes/claim")
+async def api_claim_note(req: ClaimNoteRequest):
+    if not req.session_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: session_id is required to claim a note")
+
+    res = notes_service.claim_note(
+        note_id=req.note_id,
+        session_id=req.session_id,
+        owner_id=req.owner_id
+    )
+    if res.get("is_error"):
+        code = res.get("code")
+        if code == "NOTE_ALREADY_CLAIMED":
+            raise HTTPException(status_code=409, detail=res.get("error"))
+        if code == "SESSION_REQUIRED":
+            raise HTTPException(status_code=401, detail=res.get("error"))
+        if "not found" in res.get("error", "").lower():
+            raise HTTPException(status_code=404, detail=res.get("error"))
+        raise HTTPException(status_code=400, detail=res.get("error"))
+
+    return res
 
 
 @router.get("/notes/{id}")

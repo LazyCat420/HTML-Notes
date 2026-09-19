@@ -47,6 +47,13 @@ class NotesDomainService:
 
     @staticmethod
     def update_note(note_id: str, session_id: Optional[str] = None, **fields: Any) -> Dict[str, Any]:
+        if not session_id or not str(session_id).strip():
+            return {
+                "error": "Unauthorized: session_id is required to update a note",
+                "is_error": True,
+                "code": "SESSION_REQUIRED"
+            }
+
         existing = database.get_note_by_id(note_id)
         if not existing:
             return {"error": f"Note '{note_id}' not found", "is_error": True}
@@ -62,7 +69,7 @@ class NotesDomainService:
             }
 
         # Cross-session isolation check
-        if note_session and session_id and note_session != session_id:
+        if note_session != session_id:
             return {
                 "error": f"Unauthorized: note '{note_id}' belongs to another session",
                 "is_error": True,
@@ -85,13 +92,20 @@ class NotesDomainService:
     @staticmethod
     def claim_note(note_id: str, session_id: str, owner_id: Optional[str] = None) -> Dict[str, Any]:
         """Explicitly claims an unclaimed or legacy note, binding it to the current session/owner."""
+        if not session_id or not str(session_id).strip():
+            return {
+                "error": "Unauthorized: session_id is required to claim a note",
+                "is_error": True,
+                "code": "SESSION_REQUIRED"
+            }
+
         existing = database.get_note_by_id(note_id)
         if not existing:
             return {"error": f"Note '{note_id}' not found", "is_error": True}
 
         # If already claimed by another session, reject
         current_session = existing.get("session_id")
-        if current_session and current_session != session_id:
+        if current_session and current_session != session_id and existing.get("owner_type") != "legacy_unclaimed":
             return {
                 "error": f"Unauthorized: note '{note_id}' is already claimed by another session",
                 "is_error": True,
@@ -100,7 +114,11 @@ class NotesDomainService:
 
         claimed = database.claim_note(note_id=note_id, session_id=session_id, owner_id=owner_id)
         if not claimed:
-            return {"error": f"Failed to claim note '{note_id}'", "is_error": True}
+            return {
+                "error": f"Unauthorized: failed to claim note '{note_id}' (already claimed or concurrent claim race)",
+                "is_error": True,
+                "code": "NOTE_ALREADY_CLAIMED"
+            }
 
         return {
             "success": True,
@@ -124,10 +142,50 @@ class NotesDomainService:
         return {"results": results, "count": len(results)}
 
     @staticmethod
-    def link_notes(source_note_id: str, target_note_id: str) -> Dict[str, Any]:
+    def link_notes(source_note_id: str, target_note_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Links two notes, requiring that both notes exist and are owned by the active session."""
+        if not session_id or not str(session_id).strip():
+            return {
+                "error": "Unauthorized: session_id is required to link notes",
+                "is_error": True,
+                "code": "SESSION_REQUIRED"
+            }
+
         note_a = database.get_note_by_id(source_note_id)
         if not note_a:
             return {"error": f"Source note '{source_note_id}' not found", "is_error": True}
+
+        note_b = database.get_note_by_id(target_note_id)
+        if not note_b:
+            return {"error": f"Target note '{target_note_id}' not found", "is_error": True}
+
+        # Check source note ownership
+        if note_a.get("owner_type") == "legacy_unclaimed" or note_a.get("session_id") is None:
+            return {
+                "error": f"Unauthorized: source note '{source_note_id}' is unclaimed",
+                "is_error": True,
+                "code": "NOTE_UNCLAIMED"
+            }
+        if note_a.get("session_id") != session_id:
+            return {
+                "error": f"Unauthorized: source note '{source_note_id}' belongs to another session",
+                "is_error": True,
+                "code": "NOTE_SESSION_MISMATCH"
+            }
+
+        # Check target note ownership
+        if note_b.get("owner_type") == "legacy_unclaimed" or note_b.get("session_id") is None:
+            return {
+                "error": f"Unauthorized: target note '{target_note_id}' is unclaimed",
+                "is_error": True,
+                "code": "NOTE_UNCLAIMED"
+            }
+        if note_b.get("session_id") != session_id:
+            return {
+                "error": f"Unauthorized: target note '{target_note_id}' belongs to another session",
+                "is_error": True,
+                "code": "NOTE_SESSION_MISMATCH"
+            }
 
         links = list(note_a.get("links") or [])
         if target_note_id not in links:
