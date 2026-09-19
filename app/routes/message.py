@@ -2802,69 +2802,56 @@ async def send_message(req: MessageRequest):
                 yield f'data: {json.dumps({"type": "status", "message": "connecting to agent...", "phase": _PHASE_ROUTING})}\n\n'
 
                 import os
-                if os.getenv("USE_DEV2_SDK", "true").lower() == "true":
-                    from app.services.dev2_sdk_adapter import mock_sdk
-                    run_id = await mock_sdk.create_run({"input": req.message, "session_id": req.session_id})
-                    
-                    # State variables expected by the rest of the turn processing
-                    buffer = ""
-                    active_tool_name = None
-                    active_tool_args = {}
-                    pretool_buffer = ""
-                    saw_tool_call = False
+                # Feature flag: USE_SHARED_RUNTIME defaults to false during migration until verified
+                use_shared_runtime = os.getenv("USE_SHARED_RUNTIME", "false").lower() in ("true", "1", "yes")
+                if use_shared_runtime:
+                    from app.services.runtime_chat_adapter import RuntimeChatAdapter
+                    adapter = RuntimeChatAdapter()
 
-                    async for event in mock_sdk.observe(run_id):
+                    cancel_event = asyncio.Event()
+
+                    async def local_mutation_bridge(tool_name: str, tool_args: dict):
+                        nonlocal last_committed, widgets_committed, canvas_settled
+                        failed_tool = tool_name
+                        async for evt in execute_mutation(tool_name, tool_args):
+                            yield evt
+                        if mutation_outcome["committed"]:
+                            last_committed = nonlocal_last_committed["v"]
+                            widgets_committed += 1
+                            if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
+                                canvas_settled = True
+                        else:
+                            logger.warning(f"[SHARED RUNTIME] {failed_tool} produced no canvas change")
+                            yield f'data: {json.dumps({"type": "status", "message": "that edit did not match anything on the canvas"})}\n\n'
+
+                    saw_tool_call = False
+                    pretool_buffer = ""
+
+                    async for frame in adapter.stream_chat_turn(
+                        query=req.message,
+                        session_id=req.session_id,
+                        canvas_html=req.current_canvas or "",
+                        execute_mutation_cb=local_mutation_bridge,
+                        cancel_event=cancel_event,
+                    ):
                         if canvas_settled or stream_cut:
-                            await mock_sdk.cancel_run(run_id)
+                            cancel_event.set()
                             break
-                            
-                        event_type = event.get("type")
-                        
-                        if event_type == "status":
-                            yield f'data: {{"type": "status", "message": event.get("status")}}\n\n'
-                            
-                        elif event_type == "tool_call":
+
+                        frame_type = frame.get("type")
+                        if frame_type == "raw_sse":
+                            yield frame.get("frame", "")
+                        elif frame_type == "chunk":
+                            token = frame.get("content", "")
+                            final_text += token
+                            yield f'data: {json.dumps(frame)}\n\n'
+                        elif frame_type == "tool_call":
                             saw_tool_call = True
-                            tool_name = event.get("tool")
-                            if not tool_name.startswith("mcp__lazy-tool-service__"):
-                                tool_name = f"mcp__lazy-tool-service__{tool_name}"
-                            
-                            active_tool_name = tool_name
-                            active_tool_args = event.get("args", {})
-                            executed_active_tool = False
-                            
-                            tool_phase = _phase_for_tool(tool_name)
-                            yield f'data: {{"type": "tool_call", "tool": "{tool_name}", "args": _summarize_tool_args(active_tool_args), "phase": "{tool_phase}"}}\n\n'
-                            yield f'data: {{"type": "status", "message": f"preparing {tool_name}...", "phase": "{tool_phase}"}}\n\n'
-                            
-                            if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget", "mcp__lazy-tool-service__create_widget", "mcp__lazy-tool-service__update_widget"):
-                                failed_tool = active_tool_name
-                                async for evt in execute_mutation(active_tool_name, active_tool_args):
-                                    yield evt
-                                executed_active_tool = True
-                                active_tool_name = None
-                                active_tool_args = {}
-                                
-                                if mutation_outcome["committed"]:
-                                    last_committed = nonlocal_last_committed["v"]
-                                    widgets_committed += 1
-                                    if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
-                                        canvas_settled = True
-                                        break
-                                else:
-                                    logger.warning(f"[AGENT] {failed_tool} produced no canvas change")
-                                    yield f'data: {{"type": "status", "message": "that edit did not match anything on the canvas"}}\n\n'
-                                    
-                        elif event_type == "result":
-                            token = event.get("content", "")
-                            if saw_tool_call:
-                                final_text += token
-                                yield f'data: {{"type": "chunk", "content": token}}\n\n'
-                            else:
-                                pretool_buffer += token
-                                
-                        elif event_type == "error":
-                            yield f'data: {{"type": "error", "message": event.get("error", "SDK Error")}}\n\n'
+                            yield f'data: {json.dumps(frame)}\n\n'
+                        elif frame_type in ("status", "receipt", "error"):
+                            yield f'data: {json.dumps(frame)}\n\n'
+                        elif frame_type == "done":
+                            pass  # Handled at turn completion
                 else:
                     async with httpx.AsyncClient(timeout=600.0) as client:
                         async with client.stream(
