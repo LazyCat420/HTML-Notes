@@ -28,6 +28,10 @@ services:
       - INTERNAL_EXECUTE_TOKEN=${INTERNAL_EXECUTE_TOKEN:-}
       # portal-service inventory feeds the App Hub widget + open_app tool.
       - PORTAL_SERVICE_URL=${PORTAL_SERVICE_URL:-http://10.0.0.16:4001}
+      # Shared agent runtime configuration
+      - USE_SHARED_RUNTIME=${USE_SHARED_RUNTIME:-true}
+      - LAZYCAT_RUNTIME_URL=${LAZYCAT_RUNTIME_URL:-http://10.0.0.16:5591}
+      - HTML_NOTES_RUNTIME_PROFILE=${HTML_NOTES_RUNTIME_PROFILE:-html-notes-canvas-v1}
     volumes:
       - ./data:/app/data
       # Shared SDK (research helper) — synced to the NAS by deploy.sh's

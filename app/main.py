@@ -1356,6 +1356,7 @@ class CreateNoteRequest(BaseModel):
     links: List[str] = []
     canonical_blocks: List[Dict[str, Any]] = []
     rendered_html: str
+    session_id: Optional[str] = None
 
 class UpdateNoteRequest(BaseModel):
     note_id: str
@@ -1364,10 +1365,17 @@ class UpdateNoteRequest(BaseModel):
     links: Optional[List[str]] = None
     canonical_blocks: Optional[List[Dict[str, Any]]] = None
     rendered_html: Optional[str] = None
+    session_id: Optional[str] = None
 
 class LinkNotesRequest(BaseModel):
     source_note_id: str
     target_note_id: str
+    session_id: Optional[str] = None
+
+class ClaimNoteRequest(BaseModel):
+    note_id: str
+    session_id: str
+    owner_id: Optional[str] = None
 
 class TranscribeRequest(BaseModel):
     audio: str # Base64 audio payload
@@ -3636,6 +3644,7 @@ async def _agent_dependency_status() -> dict:
 class InternalToolRequest(BaseModel):
     tool: str
     args: Dict[str, Any] = {}
+    session_id: Optional[str] = None
 
 # The complete dispatch set of internal_tool_execute. Membership is checked
 # BEFORE dispatch so a compromised or misconfigured caller can only name these

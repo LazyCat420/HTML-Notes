@@ -153,12 +153,17 @@ class LocalToolExecutor:
         requires_receipt = self.policy.requires_authorization_receipt(tool_name)
         if requires_receipt or authorization is not None:
             expected_profile = (runtime_context or {}).get("profile_id")
+            expected_run = (runtime_context or {}).get("run_id")
+            expected_call = (runtime_context or {}).get("tool_call_id") or args.get("tool_call_id") or args.get("id")
             auth_res = verify_local_authorization(
                 authorization=authorization,
                 expected_tool_id=canonical_id,
                 expected_app_id=app_id,
                 expected_session_id=session_id or "",
                 expected_profile_id=expected_profile,
+                expected_run_id=expected_run,
+                expected_tool_call_id=expected_call,
+                expected_args=args,
             )
             if not auth_res.valid:
                 return {
@@ -246,9 +251,23 @@ class LocalToolExecutor:
         elif canonical_id == "html_notes.notes.search":
             return notes_service.search_notes(query=args.get("query", ""))
         elif canonical_id == "html_notes.notes.link":
-            return notes_service.link_notes(
-                source_note_id=args.get("source_note_id", ""),
-                target_note_id=args.get("target_note_id", "")
+            link_fn: Any = getattr(notes_service, "link_notes")
+            try:
+                return link_fn(
+                    source_note_id=args.get("source_note_id", ""),
+                    target_note_id=args.get("target_note_id", ""),
+                    session_id=session_id,
+                )
+            except TypeError:
+                return link_fn(
+                    source_note_id=args.get("source_note_id", ""),
+                    target_note_id=args.get("target_note_id", ""),
+                )
+        elif canonical_id == "html_notes.notes.claim":
+            return notes_service.claim_note(
+                note_id=args.get("note_id", ""),
+                session_id=session_id,
+                owner_id=args.get("owner_id"),
             )
 
         # Canvas Domain

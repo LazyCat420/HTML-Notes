@@ -72,10 +72,28 @@ async def health_app(fresh: bool = False):
 async def health_agent(response: Response):
     """READINESS — can a research ask succeed?
 
-    503s when the tool path is dead, so a monitor sees it. Separate from
-    /health/app precisely because the right response to this failing is to go
-    look at Prism or lazy-tool-service, never to restart html-notes.
+    503s when the tool path is dead, so a monitor sees it.
     """
+    from app.adapters.runtime.config import is_shared_runtime_enabled, check_runtime_readiness
+    if is_shared_runtime_enabled():
+        readiness = await check_runtime_readiness()
+        if not readiness.is_ready:
+            response.status_code = 503
+            return {
+                "status": "unavailable",
+                "use_shared_runtime": True,
+                "error": readiness.error,
+                "profile_id": readiness.profile_id,
+                "details": readiness.details,
+            }
+        return {
+            "status": "ok",
+            "use_shared_runtime": True,
+            "contract_version": readiness.contract_version,
+            "profile_id": readiness.profile_id,
+            "details": readiness.details,
+        }
+
     agent = await _agent_dependency_status()
     if not agent.get("ok"):
         response.status_code = 503

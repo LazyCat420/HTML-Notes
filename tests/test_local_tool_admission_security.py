@@ -401,3 +401,248 @@ def test_all_local_manifest_tools_define_scope_and_receipt_policy():
 
         if effect == "destructive":
             assert t.get("requires_confirmation") is True, f"Destructive tool {t_id} must require confirmation"
+
+
+def test_unsigned_receipt_is_rejected():
+    auth = make_valid_auth()
+    auth.signature = None
+    res = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+    )
+    assert res.valid is False
+    assert res.code == "UNSIGNED_RECEIPT"
+
+
+def test_repeated_nonce_with_different_tool_call_id_is_rejected():
+    cache = ReplayCache()
+    auth1 = make_valid_auth(session_id="session_rep")
+    auth2 = make_valid_auth(session_id="session_rep")
+    # Same nonce, completely different tool_call_id
+    auth2.nonce = auth1.nonce
+
+    res1 = verify_local_authorization(
+        authorization=auth1,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id="session_rep",
+        replay_cache=cache,
+    )
+    assert res1.valid is True
+
+    res2 = verify_local_authorization(
+        authorization=auth2,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id="session_rep",
+        replay_cache=cache,
+    )
+    assert res2.valid is False
+    assert res2.code == "REPLAYED_RECEIPT"
+
+
+def test_missing_profile_id_is_rejected():
+    auth = make_valid_auth()
+    auth.profile_id = ""
+    res = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+    )
+    assert res.valid is False
+    assert res.code == "MISSING_PROFILE"
+
+
+def test_profile_id_mismatch_is_rejected():
+    auth = make_valid_auth(profile_id="html-notes-canvas-v1")
+    res = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+        expected_profile_id="different-profile-v1",
+    )
+    assert res.valid is False
+    assert res.code == "PROFILE_MISMATCH"
+
+
+def test_run_id_mismatch_is_rejected():
+    auth = make_valid_auth()
+    res = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+        expected_run_id="different_run_id_123",
+    )
+    assert res.valid is False
+    assert res.code == "RUN_MISMATCH"
+
+
+def test_tool_call_id_mismatch_is_rejected():
+    auth = make_valid_auth()
+    res = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+        expected_tool_call_id="different_tool_call_id_456",
+    )
+    assert res.valid is False
+    assert res.code == "TOOL_CALL_MISMATCH"
+
+
+def test_hmac_signature_verification_succeeds_with_matching_secret(monkeypatch):
+    import hmac
+    import hashlib
+    import secrets
+    test_secret = f"auth_{secrets.token_hex(16)}"
+    monkeypatch.setenv("INTERNAL_EXECUTE_TOKEN", test_secret)
+
+    auth = make_valid_auth()
+    exp_iso_z = auth.expires_at.isoformat().replace("+00:00", "Z")
+    payload = f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}"
+    real_sig = "sha256-" + hmac.new(test_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    auth.signature = real_sig
+
+    res = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+    )
+    assert res.valid is True
+
+    # Corrupt secret / forged signature fails
+    auth.signature = "sha256-bad000000000000000000000000000000000000000000000000000000000dead"
+    res_bad = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+    )
+    assert res_bad.valid is False
+    assert res_bad.code == "INVALID_SIGNATURE"
+
+
+def test_real_runtime_receipt_shape_compatibility():
+    """Validates that a nested authorization_receipt emitted by lazy-agent-service executes cleanly without MISSING_RUN_ID."""
+    raw_runtime_event = {
+        "tool_call_id": "call_rt_123",
+        "tool_name": "html_notes.canvas.upsert_widget",
+        "execution": "local",
+        "effect": "write",
+        "arguments": {"widget_type": "clock", "widget_id": "clk_1"},
+        "authorization_receipt": {
+            "receipt_id": "auth_rec_run_999_12345",
+            "nonce": "nonce_abc123xyz",
+            "run_id": "run_999",
+            "tool_call_id": "call_rt_123",
+            "tool_name": "html_notes.canvas.upsert_widget",
+            "canonical_tool_id": "html_notes.canvas.upsert_widget",
+            "arguments_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "app_id": "html-notes",
+            "session_id": "session_rt_999",
+            "profile_id": "html-notes-researcher-v1",
+            "execution": "local",
+            "effect": "write",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=300)).isoformat(),
+            "signature": "sha256-valid-test-sig",
+        },
+        "required_scope": {
+            "app_id": "html-notes",
+            "session_id": "session_rt_999",
+        },
+    }
+
+    # Pass nested authorization_receipt directly as adapter does
+    nested_receipt = raw_runtime_event["authorization_receipt"]
+    res = verify_local_authorization(
+        authorization=nested_receipt,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id="session_rt_999",
+        expected_profile_id="html-notes-researcher-v1",
+        expected_run_id="run_999",
+        expected_tool_call_id="call_rt_123",
+    )
+    assert res.valid is True
+    assert res.code is None
+    assert res.authorization is not None
+    assert res.authorization.run_id == "run_999"
+    assert res.authorization.tool_call_id == "call_rt_123"
+
+
+def test_argument_tampering_is_rejected():
+    """Validates that modifying tool arguments when arguments_hash is bound fails with ARGUMENTS_MISMATCH."""
+    import hashlib
+    import json
+
+    original_args = {"widget_type": "clock", "widget_id": "clk_1"}
+    sorted_orig = {k: original_args[k] for k in sorted(original_args.keys())}
+    orig_hash = hashlib.sha256(json.dumps(sorted_orig, separators=(',', ':')).encode()).hexdigest()
+
+    auth = make_valid_auth()
+    auth.arguments_hash = orig_hash
+
+    # Matching args passes
+    res_ok = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+        expected_args=original_args,
+    )
+    assert res_ok.valid is True
+
+    # Tampered args fails
+    tampered_args = {"widget_type": "clock", "widget_id": "clk_FORGED"}
+    res_tampered = verify_local_authorization(
+        authorization=auth,
+        expected_tool_id="html_notes.canvas.upsert_widget",
+        expected_app_id="html-notes",
+        expected_session_id=auth.session_id,
+        expected_args=tampered_args,
+    )
+    assert res_tampered.valid is False
+    assert res_tampered.code == "ARGUMENTS_MISMATCH"
+
+
+def test_atomic_replay_cache_concurrency():
+    """Validates thread-safe atomic check-and-add preventing concurrent race conditions for identical nonce."""
+    import concurrent.futures
+    cache = ReplayCache()
+    test_key = "nonce:concurrent_race_test_1"
+
+    success_count = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(cache.check_and_add, test_key) for _ in range(20)]
+        results = [f.result() for f in futures]
+        success_count = sum(1 for r in results if r is True)
+
+    # Exactly one thread must succeed in admitting the nonce
+    assert success_count == 1
+
+
+@pytest.mark.asyncio
+async def test_link_notes_forwards_session_id():
+    """Validates that executor dispatch for html_notes.notes.link passes session_id."""
+    auth = make_valid_auth(tool_id="html_notes.notes.link", session_id="session_owner_1")
+    with patch("app.domain.notes.service.notes_service.link_notes") as mock_link:
+        mock_link.return_value = {"success": True, "source": "n1", "target": "n2"}
+        res = await local_tool_executor.execute(
+            tool_name="html_notes.notes.link",
+            args={"source_note_id": "n1", "target_note_id": "n2"},
+            session_id="session_owner_1",
+            authorization=auth,
+        )
+        assert res["success"] is True
+        mock_link.assert_called_once_with(
+            source_note_id="n1",
+            target_note_id="n2",
+            session_id="session_owner_1",
+        )

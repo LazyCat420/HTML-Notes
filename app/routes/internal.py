@@ -36,69 +36,55 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
     t = req.tool
     a = req.args
 
+    session_id = getattr(req, "session_id", None) or a.get("session_id")
+
     try:
+        from app.domain.notes.service import notes_service
+
         if t == "html_notes_create_note":
-            from app.agents.auditor import audit_html_fragment
-            audit = audit_html_fragment(a.get("rendered_html", ""))
-            if not audit["is_valid"]:
-                return {"error": f"HTML audit failed: {audit['errors']}", "is_error": True}
-            note_id = f"note_{uuid.uuid4().hex[:8]}"
-            note = database.create_note(
-                note_id=note_id,
-                title=a["title"],
+            return notes_service.create_note(
+                title=a.get("title", ""),
+                rendered_html=a.get("rendered_html", ""),
                 tags=a.get("tags", []),
                 links=a.get("links", []),
-                source_messages=["tool-call"],
-                canonical_blocks=[],
-                rendered_html=a["rendered_html"]
+                session_id=session_id
             )
-            return {"success": True, "note_id": note["id"], "title": note["title"]}
 
         elif t == "html_notes_update_note":
-            from app.agents.auditor import audit_html_fragment
-            if "rendered_html" in a:
-                audit = audit_html_fragment(a["rendered_html"])
-                if not audit["is_valid"]:
-                    return {"error": f"HTML audit failed: {audit['errors']}", "is_error": True}
-            note = database.update_note(note_id=a["note_id"], **{k: v for k, v in a.items() if k != "note_id"})
-            return {"success": True, "note_id": a["note_id"]} if note else {"error": "Note not found", "is_error": True}
+            note_args = {k: v for k, v in a.items() if k not in ("note_id", "session_id")}
+            return notes_service.update_note(note_id=a.get("note_id", ""), session_id=session_id, **note_args)
 
         elif t == "html_notes_get_note":
-            note = database.get_note_by_id(a["note_id"])
-            return note if note else {"error": "Note not found", "is_error": True}
+            return notes_service.get_note(a.get("note_id", ""))
 
         elif t == "html_notes_search_notes":
-            results = database.search_notes(a["query"])
-            return {"results": results, "count": len(results)}
+            return notes_service.search_notes(a.get("query", ""))
 
         elif t == "html_notes_link_notes":
-            note_a = database.get_note_by_id(a["source_note_id"])
-            if not note_a:
-                return {"error": "Source note not found", "is_error": True}
-            links = note_a.get("links", [])
-            if a["target_note_id"] not in links:
-                links.append(a["target_note_id"])
-                database.update_note(note_id=a["source_note_id"], links=links)
-            return {"success": True}
+            return notes_service.link_notes(
+                source_note_id=a.get("source_note_id", ""),
+                target_note_id=a.get("target_note_id", ""),
+                session_id=session_id
+            )
 
         elif t == "html_notes_modify_dom":
-            # fetch note, apply BeautifulSoup DOM operation, update
-            note = database.get_note_by_id(a["note_id"])
+            if not session_id:
+                return {"error": "Unauthorized: session_id is required to modify note DOM", "is_error": True, "code": "SESSION_REQUIRED"}
+            note = database.get_note_by_id(a.get("note_id", ""))
             if not note:
                 return {"error": "Note not found", "is_error": True}
             soup = BeautifulSoup(note["rendered_html"], "html.parser")
-            target = soup.select_one(a["css_selector"])
+            target = soup.select_one(a.get("css_selector", ""))
             if not target:
-                return {"error": f"Selector '{a['css_selector']}' not found", "is_error": True}
-            snippet_soup = BeautifulSoup(a["html_snippet"], "html.parser")
-            action = a["action"]
+                return {"error": f"Selector '{a.get('css_selector')}' not found", "is_error": True}
+            snippet_soup = BeautifulSoup(a.get("html_snippet", ""), "html.parser")
+            action = a.get("action")
             if action == "append":      target.append(snippet_soup)
             elif action == "prepend":   target.insert(0, snippet_soup)
             elif action == "insert_before": target.insert_before(snippet_soup)
             elif action == "insert_after":  target.insert_after(snippet_soup)
             elif action == "replace":   target.replace_with(snippet_soup)
-            database.update_note(note_id=a["note_id"], rendered_html=str(soup))
-            return {"success": True}
+            return notes_service.update_note(note_id=a.get("note_id", ""), session_id=session_id, rendered_html=str(soup))
 
         elif t == "render_component":
             from app.templates import TEMPLATES

@@ -122,7 +122,10 @@ async def test_runtime_preflight_accepts_compatible_contract_version():
     mock_client = MagicMock()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"version": "1.2.0"}
+    mock_resp.json.return_value = {
+        "version": "1.2.0",
+        "registered_profiles": ["html-notes-canvas-v1"]
+    }
     mock_resp.headers = {"x-contract-version": "1.2.0"}
     mock_client.get = AsyncMock(return_value=mock_resp)
 
@@ -135,6 +138,27 @@ async def test_runtime_preflight_accepts_compatible_contract_version():
     )
     assert res.is_ready
     assert res.contract_version == "1.2.0"
+
+
+@pytest.mark.asyncio
+async def test_runtime_preflight_rejects_missing_registered_profiles_field():
+    """Readiness is rejected if the contract spec omits registered_profiles entirely."""
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"version": "1.2.0"}
+    mock_resp.headers = {"x-contract-version": "1.2.0"}
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    res = await check_runtime_readiness(
+        runtime_url="http://fake-runtime:8080",
+        profile_id="html-notes-canvas-v1",
+        required_contract_version="1.2.0",
+        manifest_override={"profile_id": "html-notes-canvas-v1", "allowed_global_capabilities": ["global.web.search", "global.web.read_page"]},
+        client=mock_client
+    )
+    assert not res.is_ready
+    assert "registered_profiles" in (res.error or "").lower()
 
 
 @pytest.mark.asyncio

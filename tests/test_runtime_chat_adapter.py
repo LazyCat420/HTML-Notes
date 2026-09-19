@@ -326,7 +326,11 @@ async def test_route_passes_authorization_to_local_executor():
     ):
         frames.append(f)
 
-    assert captured_args.get("auth_receipt") == {"signature": "sig_valid_123", "nonce": "non_456"}
+    auth = captured_args.get("auth_receipt") or {}
+    assert auth.get("signature") == "sig_valid_123"
+    assert auth.get("nonce") == "non_456"
+    assert auth.get("run_id") == "run_bridge_test"
+    assert auth.get("session_id") == "session_bridge_1"
 
 
 @pytest.mark.asyncio

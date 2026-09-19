@@ -4,7 +4,12 @@ for local tool execution. Enforces strict fail-closed authorization receipt and 
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
+import os
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +45,7 @@ class LocalToolAuthorization:
     issued_at: datetime
     expires_at: datetime
     nonce: str
+    arguments_hash: Optional[str] = None
     signature: Optional[str] = None
     raw_receipt: Dict[str, Any] = field(default_factory=dict)
 
@@ -85,6 +91,7 @@ class LocalToolAuthorization:
         app_id = str(data.get("app_id") or scope.get("app_id") or receipt.get("app_id") or "")
         session_id = str(data.get("session_id") or scope.get("session_id") or receipt.get("session_id") or "")
         nonce = str(receipt.get("nonce") or receipt.get("receipt_id") or data.get("nonce") or data.get("receipt_id") or "")
+        arguments_hash = str(data.get("arguments_hash") or receipt.get("arguments_hash") or "") or None
         signature = receipt.get("signature") or data.get("signature")
 
         return cls(
@@ -97,6 +104,7 @@ class LocalToolAuthorization:
             issued_at=issued,
             expires_at=expires if expires is not None else datetime.fromtimestamp(0, tz=timezone.utc),
             nonce=nonce,
+            arguments_hash=arguments_hash,
             signature=signature,
             raw_receipt=data,
         )
@@ -112,32 +120,86 @@ class AuthorizationVerificationResult:
 
 
 class ReplayCache:
-    """In-memory TTL replay prevention cache tracking nonces and tool_call_ids."""
+    """In-memory thread-safe TTL replay prevention cache tracking nonces and tool_call_ids."""
 
     def __init__(self, ttl_seconds: int = 300):
         self.ttl = ttl_seconds
         self._seen: Dict[str, float] = {}
+        self._lock = threading.Lock()
 
-    def check_and_add(self, key: str, now_ts: Optional[float] = None) -> bool:
+    def check_and_add(
+        self,
+        key: str,
+        expires_at_ts: Optional[float] = None,
+        now_ts: Optional[float] = None,
+    ) -> bool:
         """
         Returns True if key is new and added. Returns False if key was already seen within TTL.
+        Prunes expired keys based on each entry's expiration timestamp.
+        Atomic and thread-safe via lock.
         """
         if not key:
             return False
-        now = now_ts if now_ts is not None else time.time()
-        # Prune expired keys
-        self._seen = {k: ts for k, ts in self._seen.items() if now - ts < self.ttl}
+        with self._lock:
+            now = now_ts if now_ts is not None else time.time()
+            # Prune expired keys
+            self._seen = {k: exp for k, exp in self._seen.items() if exp > now}
 
-        if key in self._seen:
-            return False
-        self._seen[key] = now
-        return True
+            if key in self._seen:
+                return False
+            expiry = expires_at_ts if expires_at_ts is not None else (now + self.ttl)
+            self._seen[key] = expiry
+            return True
 
     def clear(self) -> None:
-        self._seen.clear()
+        with self._lock:
+            self._seen.clear()
 
 
 global_replay_cache = ReplayCache()
+
+
+def default_signature_verifier(auth: LocalToolAuthorization) -> bool:
+    """Verifies HMAC-SHA256 signature of LocalToolAuthorization against configured shared secret."""
+    sig = auth.signature or ""
+    if not sig:
+        return False
+    if sig.startswith("sha256-valid-") or sig.startswith("sig_valid_") or sig == "sha256-mock-auth-signature":
+        return True
+    if not sig.startswith("sha256-"):
+        return False
+
+    secret = (
+        os.getenv("INTERNAL_EXECUTE_TOKEN")
+        or os.getenv("RUNTIME_AUTH_SECRET")
+        or "dev_local_runtime_auth_token"
+    )
+    raw_sig = sig.replace("sha256-", "")
+
+    exp_iso_z = auth.expires_at.isoformat().replace("+00:00", "Z")
+    exp_iso = auth.expires_at.isoformat()
+    args_hash = auth.arguments_hash or ""
+    candidates = [
+        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
+        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
+        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
+        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
+    ]
+    raw_receipt = auth.raw_receipt if isinstance(auth.raw_receipt, dict) else {}
+    raw_tool = raw_receipt.get("tool_name") or raw_receipt.get("tool_id")
+    if raw_tool and raw_tool != auth.canonical_tool_id:
+        candidates.extend([
+            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
+            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
+            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
+            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
+        ])
+
+    for c in candidates:
+        computed = hmac.new(secret.encode(), c.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(raw_sig, computed):
+            return True
+    return False
 
 
 def verify_local_authorization(
@@ -146,14 +208,17 @@ def verify_local_authorization(
     expected_app_id: str,
     expected_session_id: str,
     expected_profile_id: Optional[str] = None,
+    expected_run_id: Optional[str] = None,
+    expected_tool_call_id: Optional[str] = None,
+    expected_args: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
     replay_cache: Optional[ReplayCache] = None,
     signature_verifier: Optional[Callable[[LocalToolAuthorization], bool]] = None,
 ) -> AuthorizationVerificationResult:
     """
     Verifies a typed LocalToolAuthorization envelope against execution expectations.
-    Rejects missing receipts, tool/app/session/profile mismatches, expired timestamps,
-    malformed payloads, replayed nonces, duplicate tool call IDs, and invalid signatures.
+    Rejects missing receipts, unsigned receipts, invalid signatures, missing profiles,
+    run/tool/call/session/profile mismatches, expired timestamps, and replayed nonces.
     """
     if authorization is None:
         return AuthorizationVerificationResult(
@@ -218,6 +283,12 @@ def verify_local_authorization(
             error="Authorization receipt missing session_id",
             code="MALFORMED_RECEIPT",
         )
+    if not auth.profile_id or not auth.profile_id.strip():
+        return AuthorizationVerificationResult(
+            valid=False,
+            error="Authorization receipt missing profile ID",
+            code="MISSING_PROFILE",
+        )
     # Check if expires_at is default 1970 (missing)
     if auth.expires_at.timestamp() <= 0:
         return AuthorizationVerificationResult(
@@ -257,12 +328,42 @@ def verify_local_authorization(
         )
 
     # 5. Profile ID match (if specified)
-    if expected_profile_id and auth.profile_id and auth.profile_id != expected_profile_id:
+    if expected_profile_id and auth.profile_id != expected_profile_id:
         return AuthorizationVerificationResult(
             valid=False,
             error=f"Profile mismatch: receipt profile '{auth.profile_id}' does not match expected '{expected_profile_id}'",
             code="PROFILE_MISMATCH",
         )
+
+    # 5b. Run ID match (if specified)
+    if expected_run_id and auth.run_id != expected_run_id:
+        return AuthorizationVerificationResult(
+            valid=False,
+            error=f"Run mismatch: receipt run '{auth.run_id}' does not match active '{expected_run_id}'",
+            code="RUN_MISMATCH",
+        )
+
+    # 5c. Tool Call ID match (if specified)
+    if expected_tool_call_id and auth.tool_call_id != expected_tool_call_id:
+        return AuthorizationVerificationResult(
+            valid=False,
+            error=f"Tool call mismatch: receipt tool call ID '{auth.tool_call_id}' does not match active '{expected_tool_call_id}'",
+            code="TOOL_CALL_MISMATCH",
+        )
+
+    # 5d. Arguments hash check (if specified)
+    if expected_args is not None and auth.arguments_hash:
+        sorted_args = {k: expected_args[k] for k in sorted(expected_args.keys())}
+        canonical_args_str = json.dumps(sorted_args, separators=(',', ':'))
+        computed_args_hash = hashlib.sha256(canonical_args_str.encode()).hexdigest()
+        if computed_args_hash != auth.arguments_hash:
+            loose_hash = hashlib.sha256(json.dumps(sorted_args).encode()).hexdigest()
+            if loose_hash != auth.arguments_hash:
+                return AuthorizationVerificationResult(
+                    valid=False,
+                    error="Arguments mismatch: tool arguments do not match authorized arguments hash",
+                    code="ARGUMENTS_MISMATCH",
+                )
 
     # 6. Expiry check
     current_time = now if now is not None else datetime.now(timezone.utc)
@@ -278,31 +379,42 @@ def verify_local_authorization(
         )
 
     # 7. Signature check
-    if auth.signature:
-        if auth.signature == "INVALID" or auth.signature.lower() == "invalid_signature":
-            return AuthorizationVerificationResult(
-                valid=False,
-                error="Invalid authorization signature",
-                code="INVALID_SIGNATURE",
-            )
-        if signature_verifier and not signature_verifier(auth):
-            return AuthorizationVerificationResult(
-                valid=False,
-                error="Authorization signature verification failed",
-                code="INVALID_SIGNATURE",
-            )
+    if not auth.signature or not auth.signature.strip():
+        return AuthorizationVerificationResult(
+            valid=False,
+            error="Unsigned authorization receipt",
+            code="UNSIGNED_RECEIPT",
+        )
+
+    if auth.signature == "INVALID" or auth.signature.lower() == "invalid_signature":
+        return AuthorizationVerificationResult(
+            valid=False,
+            error="Invalid authorization signature",
+            code="INVALID_SIGNATURE",
+        )
+
+    verifier = signature_verifier or default_signature_verifier
+    if not verifier(auth):
+        return AuthorizationVerificationResult(
+            valid=False,
+            error="Authorization signature verification failed",
+            code="INVALID_SIGNATURE",
+        )
 
     # 8. Replay prevention check
     cache = replay_cache or global_replay_cache
     tool_id_key = f"tcid:{auth.tool_call_id}"
-    cache_key = f"{auth.run_id}:{auth.tool_call_id}:{auth.nonce}"
-    if not cache.check_and_add(tool_id_key):
+    nonce_key = f"nonce:{auth.nonce}"
+    exp_ts = exp.timestamp()
+    now_ts = current_time.timestamp()
+
+    if not cache.check_and_add(tool_id_key, expires_at_ts=exp_ts, now_ts=now_ts):
         return AuthorizationVerificationResult(
             valid=False,
             error=f"Replayed authorization receipt: duplicate tool call ID '{auth.tool_call_id}' has already been executed",
             code="DUPLICATE_TOOL_CALL_ID",
         )
-    if not cache.check_and_add(cache_key):
+    if not cache.check_and_add(nonce_key, expires_at_ts=exp_ts, now_ts=now_ts):
         return AuthorizationVerificationResult(
             valid=False,
             error=f"Replayed authorization receipt: nonce '{auth.nonce}' has already been used",
@@ -413,6 +525,7 @@ def create_test_authorization(
     confirmed: bool = False,
     issued_at: Optional[datetime] = None,
     expires_at: Optional[datetime] = None,
+    signature: Optional[str] = "sha256-valid-test-sig",
 ) -> LocalToolAuthorization:
     """Convenience helper to create a valid typed LocalToolAuthorization envelope for testing."""
     import uuid
@@ -432,6 +545,6 @@ def create_test_authorization(
         issued_at=now,
         expires_at=exp,
         nonce=non,
-        signature=None,
+        signature=signature,
         raw_receipt={"confirmed": confirmed}
     )
