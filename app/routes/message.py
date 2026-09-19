@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, HTTPException, Response
 import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
+from app.canvas_manager import *
 async def build_apps_prompt_block(*args, **kwargs):
     from app.services.portal import build_apps_prompt_block as _fn
     return await _fn(*args, **kwargs)
@@ -2841,16 +2842,24 @@ async def send_message(req: MessageRequest):
                         tool_args: dict,
                         authorization: dict,
                         context: LocalExecutionContext,
+                        runtime_context: Optional[dict] = None,
                     ):
                         nonlocal last_committed, widgets_committed, canvas_settled
                         logger.info(
                             f"[SHARED RUNTIME CUTOVER] Executing local tool '{tool_name}' through LocalToolExecutor"
                         )
+                        resolved_rt_context = runtime_context or {
+                            "run_id": getattr(context, "run_id", None) or "run_default",
+                            "profile_id": getattr(adapter, "default_profile_id", None) or "html-notes-canvas-v1",
+                            "contract_version": "1.2.0",
+                        }
                         result = await local_tool_executor.execute(
                             tool_name=tool_name,
                             args=tool_args,
                             session_id=context.session_id,
                             canvas_html=context.canvas_html,
+                            authorization=authorization,
+                            runtime_context=resolved_rt_context,
                         )
                         async for frame in sse_formatter.from_local_result(result, session_id=context.session_id):
                             yield frame

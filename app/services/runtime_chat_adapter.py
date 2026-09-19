@@ -6,16 +6,21 @@ import logging
 import os
 from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set
 
+import httpx
 from lazycat.client import RuntimeClient, RuntimeClientError
 from lazycat.models import CreateRunRequest, RunEvent
 
 from app.adapters.runtime.config import (
     HTML_NOTES_CONTRACT_VERSION,
     HTML_NOTES_RUNTIME_PROFILE,
+    LAZYCAT_RUNTIME_URL,
+    RUNTIME_CONNECT_TIMEOUT_SECONDS,
+    RUNTIME_READ_TIMEOUT_SECONDS,
     RUNTIME_MAX_CANVAS_CONTEXT_CHARS,
     is_contract_compatible,
 )
 from app.adapters.runtime.models import (
+    EXPECTED_APP_ID,
     LocalExecutionContext,
     resolve_canonical_tool,
     verify_local_tool_scope,
@@ -74,6 +79,9 @@ class RuntimeChatAdapter:
         self,
         runtime_client: Optional[Any] = None,
         default_profile_id: Optional[str] = None,
+        runtime_url: Optional[str] = None,
+        connect_timeout: Optional[float] = None,
+        read_timeout: Optional[float] = None,
     ):
         self.runtime_client = runtime_client
         self.default_profile_id = (
@@ -81,11 +89,31 @@ class RuntimeChatAdapter:
             or os.getenv("HTML_NOTES_RUNTIME_PROFILE")
             or HTML_NOTES_RUNTIME_PROFILE
         )
+        self.runtime_url = runtime_url or os.getenv("LAZYCAT_RUNTIME_URL") or os.getenv("LAZY_AGENT_URL") or LAZYCAT_RUNTIME_URL
+        self.connect_timeout = (
+            connect_timeout
+            if connect_timeout is not None
+            else float(os.getenv("RUNTIME_CONNECT_TIMEOUT_SECONDS", str(RUNTIME_CONNECT_TIMEOUT_SECONDS)))
+        )
+        self.read_timeout = (
+            read_timeout
+            if read_timeout is not None
+            else float(os.getenv("RUNTIME_READ_TIMEOUT_SECONDS", str(RUNTIME_READ_TIMEOUT_SECONDS)))
+        )
 
     def _get_client(self) -> Any:
         if self.runtime_client is not None:
             return self.runtime_client
-        return RuntimeClient(project="html-notes", username="lazycat")
+        timeout = httpx.Timeout(timeout=self.read_timeout, connect=self.connect_timeout)
+        client = RuntimeClient(
+            base_url=self.runtime_url,
+            timeout=timeout,
+            project="html-notes",
+            username="lazycat",
+        )
+        client.connect_timeout = self.connect_timeout
+        client.read_timeout = self.read_timeout
+        return client
 
     async def stream_chat_turn(
         self,
@@ -267,8 +295,27 @@ class RuntimeChatAdapter:
                     is_local = (execution_loc == "local") or is_manifest_local or (tool_name in LOCAL_TOOLS)
 
                     if is_local:
+                        # Normalize required_scope whether provided as dict or list
+                        scope_to_verify = required_scope
+                        if isinstance(required_scope, list):
+                            scope_to_verify = {
+                                "app_id": EXPECTED_APP_ID if "app_id" in required_scope else None,
+                                "session_id": request_context.session_id if "session_id" in required_scope else None,
+                            }
+                        elif isinstance(required_scope, dict):
+                            s_app = required_scope.get("app_id")
+                            s_sess = required_scope.get("session_id")
+                            if s_app is True:
+                                s_app = EXPECTED_APP_ID
+                            if s_sess is True:
+                                s_sess = request_context.session_id
+                            scope_to_verify = {
+                                "app_id": s_app,
+                                "session_id": s_sess,
+                            }
+
                         # Validate scope
-                        scope_valid, scope_err = verify_local_tool_scope(required_scope, request_context)
+                        scope_valid, scope_err = verify_local_tool_scope(scope_to_verify, request_context)
                         if not scope_valid:
                             err_msg = scope_err or "Scope validation failed"
                             yield {
@@ -285,9 +332,20 @@ class RuntimeChatAdapter:
 
                         # Execute locally via bridge callback
                         if execute_local_tool_cb:
-                            async for frame_str in execute_local_tool_cb(
-                                canonical_name, tool_args, auth_receipt, request_context
-                            ):
+                            rt_ctx = {
+                                "run_id": active_run_id,
+                                "profile_id": active_profile,
+                                "contract_version": HTML_NOTES_CONTRACT_VERSION,
+                            }
+                            try:
+                                cb_stream = execute_local_tool_cb(
+                                    canonical_name, tool_args, auth_receipt, request_context, rt_ctx
+                                )
+                            except TypeError:
+                                cb_stream = execute_local_tool_cb(
+                                    canonical_name, tool_args, auth_receipt, request_context
+                                )
+                            async for frame_str in cb_stream:
                                 yield {"type": "raw_sse", "frame": frame_str}
                         elif execute_mutation_cb and tool_name in LOCAL_TOOLS:
                             async for mutation_sse_frame in execute_mutation_cb(tool_name, tool_args):

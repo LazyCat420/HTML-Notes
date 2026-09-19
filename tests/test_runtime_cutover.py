@@ -872,3 +872,212 @@ def test_runtime_run_id_is_included_in_structured_logs(monkeypatch, caplog):
             })
             assert resp.status_code == 200
             assert any("run_id=run_logged_9999" in record.message for record in caplog.records)
+
+
+# 21. test_route_passes_authorization_to_local_executor
+def test_route_passes_authorization_to_local_executor(monkeypatch):
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+
+    expected_auth = {
+        "run_id": "run_auth_pass_01",
+        "tool_call_id": "call_auth_01",
+        "signature": "sig_mock_123",
+        "profile_id": "html-notes-canvas-v1",
+    }
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id="run_auth_pass_01",
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id="run_auth_pass_01",
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "execution": "local",
+                "arguments": {"widget_type": "clock", "widget_id": "clock_auth_1"},
+                "authorization_receipt": expected_auth,
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id="run_auth_pass_01",
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={},
+        ),
+    ]
+
+    fake_client = FakeCutoverRuntimeClient(events=events)
+    fake_adapter = RuntimeChatAdapter(runtime_client=fake_client)
+
+    with patch("app.services.runtime_chat_adapter.RuntimeChatAdapter", return_value=fake_adapter):
+        with patch("app.tooling.local_executor.local_tool_executor.execute") as mock_exec:
+            mock_exec.return_value = {"success": True, "result": {}, "tool": "html_notes.canvas.upsert_widget"}
+            resp = client.post("/session/message", json={
+                "session_id": "session_auth_01",
+                "message": "render custom card with auth receipt",
+                "current_canvas": "<div id='dashboard-grid'></div>",
+            })
+            assert resp.status_code == 200
+            assert mock_exec.called
+            call_kwargs = mock_exec.call_args.kwargs
+            assert call_kwargs.get("authorization") == expected_auth
+
+
+# 22. test_route_passes_runtime_run_id_to_local_executor
+def test_route_passes_runtime_run_id_to_local_executor(monkeypatch):
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+
+    test_run_id = "run_ctx_run_id_999"
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id=test_run_id,
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id=test_run_id,
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "execution": "local",
+                "arguments": {"widget_type": "clock", "widget_id": "clock_runid_1"},
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id=test_run_id,
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={},
+        ),
+    ]
+
+    fake_client = FakeCutoverRuntimeClient(events=events)
+    fake_adapter = RuntimeChatAdapter(runtime_client=fake_client)
+
+    with patch("app.services.runtime_chat_adapter.RuntimeChatAdapter", return_value=fake_adapter):
+        with patch("app.tooling.local_executor.local_tool_executor.execute") as mock_exec:
+            mock_exec.return_value = {"success": True, "result": {}, "tool": "html_notes.canvas.upsert_widget"}
+            resp = client.post("/session/message", json={
+                "session_id": "session_runid_01",
+                "message": "render custom card with run_id ctx",
+                "current_canvas": "<div id='dashboard-grid'></div>",
+            })
+            assert resp.status_code == 200
+            assert mock_exec.called
+            call_kwargs = mock_exec.call_args.kwargs
+            runtime_ctx = call_kwargs.get("runtime_context", {})
+            assert runtime_ctx.get("run_id") == test_run_id
+
+
+# 23. test_route_passes_profile_id_to_local_executor
+def test_route_passes_profile_id_to_local_executor(monkeypatch):
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id="run_prof_01",
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id="run_prof_01",
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "execution": "local",
+                "arguments": {"widget_type": "clock", "widget_id": "clock_prof_1"},
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id="run_prof_01",
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={},
+        ),
+    ]
+
+    fake_client = FakeCutoverRuntimeClient(events=events)
+    fake_adapter = RuntimeChatAdapter(runtime_client=fake_client)
+
+    with patch("app.services.runtime_chat_adapter.RuntimeChatAdapter", return_value=fake_adapter):
+        with patch("app.tooling.local_executor.local_tool_executor.execute") as mock_exec:
+            mock_exec.return_value = {"success": True, "result": {}, "tool": "html_notes.canvas.upsert_widget"}
+            resp = client.post("/session/message", json={
+                "session_id": "session_prof_01",
+                "message": "render custom card with profile_id ctx",
+                "current_canvas": "<div id='dashboard-grid'></div>",
+            })
+            assert resp.status_code == 200
+            assert mock_exec.called
+            call_kwargs = mock_exec.call_args.kwargs
+            runtime_ctx = call_kwargs.get("runtime_context", {})
+            assert runtime_ctx.get("profile_id") is not None
+            assert len(runtime_ctx.get("profile_id")) > 0
+
+
+# 24. test_route_passes_contract_version_to_local_executor
+def test_route_passes_contract_version_to_local_executor(monkeypatch):
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id="run_cv_01",
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id="run_cv_01",
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "execution": "local",
+                "arguments": {"widget_type": "clock", "widget_id": "clock_cv_1"},
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id="run_cv_01",
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={},
+        ),
+    ]
+
+    fake_client = FakeCutoverRuntimeClient(events=events)
+    fake_adapter = RuntimeChatAdapter(runtime_client=fake_client)
+
+    with patch("app.services.runtime_chat_adapter.RuntimeChatAdapter", return_value=fake_adapter):
+        with patch("app.tooling.local_executor.local_tool_executor.execute") as mock_exec:
+            mock_exec.return_value = {"success": True, "result": {}, "tool": "html_notes.canvas.upsert_widget"}
+            resp = client.post("/session/message", json={
+                "session_id": "session_cv_01",
+                "message": "render custom card with contract_version ctx",
+                "current_canvas": "<div id='dashboard-grid'></div>",
+            })
+            assert resp.status_code == 200
+            assert mock_exec.called
+            call_kwargs = mock_exec.call_args.kwargs
+            runtime_ctx = call_kwargs.get("runtime_context", {})
+            assert runtime_ctx.get("contract_version") == "1.2.0"
+
