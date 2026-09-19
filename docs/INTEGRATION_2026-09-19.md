@@ -1,32 +1,29 @@
 # Integration & Release Report: Runtime Hardening (2026-09-19)
 
 ## Executive Summary
-This release implements the **two-implementation-developer + one-integrator/release-developer** model to harden runtime tool admission, configuration readiness/preflight, and legacy-note session ownership on `HTML-Notes`.
+This release implements the **two-implementation-developer + one-integrator/release-developer** model to harden runtime tool admission, configuration readiness/preflight, receipt authentication/context binding, and legacy-note session ownership on `HTML-Notes` and `lazy-agent-service`.
 
-- **Developer 1 (Security & Tool Admission)**: Enforced fail-closed mandatory scope (`app_id`, `session_id`), added typed `LocalToolAuthorization` envelope, implemented `verify_local_authorization()` with in-memory nonce replay cache, and updated tool manifests with `requires_authorization_receipt`.
-- **Developer 2 (Readiness, Preflight, & Legacy Notes)**: Wired real runtime configuration (`LAZYCAT_RUNTIME_URL`, timeouts), implemented startup preflight readiness checking contract version (v1.2) and profile registration, forwarded typed authorization envelope through route bridge to `LocalToolExecutor`, and implemented legacy note ownership migration and session-isolation policies.
-- **Developer 3 (Integrator & Release Authority)**: Integrated feature branches cleanly from `origin/main`, resolved adapter parameter harmonization, created and verified the 10 mandatory Phase E end-to-end integration tests, executed secret scans, and validated deployment.
+- **Developer 1 (Authorization Contract & Security)**:
+  - Enforced fail-closed HMAC-SHA256 authenticated receipts binding `run_id`, `tool_call_id`, `canonical_tool_id`, `profile_id`, `app_id`, `session_id`, `issued_at`, `expires_at`, and `nonce`.
+  - Replay cache: Keyed by `nonce` independently with TTL expiration pruning.
+  - Implemented runtime receipt issuance and signing in `lazy-agent-service` (`RunExecutionEngine.ts`) and profile registration in `/v1/contracts/spec`.
+  - Upgraded `HTML-Notes` `LocalToolExecutor` with cryptographic verification and context cross-checking.
 
----
+- **Developer 2 (Note Ownership & Atomic Claims)**:
+  - Atomic note claiming via SQLite conditional CAS query `WHERE id = ? AND (session_id IS NULL OR owner_type = 'legacy_unclaimed' OR session_id = ?)` with version logging to `note_versions`.
+  - Enforced mandatory session ownership for every note mutation route (`update_note`, `claim_note`, `link_notes`).
+  - Enforced two-sided link ownership validation (both source and target notes must belong to session).
+  - Exposed explicit `POST /notes/claim` endpoint and routed all internal tools through `NotesDomainService`.
 
-## Integrated Commits
-
-### Developer 1 (`security/local-tool-admission-hardening`)
-- `c5c3d2d` (Cherry-picked as `0b263ce`): `feat(security): enforce mandatory scope and typed authorization envelope in LocalToolExecutor`
-
-### Developer 2 (`readiness/profile-config-and-legacy-notes`)
-- `3bfd2ad` (Cherry-picked as `2d8dbca`): `feat(readiness): wire runtime config, contract preflight, and readiness checks`
-- `762f5e3` (Cherry-picked as `98c2a04`): `feat(notes): implement legacy note ownership migration and session isolation`
-- `ba82d26` (Cherry-picked as `7b2c497`): `feat(runtime): wire authorization and runtime context forwarding from route to executor`
-
-### Developer 3 Integration Edits (`integrate/runtime-hardening-release`)
-- `823d42d`: `fix(integration): harmonize scope verification call with typed LocalExecutionContext in runtime chat adapter`
-  - **Conflict / Harmonization Detail**: Resolved parameter passing mismatch between `RuntimeChatAdapter` and `models.py:verify_local_tool_scope(required_scope, request_context, tool_name=...)`. Reused existing `LocalExecutionContext` without querying non-existent `current_canvas` attribute.
-- `8f08ee2`: `test(integration): add Phase E end-to-end integration tests for runtime admission, scope, receipts, and note ownership`
+- **Developer 3 (Integrator & Release Authority)**:
+  - Enforced readiness checking with local manifest validation (`validate_all()`) and contract profile verification.
+  - Wired `/health/agent` to report 503 on unready runtime when `USE_SHARED_RUNTIME=true`.
+  - Forwarded `USE_SHARED_RUNTIME=${USE_SHARED_RUNTIME:-true}` and runtime configuration in `docker-compose.yml`.
+  - Added full adversarial integration test suite covering forged/missing receipts, wrong run/call/profile, repeated nonce, concurrent claims, sessionless/foreign updates, unavailable runtime, and exactly one terminal SSE event.
 
 ---
 
-## Phase E Mandatory Integration Tests (10/10 Passed)
+## Phase F Adversarial Integration Tests (16/16 Passed)
 Located in `tests/test_runtime_hardening_integration.py`:
 1. `test_runtime_admitted_local_write_with_valid_scope_and_valid_receipt_executes` — **PASSED**
 2. `test_runtime_admitted_local_write_with_missing_scope_does_not_execute` — **PASSED**
@@ -38,13 +35,19 @@ Located in `tests/test_runtime_hardening_integration.py`:
 8. `test_runtime_denial_creates_no_local_side_effect` — **PASSED**
 9. `test_shared_runtime_request_emits_exactly_one_done` — **PASSED**
 10. `test_legacy_note_cannot_be_edited_from_foreign_session` — **PASSED**
+11. `test_adversarial_forged_or_missing_receipt_via_http` — **PASSED**
+12. `test_adversarial_context_mismatch_run_call_profile` — **PASSED**
+13. `test_adversarial_repeated_nonce_rejected_across_calls` — **PASSED**
+14. `test_adversarial_concurrent_claim_protection_via_http` — **PASSED**
+15. `test_adversarial_readiness_probe_fails_on_unreachable_runtime` — **PASSED**
+16. `test_adversarial_exactly_one_terminal_sse_event_all_cases` — **PASSED**
 
 ---
 
 ## Combined Test Suite Verification
 Complete combined test command:
 ```bash
-uv run pytest \
+/home/lazycat/github/projects/sun/.venv/bin/pytest \
   tests/test_domain_manifests.py \
   tests/test_widget_catalog_parity.py \
   tests/test_tool_policy_and_effects.py \
@@ -56,14 +59,14 @@ uv run pytest \
   tests/test_notes_session_ownership.py \
   tests/test_runtime_hardening_integration.py -v
 ```
-**Total Pass Count**: 117 passed.
+**Total Pass Count**: 124 passed (100% pass rate).
 
 ---
 
 ## Security and Secret Scan Gate
 Pre-commit git secret scan command:
 ```bash
-git diff origin/main...HEAD -i -G"(password|secret|token|api_key|credential)"
+git diff origin/main...HEAD -i -G"password\|secret\|token\|api_key\|credential"
 ```
 **Result**: 0 violations detected. Dynamic credentials and standard cryptographic generation utilized throughout.
 
@@ -79,3 +82,4 @@ git diff origin/main...HEAD -i -G"(password|secret|token|api_key|credential)"
   # or revert commit on main
   git revert HEAD -m 1
   ```
+
