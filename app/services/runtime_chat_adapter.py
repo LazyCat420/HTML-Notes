@@ -25,7 +25,6 @@ from app.adapters.runtime.models import (
     resolve_canonical_tool,
     verify_local_tool_scope,
 )
-from app.presentation.sse.formatter import sse_formatter
 
 logger = logging.getLogger(__name__)
 
