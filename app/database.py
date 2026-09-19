@@ -30,9 +30,14 @@ def init_db():
         source_messages TEXT NOT NULL, -- JSON array of message IDs
         canonical_blocks TEXT NOT NULL, -- JSON array of semantic blocks
         rendered_html TEXT NOT NULL, -- Sanitized HTML output
-        version INTEGER NOT NULL DEFAULT 1
+        version INTEGER NOT NULL DEFAULT 1,
+        session_id TEXT
     );
     """)
+    try:
+        cursor.execute("ALTER TABLE notes ADD COLUMN session_id TEXT")
+    except sqlite3.OperationalError:
+        pass
     
     # Create note_versions table for tracking history
     cursor.execute("""
@@ -193,7 +198,8 @@ def create_note(
     links: List[str],
     source_messages: List[str],
     canonical_blocks: List[Dict[str, Any]],
-    rendered_html: str
+    rendered_html: str,
+    session_id: Optional[str] = None
 ) -> Dict[str, Any]:
     now = datetime.utcnow().isoformat()
     conn = get_connection()
@@ -201,8 +207,8 @@ def create_note(
     
     cursor.execute(
         """
-        INSERT INTO notes (id, title, created_at, updated_at, tags, links, source_messages, canonical_blocks, rendered_html, version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        INSERT INTO notes (id, title, created_at, updated_at, tags, links, source_messages, canonical_blocks, rendered_html, version, session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
             note_id,
@@ -213,7 +219,8 @@ def create_note(
             json.dumps(links),
             json.dumps(source_messages),
             json.dumps(canonical_blocks),
-            rendered_html
+            rendered_html,
+            session_id
         )
     )
     
@@ -335,7 +342,8 @@ def get_note_by_id(note_id: str) -> Optional[Dict[str, Any]]:
         "source_messages": json.loads(row["source_messages"]),
         "canonical_blocks": json.loads(row["canonical_blocks"]),
         "rendered_html": row["rendered_html"],
-        "version": row["version"]
+        "version": row["version"],
+        "session_id": row["session_id"] if "session_id" in row.keys() else None
     }
 
 def get_note_history(note_id: str) -> List[Dict[str, Any]]:

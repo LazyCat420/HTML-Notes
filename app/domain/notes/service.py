@@ -17,7 +17,8 @@ class NotesDomainService:
         title: str,
         rendered_html: str,
         tags: Optional[List[str]] = None,
-        links: Optional[List[str]] = None
+        links: Optional[List[str]] = None,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         audit = audit_html_fragment(rendered_html or "")
         if not audit.get("is_valid"):
@@ -34,16 +35,29 @@ class NotesDomainService:
             links=links or [],
             source_messages=["tool-call"],
             canonical_blocks=[],
-            rendered_html=rendered_html
+            rendered_html=rendered_html,
+            session_id=session_id
         )
         return {
             "success": True,
             "note_id": note["id"],
-            "title": note["title"]
+            "title": note["title"],
+            "session_id": note.get("session_id")
         }
 
     @staticmethod
-    def update_note(note_id: str, **fields: Any) -> Dict[str, Any]:
+    def update_note(note_id: str, session_id: Optional[str] = None, **fields: Any) -> Dict[str, Any]:
+        existing = database.get_note_by_id(note_id)
+        if not existing:
+            return {"error": f"Note '{note_id}' not found", "is_error": True}
+
+        # Cross-session isolation check
+        if existing.get("session_id") and session_id and existing["session_id"] != session_id:
+            return {
+                "error": f"Unauthorized: note '{note_id}' belongs to another session",
+                "is_error": True
+            }
+
         if "rendered_html" in fields and fields["rendered_html"]:
             audit = audit_html_fragment(fields["rendered_html"])
             if not audit.get("is_valid"):
@@ -52,7 +66,7 @@ class NotesDomainService:
                     "is_error": True
                 }
 
-        note = database.update_note(note_id=note_id, **{k: v for k, v in fields.items() if k != "note_id"})
+        note = database.update_note(note_id=note_id, **{k: v for k, v in fields.items() if k not in ("note_id", "session_id")})
         if not note:
             return {"error": f"Note '{note_id}' not found", "is_error": True}
         return {"success": True, "note_id": note_id}

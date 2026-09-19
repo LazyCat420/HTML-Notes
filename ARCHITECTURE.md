@@ -1,6 +1,6 @@
 # HTML-Notes System Architecture & Boundary Model
 
-**Version**: 2.0.0  
+**Version**: 2.1.0  
 **Status**: Authoritative Reference  
 **Last Updated**: 2026-09-19  
 
@@ -23,9 +23,18 @@ HTML-Notes is an interactive canvas-based research and productivity workbench. I
 
 ---
 
-## 2. Layered Bounded Architecture
+## 2. Layered Bounded Architecture & Resource Ownership
 
-The codebase is organized into strict, decoupled layers:
+The codebase is organized into strict, decoupled layers where domain services are the exclusive resource owners:
+
+| Domain Service | Exclusive Ownership | Forbidden Content / Side Effects |
+|---|---|---|
+| `notes` | Note CRUD, tags, backlinks, sanitization, revisions | Runtime protocol or SSE wire formatting |
+| `canvas` | Widget state, singleton rules, server rendering, canvas persistence | Generic web search or runtime admission logic |
+| `apps` | Portal discovery, app lookup, approved app action dispatch | Canvas rendering implementation |
+| `watches` | Watch lifecycle, scheduling metadata, session scope | Generic agent loop or runner logic |
+| `providers` | Presentation adapters for weather/sports/stocks/news/youtube | Shared runtime lifecycle or state machine |
+| `presentation` | SSE/component formatting and widget catalog display mapping | Database mutations or business policy |
 
 ```text
 app/
@@ -59,14 +68,22 @@ All operations adhere to a namespaced taxonomy and explicit effect classificatio
 - `global.web.read_page`: Global page extraction (owned by shared runtime).
 - `global.data.transform`: Pure data manipulation (JSON-in / JSON-out, no side effects).
 - `html_notes.notes.*`: Notes domain operations (`create`, `update`, `get`, `search`, `link`).
-- `html_notes.canvas.*`: Canvas operations (`upsert_widget`, `modify_dom`, `read`).
-- `html_notes.portal.*`: Portal ecosystem operations (`list_services`, `open_app`, `list_actions`, `execute_action`, `curate_app`).
+- `html_notes.canvas.*`: Canvas operations (`read`, `upsert_widget`, `remove_widget`, `mutate`).
+- `html_notes.apps.*`: Apps and portal ecosystem operations (`list`, `open`, `list_actions`, `execute_action`, `curate`).
+- `html_notes.watches.*`: Background watch operations (`create`, `list`, `cancel`).
+- `html_notes.widgets.*`: Widget catalog discovery (`list_catalog`).
 - `html_notes.<provider>.*`: App-local presentation feeds (`weather.get`, `sports.scores`, `finance.stock_history`, `news.get_news`, `media.youtube_search`).
 
 ### 3.2 Effect Classifications & Safety Rules
-1. **`read`**: Read-only query. Concurrency safe, no confirmation needed.
-2. **`write`**: Local state mutation (e.g. creating notes, upserting canvas widgets). Audited and scoped.
-3. **`destructive`**: High-risk mutations (e.g. terminating portal services, executing destructive portal commands). **Requires explicit user confirmation** via a canvas confirmation card before execution.
+1. **`read`**: Read-only query. Concurrency safe, requires `["app_id"]` scope.
+2. **`write`**: Local state mutation (e.g. creating notes, upserting canvas widgets). Audited and strictly scoped to `["app_id", "session_id"]`.
+3. **`destructive`**: High-risk mutations (e.g. terminating portal services, executing destructive portal commands). **Requires explicit user confirmation** before execution.
+
+### 3.3 DOM Mutation Restriction Policy
+- **Server-rendered widgets**: `html_notes.canvas.upsert_widget` / `html_notes.canvas.remove_widget` only.
+- **User notes**: `html_notes.notes.create` / `html_notes.notes.update` only.
+- **Custom experimental widgets**: Quarantined in `app/domain/canvas/legacy_custom_widgets.py`, omitted from default profile.
+- **Generic arbitrary DOM mutation**: Disabled by default in policy; constrained strictly to exact `#id` selectors with sanitized HTML markup.
 
 ---
 
@@ -75,7 +92,7 @@ All operations adhere to a namespaced taxonomy and explicit effect classificatio
 ### 4.1 Canonical Path: Server-Rendered Catalog Widgets
 - Canonical Tool: `html_notes.canvas.upsert_widget` (legacy alias: `canvas_add_widget`).
 - Mechanism: Config is passed to the server-side factory (`app/widgets/factory.py`), which deterministically renders self-contained markup (`generate_widget_html`).
-- Re-use vs Spawn: Passing an existing `widget_id` updates that widget in place without adding duplicates. Singletons (such as `map`, `weather`, `app_grid`, `settings`) re-use their identity.
+- Re-use vs Spawn: Passing an existing `widget_id` updates that widget in place without adding duplicates. Singletons (such as `map`, `weather`, `app_grid`, `settings`, `quality_profile`, `mini_music_player`) re-use their identity.
 
 ### 4.2 Deprecated & Quarantined: Custom Widget Sandbox
 - Overlapping legacy tools (`create_widget`, `plan_widget`, `update_widget`, `list_widget_types`, `validate_widget_html`) are **deprecated** and quarantined in `app/domain/canvas/legacy_custom_widgets.py`.
@@ -92,7 +109,7 @@ sequenceDiagram
     participant Adapter as RuntimeChatAdapter
     participant Runtime as Shared Runtime (lazy-agent-service)
     participant Executor as LocalToolExecutor
-    participant Domain as Domain Services (Notes/Canvas)
+    participant Domain as Domain Services (Notes/Canvas/Apps/Watches)
 
     Client->>Route: POST /session/message (query)
     Route->>Adapter: stream_chat_turn(query, session_id, canvas_html)
@@ -103,7 +120,7 @@ sequenceDiagram
         Adapter-->>Client: data: {"type": "chunk", "content": "..."}
 
         Runtime-->>Adapter: RunEvent(tool.invoked, name="html_notes.canvas.upsert_widget", args)
-        Adapter->>Executor: execute("html_notes.canvas.upsert_widget", args)
+        Adapter->>Executor: execute("html_notes.canvas.upsert_widget", args, session_id=session_id)
         Executor->>Domain: upsert_widget(...)
         Domain-->>Executor: {success: true, html: "<div ...>"}
         Executor-->>Adapter: Execution result

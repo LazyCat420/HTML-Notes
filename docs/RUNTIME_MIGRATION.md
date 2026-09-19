@@ -1,45 +1,41 @@
-# Contract Ownership & Source of Truth Specification
+# HTML-Notes Shared Runtime Migration & Cleanup Guide
 
 **Version**: 1.2.0  
-**Status**: Authoritative Reference  
-**Last Updated**: 2026-09-19  
+**Owner**: Developer 3  
+**Date**: 2026-09-19  
 
 ---
 
-## 1. Authority Matrix
+## 1. Boundary Principle
 
-To prevent divergence, race conditions, and duplicated schema copies, ownership across repositories is strictly demarcated:
+The shared system (`lazy-agent-service` + `lazycat-sdk`) owns **how agent runs execute and app-neutral capabilities work**.  
+HTML-Notes owns **what its data/resources are and how its UI/state changes**.
 
-| Artifact / Contract | Authoritative Owner | Distribution Mechanism | Consumer Repositories |
-|---|---|---|---|
-| **Run Protocol & State Machine** (`RunRequest`, `RunEvent`, `ContextReceipt`) | `lazy-agent-service` | Versioned package / contracts export (`dist/contracts/`) | `HTML-Notes`, `trading-service`, `lazycat-sdk` |
-| **Agent Profile Spec** (`agent-profile-spec-v1.json`) | `lazy-agent-service` | `docs/contracts/agent-profile-spec-v1.json` | All consumer agents registering profiles |
-| **Transport Normalization & Wire SDK** | `lazycat-sdk` | Python Package (`lazycat.client.RuntimeClient`) | `HTML-Notes`, `trading-service` |
-| **HTML-Notes Profile** (`html_notes.profile.json`) | `HTML-Notes` | `app/tooling/manifests/html_notes.profile.json` | Registered with `lazy-agent-service` at deploy time |
-| **HTML-Notes Domain Tools** (`html_notes.domain-tools.json`) | `HTML-Notes` | `app/tooling/manifests/html_notes.domain-tools.json` | `HTML-Notes` internal execution engine |
-| **Widget Catalog** (`html_notes.widget-catalog.json`) | `HTML-Notes` | `app/tooling/manifests/html_notes.widget-catalog.json` | `HTML-Notes` UI and canvas factory |
-| **Global Capabilities** (`global.web.*`, `global.data.*`) | `lazy-agent-service` | Capability registry in shared runtime | Referenced declaratively in application profiles |
-
----
-
-## 2. Elimination of Sibling Filesystem Coupling
-
-Historical test suites relied on relative sibling filesystem paths:
-```python
-# DEFECTIVE HISTORICAL PATTERN:
-schema_path = pathlib.Path("../lazy-agent-service/tool_schemas.json")
+```text
+Shared Runtime (lazy-agent-service)
+  ↳ Admits run, enforces budget, manages state machine, streams RunEvents
+     ↳ Global capabilities (global.web.search, global.web.read_page) executed by runtime
+     ↳ Local tools admitted by runtime, emitted as tool.invoked events with authorization receipts
+        ↳ HTML-Notes LocalToolExecutor executes domain operations locally
 ```
 
-This violated isolated deployment and container hermeticity rules. The following rules are now strictly enforced:
-1. **Zero Cross-Repo Filesystem Traversals**: No test, import, or deployment step may reference `../lazy-agent-service` or sibling checkouts.
-2. **Packaged Manifest Authority**: HTML-Notes reads its application profile, domain tool schemas, and widget catalog from in-repo manifests in `app/tooling/manifests/`.
-3. **External Protocol Verification**: Contract parity tests validate against packaged schema definitions or shared artifacts.
+---
+
+## 2. Local Domain Tool Manifest (`html_notes.domain-tools.json`)
+
+All local tools strictly declare:
+- `owner`: `"html-notes"`
+- `execution`: `"local"`
+- `effect`: `"read"` | `"write"` | `"destructive"`
+- `resource_type`: `"canvas_widget"`, `"note"`, `"portal_app"`, `"watch"`, etc.
+- `required_scope`: `["app_id", "session_id"]` for all write/destructive operations.
+- `requires_confirmation`: `true` for destructive actions.
+- `legacy_aliases`: List of backwards-compatible tool names.
+- `input_schema` and `result_schema`.
 
 ---
 
 ## 3. Alias Retirement Table
-
-To ensure zero downtime during multi-stream development, legacy aliases are mapped to canonical tools in `app/tooling/manifests/html_notes.domain-tools.json` and governed by removal gates:
 
 | Legacy Tool Alias | Canonical Replacement | Effect / Scope | Removal Gate | Status |
 |---|---|---|---|---|
@@ -67,8 +63,9 @@ To ensure zero downtime during multi-stream development, legacy aliases are mapp
 
 ---
 
-## 4. Historical Document Supersession
+## 4. Verification
 
-The following historical documents and code comments are explicitly superseded:
-- [`app/tools_schema.py`](file:///home/lazycat/github/projects/sun/HTML-Notes/app/tools_schema.py): Superseded by `app/tooling/manifests/html_notes.domain-tools.json` and this document.
-- Prior notes referencing generating flat schemas in sibling checkouts: Superseded by packaged in-repo manifests.
+Run the complete test suite:
+```bash
+pytest tests/test_domain_manifests.py tests/test_local_executor.py tests/test_tool_policy_and_effects.py tests/test_widget_catalog_parity.py
+```

@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any, Dict, Optional
 from app.tooling.html_notes_manifest import manifest_registry
 from app.tooling.policy import tool_policy
@@ -6,7 +7,9 @@ from app.domain.notes.service import notes_service
 from app.domain.canvas.service import canvas_service
 from app.domain.canvas.legacy_custom_widgets import legacy_custom_widgets
 from app.domain.apps.service import apps_hub_service
+from app.domain.watches.service import watches_service
 from app.adapters.providers.service import provider_adapter
+from app.presentation.widgets.catalog import widget_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +18,7 @@ class LocalToolExecutor:
     """
     Modular local tool executor for HTML-Notes application-owned domain operations.
     Decouples domain execution from monolithic HTTP routes.
-    Supports dual-dispatch for canonical namespaced IDs and legacy aliases.
+    Enforces manifest schema, scope isolation, confirmation gates, and safety rules.
     """
 
     def __init__(self, registry=manifest_registry, policy=tool_policy):
@@ -28,30 +31,70 @@ class LocalToolExecutor:
         args: Dict[str, Any],
         session_id: Optional[str] = None,
         canvas_html: Optional[str] = None,
-        allow_quarantined: bool = True
+        authorization: Optional[Dict[str, Any]] = None,
+        context: Optional[Any] = None,
+        allow_quarantined: bool = True,
+        **kwargs: Any
     ) -> Dict[str, Any]:
         """
         Executes an application-owned domain tool call.
         """
-        # 1. Normalize tool specification
-        tool_spec = self.registry.resolve_tool(tool_name)
-        canonical_id = tool_spec.get("id") if tool_spec else tool_name
-        is_quarantined = bool(tool_spec and tool_spec.get("deprecated"))
-
-        # 2. Check admission policy
-        admitted, admission_err = self.policy.check_admission(tool_name)
-        if not admitted:
-            if is_quarantined and allow_quarantined:
-                pass  # Permitted through legacy custom widget fallback
+        # 1. Resolve context and authorization
+        app_id = "html-notes"
+        if context:
+            session_id = session_id or getattr(context, "session_id", None)
+            if isinstance(context, dict):
+                session_id = session_id or context.get("session_id")
+                app_id = context.get("app_id", app_id)
             else:
+                app_id = getattr(context, "app_id", app_id)
+
+        if authorization:
+            req_scope = authorization.get("required_scope", {})
+            session_id = session_id or authorization.get("session_id") or req_scope.get("session_id")
+            app_id = authorization.get("app_id") or req_scope.get("app_id", app_id)
+            if authorization.get("expires_at") and authorization["expires_at"] < time.time():
                 return {
                     "success": False,
                     "is_error": True,
-                    "error": admission_err,
+                    "error": "Authorization receipt has expired",
                     "tool": tool_name
                 }
 
-        # 3. Validate arguments
+        # 2. Check admission policy first (reject unwhitelisted and retired tools)
+        admitted, admission_err = self.policy.check_admission(tool_name)
+        if not admitted:
+            return {
+                "success": False,
+                "is_error": True,
+                "error": admission_err,
+                "tool": tool_name
+            }
+
+        # 3. Normalize tool specification
+        tool_spec = self.registry.resolve_tool(tool_name)
+        if not tool_spec and not tool_name.startswith("global."):
+            return {
+                "success": False,
+                "is_error": True,
+                "error": f"Tool '{tool_name}' is not permitted (unknown tool)",
+                "tool": tool_name
+            }
+
+        canonical_id = tool_spec.get("id") if tool_spec else tool_name
+        is_quarantined = bool(tool_spec and tool_spec.get("deprecated"))
+
+        # 4. Check safety rules (prevent arbitrary script injection)
+        safe, safety_err = self.policy.validate_safety(tool_name, args)
+        if not safe:
+            return {
+                "success": False,
+                "is_error": True,
+                "error": safety_err,
+                "tool": tool_name
+            }
+
+        # 5. Validate arguments schema
         valid, val_err = self.policy.validate_args(tool_name, args)
         if not valid:
             return {
@@ -61,9 +104,19 @@ class LocalToolExecutor:
                 "tool": tool_name
             }
 
-        # 4. Check confirmation requirement
+        # 6. Validate scope requirements
+        scope_ok, scope_err = self.policy.validate_scope(tool_name, session_id=session_id, app_id=app_id)
+        if not scope_ok:
+            return {
+                "success": False,
+                "is_error": True,
+                "error": scope_err,
+                "tool": tool_name
+            }
+
+        # 7. Check confirmation requirement
         if self.policy.requires_confirmation(tool_name, args):
-            if canonical_id == "html_notes.portal.execute_action" or tool_name == "html_notes_app_action":
+            if canonical_id in ("html_notes.apps.execute_action", "html_notes.portal.execute_action") or tool_name in ("html_notes_app_action", "execute_action"):
                 res = await apps_hub_service.execute_action(
                     app_id=args.get("app_id", ""),
                     action=args.get("action", ""),
@@ -76,16 +129,19 @@ class LocalToolExecutor:
                     "tool": tool_name
                 }
 
-        # 5. Dispatch execution to domain services
+        # 8. Dispatch execution to domain services
         try:
             result = await self._dispatch(canonical_id, tool_name, args, session_id, canvas_html)
             is_err = isinstance(result, dict) and bool(result.get("is_error"))
-            return {
+            out = {
                 "success": not is_err,
                 "is_error": is_err,
                 "result": result,
                 "tool": tool_name
             }
+            if is_err and isinstance(result, dict) and "error" in result:
+                out["error"] = result["error"]
+            return out
         except Exception as e:
             logger.exception(f"Execution failed for tool '{tool_name}': {e}")
             return {
@@ -109,11 +165,12 @@ class LocalToolExecutor:
                 title=args.get("title", ""),
                 rendered_html=args.get("rendered_html", ""),
                 tags=args.get("tags"),
-                links=args.get("links")
+                links=args.get("links"),
+                session_id=session_id
             )
         elif canonical_id == "html_notes.notes.update":
             note_args = {k: v for k, v in args.items() if k != "note_id"}
-            return notes_service.update_note(note_id=args.get("note_id", ""), **note_args)
+            return notes_service.update_note(note_id=args.get("note_id", ""), session_id=session_id, **note_args)
         elif canonical_id == "html_notes.notes.get":
             return notes_service.get_note(note_id=args.get("note_id", ""))
         elif canonical_id == "html_notes.notes.search":
@@ -130,15 +187,24 @@ class LocalToolExecutor:
                 widget_type=args.get("widget_type", ""),
                 widget_id=args.get("widget_id", ""),
                 config=args.get("config", {}),
-                session_id=session_id
+                session_id=session_id,
+                current_canvas_html=canvas_html
             )
-        elif canonical_id == "html_notes.canvas.modify_dom":
-            return canvas_service.modify_dom(
+        elif canonical_id == "html_notes.canvas.remove_widget":
+            return canvas_service.remove_widget(
+                widget_id=args.get("widget_id"),
+                selector=args.get("selector"),
+                session_id=session_id,
+                current_canvas_html=canvas_html or ""
+            )
+        elif canonical_id in ("html_notes.canvas.mutate", "html_notes.canvas.modify_dom"):
+            return canvas_service.mutate(
                 action=args.get("action", ""),
                 selector=args.get("selector", ""),
                 html_snippet=args.get("html", ""),
                 widget_id=args.get("widget_id"),
-                current_canvas_html=canvas_html or ""
+                current_canvas_html=canvas_html or "",
+                session_id=session_id
             )
         elif canonical_id == "html_notes.canvas.read":
             return canvas_service.read_dom(
@@ -146,31 +212,52 @@ class LocalToolExecutor:
                 selector=args.get("selector")
             )
 
+        # Widgets Catalog
+        elif canonical_id == "html_notes.widgets.list_catalog":
+            return {"widgets": widget_catalog.get_all_widgets()}
+
         # Apps / Portal Domain
-        elif canonical_id == "html_notes.portal.list_services":
+        elif canonical_id in ("html_notes.apps.list", "html_notes.portal.list_services"):
             return await apps_hub_service.list_services(
                 query=args.get("query", ""),
                 status=args.get("status", ""),
                 include_hidden=bool(args.get("include_hidden", False))
             )
-        elif canonical_id == "html_notes.portal.open_app":
+        elif canonical_id in ("html_notes.apps.open", "html_notes.portal.open_app"):
             return await apps_hub_service.open_app(
                 app_id=args.get("app_id", ""),
                 query=args.get("query", "")
             )
-        elif canonical_id == "html_notes.portal.list_actions":
+        elif canonical_id in ("html_notes.apps.list_actions", "html_notes.portal.list_actions"):
             return apps_hub_service.list_actions(app_id=args.get("app_id", ""))
-        elif canonical_id == "html_notes.portal.execute_action":
+        elif canonical_id in ("html_notes.apps.execute_action", "html_notes.portal.execute_action"):
             return await apps_hub_service.execute_action(
                 app_id=args.get("app_id", ""),
                 action=args.get("action", ""),
                 params=args.get("params")
             )
-        elif canonical_id == "html_notes.portal.curate_app":
+        elif canonical_id in ("html_notes.apps.curate", "html_notes.portal.curate_app"):
             return await apps_hub_service.curate_app(
                 app_id=args.get("app_id", ""),
                 hidden=args.get("hidden"),
                 pinned=args.get("pinned")
+            )
+
+        # Watches Domain
+        elif canonical_id == "html_notes.watches.create":
+            return watches_service.create_watch(
+                session_id=session_id or "",
+                kind=args.get("kind", ""),
+                spec=args.get("spec", {}),
+                label=args.get("label", ""),
+                interval_s=args.get("interval_s")
+            )
+        elif canonical_id == "html_notes.watches.list":
+            return watches_service.list_watches(session_id=session_id or "")
+        elif canonical_id == "html_notes.watches.cancel":
+            return watches_service.cancel_watch(
+                watch_id=args.get("watch_id", ""),
+                session_id=session_id or ""
             )
 
         # Presentation Providers
@@ -242,5 +329,6 @@ class LocalToolExecutor:
 
         else:
             return {"error": f"Unknown tool: '{tool_name}'", "is_error": True}
+
 
 local_tool_executor = LocalToolExecutor()

@@ -17,13 +17,15 @@ class CanvasDomainService:
 
     def __init__(self, registry=manifest_registry):
         self.registry = registry
+        self._widget_sessions: Dict[str, str] = {}
 
     def upsert_widget(
         self,
         widget_type: str,
         widget_id: str,
         config: Optional[Dict[str, Any]] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        current_canvas_html: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Renders widget markup server-side and prepares canvas insertion/update.
@@ -38,26 +40,102 @@ class CanvasDomainService:
                 is_singleton = True
                 break
 
-        # Generate HTML from factory
-        try:
-            rendered_html = generate_widget_html(widget_type, widget_id, config)
-        except Exception as e:
-            logger.exception(f"Failed to render widget {widget_type}:{widget_id}: {e}")
+        # Check cross-session widget ownership
+        if widget_id in self._widget_sessions and session_id and self._widget_sessions[widget_id] != session_id:
             return {
-                "error": f"Failed to render widget: {str(e)}",
+                "error": f"Unauthorized: widget '{widget_id}' belongs to another session",
                 "is_error": True,
                 "widget_type": widget_type,
                 "widget_id": widget_id
             }
 
+        # If singleton and current_canvas_html is present, discover existing singleton id to update in place
+        target_id = widget_id
+        if is_singleton and current_canvas_html:
+            soup = BeautifulSoup(current_canvas_html, "html.parser")
+            existing = soup.find(attrs={"data-widget-type": widget_type}) or soup.find(id=widget_id)
+            if existing and existing.get("id"):
+                target_id = existing.get("id")
+
+        if session_id:
+            self._widget_sessions[target_id] = session_id
+
+        # Generate HTML from factory
+        try:
+            rendered_html = generate_widget_html(widget_type, target_id, config)
+        except Exception as e:
+            logger.exception(f"Failed to render widget {widget_type}:{target_id}: {e}")
+            return {
+                "error": f"Failed to render widget: {str(e)}",
+                "is_error": True,
+                "widget_type": widget_type,
+                "widget_id": target_id
+            }
+
         return {
             "success": True,
             "widget_type": widget_type,
-            "widget_id": widget_id,
+            "widget_id": target_id,
             "is_singleton": is_singleton,
             "html": rendered_html,
             "config": config
         }
+
+    def remove_widget(
+        self,
+        widget_id: Optional[str] = None,
+        selector: Optional[str] = None,
+        session_id: Optional[str] = None,
+        current_canvas_html: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Dedicated scoped widget removal. Enforces exact #id selector.
+        """
+        sel = selector or (f"#{widget_id}" if widget_id else "")
+        if not sel:
+            return {"error": "Missing widget_id or selector for remove", "is_error": True}
+
+        # Ambiguous selector check
+        if not sel.startswith("#"):
+            return {
+                "error": f"Ambiguous remove: selector '{sel}' is not an exact #id.",
+                "is_error": True
+            }
+
+        # Verify cross-session ownership if widget_id known
+        wid = widget_id or sel.lstrip("#")
+        if wid in self._widget_sessions and session_id and self._widget_sessions[wid] != session_id:
+            return {
+                "error": f"Unauthorized: widget '{wid}' belongs to another session",
+                "is_error": True
+            }
+
+        return self.modify_dom(
+            action="remove",
+            selector=sel,
+            widget_id=wid,
+            current_canvas_html=current_canvas_html
+        )
+
+    def mutate(
+        self,
+        action: str,
+        selector: str,
+        html_snippet: str = "",
+        widget_id: Optional[str] = None,
+        current_canvas_html: str = "",
+        session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Canonical DOM mutation method with safety checks.
+        """
+        return self.modify_dom(
+            action=action,
+            selector=selector,
+            html_snippet=html_snippet,
+            widget_id=widget_id,
+            current_canvas_html=current_canvas_html
+        )
 
     def modify_dom(
         self,
