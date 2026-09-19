@@ -1,3 +1,26 @@
+# Handoff — 2026-09-19 (Phase 1: Shared Runtime Adapter, USE_SHARED_RUNTIME Feature Flag & Integration Test Suite)
+
+**Context:** Connected HTML-Notes to the shared `lazy-agent-service` execution runtime via `lazycat.client.RuntimeClient` behind a safe feature flag (`USE_SHARED_RUNTIME=false`). Replaced prototype mock stream with real canonical v1 event dispatch, local canvas mutation callback bridge, and production degraded mode without synthetic hallucinations.
+
+**Core Guarantees Delivered:**
+1. **Production-Grade Runtime Adapter (`app/services/runtime_chat_adapter.py`)**:
+   - Uses `lazycat.client.RuntimeClient` with configurable endpoint (`LAZY_AGENT_URL`, default `http://127.0.0.1:8080`) and 30s timeout.
+   - Translates canonical `RunEvent` stream (`run.started`, `text.delta`, `tool.call`, `tool.denied`, `worker.progress`, `worker.completed`, `run.completed`, `run.failed`, `run.cancelled`) into HTML-Notes SSE presentation frames.
+   - Binds canonical profile `html-notes-researcher-v1` with bounded session and canvas context metadata.
+   - Forwards cancellation mid-turn via `client.cancel_run(run_id)`.
+   - Filters local mutation tools (`LOCAL_MUTATION_TOOLS`) and delegates to app-owned canvas executor callback `on_local_mutation`.
+   - Replaced synthetic mock stream and fake evidence receipts with honest degraded error frame (`RUNTIME_UNAVAILABLE`).
+2. **Feature-Flagged Message Route (`app/routes/message.py`)**:
+   - Introduced `USE_SHARED_RUNTIME` feature flag (default `false`, toggled via environment variable or app settings).
+   - When enabled, coordinates with `RuntimeChatAdapter` and bridges local canvas mutations through `execute_mutation`.
+   - Canvas state is committed atomically to DB via `commit_canvas`.
+3. **Comprehensive Unit & Integration Test Suites**:
+   - `tests/test_runtime_chat_adapter.py`: 5 tests verifying canonical event stream mapping, local mutation callbacks, mid-turn cancellation, tool permission denial, and runtime outage degraded mode.
+   - `tests/test_runtime_integration.py`: 5 end-to-end route tests verifying feature flag disabled fallback, search-only shared runtime run, canvas widget mutation through local executor, tool permission denial presentation, and connection error handling.
+   - Full test suite passing 100% (13/13 green).
+
+---
+
 # Handoff — 2026-09-17 (Deterministic Evidence-First News Pipeline)
 
 **Context:** Refactored HTML-Notes news retrieval from fragmented multi-builder/fallback routes into a single deterministic, evidence-first pipeline: `news request` -> `normalize request` -> `retrieve candidates` -> `validate + dedupe` -> `fetch/verify article evidence` -> `rank` -> `render`.
