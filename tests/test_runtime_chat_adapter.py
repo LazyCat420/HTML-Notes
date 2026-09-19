@@ -274,3 +274,207 @@ async def test_runtime_chat_adapter_runtime_outage_degraded_mode():
     assert len(receipts) == 0
     assert len(chunks) == 0
     assert len(raw_sse) == 0
+
+
+@pytest.mark.asyncio
+async def test_route_passes_authorization_to_local_executor():
+    captured_args = {}
+
+    async def mock_execute_cb(tool_name, tool_args, auth_receipt, ctx, rt_ctx=None):
+        captured_args["auth_receipt"] = auth_receipt
+        captured_args["rt_ctx"] = rt_ctx
+        yield "data: {\"type\": \"status\"}\n\n"
+
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id="run_bridge_test",
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id="run_bridge_test",
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "arguments": {"widget_type": "clock", "widget_id": "clk_1"},
+                "authorization_receipt": {"signature": "sig_valid_123", "nonce": "non_456"},
+                "required_scope": ["app_id", "session_id"],
+                "execution": "local",
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id="run_bridge_test",
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={"context_receipt": {"status": "verified"}},
+        ),
+    ]
+
+    client = FakeRuntimeClient(events=events)
+    adapter = RuntimeChatAdapter(runtime_client=client)
+
+    frames = []
+    async for f in adapter.stream_chat_turn(
+        query="Add clock widget",
+        session_id="session_bridge_1",
+        execute_local_tool_cb=mock_execute_cb
+    ):
+        frames.append(f)
+
+    assert captured_args.get("auth_receipt") == {"signature": "sig_valid_123", "nonce": "non_456"}
+
+
+@pytest.mark.asyncio
+async def test_route_passes_runtime_run_id_to_local_executor():
+    captured_rt_ctx = {}
+
+    async def mock_execute_cb(tool_name, tool_args, auth_receipt, ctx, rt_ctx=None):
+        captured_rt_ctx.update(rt_ctx or {})
+        yield "data: {\"type\": \"status\"}\n\n"
+
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id="run_specific_id_777",
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id="run_specific_id_777",
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "arguments": {"widget_type": "clock", "widget_id": "clk_1"},
+                "required_scope": ["app_id", "session_id"],
+                "execution": "local",
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id="run_specific_id_777",
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={"context_receipt": {"status": "verified"}},
+        ),
+    ]
+
+    client = FakeRuntimeClient(events=events)
+    adapter = RuntimeChatAdapter(runtime_client=client)
+
+    async for _ in adapter.stream_chat_turn(
+        query="Add clock widget",
+        session_id="session_bridge_2",
+        execute_local_tool_cb=mock_execute_cb
+    ):
+        pass
+
+    assert captured_rt_ctx.get("run_id") == "run_specific_id_777"
+
+
+@pytest.mark.asyncio
+async def test_route_passes_profile_id_to_local_executor():
+    captured_rt_ctx = {}
+
+    async def mock_execute_cb(tool_name, tool_args, auth_receipt, ctx, rt_ctx=None):
+        captured_rt_ctx.update(rt_ctx or {})
+        yield "data: {\"type\": \"status\"}\n\n"
+
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id="run_profile_test",
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id="run_profile_test",
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "arguments": {"widget_type": "clock", "widget_id": "clk_1"},
+                "required_scope": ["app_id", "session_id"],
+                "execution": "local",
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id="run_profile_test",
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={"context_receipt": {"status": "verified"}},
+        ),
+    ]
+
+    client = FakeRuntimeClient(events=events)
+    adapter = RuntimeChatAdapter(runtime_client=client, default_profile_id="custom-notes-researcher-v2")
+
+    async for _ in adapter.stream_chat_turn(
+        query="Add clock widget",
+        session_id="session_bridge_3",
+        profile_id="custom-notes-researcher-v2",
+        execute_local_tool_cb=mock_execute_cb
+    ):
+        pass
+
+    assert captured_rt_ctx.get("profile_id") == "custom-notes-researcher-v2"
+
+
+@pytest.mark.asyncio
+async def test_route_passes_contract_version_to_local_executor():
+    captured_rt_ctx = {}
+
+    async def mock_execute_cb(tool_name, tool_args, auth_receipt, ctx, rt_ctx=None):
+        captured_rt_ctx.update(rt_ctx or {})
+        yield "data: {\"type\": \"status\"}\n\n"
+
+    events = [
+        RunEvent(
+            id="evt_0",
+            run_id="run_contract_test",
+            type="run.started",
+            timestamp="2026-09-19T12:00:00Z",
+            data={"status": "running"},
+        ),
+        RunEvent(
+            id="evt_1",
+            run_id="run_contract_test",
+            type="tool.invoked",
+            timestamp="2026-09-19T12:00:01Z",
+            data={
+                "tool_name": "html_notes.canvas.upsert_widget",
+                "arguments": {"widget_type": "clock", "widget_id": "clk_1"},
+                "required_scope": ["app_id", "session_id"],
+                "execution": "local",
+            },
+        ),
+        RunEvent(
+            id="evt_2",
+            run_id="run_contract_test",
+            type="run.completed",
+            timestamp="2026-09-19T12:00:02Z",
+            data={"context_receipt": {"status": "verified"}},
+        ),
+    ]
+
+    client = FakeRuntimeClient(events=events)
+    adapter = RuntimeChatAdapter(runtime_client=client)
+
+    async for _ in adapter.stream_chat_turn(
+        query="Add clock widget",
+        session_id="session_bridge_4",
+        execute_local_tool_cb=mock_execute_cb
+    ):
+        pass
+
+    assert captured_rt_ctx.get("contract_version") == "1.2.0"
