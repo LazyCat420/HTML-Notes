@@ -80,7 +80,7 @@ All local tools strictly declare:
 ## 5. Startup & Preflight Readiness Validation
 
 When `USE_SHARED_RUNTIME=true`, the application verifies before processing turns:
-1. **Reachability**: Runtime endpoint responds to HTTP GET at `/v1/contracts/spec`.
+1. **Reachability**: Runtime endpoint responds to HTTP GET at `/v1/contracts/spec` or `/ready`.
 2. **Contract Compatibility**: Runtime reports `1.2.0` or compatible v1 minor semver (`rep_maj == 1`, `rep_min >= 2`).
 3. **Profile Alignment**: Configured profile matches declared profile in `app/tooling/manifests/html_notes.profile.json`.
 4. **Capability Whitelist**: Profile permits required global capabilities (`global.web.search`, `global.web.read_page`).
@@ -88,7 +88,49 @@ When `USE_SHARED_RUNTIME=true`, the application verifies before processing turns
 
 ---
 
-## 6. Legacy Note Ownership Migration Procedure
+## 6. Profile Registration Workflow
+
+1. **Manifest Authoring**: Define tools, capabilities, and sandboxing in `app/tooling/manifests/html_notes.profile.json`.
+2. **Pre-Deployment Registration**: Register the profile with `lazy-agent-service`:
+   ```bash
+   curl -X POST "${LAZYCAT_RUNTIME_URL}/v1/profiles" \
+     -H "Content-Type: application/json" \
+     -d @app/tooling/manifests/html_notes.profile.json
+   ```
+3. **Registration Verification**:
+   Query `${LAZYCAT_RUNTIME_URL}/v1/profiles/html-notes-canvas-v1` to confirm active registration.
+4. **App Initialization**:
+   During startup or preflight, `check_runtime_readiness()` inspects the active profile registration against the local manifest.
+
+---
+
+## 7. Contract Version Rollout Procedure
+
+1. **Minor Version Bumps (Backward Compatible)**:
+   - Increments in minor versions (e.g. `1.2` to `1.3`) allow backward-compatible additions.
+   - `check_runtime_readiness()` accepts `rep_maj == 1` and `rep_min >= 2`.
+2. **Major Version Bumps (Breaking Changes)**:
+   - Major version changes (e.g. `2.0`) require synchronized coordination with `lazy-agent-service` and `lazycat-sdk`.
+   - Preflight strictly fails closed if major versions mismatch.
+3. **Rollout Sequence**:
+   - Step 1: Deploy runtime support for new contract version in `lazy-agent-service`.
+   - Step 2: Validate staging compatibility using `uv run pytest tests/test_runtime_readiness.py`.
+   - Step 3: Update `HTML_NOTES_CONTRACT_VERSION` in deployment configuration.
+
+---
+
+## 8. SDK Pinning Policy
+
+1. **Strict Version Compatibility**:
+   - The application relies on `lazycat-sdk` for shared contracts, event envelopes, and runtime clients.
+   - Any updates to `lazycat-sdk` must preserve contract v1.2 semantics.
+2. **Dependency Management**:
+   - `lazycat-sdk` dependency is locked and managed in pyproject.toml / uv.lock.
+   - Test suites `tests/test_runtime_chat_adapter.py` and `tests/test_runtime_readiness.py` validate runtime client compliance across updates.
+
+---
+
+## 9. Legacy Note Ownership Migration Procedure
 
 Notes with `session_id = NULL` are transitioned to `owner_type = 'legacy_unclaimed'` to prevent cross-session tampering:
 ```bash
@@ -96,15 +138,15 @@ Notes with `session_id = NULL` are transitioned to `owner_type = 'legacy_unclaim
 python3 scripts/migrate_legacy_note_ownership.py --dry-run
 
 # Execute migration
-python3 scripts/migrate_legacy_note_ownership.py
+python3 scripts/migrate_legacy_note_ownership.py --batch-size 500
 
 # Rollback if needed
-python3 scripts/migrate_legacy_note_ownership.py --rollback
+python3 scripts/migrate_legacy_note_ownership.py --rollback --owner-id migration-2026-09-19
 ```
 
 ---
 
-## 7. Verification & Testing
+## 10. Verification & Testing
 
 Run the Dev 2 readiness, adapter, cutover, and ownership test suites:
 ```bash
@@ -115,4 +157,5 @@ uv run pytest \
   tests/test_legacy_note_migration.py \
   tests/test_notes_session_ownership.py -v
 ```
+
 
