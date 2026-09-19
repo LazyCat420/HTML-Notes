@@ -59,23 +59,55 @@ class HTMLNotesToolPolicy:
         """Validates that execution context satisfies the tool's required scopes."""
         tool_spec = self.registry.resolve_tool(tool_name)
         if not tool_spec:
-            return True, None
+            return False, f"Tool '{tool_name}' missing manifest specification"
 
-        required_scope = tool_spec.get("required_scope", [])
+        effect = tool_spec.get("effect", "write")
+        resource_type = tool_spec.get("resource_type")
+        raw_required = tool_spec.get("required_scope")
 
-        # Write or destructive tools must require session_id
-        if tool_spec.get("effect") in ("write", "destructive"):
-            if "session_id" not in required_scope:
-                return False, f"Tool '{tool_name}' has effect '{tool_spec.get('effect')}' but does not declare session_id scope"
+        # Missing required_scope specification fails closed
+        if not raw_required:
+            return False, f"Tool '{tool_name}' lacks required_scope specification"
 
-        if "session_id" in required_scope and not session_id:
-            return False, f"Tool '{tool_name}' requires session_id scope"
+        if isinstance(raw_required, list):
+            req_set = set(raw_required)
+        elif isinstance(raw_required, dict):
+            req_set = {k for k, v in raw_required.items() if bool(v)}
+        else:
+            req_set = set()
 
-        if "app_id" in required_scope and app_id:
-            if app_id not in ("html-notes", "html_notes"):
+        # Invariants: write and destructive tools strictly require app_id and session_id
+        if effect in ("write", "destructive"):
+            req_set.add("app_id")
+            req_set.add("session_id")
+        elif effect == "read" and ("session" in str(resource_type).lower() or "session_id" in req_set):
+            req_set.add("app_id")
+            req_set.add("session_id")
+        else:
+            req_set.add("app_id")
+
+        # Validate app_id
+        if "app_id" in req_set:
+            if not app_id:
+                return False, f"Tool '{tool_name}' requires app_id"
+            if app_id.replace("_", "-") != "html-notes":
                 return False, f"Tool '{tool_name}' requires app_id 'html-notes', got '{app_id}'"
 
+        # Validate session_id
+        if "session_id" in req_set:
+            if not session_id or not str(session_id).strip():
+                return False, f"Tool '{tool_name}' requires session_id scope"
+
         return True, None
+
+    def requires_authorization_receipt(self, tool_name: str) -> bool:
+        """Determines if a tool call requires a valid runtime authorization receipt."""
+        tool_spec = self.registry.resolve_tool(tool_name)
+        if not tool_spec:
+            return True
+        if "requires_authorization_receipt" in tool_spec:
+            return bool(tool_spec.get("requires_authorization_receipt"))
+        return tool_spec.get("effect") in ("write", "destructive")
 
     def requires_confirmation(self, tool_name: str, args: Dict[str, Any]) -> bool:
         """Determines if a tool call requires explicit user confirmation before execution."""
