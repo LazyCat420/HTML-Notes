@@ -70,6 +70,14 @@ async def send_message(req: MessageRequest):
     import app.canvas_manager as _cm
     globals().update({k: v for k, v in _main.__dict__.items() if not k.startswith("__")})
     globals().update({k: v for k, v in _cm.__dict__.items() if not k.startswith("__")})
+    from app.adapters.runtime.config import is_shared_runtime_enabled, check_runtime_readiness
+    if is_shared_runtime_enabled():
+        readiness = await check_runtime_readiness()
+        if not readiness.is_ready:
+            async def unavailable():
+                yield 'data: ' + json.dumps({"type": "error", "code": "RUNTIME_NOT_READY", "message": readiness.error}) + '\n\n'
+                yield 'data: {"type": "done"}\n\n'
+            return StreamingResponse(unavailable(), media_type="text/event-stream")
     try:
         # Stamp this request's arrival order so a slower-committing older video
         # can't overwrite a newer one (see _place_media_widget). Captured as a
@@ -2853,11 +2861,10 @@ async def send_message(req: MessageRequest):
                         logger.info(
                             f"[SHARED RUNTIME CUTOVER] Executing local tool '{tool_name}' through LocalToolExecutor"
                         )
-                        resolved_rt_context = runtime_context or {
-                            "run_id": getattr(context, "run_id", None) or "run_default",
-                            "profile_id": getattr(adapter, "default_profile_id", None) or "html-notes-canvas-v1",
-                            "contract_version": "1.2.0",
-                        }
+                        if not runtime_context or not all(runtime_context.get(k) for k in ("run_id", "tool_call_id", "profile_id")):
+                            yield sse_formatter.error_frame("Runtime execution context is incomplete", "CONTEXT_MISMATCH")
+                            return
+                        resolved_rt_context = runtime_context
                         result = await local_tool_executor.execute(
                             tool_name=tool_name,
                             args=tool_args,
@@ -2898,7 +2905,13 @@ async def send_message(req: MessageRequest):
                     ):
                         frame_type = frame.get("type")
                         if frame_type == "raw_sse":
-                            yield frame.get("frame", "")
+                            raw_frame = frame.get("frame", "")
+                            if raw_frame.startswith("data: "):
+                                try:
+                                    shared_runtime_error |= json.loads(raw_frame[6:].strip()).get("type") == "error"
+                                except (ValueError, AttributeError):
+                                    pass
+                            yield raw_frame
                         elif frame_type == "chunk":
                             token = frame.get("content", "")
                             final_text += token
@@ -3424,8 +3437,12 @@ async def send_message(req: MessageRequest):
         # Overwritten (or cleared) by every tier-3 turn and TTL-bounded, so an
         # aborted stream can't leak a stale bias past 180s.
         _stash_turn_freshness(req.message)
+        response_stream = _run_turn(req.session_id, req.current_canvas or "", proxy_prism_sse, req.canvas_version)
+        if is_shared_runtime_enabled():
+            from app.services.runtime_chat_adapter import ensure_terminal_sse
+            response_stream = ensure_terminal_sse(response_stream)
         return StreamingResponse(
-            _run_turn(req.session_id, req.current_canvas or "", proxy_prism_sse, req.canvas_version),
+            response_stream,
             media_type="text/event-stream",
         )
 

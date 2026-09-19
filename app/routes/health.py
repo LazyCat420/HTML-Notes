@@ -82,6 +82,7 @@ async def health_agent(response: Response):
             return {
                 "status": "unavailable",
                 "use_shared_runtime": True,
+                "runtime_ready": readiness.is_ready,
                 "error": readiness.error,
                 "profile_id": readiness.profile_id,
                 "details": readiness.details,
@@ -89,6 +90,7 @@ async def health_agent(response: Response):
         return {
             "status": "ok",
             "use_shared_runtime": True,
+            "runtime_ready": readiness.is_ready,
             "contract_version": readiness.contract_version,
             "profile_id": readiness.profile_id,
             "details": readiness.details,

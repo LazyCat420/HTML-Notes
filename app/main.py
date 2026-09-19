@@ -1182,6 +1182,13 @@ def _followup_target_id(session_id: str, focus_id: Optional[str],
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    from app.adapters.runtime.config import is_shared_runtime_enabled, check_runtime_readiness
+    if is_shared_runtime_enabled():
+        readiness = await check_runtime_readiness()
+        _app.state.runtime_readiness = readiness
+        logger.log(logging.INFO if readiness.is_ready else logging.ERROR,
+                   "Runtime preflight: ready=%s profile=%s contract=%s error=%s",
+                   readiness.is_ready, readiness.profile_id, readiness.contract_version, readiness.error)
     await _warn_if_research_is_down()
     watchdog = asyncio.create_task(_mcp_watchdog())
     # Standing asks (watches) — the one thing that puts a widget on the canvas

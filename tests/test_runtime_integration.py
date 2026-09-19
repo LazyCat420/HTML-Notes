@@ -172,6 +172,13 @@ def test_shared_runtime_canvas_widget_mutation(monkeypatch):
         ),
     ]
 
+    from dataclasses import asdict
+    from app.adapters.runtime.models import create_test_authorization
+    events[1].data["tool_call_id"] = "canvas-call"
+    events[1].data["authorization_receipt"] = asdict(create_test_authorization(
+        tool_id="html_notes.canvas.upsert_widget", session_id="test_canvas_session",
+        run_id="run_canvas_01", tool_call_id="canvas-call"))
+
     fake_client = FakeTestRuntimeClient(events=events)
     fake_adapter = RuntimeChatAdapter(runtime_client=fake_client)
 

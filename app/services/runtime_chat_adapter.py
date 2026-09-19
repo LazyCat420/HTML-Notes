@@ -168,6 +168,11 @@ class RuntimeChatAdapter:
             "phase": "routing",
         }
 
+        from app.tooling.html_notes_manifest import manifest_registry
+        local_tools = [{"name": t["id"], "description": t.get("description", ""),
+                        "parameters": t.get("parameters", t.get("input_schema", {}))}
+                       for t in manifest_registry.get_domain_tools_manifest()["tools"]]
+        # Schemas describe app-owned tools; admission remains runtime profile controlled.
         # Build run request
         run_request = CreateRunRequest(
             profile_id=active_profile,
@@ -175,6 +180,7 @@ class RuntimeChatAdapter:
             stream=True,
             runtime_overrides={
                 "context": context_payload,
+                "local_tool_schemas": local_tools,
                 **(runtime_overrides or {}),
             },
         )
@@ -462,3 +468,21 @@ class RuntimeChatAdapter:
 
 
 runtime_chat_adapter = RuntimeChatAdapter()
+
+
+async def ensure_terminal_sse(source):
+    """Give a connected shared-runtime HTTP stream one terminal frame, even on persistence errors."""
+    try:
+        async for frame in source:
+            # Each server frame contains a single JSON data event.
+            if frame.startswith("data: "):
+                try:
+                    if json.loads(frame[6:].strip()).get("type") == "done":
+                        continue
+                except (ValueError, AttributeError):
+                    pass
+            yield frame
+    except Exception:
+        logger.exception("Shared runtime response stream failed")
+        yield sse_formatter.error_frame("Shared runtime response failed", "RUNTIME_STREAM_FAILED")
+    yield sse_formatter.done_frame()

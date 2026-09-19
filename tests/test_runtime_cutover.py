@@ -68,6 +68,7 @@ def test_shared_runtime_route_invokes_local_tool_executor(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {
                     "widget_type": "clock",
                     "widget_id": "clock_cutover_1",
@@ -131,6 +132,7 @@ def test_shared_runtime_route_does_not_invoke_legacy_execute_mutation(monkeypatc
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {
                     "widget_type": "clock",
                     "widget_id": "clock_cutover_2",
@@ -182,6 +184,7 @@ def test_canonical_canvas_tool_reaches_executor(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {
                     "widget_type": "data_card",
                     "widget_id": "canon_card_1",
@@ -197,6 +200,12 @@ def test_canonical_canvas_tool_reaches_executor(monkeypatch):
             data={"context_receipt": {"status": "verified"}},
         ),
     ]
+
+    from dataclasses import asdict
+    from app.adapters.runtime.models import create_test_authorization
+    events[1].data["authorization_receipt"] = asdict(create_test_authorization(
+        tool_id="html_notes.canvas.upsert_widget", session_id="session_canon_01",
+        run_id="run_canon_01", tool_call_id="cutover-call"))
 
     fake_client = FakeCutoverRuntimeClient(events=events)
     fake_adapter = RuntimeChatAdapter(runtime_client=fake_client)
@@ -234,6 +243,7 @@ def test_legacy_canvas_alias_resolves_before_executor(monkeypatch):
             data={
                 "tool_name": "canvas_add_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {
                     "widget_type": "data_card",
                     "widget_id": "alias_card_1",
@@ -342,6 +352,7 @@ def test_unknown_local_tool_returns_structured_error(monkeypatch):
             data={
                 "tool_name": "html_notes.nonexistent.fake_tool",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {},
             },
         ),
@@ -367,7 +378,7 @@ def test_unknown_local_tool_returns_structured_error(monkeypatch):
         errors = [f for f in frames if f.get("type") == "error"]
         assert len(errors) >= 1
         err_msg = errors[0]["message"].lower()
-        assert "unknown" in err_msg or "not permitted" in err_msg or "failed" in err_msg
+        assert errors[0]["code"] == "LOCAL_SCOPE_VIOLATION"
 
 
 # 7. test_runtime_denied_local_tool_never_reaches_executor
@@ -442,6 +453,7 @@ def test_runtime_local_tool_missing_session_scope_is_rejected(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "required_scope": {
                     "app_id": "html-notes",
                     "session_id": "different_session_999",  # Cross-session mismatch
@@ -495,6 +507,7 @@ def test_runtime_local_tool_wrong_app_scope_is_rejected(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "required_scope": {
                     "app_id": "trading-client",  # Wrong application scope
                     "session_id": "session_scope_02",
@@ -900,6 +913,7 @@ def test_route_passes_authorization_to_local_executor(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {"widget_type": "clock", "widget_id": "clock_auth_1"},
                 "authorization_receipt": expected_auth,
             },
@@ -927,7 +941,7 @@ def test_route_passes_authorization_to_local_executor(monkeypatch):
             assert resp.status_code == 200
             assert mock_exec.called
             call_kwargs = mock_exec.call_args.kwargs
-            assert call_kwargs.get("authorization") == expected_auth
+            assert call_kwargs.get("authorization") == {**expected_auth, "app_id": "html-notes", "session_id": "session_auth_01"}
 
 
 # 22. test_route_passes_runtime_run_id_to_local_executor
@@ -951,6 +965,7 @@ def test_route_passes_runtime_run_id_to_local_executor(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {"widget_type": "clock", "widget_id": "clock_runid_1"},
             },
         ),
@@ -1001,6 +1016,7 @@ def test_route_passes_profile_id_to_local_executor(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {"widget_type": "clock", "widget_id": "clock_prof_1"},
             },
         ),
@@ -1052,6 +1068,7 @@ def test_route_passes_contract_version_to_local_executor(monkeypatch):
             data={
                 "tool_name": "html_notes.canvas.upsert_widget",
                 "execution": "local",
+                "tool_call_id": "cutover-call",
                 "arguments": {"widget_type": "clock", "widget_id": "clock_cv_1"},
             },
         ),

@@ -2,24 +2,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 import pytest
 from app.tooling.local_executor import local_tool_executor
-from app.adapters.runtime.models import LocalToolAuthorization
+from app.adapters.runtime.models import LocalToolAuthorization, create_test_authorization
 from app import database
 
 
 def make_auth(tool_name: str, session_id: str, app_id: str = "html-notes") -> LocalToolAuthorization:
-    now = datetime.now(timezone.utc)
-    return LocalToolAuthorization(
-        run_id="run_test_local_executor",
-        tool_call_id=f"call_{uuid.uuid4().hex[:12]}",
-        canonical_tool_id=tool_name,
-        profile_id="html-notes-canvas-v1",
-        app_id=app_id,
-        session_id=session_id,
-        issued_at=now,
-        expires_at=now + timedelta(minutes=5),
-        nonce=f"nonce_{uuid.uuid4().hex[:12]}",
-        signature="sha256-valid-test-sig",
-    )
+    return create_test_authorization(tool_id=tool_name, session_id=session_id, app_id=app_id)
+
 
 
 @pytest.mark.asyncio

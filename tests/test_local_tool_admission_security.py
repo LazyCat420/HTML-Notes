@@ -6,6 +6,7 @@ import pytest
 
 from app.adapters.runtime.models import (
     LocalToolAuthorization,
+    create_test_authorization,
     ReplayCache,
     verify_local_authorization,
     verify_local_tool_scope,
@@ -16,27 +17,28 @@ from app.tooling.local_executor import local_tool_executor
 from app.tooling.policy import tool_policy
 
 
+def sign_auth(auth):
+    import os, hmac, hashlib
+    raw = auth.raw_receipt or {}
+    fields = [auth.run_id, auth.tool_call_id, auth.canonical_tool_id]
+    if auth.arguments_hash:
+        fields.append(auth.arguments_hash)
+    fields += [auth.app_id, auth.session_id, auth.profile_id, auth.nonce, raw.get("expires_at") or auth.expires_at.isoformat()]
+    auth.signature = "hmac-sha256-" + hmac.new(os.environ["RUNTIME_AUTH_SECRET"].encode(), ":".join(fields).encode(), hashlib.sha256).hexdigest()
+    return auth
+
+
 def make_valid_auth(
     tool_id: str = "html_notes.canvas.upsert_widget",
     session_id: str = "session_security_1",
     app_id: str = "html-notes",
     profile_id: str = "html-notes-canvas-v1",
     expires_delta_s: int = 300,
-    signature: str = "sha256-valid-mock-signature",
+    signature: str = "",
 ) -> LocalToolAuthorization:
-    now = datetime.now(timezone.utc)
-    return LocalToolAuthorization(
-        run_id=f"run_{uuid.uuid4().hex[:8]}",
-        tool_call_id=f"call_{uuid.uuid4().hex[:8]}",
-        canonical_tool_id=tool_id,
-        profile_id=profile_id,
-        app_id=app_id,
-        session_id=session_id,
-        issued_at=now,
-        expires_at=now + timedelta(seconds=expires_delta_s),
-        nonce=f"nonce_{uuid.uuid4().hex[:12]}",
-        signature=signature,
-    )
+    return create_test_authorization(tool_id=tool_id, session_id=session_id, app_id=app_id,
+                                     profile_id=profile_id, ttl_seconds=expires_delta_s, signature=signature)
+
 
 
 # 1. Scope Tests
@@ -294,6 +296,7 @@ def test_duplicate_tool_call_id_is_rejected():
     auth2 = make_valid_auth(session_id="session_1")
     # Same tool_call_id, different nonce
     auth2.tool_call_id = auth1.tool_call_id
+    sign_auth(auth2)
 
     res1 = verify_local_authorization(
         authorization=auth1,
@@ -422,6 +425,7 @@ def test_repeated_nonce_with_different_tool_call_id_is_rejected():
     auth2 = make_valid_auth(session_id="session_rep")
     # Same nonce, completely different tool_call_id
     auth2.nonce = auth1.nonce
+    sign_auth(auth2)
 
     res1 = verify_local_authorization(
         authorization=auth1,
@@ -500,10 +504,10 @@ def test_hmac_signature_verification_succeeds_with_matching_secret(monkeypatch):
     import hashlib
     import secrets
     test_secret = f"auth_{secrets.token_hex(16)}"
-    monkeypatch.setenv("INTERNAL_EXECUTE_TOKEN", test_secret)
+    monkeypatch.setenv("RUNTIME_AUTH_SECRET", test_secret)
 
     auth = make_valid_auth()
-    exp_iso_z = auth.expires_at.isoformat().replace("+00:00", "Z")
+    exp_iso_z = auth.expires_at.isoformat()
     payload = f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}"
     real_sig = "sha256-" + hmac.new(test_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     auth.signature = real_sig
@@ -551,7 +555,7 @@ def test_real_runtime_receipt_shape_compatibility():
             "effect": "write",
             "issued_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=300)).isoformat(),
-            "signature": "sha256-valid-test-sig",
+
         },
         "required_scope": {
             "app_id": "html-notes",
@@ -561,6 +565,7 @@ def test_real_runtime_receipt_shape_compatibility():
 
     # Pass nested authorization_receipt directly as adapter does
     nested_receipt = raw_runtime_event["authorization_receipt"]
+    nested_receipt["signature"] = sign_auth(LocalToolAuthorization.from_dict(nested_receipt)).signature
     res = verify_local_authorization(
         authorization=nested_receipt,
         expected_tool_id="html_notes.canvas.upsert_widget",
@@ -588,6 +593,7 @@ def test_argument_tampering_is_rejected():
 
     auth = make_valid_auth()
     auth.arguments_hash = orig_hash
+    sign_auth(auth)
 
     # Matching args passes
     res_ok = verify_local_authorization(
@@ -646,3 +652,32 @@ async def test_link_notes_forwards_session_id():
             target_note_id="n2",
             session_id="session_owner_1",
         )
+
+
+@pytest.mark.parametrize("prefix", ["sha256-valid-", "sig_valid_", "sha256-mock-"])
+def test_test_signature_prefixes_are_not_authorization(prefix):
+    import secrets
+    auth = make_valid_auth()
+    auth.signature = prefix + secrets.token_hex(16)
+    result = verify_local_authorization(auth, auth.canonical_tool_id, auth.app_id, auth.session_id)
+    assert not result.valid
+    assert result.code == "INVALID_SIGNATURE"
+
+
+def test_unconfigured_verifier_fails_closed(monkeypatch):
+    auth = make_valid_auth()
+    monkeypatch.delenv("RUNTIME_AUTH_SECRET", raising=False)
+    monkeypatch.delenv("INTERNAL_EXECUTE_TOKEN", raising=False)
+    result = verify_local_authorization(auth, auth.canonical_tool_id, auth.app_id, auth.session_id)
+    assert not result.valid
+
+
+def test_canonical_tool_cannot_override_signed_tool_name():
+    from dataclasses import asdict
+    auth = make_valid_auth()
+    receipt = asdict(auth)
+    receipt["tool_name"] = auth.canonical_tool_id
+    receipt["canonical_tool_id"] = "html_notes.notes.create"
+    result = verify_local_authorization(receipt, "html_notes.notes.create", auth.app_id, auth.session_id)
+    assert not result.valid
+    assert result.code == "INVALID_SIGNATURE"

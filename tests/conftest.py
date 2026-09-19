@@ -127,3 +127,30 @@ def _no_live_models(request, monkeypatch):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: test genuinely needs a live model box")
+
+
+@pytest.fixture(autouse=True)
+def runtime_test_signing_key(monkeypatch):
+    import secrets
+    from app.adapters.runtime.models import global_replay_cache
+    global_replay_cache.clear()
+    monkeypatch.setenv("RUNTIME_AUTH_SECRET", secrets.token_hex(32))
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_http_tests(request, monkeypatch, tmp_path, patch_server):
+    if request.path.name not in {"test_runtime_hardening_integration.py", "test_runtime_integration.py", "test_runtime_cutover.py"}:
+        return
+    from unittest.mock import AsyncMock
+    import httpx
+    from app import main, database
+    from app.adapters.runtime import config
+    monkeypatch.setattr(database, "DATABASE_URL", str(tmp_path / "runtime.db"))
+    database.init_db()
+    patch_server("route_with_llm", AsyncMock(return_value={"defer": True}))
+    patch_server("build_apps_prompt_block", AsyncMock(return_value=""))
+    patch_server("build_actions_prompt_block", AsyncMock(return_value=""))
+    patch_server("capture_user_facts", lambda *a, **kw: None)
+    monkeypatch.setattr(config, "check_runtime_readiness", AsyncMock(return_value=config.RuntimeReadinessResult(is_ready=True)))
+    async def catalog(*args, **kwargs):
+        return httpx.Response(200, json={"models": {"vllm": [{"name": "llama-3-8b", "modelType": "conversation", "tools": ["Tool Calling"]}]}})
+    monkeypatch.setattr(httpx.AsyncClient, "get", catalog)

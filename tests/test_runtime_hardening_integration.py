@@ -429,7 +429,7 @@ async def test_adversarial_forged_or_missing_receipt_via_http(clean_db, monkeypa
     body = resp.text
 
     # Verify error frame emitted for signature verification
-    assert "SIGNATURE_VERIFICATION_FAILED" in body or "Signature verification failed" in body or "is_error" in body or "LOCAL_TOOL_ERROR" in body
+    assert '"code": "INVALID_SIGNATURE"' in body
     # Verify no note was created in the database
     notes = database.list_all_notes()
     assert len(notes) == 0
@@ -612,3 +612,101 @@ async def test_adversarial_exactly_one_terminal_sse_event_all_cases():
     frames_cancel = [f async for f in adapter_cancel.stream_chat_turn(query="q", session_id="s", cancel_event=cancel_event)]
     assert len([f for f in frames_cancel if f.get("type") == "done"]) == 1
     assert any(f.get("phase") == "cancelled" for f in frames_cancel)
+
+
+def _signed_wire_receipt(tool_args, session_id, call_id="call-wire", nonce=None, **changes):
+    """Node's wire representation, including millisecond timestamps and UTF-8 JSON."""
+    import hashlib, hmac, os, secrets
+    now = datetime.now(timezone.utc)
+    wire_args = json.dumps(tool_args, separators=(",", ":"), ensure_ascii=False)
+    receipt = {
+        "run_id": "run-wire", "tool_call_id": call_id, "tool_name": "html_notes.notes.create",
+        "app_id": "html-notes", "session_id": session_id, "profile_id": "html-notes-canvas-v1",
+        "nonce": nonce or secrets.token_hex(16),
+        "issued_at": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "expires_at": (now + timedelta(minutes=5)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "arguments_json": wire_args, "arguments_hash": hashlib.sha256(wire_args.encode()).hexdigest(),
+    }
+    receipt.update(changes)
+    payload = ":".join(receipt[k] for k in ("run_id", "tool_call_id", "tool_name", "arguments_hash", "app_id", "session_id", "profile_id", "nonce", "expires_at"))
+    receipt["signature"] = "hmac-sha256-" + hmac.new(os.environ["RUNTIME_AUTH_SECRET"].encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return receipt
+
+
+@pytest.mark.parametrize("case,code", [
+    ("valid", None), ("unsigned", "UNSIGNED_RECEIPT"), ("forged", "INVALID_SIGNATURE"),
+    ("run", "RUN_MISMATCH"), ("call", "TOOL_CALL_MISMATCH"), ("profile", "PROFILE_MISMATCH"),
+    ("session", "SESSION_MISMATCH"), ("arguments", "ARGUMENTS_MISMATCH"),
+    ("stripped_hash", "INVALID_SIGNATURE"), ("replay", "REPLAYED_RECEIPT"),
+])
+def test_signed_receipts_through_http_to_persistence(case, code, clean_db, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+    session_id = "session-wire"
+    args = {"title": "Café receipt", "rendered_html": "<article><p>Signed content</p></article>"}
+    receipt = _signed_wire_receipt(args, session_id)
+    if case in {"run", "call", "profile", "session"}:
+        key = {"run": "run_id", "call": "tool_call_id", "profile": "profile_id", "session": "session_id"}[case]
+        receipt = _signed_wire_receipt(args, session_id, **{key: "foreign-context"}) if case != "session" else _signed_wire_receipt(args, "foreign-context")
+    elif case == "unsigned":
+        receipt.pop("signature")
+    elif case == "forged":
+        import secrets
+        receipt["signature"] = "hmac-sha256-" + secrets.token_hex(32)
+    elif case == "arguments":
+        args = {**args, "title": "Tampered"}
+    elif case == "stripped_hash":
+        receipt.pop("arguments_hash")
+        receipt.pop("arguments_json")
+    def event(auth, call="call-wire"):
+        return FakeRuntimeEvent("tool", "tool.invoked", "2026-09-19T12:00:00Z", {
+            "tool_name": "html_notes.notes.create", "tool_call_id": call, "arguments": args,
+            "execution": "local", "required_scope": {"app_id": "html-notes", "session_id": session_id},
+            "authorization_receipt": auth,
+        }, run_id="run-wire")
+    events = [event(receipt)]
+    if case == "replay":
+        events.append(event(_signed_wire_receipt(args, session_id, call_id="call-second", nonce=receipt["nonce"]), "call-second"))
+    events.append(FakeRuntimeEvent("done", "run.completed", "2026-09-19T12:00:01Z", {}, run_id="run-wire"))
+    adapter = RuntimeChatAdapter(runtime_client=FakeStreamingClient(events))
+    with patch("app.services.runtime_chat_adapter.RuntimeChatAdapter", return_value=adapter):
+        response = TestClient(app).post("/session/message", json={"session_id": session_id, "message": "render custom card"})
+    assert response.status_code == 200
+    frames = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert sum(f.get("type") == "done" for f in frames) == 1
+    errors = [f for f in frames if f.get("type") == "error"]
+    if code:
+        assert any(f.get("code") == code for f in errors), errors
+    else:
+        assert not errors
+    notes = database.list_all_notes()
+    assert len(notes) == (1 if case in {"valid", "replay"} else 0)
+    if notes:
+        assert notes[0]["title"] == "Café receipt"
+        assert database.get_note_by_id(notes[0]["id"])["session_id"] == session_id
+
+
+def test_http_preflight_failure_never_starts_runtime(clean_db, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.adapters.runtime import config
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+    monkeypatch.setattr(config, "check_runtime_readiness", AsyncMock(return_value=config.RuntimeReadinessResult(False, error="unreachable")))
+    with patch("app.services.runtime_chat_adapter.RuntimeChatAdapter") as adapter:
+        response = TestClient(app).post("/session/message", json={"session_id": "preflight", "message": "render custom card"})
+    adapter.assert_not_called()
+    frames = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert [f["type"] for f in frames] == ["error", "done"]
+    assert frames[0]["code"] == "RUNTIME_NOT_READY"
+    assert database.list_all_notes() == []
+
+
+@pytest.mark.asyncio
+async def test_stream_finalization_failure_still_terminates():
+    from app.services.runtime_chat_adapter import ensure_terminal_sse
+    async def broken():
+        yield 'data: {"type": "done"}\n\n'
+        raise RuntimeError("persistence unavailable")
+    frames = [json.loads(f[6:]) async for f in ensure_terminal_sse(broken())]
+    assert [f["type"] for f in frames] == ["error", "done"]

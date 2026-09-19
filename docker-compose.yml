@@ -26,6 +26,7 @@ services:
       # Interpolated from the staged .env (deploy-kit/.env.deploy) at deploy;
       # empty = endpoint runs in compat (unauthenticated) mode with a warning.
       - INTERNAL_EXECUTE_TOKEN=${INTERNAL_EXECUTE_TOKEN:-}
+      - RUNTIME_AUTH_SECRET=${RUNTIME_AUTH_SECRET:-}
       # portal-service inventory feeds the App Hub widget + open_app tool.
       - PORTAL_SERVICE_URL=${PORTAL_SERVICE_URL:-http://10.0.0.16:4001}
       # Shared agent runtime configuration

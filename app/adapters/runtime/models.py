@@ -164,42 +164,27 @@ def default_signature_verifier(auth: LocalToolAuthorization) -> bool:
     sig = auth.signature or ""
     if not sig:
         return False
-    if sig.startswith("sha256-valid-") or sig.startswith("sig_valid_") or sig == "sha256-mock-auth-signature":
-        return True
-    if not sig.startswith("sha256-"):
+    prefix = "hmac-sha256-" if sig.startswith("hmac-sha256-") else "sha256-"
+    if not sig.startswith(prefix):
         return False
-
-    secret = (
-        os.getenv("INTERNAL_EXECUTE_TOKEN")
-        or os.getenv("RUNTIME_AUTH_SECRET")
-        or "dev_local_runtime_auth_token"
-    )
-    raw_sig = sig.replace("sha256-", "")
-
-    exp_iso_z = auth.expires_at.isoformat().replace("+00:00", "Z")
-    exp_iso = auth.expires_at.isoformat()
-    args_hash = auth.arguments_hash or ""
-    candidates = [
-        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
-        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
-        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
-        f"{auth.run_id}:{auth.tool_call_id}:{auth.canonical_tool_id}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
-    ]
-    raw_receipt = auth.raw_receipt if isinstance(auth.raw_receipt, dict) else {}
-    raw_tool = raw_receipt.get("tool_name") or raw_receipt.get("tool_id")
-    if raw_tool and raw_tool != auth.canonical_tool_id:
-        candidates.extend([
-            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
-            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{args_hash}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
-            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso_z}",
-            f"{auth.run_id}:{auth.tool_call_id}:{raw_tool}:{auth.app_id}:{auth.session_id}:{auth.profile_id}:{auth.nonce}:{exp_iso}",
-        ])
-
-    for c in candidates:
-        computed = hmac.new(secret.encode(), c.encode(), hashlib.sha256).hexdigest()
-        if hmac.compare_digest(raw_sig, computed):
-            return True
-    return False
+    secret = os.getenv("RUNTIME_AUTH_SECRET") or os.getenv("INTERNAL_EXECUTE_TOKEN")
+    if not secret:
+        return False
+    raw = auth.raw_receipt or {}
+    raw = raw.get("authorization_receipt", raw)
+    # Verify the exact wire timestamp: JS uses milliseconds, Python microseconds.
+    expires = raw.get("expires_at") or auth.expires_at.isoformat()
+    if isinstance(expires, datetime):
+        expires = expires.isoformat()
+    tool = raw.get("tool_name") or raw.get("tool_id") or auth.canonical_tool_id
+    if resolve_canonical_tool(tool)[0] != resolve_canonical_tool(auth.canonical_tool_id)[0]:
+        return False
+    fields = [auth.run_id, auth.tool_call_id, tool]
+    if auth.arguments_hash:
+        fields.append(auth.arguments_hash)
+    fields.extend([auth.app_id, auth.session_id, auth.profile_id, auth.nonce, expires])
+    computed = hmac.new(secret.encode(), ":".join(fields).encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig[len(prefix):], computed)
 
 
 def verify_local_authorization(
@@ -353,17 +338,21 @@ def verify_local_authorization(
 
     # 5d. Arguments hash check (if specified)
     if expected_args is not None and auth.arguments_hash:
-        sorted_args = {k: expected_args[k] for k in sorted(expected_args.keys())}
-        canonical_args_str = json.dumps(sorted_args, separators=(',', ':'))
-        computed_args_hash = hashlib.sha256(canonical_args_str.encode()).hexdigest()
-        if computed_args_hash != auth.arguments_hash:
-            loose_hash = hashlib.sha256(json.dumps(sorted_args).encode()).hexdigest()
-            if loose_hash != auth.arguments_hash:
-                return AuthorizationVerificationResult(
-                    valid=False,
-                    error="Arguments mismatch: tool arguments do not match authorized arguments hash",
-                    code="ARGUMENTS_MISMATCH",
-                )
+        raw = auth.raw_receipt or {}
+        raw = raw.get("authorization_receipt", raw)
+        wire_args = raw.get("arguments_json")
+        try:
+            if wire_args is not None:
+                computed_args_hash = hashlib.sha256(wire_args.encode()).hexdigest()
+                same_args = json.dumps(json.loads(wire_args), sort_keys=True) == json.dumps(expected_args, sort_keys=True)
+            else:
+                encoded = json.dumps(expected_args, sort_keys=True, separators=(',', ':'))
+                computed_args_hash = hashlib.sha256(encoded.encode()).hexdigest()
+                same_args = True
+        except (TypeError, ValueError):
+            same_args, computed_args_hash = False, None
+        if not same_args or computed_args_hash != auth.arguments_hash:
+            return AuthorizationVerificationResult(valid=False, error="Arguments mismatch: tool arguments do not match authorized arguments hash", code="ARGUMENTS_MISMATCH")
 
     # 6. Expiry check
     current_time = now if now is not None else datetime.now(timezone.utc)
@@ -450,6 +439,12 @@ def verify_local_tool_scope(
     if isinstance(required_scope, list):
         scope_keys = set(required_scope)
     elif isinstance(required_scope, dict):
+        for key in ("app_id", "session_id"):
+            if key in required_scope and required_scope[key] is not True:
+                expected = required_scope[key]
+                actual = getattr(context, key, None)
+                if not expected or expected != actual:
+                    return False, f"Scope violation: {key} does not match active request"
         scope_keys = {k for k, v in required_scope.items() if bool(v)}
     else:
         return False, "Scope violation: malformed required_scope format"
@@ -525,7 +520,7 @@ def create_test_authorization(
     confirmed: bool = False,
     issued_at: Optional[datetime] = None,
     expires_at: Optional[datetime] = None,
-    signature: Optional[str] = "sha256-valid-test-sig",
+    signature: Optional[str] = "",
 ) -> LocalToolAuthorization:
     """Convenience helper to create a valid typed LocalToolAuthorization envelope for testing."""
     import uuid
@@ -535,7 +530,7 @@ def create_test_authorization(
     tid = tool_call_id or f"tc_{uuid.uuid4().hex[:8]}"
     rid = run_id or f"run_{uuid.uuid4().hex[:8]}"
     non = nonce or f"nonce_{uuid.uuid4().hex[:8]}"
-    return LocalToolAuthorization(
+    auth = LocalToolAuthorization(
         run_id=rid,
         tool_call_id=tid,
         canonical_tool_id=tool_id,
@@ -548,3 +543,9 @@ def create_test_authorization(
         signature=signature,
         raw_receipt={"confirmed": confirmed}
     )
+
+    if signature == "":
+        secret = os.environ.get("RUNTIME_AUTH_SECRET") or os.environ["INTERNAL_EXECUTE_TOKEN"]
+        payload = ":".join([rid, tid, tool_id, app_id, session_id, profile_id, non, exp.isoformat()])
+        auth.signature = "hmac-sha256-" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return auth

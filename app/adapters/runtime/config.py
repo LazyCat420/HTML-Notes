@@ -27,7 +27,7 @@ LAZYCAT_RUNTIME_URL: str = os.getenv(
 # Canonical agent profile
 HTML_NOTES_RUNTIME_PROFILE: str = os.getenv(
     "HTML_NOTES_RUNTIME_PROFILE",
-    "html-notes-researcher-v1"
+    "html-notes-canvas-v1"
 )
 
 # Canonical contract version
@@ -81,7 +81,7 @@ def is_contract_compatible(required_version: str, reported_version: str) -> bool
 def validate_profile_against_manifest(profile_id: str, manifest_profile: dict) -> Tuple[bool, Optional[str]]:
     """Validates that requested profile ID matches declared application profile."""
     declared_id = manifest_profile.get("profile_id") or manifest_profile.get("id")
-    if declared_id and declared_id != profile_id:
+    if not declared_id or declared_id != profile_id:
         return False, f"Requested profile '{profile_id}' does not match declared profile '{declared_id}'"
     return True, None
 
@@ -238,7 +238,15 @@ async def check_runtime_readiness(
 
     from app.tooling.html_notes_manifest import manifest_registry
     try:
-        manifest_registry.validate_all()
+        from app.tooling.html_notes_manifest import HTMLNotesManifestRegistry
+        registry = HTMLNotesManifestRegistry(manifest_registry.manifest_dir)
+        registry.validate_all()
+        tools = registry.get_domain_tools_manifest().get("tools")
+        if not isinstance(tools, list) or not tools:
+            raise ValueError("Domain manifest must contain tool definitions")
+        ids = [tool.get("id") for tool in tools]
+        if any(not isinstance(name, str) or not name.startswith("html_notes.") for name in ids) or len(ids) != len(set(ids)):
+            raise ValueError("Domain manifest contains invalid or duplicate canonical IDs")
     except Exception as me:
         return RuntimeReadinessResult(
             is_ready=False,
@@ -303,7 +311,7 @@ async def check_runtime_readiness(
             )
 
         # 5. Profile registration check
-        known_profiles = registered_profiles or spec_data.get("registered_profiles") or spec_data.get("profiles")
+        known_profiles = registered_profiles if registered_profiles is not None else spec_data.get("registered_profiles", spec_data.get("profiles"))
         if not known_profiles:
             return RuntimeReadinessResult(
                 is_ready=False,

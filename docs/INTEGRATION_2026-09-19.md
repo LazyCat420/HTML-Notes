@@ -83,3 +83,37 @@ git diff origin/main...HEAD -i -G"password\|secret\|token\|api_key\|credential"
   git revert HEAD -m 1
   ```
 
+
+## Release follow-up: verified gaps and corrections
+
+The earlier pass counts above describe the prior test suite, not a successful
+end-to-end runtime release. Follow-up inspection found a test-signature bypass,
+incompatible fallback keys, timestamp serialization mismatch, missing startup
+and request preflight, and an unconnected runtime admission helper.
+
+The follow-up removes signature shortcuts and default signing keys, binds the
+producer's exact serialized arguments into HMAC receipts, preserves wire expiry
+precision, uses UUID nonces, and prevents a canonical tool override from changing
+the signed tool. Both services prefer RUNTIME_AUTH_SECRET, falling back only to
+the configured INTERNAL_EXECUTE_TOKEN. Compose forwards the dedicated setting.
+The existing old HMAC envelope remains verifiable during the coordinated rollout.
+
+Startup records readiness and chat preflight fails closed before mutation. Health
+reports runtime_ready explicitly. The canonical profile defaults agree, and the
+server canvas profile selects the deployed vllm-2 / GLM-5.3-Flash-EXL3 pair.
+The runtime now supplies an event emitter, profile-filtered application schemas,
+and an admission callback to the agent harness. Local calls are dispatched to
+the app with a receipt; the runtime does not claim their execution succeeded.
+Capabilities requiring confirmation fail closed in the canonical execution path.
+
+The HTTP tests use isolated SQLite databases and mocked external dependencies;
+valid receipts persist a note, while forged, unsigned, mismatched, changed-argument
+and repeated receipts are rejected. TestClient requires execution outside this
+workspace's restricted sandbox (it hangs at the thread bridge inside it).
+The shared-runtime SSE wrapper emits one terminal event for connected streams,
+including a finalization/persistence exception. Disconnected clients cannot be
+guaranteed delivery of a terminal frame.
+
+Validation and NAS release results are recorded below after integration.
+Replay state is process-local; this release assumes the existing single-worker
+container. It does not provide replay durability across a restart or replicas.

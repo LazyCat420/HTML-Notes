@@ -230,3 +230,23 @@ async def test_runtime_preflight_reports_missing_capability():
     assert "missing required capability" in (res.error or "").lower()
     assert "global.web.read_page" in (res.error or "")
     assert res.details.get("phase") == "capability_check"
+
+
+@pytest.mark.asyncio
+async def test_startup_records_runtime_preflight(monkeypatch):
+    from fastapi import FastAPI
+    from app import main
+    from app.adapters.runtime import config
+    import asyncio
+    result = RuntimeReadinessResult(False, error="test runtime unavailable")
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+    check = AsyncMock(return_value=result)
+    monkeypatch.setattr(config, "check_runtime_readiness", check)
+    monkeypatch.setattr(main, "_warn_if_research_is_down", AsyncMock())
+    monkeypatch.setattr(main, "_mcp_watchdog", AsyncMock())
+    monkeypatch.setattr(main, "_watch_scheduler", AsyncMock())
+    application = FastAPI()
+    async with main._lifespan(application):
+        assert application.state.runtime_readiness is result
+    await asyncio.sleep(0)
+    check.assert_awaited_once()

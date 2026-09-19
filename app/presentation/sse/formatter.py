@@ -77,7 +77,7 @@ class SSEFormatter:
         # 1. Handle error cases
         if not result.get("success") or result.get("is_error"):
             err_msg = str(result.get("error") or "Tool execution failed")
-            yield self.error_frame(message=err_msg, code="LOCAL_TOOL_ERROR")
+            yield self.error_frame(message=err_msg, code=result.get("code") or "LOCAL_TOOL_ERROR")
             yield self.status_frame(message=f"tool {tool_name} failed: {err_msg}", phase="tool_failed")
             return
 
