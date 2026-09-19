@@ -4,33 +4,57 @@ import asyncio
 import json
 import logging
 import os
-import uuid
 from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set
 
 from lazycat.client import RuntimeClient, RuntimeClientError
 from lazycat.models import CreateRunRequest, RunEvent
 
+from app.adapters.runtime.config import (
+    HTML_NOTES_CONTRACT_VERSION,
+    HTML_NOTES_RUNTIME_PROFILE,
+    RUNTIME_MAX_CANVAS_CONTEXT_CHARS,
+    is_contract_compatible,
+)
+from app.adapters.runtime.models import (
+    LocalExecutionContext,
+    resolve_canonical_tool,
+    verify_local_tool_scope,
+)
+from app.presentation.sse.formatter import sse_formatter
+
 logger = logging.getLogger(__name__)
 
-# Canonical profile in lazy-agent-service
-DEFAULT_HTML_NOTES_PROFILE = "html-notes-researcher-v1"
-
-# Local canvas mutations that HTML-Notes executes directly
-LOCAL_MUTATION_TOOLS: Set[str] = {
+# Known local tool set that HTML-Notes executes locally
+LOCAL_TOOLS: Set[str] = {
     "canvas_add_widget",
     "canvas_modify_dom",
     "create_widget",
     "update_widget",
+    "plan_widget",
+    "list_widget_types",
     "mcp__lazy-tool-service__canvas_add_widget",
     "mcp__lazy-tool-service__canvas_modify_dom",
     "mcp__lazy-tool-service__create_widget",
     "mcp__lazy-tool-service__update_widget",
     "html_notes.canvas.upsert_widget",
     "html_notes.canvas.remove_widget",
+    "html_notes.canvas.modify_dom",
+    "html_notes.canvas.mutate",
+    "html_notes.canvas.read",
+    "html_notes.notes.create",
+    "html_notes.notes.get",
+    "html_notes.notes.update",
+    "html_notes.notes.search",
+    "html_notes.notes.link",
+    "html_notes.portal.open_app",
+    "html_notes.portal.list_services",
+    "html_notes.portal.list_actions",
+    "html_notes.portal.execute_action",
+    "html_notes.portal.curate_app",
 }
 
 
-def create_bounded_canvas_context(canvas_html: Optional[str], max_chars: int = 4000) -> str:
+def create_bounded_canvas_context(canvas_html: Optional[str], max_chars: int = RUNTIME_MAX_CANVAS_CONTEXT_CHARS) -> str:
     """Returns a bounded representation of canvas HTML for prompt context."""
     if not canvas_html:
         return ""
@@ -55,7 +79,7 @@ class RuntimeChatAdapter:
         self.default_profile_id = (
             default_profile_id
             or os.getenv("HTML_NOTES_RUNTIME_PROFILE")
-            or DEFAULT_HTML_NOTES_PROFILE
+            or HTML_NOTES_RUNTIME_PROFILE
         )
 
     def _get_client(self) -> Any:
@@ -68,11 +92,13 @@ class RuntimeChatAdapter:
         query: str,
         session_id: str,
         canvas_html: str = "",
-        execute_mutation_cb: Optional[Callable[[str, Dict[str, Any]], AsyncGenerator[str, None]]] = None,
+        execute_local_tool_cb: Optional[Callable[[str, Dict[str, Any], Dict[str, Any], LocalExecutionContext], AsyncGenerator[str, None]]] = None,
         cancel_event: Optional[asyncio.Event] = None,
         profile_id: Optional[str] = None,
         extra_context: Optional[Dict[str, Any]] = None,
         runtime_overrides: Optional[Dict[str, Any]] = None,
+        execute_mutation_cb: Optional[Callable[[str, Dict[str, Any]], AsyncGenerator[str, None]]] = None,
+        request_context: Optional[LocalExecutionContext] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Coordinates a single chat turn through the shared runtime and yields SSE-ready dicts.
@@ -80,8 +106,26 @@ class RuntimeChatAdapter:
         active_profile = profile_id or self.default_profile_id
         client = self._get_client()
 
+        # Build or verify LocalExecutionContext
+        if request_context is None:
+            request_context = LocalExecutionContext(
+                session_id=session_id,
+                canvas_html=canvas_html,
+                query=query,
+            )
+
+        # Preflight handshake check if client reports contract version
+        reported_contract = getattr(client, "contract_version", None)
+        if reported_contract and not is_contract_compatible(HTML_NOTES_CONTRACT_VERSION, reported_contract):
+            err_msg = f"Incompatible contract version: required {HTML_NOTES_CONTRACT_VERSION}, runtime reports {reported_contract}"
+            logger.error(f"[RUNTIME ADAPTER] {err_msg}")
+            yield {"type": "error", "message": err_msg, "code": "INCOMPATIBLE_CONTRACT_VERSION"}
+            yield {"type": "status", "message": "agent runtime version mismatch", "phase": "error"}
+            yield {"type": "done"}
+            return
+
         # Bounded context envelope
-        bounded_canvas = create_bounded_canvas_context(canvas_html)
+        bounded_canvas = create_bounded_canvas_context(canvas_html, RUNTIME_MAX_CANVAS_CONTEXT_CHARS)
         context_payload: Dict[str, Any] = {
             "session_id": session_id,
             "canvas_context": bounded_canvas,
@@ -138,9 +182,13 @@ class RuntimeChatAdapter:
                         event.get("run_id") if isinstance(event, dict) else None
                     ) or data.get("run_id")
 
+                # Structured log with active run_id
+                if active_run_id:
+                    logger.debug(f"[RUNTIME ADAPTER] run_id={active_run_id} event_type={event_type}")
+
                 # Check for cancellation before processing each event
                 if cancel_event and cancel_event.is_set():
-                    logger.info(f"[RUNTIME ADAPTER] Cancellation requested for run {active_run_id}")
+                    logger.info(f"[RUNTIME ADAPTER] Cancellation requested for run_id={active_run_id}")
                     if active_run_id and hasattr(client, "cancel_run"):
                         try:
                             await client.cancel_run(active_run_id)
@@ -194,6 +242,13 @@ class RuntimeChatAdapter:
                         or {}
                     )
                     tool_call_id = data.get("tool_call_id") or data.get("id") or ""
+                    execution_loc = data.get("execution")
+                    required_scope = data.get("required_scope")
+                    auth_receipt = data.get("authorization_receipt") or {}
+
+                    logger.info(
+                        f"[RUNTIME ADAPTER] tool.invoked: name={tool_name} run_id={active_run_id} execution={execution_loc}"
+                    )
 
                     yield {
                         "type": "tool_call",
@@ -207,10 +262,41 @@ class RuntimeChatAdapter:
                         "phase": "tool",
                     }
 
-                    # If tool is an application-owned canvas mutation, execute locally
-                    if execute_mutation_cb and tool_name in LOCAL_MUTATION_TOOLS:
-                        async for mutation_sse_frame in execute_mutation_cb(tool_name, tool_args):
-                            yield {"type": "raw_sse", "frame": mutation_sse_frame}
+                    # Determine if tool is local vs shared
+                    canonical_name, is_manifest_local = resolve_canonical_tool(tool_name)
+                    is_local = (execution_loc == "local") or is_manifest_local or (tool_name in LOCAL_TOOLS)
+
+                    if is_local:
+                        # Validate scope
+                        scope_valid, scope_err = verify_local_tool_scope(required_scope, request_context)
+                        if not scope_valid:
+                            err_msg = scope_err or "Scope validation failed"
+                            yield {
+                                "type": "error",
+                                "message": err_msg,
+                                "code": "LOCAL_SCOPE_VIOLATION",
+                            }
+                            yield {
+                                "type": "status",
+                                "message": f"tool {tool_name} rejected: {err_msg}",
+                                "phase": "tool_failed",
+                            }
+                            continue
+
+                        # Execute locally via bridge callback
+                        if execute_local_tool_cb:
+                            async for frame_str in execute_local_tool_cb(
+                                canonical_name, tool_args, auth_receipt, request_context
+                            ):
+                                yield {"type": "raw_sse", "frame": frame_str}
+                        elif execute_mutation_cb and tool_name in LOCAL_TOOLS:
+                            async for mutation_sse_frame in execute_mutation_cb(tool_name, tool_args):
+                                yield {"type": "raw_sse", "frame": mutation_sse_frame}
+                    else:
+                        logger.info(
+                            f"[RUNTIME ADAPTER] Tool '{tool_name}' executed in shared runtime; "
+                            f"local executor will not be invoked."
+                        )
 
                 elif event_type in ("tool.completed", "tool.result"):
                     tool_name = data.get("tool_name") or data.get("tool") or ""
@@ -226,13 +312,14 @@ class RuntimeChatAdapter:
                     err_code = err.get("code", "TOOL_FAILED")
                     err_msg = err.get("message", f"Tool {tool_name} failed")
 
+                    logger.warning(f"[RUNTIME ADAPTER] Tool failed: {tool_name} code={err_code} err={err_msg}")
                     yield {
                         "type": "status",
                         "message": f"tool {tool_name} failed: {err_msg}",
                         "phase": "tool_failed",
                         "error": err,
                     }
-                    if err_code == "TOOL_PERMISSION_DENIED":
+                    if err_code in ("TOOL_PERMISSION_DENIED", "POLICY_DENIED"):
                         yield {
                             "type": "error",
                             "message": err_msg,
@@ -265,6 +352,7 @@ class RuntimeChatAdapter:
                         "type": "status",
                         "message": "agent execution cancelled",
                         "phase": "cancelled",
+                        "run_id": active_run_id,
                     }
 
                 elif event_type == "run.failed":
@@ -280,6 +368,7 @@ class RuntimeChatAdapter:
                         "type": "status",
                         "message": f"agent run failed: {err_msg}",
                         "phase": "failed",
+                        "run_id": active_run_id,
                     }
 
                 elif event_type == "run.completed":
@@ -297,6 +386,7 @@ class RuntimeChatAdapter:
                         "type": "status",
                         "message": "agent turn completed",
                         "phase": "completed",
+                        "run_id": active_run_id,
                     }
 
         except Exception as exc:
