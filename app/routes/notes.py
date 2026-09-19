@@ -1,83 +1,133 @@
 from fastapi import APIRouter, Request, HTTPException, Response
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
 import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
+from app import database
+from app.domain.notes.service import notes_service
 
 router = APIRouter()
 
+
+class ClaimNoteRequest(BaseModel):
+    note_id: str
+    session_id: Optional[str] = None
+    owner_id: Optional[str] = None
+
+
+def _extract_session_id(request: Request, body_session_id: Optional[str] = None) -> Optional[str]:
+    if body_session_id and str(body_session_id).strip():
+        return str(body_session_id).strip()
+    if request is not None:
+        hdr = request.headers.get("x-session-id") or request.headers.get("X-Session-ID")
+        if hdr and str(hdr).strip():
+            return str(hdr).strip()
+        qp = request.query_params.get("session_id")
+        if qp and str(qp).strip():
+            return str(qp).strip()
+    return None
+
+
 @router.post("/notes/create")
-async def api_create_note(req: CreateNoteRequest):
-    import uuid
-    from app.agents.auditor import audit_html_fragment
-    
-    # Audit before manual creation
-    audit_res = audit_html_fragment(req.rendered_html)
-    if not audit_res["is_valid"]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"HTML content failed security audit: {', '.join(audit_res['errors'])}"
-        )
-        
-    try:
-        note_id = f"note_{uuid.uuid4().hex[:8]}"
-        note = database.create_note(
-            note_id=note_id,
-            title=req.title,
-            tags=req.tags,
-            links=req.links,
-            source_messages=["api-manual-create"],
-            canonical_blocks=req.canonical_blocks,
-            rendered_html=req.rendered_html
-        )
-        return note
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_create_note(req: CreateNoteRequest, request: Request = None):
+    session_id = _extract_session_id(request, getattr(req, "session_id", None))
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    res = notes_service.create_note(
+        title=req.title,
+        rendered_html=req.rendered_html,
+        tags=req.tags,
+        links=req.links,
+        session_id=session_id
+    )
+    if res.get("is_error"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+
+    note = database.get_note_by_id(res["note_id"])
+    if not note:
+        raise HTTPException(status_code=500, detail="Failed to retrieve created note")
+    return note
 
 
 @router.post("/notes/update")
-async def api_update_note(req: UpdateNoteRequest):
-    if req.rendered_html is not None:
-        from app.agents.auditor import audit_html_fragment
-        audit_res = audit_html_fragment(req.rendered_html)
-        if not audit_res["is_valid"]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"HTML content failed security audit: {', '.join(audit_res['errors'])}"
-            )
-            
-    try:
-        note = database.update_note(
-            note_id=req.note_id,
-            title=req.title,
-            tags=req.tags,
-            links=req.links,
-            canonical_blocks=req.canonical_blocks,
-            rendered_html=req.rendered_html,
-            source_message="api-manual-update"
-        )
-        if not note:
-            raise HTTPException(status_code=404, detail="Note not found")
-        return note
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_update_note(req: UpdateNoteRequest, request: Request = None):
+    session_id = _extract_session_id(request, getattr(req, "session_id", None))
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    res = notes_service.update_note(
+        note_id=req.note_id,
+        session_id=session_id,
+        title=req.title,
+        tags=req.tags,
+        links=req.links,
+        canonical_blocks=req.canonical_blocks,
+        rendered_html=req.rendered_html,
+        source_message="api-manual-update"
+    )
+    if res.get("is_error"):
+        code = res.get("code")
+        if code == "NOTE_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=res.get("error"))
+        elif code in ("NOTE_SESSION_MISMATCH", "NOTE_UNCLAIMED"):
+            raise HTTPException(status_code=403, detail=res.get("error"))
+        else:
+            raise HTTPException(status_code=400, detail=res.get("error"))
+
+    note = database.get_note_by_id(req.note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return note
 
 
 @router.post("/notes/link")
-async def api_link_notes(req: LinkNotesRequest):
-    try:
-        note_a = database.get_note_by_id(req.source_note_id)
-        note_b = database.get_note_by_id(req.target_note_id)
-        if not note_a or not note_b:
-            raise HTTPException(status_code=404, detail="One or both notes not found")
-            
-        links = note_a.get("links", [])
-        if req.target_note_id not in links:
-            links.append(req.target_note_id)
-            database.update_note(note_id=req.source_note_id, links=links)
-            
-        return {"status": "success", "detail": f"Linked {req.source_note_id} to {req.target_note_id}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_link_notes(req: LinkNotesRequest, request: Request = None):
+    session_id = _extract_session_id(request, getattr(req, "session_id", None))
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    res = notes_service.link_notes(
+        source_note_id=req.source_note_id,
+        target_note_id=req.target_note_id,
+        session_id=session_id
+    )
+    if res.get("is_error"):
+        code = res.get("code")
+        if code in ("SOURCE_NOTE_NOT_FOUND", "TARGET_NOTE_NOT_FOUND"):
+            raise HTTPException(status_code=404, detail=res.get("error"))
+        elif code in ("NOTE_SESSION_MISMATCH", "NOTE_UNCLAIMED"):
+            raise HTTPException(status_code=403, detail=res.get("error"))
+        else:
+            raise HTTPException(status_code=400, detail=res.get("error"))
+
+    return {"status": "success", "detail": f"Linked {req.source_note_id} to {req.target_note_id}"}
+
+
+@router.post("/notes/claim")
+@router.post("/api/notes/claim")
+async def api_claim_note(req: ClaimNoteRequest, request: Request = None):
+    session_id = _extract_session_id(request, req.session_id)
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required to claim a note")
+
+    res = notes_service.claim_note(
+        note_id=req.note_id,
+        session_id=session_id,
+        owner_id=req.owner_id
+    )
+    if res.get("is_error"):
+        code = res.get("code")
+        if code == "NOTE_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=res.get("error"))
+        elif code == "NOTE_ALREADY_CLAIMED":
+            raise HTTPException(status_code=409, detail=res.get("error"))
+        else:
+            raise HTTPException(status_code=400, detail=res.get("error"))
+
+    return res
+
 
 
 @router.get("/notes/{id}")

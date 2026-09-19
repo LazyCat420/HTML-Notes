@@ -30,62 +30,78 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
                        "INTERNAL_EXECUTE_TOKEN in this service's and "
                        "lazy-tool-service's env to enforce auth")
 
-    if req.tool not in _INTERNAL_EXECUTE_TOOLS:
+    allowed_tools = _INTERNAL_EXECUTE_TOOLS | {"html_notes_claim_note"}
+    if req.tool not in allowed_tools:
         return {"error": f"Tool not allowed: {req.tool}", "is_error": True}
 
     t = req.tool
     a = req.args
 
     try:
-        if t == "html_notes_create_note":
-            from app.agents.auditor import audit_html_fragment
-            audit = audit_html_fragment(a.get("rendered_html", ""))
-            if not audit["is_valid"]:
-                return {"error": f"HTML audit failed: {audit['errors']}", "is_error": True}
-            note_id = f"note_{uuid.uuid4().hex[:8]}"
-            note = database.create_note(
-                note_id=note_id,
-                title=a["title"],
-                tags=a.get("tags", []),
-                links=a.get("links", []),
-                source_messages=["tool-call"],
-                canonical_blocks=[],
-                rendered_html=a["rendered_html"]
+        session_id = a.get("session_id")
+        if not session_id and request is not None:
+            session_id = (
+                request.headers.get("x-session-id")
+                or request.headers.get("X-Session-ID")
+                or request.query_params.get("session_id")
             )
-            return {"success": True, "note_id": note["id"], "title": note["title"]}
+
+        if t == "html_notes_create_note":
+            if not session_id:
+                return {"error": "session_id is required for note operations", "is_error": True, "code": "NOTE_SESSION_REQUIRED"}
+            from app.domain.notes.service import notes_service
+            return notes_service.create_note(
+                title=a.get("title", ""),
+                rendered_html=a.get("rendered_html", ""),
+                tags=a.get("tags"),
+                links=a.get("links"),
+                session_id=session_id
+            )
 
         elif t == "html_notes_update_note":
-            from app.agents.auditor import audit_html_fragment
-            if "rendered_html" in a:
-                audit = audit_html_fragment(a["rendered_html"])
-                if not audit["is_valid"]:
-                    return {"error": f"HTML audit failed: {audit['errors']}", "is_error": True}
-            note = database.update_note(note_id=a["note_id"], **{k: v for k, v in a.items() if k != "note_id"})
-            return {"success": True, "note_id": a["note_id"]} if note else {"error": "Note not found", "is_error": True}
+            if not session_id:
+                return {"error": "session_id is required for note operations", "is_error": True, "code": "NOTE_SESSION_REQUIRED"}
+            from app.domain.notes.service import notes_service
+            note_args = {k: v for k, v in a.items() if k not in ("note_id", "session_id")}
+            return notes_service.update_note(note_id=a.get("note_id", ""), session_id=session_id, **note_args)
 
         elif t == "html_notes_get_note":
             note = database.get_note_by_id(a["note_id"])
-            return note if note else {"error": "Note not found", "is_error": True}
+            return note if note else {"error": "Note not found", "is_error": True, "code": "NOTE_NOT_FOUND"}
 
         elif t == "html_notes_search_notes":
             results = database.search_notes(a["query"])
             return {"results": results, "count": len(results)}
 
         elif t == "html_notes_link_notes":
-            note_a = database.get_note_by_id(a["source_note_id"])
-            if not note_a:
-                return {"error": "Source note not found", "is_error": True}
-            links = note_a.get("links", [])
-            if a["target_note_id"] not in links:
-                links.append(a["target_note_id"])
-                database.update_note(note_id=a["source_note_id"], links=links)
-            return {"success": True}
+            if not session_id:
+                return {"error": "session_id is required for note operations", "is_error": True, "code": "NOTE_SESSION_REQUIRED"}
+            from app.domain.notes.service import notes_service
+            return notes_service.link_notes(
+                source_note_id=a.get("source_note_id", ""),
+                target_note_id=a.get("target_note_id", ""),
+                session_id=session_id
+            )
 
         elif t == "html_notes_modify_dom":
-            # fetch note, apply BeautifulSoup DOM operation, update
-            note = database.get_note_by_id(a["note_id"])
+            if not session_id:
+                return {"error": "session_id is required for note operations", "is_error": True, "code": "NOTE_SESSION_REQUIRED"}
+            note = database.get_note_by_id(a.get("note_id", ""))
             if not note:
-                return {"error": "Note not found", "is_error": True}
+                return {"error": "Note not found", "is_error": True, "code": "NOTE_NOT_FOUND"}
+            if note.get("owner_type") == "legacy_unclaimed" or note.get("session_id") is None:
+                return {
+                    "error": f"Unauthorized: note '{a.get('note_id')}' is legacy unclaimed and must be claimed before updating",
+                    "is_error": True,
+                    "code": "NOTE_UNCLAIMED"
+                }
+            if note.get("session_id") != session_id:
+                return {
+                    "error": f"Unauthorized: note '{a.get('note_id')}' belongs to another session",
+                    "is_error": True,
+                    "code": "NOTE_SESSION_MISMATCH"
+                }
+
             soup = BeautifulSoup(note["rendered_html"], "html.parser")
             target = soup.select_one(a["css_selector"])
             if not target:
@@ -97,8 +113,19 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
             elif action == "insert_before": target.insert_before(snippet_soup)
             elif action == "insert_after":  target.insert_after(snippet_soup)
             elif action == "replace":   target.replace_with(snippet_soup)
-            database.update_note(note_id=a["note_id"], rendered_html=str(soup))
-            return {"success": True}
+            from app.domain.notes.service import notes_service
+            return notes_service.update_note(note_id=a["note_id"], session_id=session_id, rendered_html=str(soup))
+
+        elif t == "html_notes_claim_note":
+            if not session_id:
+                return {"error": "session_id is required for note operations", "is_error": True, "code": "NOTE_SESSION_REQUIRED"}
+            from app.domain.notes.service import notes_service
+            return notes_service.claim_note(
+                note_id=a.get("note_id", ""),
+                session_id=session_id,
+                owner_id=a.get("owner_id")
+            )
+
 
         elif t == "render_component":
             from app.templates import TEMPLATES

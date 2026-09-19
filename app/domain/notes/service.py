@@ -20,6 +20,13 @@ class NotesDomainService:
         links: Optional[List[str]] = None,
         session_id: Optional[str] = None
     ) -> Dict[str, Any]:
+        if not session_id or not str(session_id).strip():
+            return {
+                "error": "Unauthorized: session_id is required to create a note",
+                "is_error": True,
+                "code": "NOTE_SESSION_REQUIRED"
+            }
+
         audit = audit_html_fragment(rendered_html or "")
         if not audit.get("is_valid"):
             return {
@@ -47,9 +54,16 @@ class NotesDomainService:
 
     @staticmethod
     def update_note(note_id: str, session_id: Optional[str] = None, **fields: Any) -> Dict[str, Any]:
+        if not session_id or not str(session_id).strip():
+            return {
+                "error": "Unauthorized: session_id is required to update a note",
+                "is_error": True,
+                "code": "NOTE_SESSION_REQUIRED"
+            }
+
         existing = database.get_note_by_id(note_id)
         if not existing:
-            return {"error": f"Note '{note_id}' not found", "is_error": True}
+            return {"error": f"Note '{note_id}' not found", "is_error": True, "code": "NOTE_NOT_FOUND"}
 
         # Legacy unclaimed note check
         owner_type = existing.get("owner_type")
@@ -62,7 +76,7 @@ class NotesDomainService:
             }
 
         # Cross-session isolation check
-        if note_session and session_id and note_session != session_id:
+        if note_session != session_id:
             return {
                 "error": f"Unauthorized: note '{note_id}' belongs to another session",
                 "is_error": True,
@@ -79,28 +93,24 @@ class NotesDomainService:
 
         note = database.update_note(note_id=note_id, **{k: v for k, v in fields.items() if k not in ("note_id", "session_id")})
         if not note:
-            return {"error": f"Note '{note_id}' not found", "is_error": True}
+            return {"error": f"Note '{note_id}' not found", "is_error": True, "code": "NOTE_NOT_FOUND"}
         return {"success": True, "note_id": note_id}
 
     @staticmethod
     def claim_note(note_id: str, session_id: str, owner_id: Optional[str] = None) -> Dict[str, Any]:
         """Explicitly claims an unclaimed or legacy note, binding it to the current session/owner."""
-        existing = database.get_note_by_id(note_id)
-        if not existing:
-            return {"error": f"Note '{note_id}' not found", "is_error": True}
-
-        # If already claimed by another session, reject
-        current_session = existing.get("session_id")
-        if current_session and current_session != session_id:
+        if not session_id or not str(session_id).strip():
             return {
-                "error": f"Unauthorized: note '{note_id}' is already claimed by another session",
+                "error": "Unauthorized: session_id is required to claim a note",
                 "is_error": True,
-                "code": "NOTE_ALREADY_CLAIMED"
+                "code": "NOTE_SESSION_REQUIRED"
             }
 
         claimed = database.claim_note(note_id=note_id, session_id=session_id, owner_id=owner_id)
-        if not claimed:
-            return {"error": f"Failed to claim note '{note_id}'", "is_error": True}
+        if claimed is None:
+            return {"error": f"Note '{note_id}' not found", "is_error": True, "code": "NOTE_NOT_FOUND"}
+        if isinstance(claimed, dict) and claimed.get("is_error"):
+            return claimed
 
         return {
             "success": True,
@@ -115,7 +125,7 @@ class NotesDomainService:
     def get_note(note_id: str) -> Dict[str, Any]:
         note = database.get_note_by_id(note_id)
         if not note:
-            return {"error": f"Note '{note_id}' not found", "is_error": True}
+            return {"error": f"Note '{note_id}' not found", "is_error": True, "code": "NOTE_NOT_FOUND"}
         return note
 
     @staticmethod
@@ -124,15 +134,54 @@ class NotesDomainService:
         return {"results": results, "count": len(results)}
 
     @staticmethod
-    def link_notes(source_note_id: str, target_note_id: str) -> Dict[str, Any]:
+    def link_notes(source_note_id: str, target_note_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        if not session_id or not str(session_id).strip():
+            return {
+                "error": "Unauthorized: session_id is required to link notes",
+                "is_error": True,
+                "code": "NOTE_SESSION_REQUIRED"
+            }
+
         note_a = database.get_note_by_id(source_note_id)
         if not note_a:
-            return {"error": f"Source note '{source_note_id}' not found", "is_error": True}
+            return {"error": f"Source note '{source_note_id}' not found", "is_error": True, "code": "SOURCE_NOTE_NOT_FOUND"}
+
+        # Validate source note ownership
+        if note_a.get("owner_type") == "legacy_unclaimed" or note_a.get("session_id") is None:
+            return {
+                "error": f"Unauthorized: source note '{source_note_id}' is unclaimed and must be claimed before linking",
+                "is_error": True,
+                "code": "NOTE_UNCLAIMED"
+            }
+        if note_a.get("session_id") != session_id:
+            return {
+                "error": f"Unauthorized: source note '{source_note_id}' belongs to another session",
+                "is_error": True,
+                "code": "NOTE_SESSION_MISMATCH"
+            }
+
+        note_b = database.get_note_by_id(target_note_id)
+        if not note_b:
+            return {"error": f"Target note '{target_note_id}' not found", "is_error": True, "code": "TARGET_NOTE_NOT_FOUND"}
+
+        # Validate target note ownership
+        if note_b.get("owner_type") == "legacy_unclaimed" or note_b.get("session_id") is None:
+            return {
+                "error": f"Unauthorized: target note '{target_note_id}' is unclaimed and must be claimed before linking",
+                "is_error": True,
+                "code": "NOTE_UNCLAIMED"
+            }
+        if note_b.get("session_id") != session_id:
+            return {
+                "error": f"Unauthorized: target note '{target_note_id}' belongs to another session",
+                "is_error": True,
+                "code": "NOTE_SESSION_MISMATCH"
+            }
 
         links = list(note_a.get("links") or [])
         if target_note_id not in links:
             links.append(target_note_id)
             database.update_note(note_id=source_note_id, links=links)
-        return {"success": True, "source": source_note_id, "target": target_note_id}
+        return {"success": True, "source": source_note_id, "target": target_note_id, "session_id": session_id}
 
 notes_service = NotesDomainService()

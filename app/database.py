@@ -368,22 +368,66 @@ def claim_note(
     session_id: str,
     owner_id: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
-    """Binds an unclaimed or session-bound note to the specified session and owner."""
-    note = get_note_by_id(note_id)
-    if not note:
-        return None
+    """
+    Atomically binds an unclaimed or session-bound note to the specified session and owner.
+    Prevents race conditions by conditionally updating only if the note is unclaimed
+    or already owned by the same session.
+    Also preserves note version history by creating a note_versions entry.
+    """
     now = datetime.utcnow().isoformat()
     conn = get_connection()
     cursor = conn.cursor()
-    new_version = note["version"] + 1
+    
+    # Atomic conditional update
     cursor.execute(
         """
         UPDATE notes
-        SET session_id = ?, owner_type = 'session', owner_id = ?, claimed_at = ?, updated_at = ?, version = ?
+        SET session_id = ?,
+            owner_type = 'session',
+            owner_id = ?,
+            claimed_at = ?,
+            updated_at = ?,
+            version = version + 1
         WHERE id = ?
+          AND (session_id IS NULL OR session_id = ? OR owner_type = 'legacy_unclaimed')
         """,
-        (session_id, owner_id or session_id, now, now, new_version, note_id)
+        (session_id, owner_id or session_id, now, now, note_id, session_id)
     )
+    
+    if cursor.rowcount == 0:
+        conn.close()
+        # Check if note exists to differentiate between not found vs already claimed
+        existing = get_note_by_id(note_id)
+        if not existing:
+            return None
+        # Note exists, but was already claimed by another session
+        return {
+            "error": f"Unauthorized: note '{note_id}' is already claimed by another session",
+            "is_error": True,
+            "code": "NOTE_ALREADY_CLAIMED"
+        }
+        
+    # Retrieve updated note within the same connection to save history
+    cursor.execute("SELECT * FROM notes WHERE id = ?", (note_id,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            """
+            INSERT INTO note_versions (note_id, version, title, updated_at, tags, links, canonical_blocks, rendered_html)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                note_id,
+                row["version"],
+                row["title"],
+                now,
+                row["tags"],
+                row["links"],
+                row["canonical_blocks"],
+                row["rendered_html"]
+            )
+        )
+    
     conn.commit()
     conn.close()
     return get_note_by_id(note_id)
