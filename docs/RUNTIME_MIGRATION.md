@@ -63,9 +63,56 @@ All local tools strictly declare:
 
 ---
 
-## 4. Verification
+## 4. Required Runtime Environment Variables
 
-Run the complete test suite:
+| Variable | Default | Purpose |
+|---|---|---|
+| `USE_SHARED_RUNTIME` | `false` | Feature flag toggling shared agent runtime vs legacy Prism route. |
+| `LAZYCAT_RUNTIME_URL` | `http://10.0.0.16:5591` | Base URL of `lazy-agent-service` instance. |
+| `HTML_NOTES_RUNTIME_PROFILE` | `html-notes-canvas-v1` | Canonical agent profile ID declared in local manifest. |
+| `HTML_NOTES_CONTRACT_VERSION` | `1.2.0` | Required contract version specification. |
+| `RUNTIME_CONNECT_TIMEOUT_SECONDS`| `5.0` | HTTP client connection timeout to runtime. |
+| `RUNTIME_READ_TIMEOUT_SECONDS` | `90.0` | HTTP client read/stream timeout for agent runs. |
+| `RUNTIME_MAX_CANVAS_CONTEXT_CHARS`| `4000` | Bounded character limit for canvas DOM context prompt. |
+
+---
+
+## 5. Startup & Preflight Readiness Validation
+
+When `USE_SHARED_RUNTIME=true`, the application verifies before processing turns:
+1. **Reachability**: Runtime endpoint responds to HTTP GET at `/v1/contracts/spec`.
+2. **Contract Compatibility**: Runtime reports `1.2.0` or compatible v1 minor semver (`rep_maj == 1`, `rep_min >= 2`).
+3. **Profile Alignment**: Configured profile matches declared profile in `app/tooling/manifests/html_notes.profile.json`.
+4. **Capability Whitelist**: Profile permits required global capabilities (`global.web.search`, `global.web.read_page`).
+5. **Fail-Closed Gate**: Preflight failures return structured `RuntimeReadinessResult` without silent fallback.
+
+---
+
+## 6. Legacy Note Ownership Migration Procedure
+
+Notes with `session_id = NULL` are transitioned to `owner_type = 'legacy_unclaimed'` to prevent cross-session tampering:
 ```bash
-pytest tests/test_domain_manifests.py tests/test_local_executor.py tests/test_tool_policy_and_effects.py tests/test_widget_catalog_parity.py
+# Preview candidates
+python3 scripts/migrate_legacy_note_ownership.py --dry-run
+
+# Execute migration
+python3 scripts/migrate_legacy_note_ownership.py
+
+# Rollback if needed
+python3 scripts/migrate_legacy_note_ownership.py --rollback
 ```
+
+---
+
+## 7. Verification & Testing
+
+Run the Dev 2 readiness, adapter, cutover, and ownership test suites:
+```bash
+uv run pytest \
+  tests/test_runtime_readiness.py \
+  tests/test_runtime_chat_adapter.py \
+  tests/test_runtime_cutover.py \
+  tests/test_legacy_note_migration.py \
+  tests/test_notes_session_ownership.py -v
+```
+
