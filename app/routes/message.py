@@ -66,6 +66,10 @@ async def get_models():
 
 @router.post("/session/message")
 async def send_message(req: MessageRequest):
+    import app.main as _main
+    import app.canvas_manager as _cm
+    globals().update({k: v for k, v in _main.__dict__.items() if not k.startswith("__")})
+    globals().update({k: v for k, v in _cm.__dict__.items() if not k.startswith("__")})
     try:
         # Stamp this request's arrival order so a slower-committing older video
         # can't overwrite a newer one (see _place_media_widget). Captured as a
@@ -1352,7 +1356,8 @@ async def send_message(req: MessageRequest):
         # The shared awareness bundle (recent turns + canvas inventory + focus)
         # feeds BOTH the router and the agent, so every tier reasons about the
         # conversation thread the same way.
-        turn_ctx = build_turn_context(req.session_id, req.current_canvas or "")
+        from app.canvas_manager import build_turn_context as _build_turn_context
+        turn_ctx = _build_turn_context(req.session_id, req.current_canvas or "")
         # Where a refining follow-up should land: topical match beats the
         # recency focus when the message names a subject ("tell me more about
         # the costco deals" must not rewrite the sandals card built last turn).
