@@ -120,6 +120,7 @@ class RuntimeChatAdapter:
         query: str,
         session_id: str,
         canvas_html: str = "",
+        messages: Optional[list] = None,
         execute_local_tool_cb: Optional[Callable[[str, Dict[str, Any], Dict[str, Any], LocalExecutionContext], AsyncGenerator[str, None]]] = None,
         cancel_event: Optional[asyncio.Event] = None,
         profile_id: Optional[str] = None,
@@ -156,6 +157,7 @@ class RuntimeChatAdapter:
         bounded_canvas = create_bounded_canvas_context(canvas_html, RUNTIME_MAX_CANVAS_CONTEXT_CHARS)
         context_payload: Dict[str, Any] = {
             "session_id": session_id,
+            "app_id": EXPECTED_APP_ID,
             "canvas_context": bounded_canvas,
         }
         if extra_context:
@@ -176,7 +178,9 @@ class RuntimeChatAdapter:
         # Build run request
         run_request = CreateRunRequest(
             profile_id=active_profile,
-            input=query,
+            input=messages if messages is not None else query,
+            app_id=EXPECTED_APP_ID,
+            session_id=session_id,
             stream=True,
             runtime_overrides={
                 "context": context_payload,
@@ -186,6 +190,8 @@ class RuntimeChatAdapter:
         )
 
         active_run_id: Optional[str] = None
+        terminal = False
+        event_stream = None
 
         try:
             # Stream events from runtime client
@@ -226,6 +232,7 @@ class RuntimeChatAdapter:
                     if active_run_id and hasattr(client, "cancel_run"):
                         try:
                             await client.cancel_run(active_run_id)
+                            terminal = True
                         except Exception as ce:
                             logger.warning(f"Error cancelling run {active_run_id}: {ce}")
                     yield {
@@ -236,6 +243,9 @@ class RuntimeChatAdapter:
                     }
                     yield {"type": "done"}
                     return
+
+                if event_type in ("run.completed", "run.failed", "run.cancelled"):
+                    terminal = True
 
                 # Handle canonical event types
                 if event_type in ("run.admitted", "run.created"):
@@ -331,7 +341,7 @@ class RuntimeChatAdapter:
                                 "message": f"tool {tool_name} rejected: {err_msg}",
                                 "phase": "tool_failed",
                             }
-                            continue
+                            raise RuntimeClientError(err_msg)
 
                         # Execute locally via bridge callback
                         if execute_local_tool_cb:
@@ -349,11 +359,21 @@ class RuntimeChatAdapter:
                                 cb_stream = execute_local_tool_cb(
                                     canonical_name, tool_args, auth_receipt, request_context
                                 )
+                            observation = None
                             async for frame_str in cb_stream:
-                                yield {"type": "raw_sse", "frame": frame_str}
-                        elif execute_mutation_cb and tool_name in LOCAL_TOOLS:
-                            async for mutation_sse_frame in execute_mutation_cb(tool_name, tool_args):
-                                yield {"type": "raw_sse", "frame": mutation_sse_frame}
+                                if isinstance(frame_str, dict) and frame_str.get("type") == "runtime_tool_result":
+                                    observation = frame_str["result"]
+                                else:
+                                    yield {"type": "raw_sse", "frame": frame_str}
+                            if observation is None:
+                                raise RuntimeClientError("Local executor did not return an observation")
+                            await client.submit_tool_result(
+                                active_run_id, tool_call_id, result=observation,
+                                is_error=bool(observation.get("is_error") or not observation.get("success")),
+                                authorization_receipt=auth_receipt,
+                            )
+                        else:
+                            raise RuntimeClientError("A local executor with result acknowledgement is required")
                     else:
                         logger.info(
                             f"[RUNTIME ADAPTER] Tool '{tool_name}' executed in shared runtime; "
@@ -463,6 +483,15 @@ class RuntimeChatAdapter:
                 "message": "agent runtime unavailable",
                 "phase": "error",
             }
+
+        finally:
+            if active_run_id and not terminal:
+                try:
+                    await client.cancel_run(active_run_id)
+                except Exception:
+                    logger.warning("Could not cancel interrupted runtime run %s", active_run_id)
+            if event_stream is not None and hasattr(event_stream, "aclose"):
+                await event_stream.aclose()
 
         yield {"type": "done"}
 

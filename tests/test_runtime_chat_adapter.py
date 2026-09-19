@@ -98,7 +98,7 @@ async def test_runtime_chat_adapter_event_translation():
 
 
 @pytest.mark.asyncio
-async def test_runtime_chat_adapter_mutation_callback():
+async def test_runtime_chat_adapter_rejects_unacknowledged_legacy_mutation():
     events = [
         RunEvent(
             id="evt_0",
@@ -147,13 +147,9 @@ async def test_runtime_chat_adapter_mutation_callback():
     ):
         frames.append(frame)
 
-    assert len(mutation_invoked) == 1
-    assert mutation_invoked[0][0] == "canvas_add_widget"
-    assert mutation_invoked[0][1]["widget_id"] == "card_res_01"
-
-    raw_sse_frames = [f for f in frames if f.get("type") == "raw_sse"]
-    assert len(raw_sse_frames) == 1
-    assert "card_res_01" in raw_sse_frames[0]["frame"]
+    assert mutation_invoked == []
+    assert any(f.get("type") == "error" for f in frames)
+    assert client.cancelled_runs == ["run_test_102"]
 
 
 @pytest.mark.asyncio
@@ -482,3 +478,47 @@ async def test_route_passes_contract_version_to_local_executor():
         pass
 
     assert captured_rt_ctx.get("contract_version") == "1.2.0"
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_nonterminal_run_and_preserves_context():
+    client = FakeRuntimeClient(events=[dict(type='run.started', run_id='run-close', data={})])
+    captured = []
+    original = client.stream_run
+    def capture(request):
+        captured.append(request)
+        return original(request)
+    client.stream_run = capture
+    adapter = RuntimeChatAdapter(runtime_client=client)
+    history = [{'role': 'system', 'content': 'Application rules'}, {'role': 'user', 'content': 'Follow up'}]
+    stream = adapter.stream_chat_turn(query='Follow up', session_id='session-close', canvas_html='<p>Context</p>', messages=history)
+    async for frame in stream:
+        if frame.get('run_id'):
+            break
+    await stream.aclose()
+    assert client.cancelled_runs == ['run-close']
+    assert captured[0].input[0].content == 'Application rules'
+    assert captured[0].runtime_overrides['context']['canvas_context']
+
+
+@pytest.mark.asyncio
+async def test_real_local_observation_is_returned_to_runtime():
+    from unittest.mock import AsyncMock
+    from secrets import token_hex
+    receipt = {'signature': token_hex(32)}
+    client = FakeRuntimeClient(events=[
+        dict(type='tool.invoked', run_id='run-observation', data={
+            'tool_name': 'html_notes.notes.get', 'tool_call_id': 'call-1', 'execution': 'local',
+            'arguments': {}, 'authorization_receipt': receipt,
+            'required_scope': {'app_id': 'html-notes', 'session_id': 'session-observation'},
+        }), dict(type='run.completed', run_id='run-observation', data={})])
+    client.submit_tool_result = AsyncMock(return_value={'ok': True})
+    observation = {'success': True, 'result': {'title': 'Actual persisted note'}}
+    async def executor(*args):
+        yield {'type': 'runtime_tool_result', 'result': observation}
+    frames = [f async for f in RuntimeChatAdapter(runtime_client=client).stream_chat_turn(
+        query='Read note', session_id='session-observation', execute_local_tool_cb=executor)]
+    client.submit_tool_result.assert_awaited_once()
+    assert client.submit_tool_result.call_args.kwargs['result'] == observation
+    assert not any(f.get('type') == 'error' for f in frames)
+    assert client.cancelled_runs == []

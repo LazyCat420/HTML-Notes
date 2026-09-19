@@ -2876,6 +2876,8 @@ async def send_message(req: MessageRequest):
                         async for frame in sse_formatter.from_local_result(result, session_id=context.session_id):
                             yield frame
 
+                        yield {"type": "runtime_tool_result", "result": result}
+
                         if result.get("success") and not result.get("is_error"):
                             payload = result.get("result")
                             if isinstance(payload, dict) and "widget_type" in payload:
@@ -2895,41 +2897,47 @@ async def send_message(req: MessageRequest):
                     saw_tool_call = False
                     pretool_buffer = ""
 
-                    async for frame in adapter.stream_chat_turn(
+                    runtime_stream = adapter.stream_chat_turn(
                         query=req.message,
                         session_id=req.session_id,
                         canvas_html=req.current_canvas or "",
+                        messages=messages,
+                        extra_context={"focus_widget_id": req.focus_widget_id, "followup_target": followup_target},
                         execute_local_tool_cb=execute_local_runtime_tool,
                         cancel_event=cancel_event,
                         request_context=request_context,
-                    ):
-                        frame_type = frame.get("type")
-                        if frame_type == "raw_sse":
-                            raw_frame = frame.get("frame", "")
-                            if raw_frame.startswith("data: "):
-                                try:
-                                    shared_runtime_error |= json.loads(raw_frame[6:].strip()).get("type") == "error"
-                                except (ValueError, AttributeError):
-                                    pass
-                            yield raw_frame
-                        elif frame_type == "chunk":
-                            token = frame.get("content", "")
-                            final_text += token
-                            yield f'data: {json.dumps(frame)}\n\n'
-                        elif frame_type == "tool_call":
-                            saw_tool_call = True
-                            yield f'data: {json.dumps(frame)}\n\n'
-                        elif frame_type == "error":
-                            shared_runtime_error = True
-                            yield f'data: {json.dumps(frame)}\n\n'
-                        elif frame_type in ("status", "receipt"):
-                            yield f'data: {json.dumps(frame)}\n\n'
-                        elif frame_type == "done":
-                            pass  # Handled at turn completion
+                    )
+                    try:
+                        async for frame in runtime_stream:
+                            frame_type = frame.get("type")
+                            if frame_type == "raw_sse":
+                                raw_frame = frame.get("frame", "")
+                                if raw_frame.startswith("data: "):
+                                    try:
+                                        shared_runtime_error |= json.loads(raw_frame[6:].strip()).get("type") == "error"
+                                    except (ValueError, AttributeError):
+                                        pass
+                                yield raw_frame
+                            elif frame_type == "chunk":
+                                token = frame.get("content", "")
+                                final_text += token
+                                yield f'data: {json.dumps(frame)}\n\n'
+                            elif frame_type == "tool_call":
+                                saw_tool_call = True
+                                yield f'data: {json.dumps(frame)}\n\n'
+                            elif frame_type == "error":
+                                shared_runtime_error = True
+                                yield f'data: {json.dumps(frame)}\n\n'
+                            elif frame_type in ("status", "receipt"):
+                                yield f'data: {json.dumps(frame)}\n\n'
+                            elif frame_type == "done":
+                                pass  # Handled at turn completion
 
-                        if canvas_settled or stream_cut:
-                            cancel_event.set()
-                            break
+                            if stream_cut:
+                                cancel_event.set()
+                                break
+                    finally:
+                        await runtime_stream.aclose()
                 else:
                     async with httpx.AsyncClient(timeout=600.0) as client:
                         async with client.stream(
