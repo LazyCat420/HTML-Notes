@@ -2,6 +2,21 @@ from fastapi import APIRouter, Request, HTTPException, Response
 import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
+async def build_apps_prompt_block(*args, **kwargs):
+    from app.services.portal import build_apps_prompt_block as _fn
+    return await _fn(*args, **kwargs)
+
+async def get_portal_apps(*args, **kwargs):
+    from app.services.portal import get_portal_apps as _fn
+    return await _fn(*args, **kwargs)
+
+def resolve_portal_app(*args, **kwargs):
+    from app.services.portal import resolve_portal_app as _fn
+    return _fn(*args, **kwargs)
+
+async def build_actions_prompt_block(*args, **kwargs):
+    from app.services.app_actions import build_actions_prompt_block as _fn
+    return await _fn(*args, **kwargs)
 
 router = APIRouter()
 

@@ -9,3 +9,4 @@ logs/
 .DS_Store
 data/test_notes*.db
 scratch/
+.worktrees/
