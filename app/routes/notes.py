@@ -9,6 +9,8 @@ router = APIRouter()
 
 @router.post("/notes/create")
 async def api_create_note(req: CreateNoteRequest):
+    if not req.session_id or not req.session_id.strip():
+        raise HTTPException(status_code=401, detail="session_id is required to create a note")
     import uuid
     from app.agents.auditor import audit_html_fragment
     

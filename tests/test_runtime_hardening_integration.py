@@ -710,3 +710,28 @@ async def test_stream_finalization_failure_still_terminates():
         raise RuntimeError("persistence unavailable")
     frames = [json.loads(f[6:]) async for f in ensure_terminal_sse(broken())]
     assert [f["type"] for f in frames] == ["error", "done"]
+
+
+@pytest.mark.parametrize("session_id", [None, "", "   "])
+def test_sessionless_creation_is_rejected_by_http_and_domain(clean_db, session_id):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    result = NotesDomainService.create_note("Unowned", "<p>Unowned</p>", session_id=session_id)
+    assert result["code"] == "SESSION_REQUIRED"
+    response = TestClient(app).post("/notes/create", json={"title": "Unowned", "rendered_html": "<p>Unowned</p>", "session_id": session_id})
+    assert response.status_code in {401, 422}
+    assert database.list_all_notes() == []
+
+
+def test_internal_http_rejects_foreign_note_update(clean_db, monkeypatch, patch_server):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    import secrets
+    credential = secrets.token_hex(32)
+    patch_server("_fetch_secret", AsyncMock(return_value=credential))
+    created = NotesDomainService.create_note("Owned", "<p>Owned</p>", session_id="owner-http")
+    response = TestClient(app).post("/internal/execute", headers={"x-internal-token": credential}, json={
+        "tool": "html_notes_update_note", "session_id": "foreign-http", "args": {"note_id": created["note_id"], "title": "Changed"}})
+    assert response.status_code == 200
+    assert response.json()["code"] == "NOTE_SESSION_MISMATCH"
+    assert database.get_note_by_id(created["note_id"])["title"] == "Owned"

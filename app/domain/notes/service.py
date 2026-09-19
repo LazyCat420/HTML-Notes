@@ -20,6 +20,8 @@ class NotesDomainService:
         links: Optional[List[str]] = None,
         session_id: Optional[str] = None
     ) -> Dict[str, Any]:
+        if not session_id or not str(session_id).strip():
+            return {"error": "session_id is required to create a note", "is_error": True, "code": "SESSION_REQUIRED"}
         audit = audit_html_fragment(rendered_html or "")
         if not audit.get("is_valid"):
             return {
