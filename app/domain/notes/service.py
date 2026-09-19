@@ -51,11 +51,22 @@ class NotesDomainService:
         if not existing:
             return {"error": f"Note '{note_id}' not found", "is_error": True}
 
+        # Legacy unclaimed note check
+        owner_type = existing.get("owner_type")
+        note_session = existing.get("session_id")
+        if owner_type == "legacy_unclaimed" or (note_session is None and owner_type != "session"):
+            return {
+                "error": f"Unauthorized: note '{note_id}' is legacy unclaimed and must be claimed before updating",
+                "is_error": True,
+                "code": "NOTE_UNCLAIMED"
+            }
+
         # Cross-session isolation check
-        if existing.get("session_id") and session_id and existing["session_id"] != session_id:
+        if note_session and session_id and note_session != session_id:
             return {
                 "error": f"Unauthorized: note '{note_id}' belongs to another session",
-                "is_error": True
+                "is_error": True,
+                "code": "NOTE_SESSION_MISMATCH"
             }
 
         if "rendered_html" in fields and fields["rendered_html"]:
@@ -70,6 +81,35 @@ class NotesDomainService:
         if not note:
             return {"error": f"Note '{note_id}' not found", "is_error": True}
         return {"success": True, "note_id": note_id}
+
+    @staticmethod
+    def claim_note(note_id: str, session_id: str, owner_id: Optional[str] = None) -> Dict[str, Any]:
+        """Explicitly claims an unclaimed or legacy note, binding it to the current session/owner."""
+        existing = database.get_note_by_id(note_id)
+        if not existing:
+            return {"error": f"Note '{note_id}' not found", "is_error": True}
+
+        # If already claimed by another session, reject
+        current_session = existing.get("session_id")
+        if current_session and current_session != session_id:
+            return {
+                "error": f"Unauthorized: note '{note_id}' is already claimed by another session",
+                "is_error": True,
+                "code": "NOTE_ALREADY_CLAIMED"
+            }
+
+        claimed = database.claim_note(note_id=note_id, session_id=session_id, owner_id=owner_id)
+        if not claimed:
+            return {"error": f"Failed to claim note '{note_id}'", "is_error": True}
+
+        return {
+            "success": True,
+            "note_id": note_id,
+            "session_id": session_id,
+            "owner_id": claimed.get("owner_id"),
+            "claimed_at": claimed.get("claimed_at"),
+            "version": claimed.get("version"),
+        }
 
     @staticmethod
     def get_note(note_id: str) -> Dict[str, Any]:

@@ -38,6 +38,18 @@ def init_db():
         cursor.execute("ALTER TABLE notes ADD COLUMN session_id TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE notes ADD COLUMN owner_type TEXT DEFAULT 'session'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE notes ADD COLUMN owner_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE notes ADD COLUMN claimed_at TEXT")
+    except sqlite3.OperationalError:
+        pass
     
     # Create note_versions table for tracking history
     cursor.execute("""
@@ -332,6 +344,7 @@ def get_note_by_id(note_id: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
         
+    keys = row.keys()
     return {
         "id": row["id"],
         "title": row["title"],
@@ -343,8 +356,96 @@ def get_note_by_id(note_id: str) -> Optional[Dict[str, Any]]:
         "canonical_blocks": json.loads(row["canonical_blocks"]),
         "rendered_html": row["rendered_html"],
         "version": row["version"],
-        "session_id": row["session_id"] if "session_id" in row.keys() else None
+        "session_id": row["session_id"] if "session_id" in keys else None,
+        "owner_type": row["owner_type"] if "owner_type" in keys else "session",
+        "owner_id": row["owner_id"] if "owner_id" in keys else None,
+        "claimed_at": row["claimed_at"] if "claimed_at" in keys else None,
     }
+
+
+def claim_note(
+    note_id: str,
+    session_id: str,
+    owner_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Binds an unclaimed or session-bound note to the specified session and owner."""
+    note = get_note_by_id(note_id)
+    if not note:
+        return None
+    now = datetime.utcnow().isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    new_version = note["version"] + 1
+    cursor.execute(
+        """
+        UPDATE notes
+        SET session_id = ?, owner_type = 'session', owner_id = ?, claimed_at = ?, updated_at = ?, version = ?
+        WHERE id = ?
+        """,
+        (session_id, owner_id or session_id, now, now, new_version, note_id)
+    )
+    conn.commit()
+    conn.close()
+    return get_note_by_id(note_id)
+
+
+def list_legacy_unclaimed_notes() -> List[Dict[str, Any]]:
+    """Returns all notes currently in legacy_unclaimed state or with NULL session_id."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM notes WHERE session_id IS NULL OR owner_type = 'legacy_unclaimed'")
+    rows = cursor.fetchall()
+    conn.close()
+    notes = []
+    for r in rows:
+        n = get_note_by_id(r["id"])
+        if n:
+            notes.append(n)
+    return notes
+
+
+def migrate_legacy_notes_batch(
+    owner_id: str = "migration-2026-09-19"
+) -> int:
+    """
+    Idempotent batch migration for legacy NULL session_id notes.
+    Marks them owner_type = 'legacy_unclaimed' and owner_id = owner_id.
+    Preserves all rendered_html, tags, links, and blocks.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE notes
+        SET owner_type = 'legacy_unclaimed', owner_id = ?
+        WHERE session_id IS NULL AND (owner_type IS NULL OR owner_type != 'legacy_unclaimed' OR owner_id IS NULL)
+        """,
+        (owner_id,)
+    )
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+
+def rollback_legacy_notes_migration(
+    owner_id: str = "migration-2026-09-19"
+) -> int:
+    """Rolls back notes tagged with the migration owner ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE notes
+        SET owner_type = 'session', owner_id = NULL
+        WHERE owner_id = ? AND session_id IS NULL
+        """,
+        (owner_id,)
+    )
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
 
 def get_note_history(note_id: str) -> List[Dict[str, Any]]:
     conn = get_connection()
