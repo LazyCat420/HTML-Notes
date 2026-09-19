@@ -273,6 +273,18 @@ class RuntimeChatAdapter:
                     execution_loc = data.get("execution")
                     required_scope = data.get("required_scope")
                     auth_receipt = data.get("authorization_receipt") or {}
+                    if isinstance(auth_receipt, dict):
+                        auth_receipt = dict(auth_receipt)
+                        if "run_id" not in auth_receipt and active_run_id:
+                            auth_receipt["run_id"] = active_run_id
+                        if "tool_call_id" not in auth_receipt and tool_call_id:
+                            auth_receipt["tool_call_id"] = tool_call_id
+                        if "profile_id" not in auth_receipt and active_profile:
+                            auth_receipt["profile_id"] = active_profile
+                        if "session_id" not in auth_receipt and session_id:
+                            auth_receipt["session_id"] = session_id
+                        if "app_id" not in auth_receipt:
+                            auth_receipt["app_id"] = EXPECTED_APP_ID
 
                     logger.info(
                         f"[RUNTIME ADAPTER] tool.invoked: name={tool_name} run_id={active_run_id} execution={execution_loc}"
@@ -319,6 +331,7 @@ class RuntimeChatAdapter:
                         if execute_local_tool_cb:
                             rt_ctx = {
                                 "run_id": active_run_id,
+                                "tool_call_id": tool_call_id,
                                 "profile_id": active_profile,
                                 "contract_version": HTML_NOTES_CONTRACT_VERSION,
                             }

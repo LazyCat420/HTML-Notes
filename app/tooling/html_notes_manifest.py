@@ -90,6 +90,13 @@ class HTMLNotesManifestRegistry:
                 self._global_capabilities = json.load(f)
         return self._global_capabilities
 
+    def validate_all(self) -> None:
+        """Validates that all required local manifests exist and parse correctly."""
+        self.get_domain_tools_manifest()
+        self.get_profile()
+        self.get_widget_catalog()
+        self.get_global_capabilities()
+
     def resolve_tool(self, name_or_id: str) -> Optional[Dict[str, Any]]:
         """Resolves tool spec by canonical namespaced id or registered alias."""
         self.get_domain_tools_manifest()

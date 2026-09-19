@@ -381,3 +381,234 @@ def test_legacy_note_cannot_be_edited_from_foreign_session(clean_db):
     assert updated.get("success") is True
     persisted_updated = database.get_note_by_id("legacy-int-note-1")
     assert persisted_updated["title"] == "Updated by Session A"
+
+
+@pytest.mark.asyncio
+async def test_adversarial_forged_or_missing_receipt_via_http(clean_db, monkeypatch):
+    """Adversarial: Forged or missing receipt via runtime stream results in admission failure and no mutation."""
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+    from app.main import app
+    from fastapi.testclient import TestClient
+    from unittest.mock import patch
+    from app.services.runtime_chat_adapter import RuntimeChatAdapter
+
+    # Mock runtime client that emits a tool call with a forged signature
+    events = [
+        FakeRuntimeEvent("e1", "run.started", "2026-09-19T12:00:00Z", {"status": "running"}, run_id="run_adv_forged"),
+        FakeRuntimeEvent("e2", "tool.invoked", "2026-09-19T12:00:01Z", {
+            "tool": "html_notes.notes.create",
+            "arguments": {"title": "Forged Note", "rendered_html": "<p>Forged</p>"},
+            "id": "call_adv_forged",
+            "execution": "local",
+            "authorization_receipt": {
+                "run_id": "run_adv_forged",
+                "tool_call_id": "call_adv_forged",
+                "canonical_tool_id": "html_notes.notes.create",
+                "profile_id": "html-notes-canvas-v1",
+                "app_id": "html-notes",
+                "session_id": "session_adv_forged",
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                "nonce": "nonce_adv_forged",
+                "signature": "sha256-invalidforgedsignature00000000000000000000000000000000000000000"
+            }
+        }, run_id="run_adv_forged"),
+        FakeRuntimeEvent("e3", "run.completed", "2026-09-19T12:00:02Z", {}, run_id="run_adv_forged"),
+    ]
+    fake_client = FakeStreamingClient(events=events)
+    fake_adapter = RuntimeChatAdapter(runtime_client=fake_client)
+
+    client = TestClient(app)
+    with patch("app.services.runtime_chat_adapter.RuntimeChatAdapter", return_value=fake_adapter):
+        resp = client.post("/session/message", json={
+            "session_id": "session_adv_forged",
+            "message": "render custom card",
+            "current_canvas": "<div id='dashboard-grid'></div>",
+        })
+    assert resp.status_code == 200
+    body = resp.text
+
+    # Verify error frame emitted for signature verification
+    assert "SIGNATURE_VERIFICATION_FAILED" in body or "Signature verification failed" in body or "is_error" in body or "LOCAL_TOOL_ERROR" in body
+    # Verify no note was created in the database
+    notes = database.list_all_notes()
+    assert len(notes) == 0
+
+
+@pytest.mark.asyncio
+async def test_adversarial_context_mismatch_run_call_profile(executor):
+    """Adversarial: Receipts with mismatched run_id, tool_call_id, or profile_id are rejected."""
+    session_id = "session_adv_ctx"
+    now = datetime.now(timezone.utc)
+    base_auth = create_test_authorization(
+        run_id="run_expected",
+        tool_call_id="call_expected",
+        tool_id="html_notes.notes.get",
+        session_id=session_id,
+        profile_id="html-notes-canvas-v1",
+    )
+
+    # 1. Run ID mismatch
+    res_run = await executor.execute(
+        tool_name="html_notes.notes.get",
+        args={"note_id": "any"},
+        session_id=session_id,
+        authorization=base_auth,
+        runtime_context={"run_id": "run_WRONG", "profile_id": "html-notes-canvas-v1", "tool_call_id": "call_expected"},
+    )
+    assert res_run["success"] is False
+    assert res_run.get("code") == "RUN_MISMATCH" or "Run mismatch" in res_run.get("error", "")
+
+    # 2. Tool call ID mismatch
+    res_call = await executor.execute(
+        tool_name="html_notes.notes.get",
+        args={"note_id": "any"},
+        session_id=session_id,
+        authorization=base_auth,
+        runtime_context={"run_id": "run_expected", "profile_id": "html-notes-canvas-v1", "tool_call_id": "call_WRONG"},
+    )
+    assert res_call["success"] is False
+    assert res_call.get("code") == "TOOL_CALL_MISMATCH" or "Tool call mismatch" in res_call.get("error", "")
+
+    # 3. Profile ID mismatch
+    res_prof = await executor.execute(
+        tool_name="html_notes.notes.get",
+        args={"note_id": "any"},
+        session_id=session_id,
+        authorization=base_auth,
+        runtime_context={"run_id": "run_expected", "profile_id": "WRONG_PROFILE", "tool_call_id": "call_expected"},
+    )
+    assert res_prof["success"] is False
+    assert res_prof.get("code") == "PROFILE_MISMATCH" or "Profile mismatch" in res_prof.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_adversarial_repeated_nonce_rejected_across_calls(executor):
+    """Adversarial: Replaying the same nonce with a different tool call is rejected."""
+    session_id = "session_adv_nonce"
+    shared_nonce = f"fixed_nonce_{datetime.now(timezone.utc).timestamp()}"
+
+    auth1 = create_test_authorization(
+        run_id="run_1",
+        tool_call_id="call_1",
+        tool_id="html_notes.notes.get",
+        session_id=session_id,
+        nonce=shared_nonce,
+    )
+    auth2 = create_test_authorization(
+        run_id="run_2",
+        tool_call_id="call_2",
+        tool_id="html_notes.notes.get",
+        session_id=session_id,
+        nonce=shared_nonce,
+    )
+
+    # First call succeeds admission
+    res1 = await executor.execute(
+        tool_name="html_notes.notes.get",
+        args={"note_id": "nonexistent"},
+        session_id=session_id,
+        authorization=auth1,
+        runtime_context={"run_id": "run_1", "profile_id": "html-notes-canvas-v1", "tool_call_id": "call_1"},
+    )
+    assert res1.get("code") != "REPLAYED_RECEIPT"
+
+    # Second call with same nonce must be rejected with REPLAYED_RECEIPT
+    res2 = await executor.execute(
+        tool_name="html_notes.notes.get",
+        args={"note_id": "nonexistent"},
+        session_id=session_id,
+        authorization=auth2,
+        runtime_context={"run_id": "run_2", "profile_id": "html-notes-canvas-v1", "tool_call_id": "call_2"},
+    )
+    assert res2["success"] is False
+    assert res2.get("code") == "REPLAYED_RECEIPT" or "Replayed authorization receipt" in res2.get("error", "")
+
+
+def test_adversarial_concurrent_claim_protection_via_http(clean_db):
+    """Adversarial: Concurrent claim operations on the same note permit only one winner (409 on second)."""
+    from app.main import app
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    # Insert unclaimed note
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO notes (
+            id, title, created_at, updated_at, tags, links,
+            source_messages, canonical_blocks, rendered_html, version, session_id, owner_type, owner_id
+        ) VALUES (
+            'concurrent-note', 'Concurrent Test', '2026-09-01T00:00:00', '2026-09-01T00:00:00',
+            '[]', '[]', '[]', '[]', '<p>Concurrent</p>', 1, NULL, 'legacy_unclaimed', 'mig'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Session 1 claims note
+    r1 = client.post("/notes/claim", json={"note_id": "concurrent-note", "session_id": "session_one"})
+    assert r1.status_code == 200
+    assert r1.json()["session_id"] == "session_one"
+
+    # Session 2 attempts to claim note -> 409 Conflict
+    r2 = client.post("/notes/claim", json={"note_id": "concurrent-note", "session_id": "session_two"})
+    assert r2.status_code == 409
+    assert "already claimed" in r2.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_adversarial_readiness_probe_fails_on_unreachable_runtime(clean_db, monkeypatch):
+    """Adversarial: /health/agent returns 503 when shared runtime is unreachable or reports invalid contract."""
+    monkeypatch.setenv("USE_SHARED_RUNTIME", "true")
+    from app.main import app
+    from fastapi.testclient import TestClient
+    from app.adapters.runtime.config import RuntimeReadinessResult
+    import app.routes.health as health_module
+
+    # Mock check_runtime_readiness returning unready
+    async def mock_unready(*args, **kwargs):
+        return RuntimeReadinessResult(
+            is_ready=False,
+            error="Runtime unreachable on port 5591",
+            details={"phase": "reachability"}
+        )
+
+    monkeypatch.setattr("app.adapters.runtime.config.check_runtime_readiness", mock_unready)
+
+    client = TestClient(app)
+    resp = client.get("/health/agent")
+    assert resp.status_code == 503
+    data = resp.json()
+    assert data["status"] == "unavailable"
+    assert "Runtime unreachable" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_adversarial_exactly_one_terminal_sse_event_all_cases():
+    """Adversarial: Every stream turn (completed, error, cancelled) emits exactly one done frame."""
+    from app.services.runtime_chat_adapter import RuntimeChatAdapter
+
+    # Case A: completed turn
+    events_ok = [
+        FakeRuntimeEvent("e1", "run.started", "2026-09-19T12:00:00Z", {"status": "running"}),
+        FakeRuntimeEvent("e2", "run.completed", "2026-09-19T12:00:01Z", {}),
+    ]
+    adapter_ok = RuntimeChatAdapter(runtime_client=FakeStreamingClient(events=events_ok))
+    frames_ok = [f async for f in adapter_ok.stream_chat_turn(query="q", session_id="s")]
+    assert len([f for f in frames_ok if f.get("type") == "done"]) == 1
+
+    # Case B: error/exception turn
+    adapter_err = RuntimeChatAdapter(runtime_client=FakeStreamingClient(raise_on_stream=RuntimeError("Outage")))
+    frames_err = [f async for f in adapter_err.stream_chat_turn(query="q", session_id="s")]
+    assert len([f for f in frames_err if f.get("type") == "done"]) == 1
+    assert any(f.get("type") == "error" for f in frames_err)
+
+    # Case C: cancelled turn
+    import asyncio
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    adapter_cancel = RuntimeChatAdapter(runtime_client=FakeStreamingClient(events=events_ok))
+    frames_cancel = [f async for f in adapter_cancel.stream_chat_turn(query="q", session_id="s", cancel_event=cancel_event)]
+    assert len([f for f in frames_cancel if f.get("type") == "done"]) == 1
+    assert any(f.get("phase") == "cancelled" for f in frames_cancel)

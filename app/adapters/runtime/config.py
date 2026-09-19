@@ -159,6 +159,8 @@ def should_enforce_readiness() -> bool:
     """True when shared runtime feature flag is enabled."""
     return _bool_env("USE_SHARED_RUNTIME", default=False)
 
+is_shared_runtime_enabled = should_enforce_readiness
+
 
 async def check_runtime_readiness(
     runtime_url: Optional[str] = None,
@@ -208,24 +210,42 @@ async def check_runtime_readiness(
 
     # 3. Local manifest validation
     local_manifest = manifest_override if manifest_override is not None else load_local_profile_manifest(manifest_path)
-    if local_manifest is not None:
-        prof_ok, prof_err = validate_profile_against_manifest(prof, local_manifest)
-        if not prof_ok:
-            return RuntimeReadinessResult(
-                is_ready=False,
-                error=prof_err or f"Configured profile '{prof}' does not match local manifest",
-                profile_id=prof,
-                details={"phase": "profile_manifest_mismatch", "manifest_profile": local_manifest.get("profile_id")}
-            )
+    if local_manifest is None:
+        return RuntimeReadinessResult(
+            is_ready=False,
+            error=f"Local profile manifest not found or unreadable at {manifest_path or 'app/tooling/manifests/html_notes.profile.json'}",
+            profile_id=prof,
+            details={"phase": "missing_local_manifest"}
+        )
 
-        caps_ok, caps_err = validate_capabilities(local_manifest)
-        if not caps_ok:
-            return RuntimeReadinessResult(
-                is_ready=False,
-                error=caps_err,
-                profile_id=prof,
-                details={"phase": "capability_check"}
-            )
+    prof_ok, prof_err = validate_profile_against_manifest(prof, local_manifest)
+    if not prof_ok:
+        return RuntimeReadinessResult(
+            is_ready=False,
+            error=prof_err or f"Configured profile '{prof}' does not match local manifest",
+            profile_id=prof,
+            details={"phase": "profile_manifest_mismatch", "manifest_profile": local_manifest.get("profile_id")}
+        )
+
+    caps_ok, caps_err = validate_capabilities(local_manifest)
+    if not caps_ok:
+        return RuntimeReadinessResult(
+            is_ready=False,
+            error=caps_err,
+            profile_id=prof,
+            details={"phase": "capability_check"}
+        )
+
+    from app.tooling.html_notes_manifest import manifest_registry
+    try:
+        manifest_registry.validate_all()
+    except Exception as me:
+        return RuntimeReadinessResult(
+            is_ready=False,
+            error=f"Local manifest registry validation failed: {me}",
+            profile_id=prof,
+            details={"phase": "local_manifest_registry_invalid", "error": str(me)}
+        )
 
     # 4. Runtime reachability and contract version check
     # Construct contract spec endpoint URL
@@ -283,17 +303,24 @@ async def check_runtime_readiness(
             )
 
         # 5. Profile registration check
-        # Check explicit registered profiles passed in or returned in spec
         known_profiles = registered_profiles or spec_data.get("registered_profiles") or spec_data.get("profiles")
-        if known_profiles is not None:
-            if prof not in known_profiles:
-                return RuntimeReadinessResult(
-                    is_ready=False,
-                    error=f"Profile '{prof}' is not registered in runtime",
-                    contract_version=reported_version,
-                    profile_id=prof,
-                    details={"phase": "unregistered_profile", "registered_profiles": known_profiles}
-                )
+        if not known_profiles:
+            return RuntimeReadinessResult(
+                is_ready=False,
+                error="Runtime failed to report registered_profiles in contract spec",
+                contract_version=reported_version,
+                profile_id=prof,
+                details={"phase": "missing_profile_registration"}
+            )
+
+        if prof not in known_profiles:
+            return RuntimeReadinessResult(
+                is_ready=False,
+                error=f"Profile '{prof}' is not registered in runtime",
+                contract_version=reported_version,
+                profile_id=prof,
+                details={"phase": "unregistered_profile", "registered_profiles": known_profiles}
+            )
 
         return RuntimeReadinessResult(
             is_ready=True,
