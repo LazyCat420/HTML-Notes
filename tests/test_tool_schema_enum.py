@@ -21,19 +21,20 @@ def _flat_schema_path():
     env = os.environ.get("LAZY_AGENT_SERVICE_DIR")
     if env:
         p = pathlib.Path(env) / "tool_schemas.json"
-        return p if p.exists() else None
-    here = pathlib.Path(__file__).resolve()
-    for parent in here.parents:
-        cand = parent / "lazy-agent-service" / "tool_schemas.json"
-        if cand.exists():
-            return cand
+        if p.exists():
+            return p
+    # Packaged in-repo versioned schema artifact (independent of sibling worktrees)
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    packaged = repo_root / "app" / "schemas" / "tool-contract-v1.json"
+    if packaged.exists():
+        return packaged
     return None
 
 
 def _live_enum():
     path = _flat_schema_path()
     if path is None:
-        pytest.skip("no lazy-agent-service checkout found (set LAZY_AGENT_SERVICE_DIR)")
+        pytest.fail("Tool contract schema not found; app/schemas/tool-contract-v1.json is missing")
     tools = json.loads(path.read_text())
     tool = next(t for t in tools if t["name"] == "canvas_add_widget")
     return set(tool["parameters"]["properties"]["widget_type"]["enum"]), path
