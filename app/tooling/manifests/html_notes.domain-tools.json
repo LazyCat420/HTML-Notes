@@ -1,0 +1,432 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "manifest_version": "1.0.0",
+  "namespace": "html_notes",
+  "description": "Authoritative manifest of HTML-Notes application-owned domain tools.",
+  "tools": [
+    {
+      "id": "html_notes.notes.create",
+      "legacy_name": "html_notes_create_note",
+      "domain": "notes",
+      "effect": "write",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Create a new note in the HTML Notes database with a title, sanitized HTML fragment, tags, and optional backlinks.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "description": "Title of the note" },
+          "rendered_html": { "type": "string", "description": "HTML note content using approved subset tags" },
+          "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for categorizing note" },
+          "links": { "type": "array", "items": { "type": "string" }, "description": "Target note IDs to link to" }
+        },
+        "required": ["title", "rendered_html"]
+      }
+    },
+    {
+      "id": "html_notes.notes.update",
+      "legacy_name": "html_notes_update_note",
+      "domain": "notes",
+      "effect": "write",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Update an existing note in the HTML Notes database.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "note_id": { "type": "string", "description": "ID of the note to update" },
+          "title": { "type": "string", "description": "Updated title" },
+          "rendered_html": { "type": "string", "description": "Updated HTML content" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "links": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["note_id"]
+      }
+    },
+    {
+      "id": "html_notes.notes.get",
+      "legacy_name": "html_notes_get_note",
+      "domain": "notes",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Retrieve an existing note by ID.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "note_id": { "type": "string", "description": "ID of the note to retrieve" }
+        },
+        "required": ["note_id"]
+      }
+    },
+    {
+      "id": "html_notes.notes.search",
+      "legacy_name": "html_notes_search_notes",
+      "domain": "notes",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Search notes database by text query.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search query terms" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "id": "html_notes.notes.link",
+      "legacy_name": "html_notes_link_notes",
+      "domain": "notes",
+      "effect": "write",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Add a directional backlink from source note to target note.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source_note_id": { "type": "string" },
+          "target_note_id": { "type": "string" }
+        },
+        "required": ["source_note_id", "target_note_id"]
+      }
+    },
+    {
+      "id": "html_notes.canvas.upsert_widget",
+      "legacy_name": "canvas_add_widget",
+      "domain": "canvas",
+      "effect": "write",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Canonical server-rendered widget spawner/updater. Reuses widget_id for in-place updates.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "widget_type": { "type": "string", "description": "Pre-built widget type from widget catalog" },
+          "widget_id": { "type": "string", "description": "Unique widget ID. Reuse to edit an existing widget" },
+          "config": { "type": "object", "description": "Widget-specific configuration payload" }
+        },
+        "required": ["widget_type", "widget_id"]
+      }
+    },
+    {
+      "id": "html_notes.canvas.modify_dom",
+      "legacy_name": "canvas_modify_dom",
+      "domain": "canvas",
+      "effect": "write",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Modify or remove an element on the live canvas DOM by exact widget id selector.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["append", "prepend", "replace", "remove", "insert_before", "insert_after"] },
+          "selector": { "type": "string", "description": "Exact #id selector" },
+          "html": { "type": "string", "description": "HTML fragment for insertion/replacement" },
+          "widget_id": { "type": "string", "description": "Target widget ID for scoped mutation" }
+        },
+        "required": ["action", "selector"]
+      }
+    },
+    {
+      "id": "html_notes.canvas.read",
+      "legacy_name": "canvas_read_dom",
+      "domain": "canvas",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Read the current live canvas DOM summary of visible widgets, component types, and element counts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "selector": { "type": "string", "description": "Optional CSS selector to scope read" }
+        }
+      }
+    },
+    {
+      "id": "html_notes.portal.list_services",
+      "legacy_name": "html_notes_list_services",
+      "domain": "portal",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Query running services and applications from portal-service registry.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "status": { "type": "string", "enum": ["healthy", "unhealthy", "unknown"] },
+          "include_hidden": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "id": "html_notes.portal.open_app",
+      "legacy_name": "html_notes_open_app",
+      "domain": "portal",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Resolve a registered portal app and open it in a client tab via open_url frame.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "app_id": { "type": "string" },
+          "query": { "type": "string" }
+        }
+      }
+    },
+    {
+      "id": "html_notes.portal.list_actions",
+      "legacy_name": "html_notes_list_actions",
+      "domain": "portal",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "List available executable actions exposed by portal apps.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "app_id": { "type": "string" }
+        }
+      }
+    },
+    {
+      "id": "html_notes.portal.execute_action",
+      "legacy_name": "html_notes_app_action",
+      "domain": "portal",
+      "effect": "write",
+      "requires_confirmation": true,
+      "timeout_ms": 15000,
+      "audit_level": "high",
+      "description": "Execute an action on a registered portal service. Destructive actions park for user confirmation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "app_id": { "type": "string" },
+          "action": { "type": "string" },
+          "params": { "type": "object" }
+        },
+        "required": ["app_id", "action"]
+      }
+    },
+    {
+      "id": "html_notes.portal.curate_app",
+      "legacy_name": "html_notes_curate_app",
+      "domain": "portal",
+      "effect": "write",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Update pinned or hidden visibility settings for a portal app.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "app_id": { "type": "string" },
+          "hidden": { "type": "boolean" },
+          "pinned": { "type": "boolean" }
+        },
+        "required": ["app_id"]
+      }
+    },
+    {
+      "id": "html_notes.weather.get",
+      "legacy_name": "html_notes_get_weather",
+      "domain": "presentation_provider",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 8000,
+      "audit_level": "standard",
+      "description": "Fetch weather conditions and 5-day forecast for a location.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": { "type": "string" },
+          "units": { "type": "string", "enum": ["fahrenheit", "celsius"] }
+        },
+        "required": ["location"]
+      }
+    },
+    {
+      "id": "html_notes.sports.scores",
+      "legacy_name": "html_notes_sports_scores",
+      "domain": "presentation_provider",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 8000,
+      "audit_level": "standard",
+      "description": "Fetch live scores, standings, and fixtures for a league.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "league": { "type": "string" }
+        },
+        "required": ["league"]
+      }
+    },
+    {
+      "id": "html_notes.finance.stock_history",
+      "legacy_name": "html_notes_stock_history",
+      "domain": "presentation_provider",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Fetch market snapshot, price series, technical indicators, and fundamentals for a ticker.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "range": { "type": "string" }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "id": "html_notes.finance.stock_news",
+      "legacy_name": "html_notes_stock_news",
+      "domain": "presentation_provider",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Fetch market and company news headlines with ticker symbol discovery.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "integer" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "id": "html_notes.news.get_news",
+      "legacy_name": "html_notes_news",
+      "domain": "presentation_provider",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Fetch live news articles with photo, headline, and concise summary.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "topic": { "type": "string" },
+          "query": { "type": "string" }
+        }
+      }
+    },
+    {
+      "id": "html_notes.media.youtube_search",
+      "legacy_name": "html_notes_youtube_search",
+      "domain": "presentation_provider",
+      "effect": "read",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Search YouTube for videos with video_id, title, channel, and freshness filtering.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "integer" },
+          "format": { "type": "string", "enum": ["all", "short"] }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "id": "html_notes.canvas.create_custom_widget",
+      "legacy_name": "create_widget",
+      "domain": "canvas_custom_quarantined",
+      "effect": "write",
+      "deprecated": true,
+      "deprecation_reason": "Legacy custom widget sandbox tool. Use canvas_add_widget / html_notes.canvas.upsert_widget for catalog widgets.",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Deprecated: Create custom sandboxed widget with arbitrary HTML/CSS/JS.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "widgetType": { "type": "string" },
+          "title": { "type": "string" },
+          "htmlContent": { "type": "string" },
+          "cssContent": { "type": "string" },
+          "jsContent": { "type": "string" }
+        },
+        "required": ["widgetType", "title", "htmlContent"]
+      }
+    },
+    {
+      "id": "html_notes.canvas.plan_custom_widget",
+      "legacy_name": "plan_widget",
+      "domain": "canvas_custom_quarantined",
+      "effect": "read",
+      "deprecated": true,
+      "deprecation_reason": "Legacy custom widget planning step.",
+      "requires_confirmation": false,
+      "timeout_ms": 5000,
+      "audit_level": "standard",
+      "description": "Deprecated: Plan custom widget interface and layout.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "widgetType": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" }
+        },
+        "required": ["widgetType", "title"]
+      }
+    },
+    {
+      "id": "html_notes.canvas.update_custom_widget",
+      "legacy_name": "update_widget",
+      "domain": "canvas_custom_quarantined",
+      "effect": "write",
+      "deprecated": true,
+      "deprecation_reason": "Legacy custom widget modification. Use canvas_add_widget with same widget_id.",
+      "requires_confirmation": false,
+      "timeout_ms": 10000,
+      "audit_level": "standard",
+      "description": "Deprecated: Update custom sandboxed widget markup/scripts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "widgetId": { "type": "string" },
+          "title": { "type": "string" },
+          "htmlContent": { "type": "string" },
+          "cssContent": { "type": "string" },
+          "jsContent": { "type": "string" }
+        },
+        "required": ["widgetId"]
+      }
+    },
+    {
+      "id": "html_notes.canvas.list_widget_types",
+      "legacy_name": "list_widget_types",
+      "domain": "canvas_custom_quarantined",
+      "effect": "read",
+      "deprecated": true,
+      "deprecation_reason": "Superseded by html_notes.widget-catalog.json manifest.",
+      "requires_confirmation": false,
+      "timeout_ms": 3000,
+      "audit_level": "standard",
+      "description": "Deprecated: List standard custom widget types.",
+      "parameters": { "type": "object" }
+    }
+  ]
+}
