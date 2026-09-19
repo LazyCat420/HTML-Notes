@@ -295,27 +295,12 @@ class RuntimeChatAdapter:
                     is_local = (execution_loc == "local") or is_manifest_local or (tool_name in LOCAL_TOOLS)
 
                     if is_local:
-                        # Normalize required_scope whether provided as dict or list
-                        scope_to_verify = required_scope
-                        if isinstance(required_scope, list):
-                            scope_to_verify = {
-                                "app_id": EXPECTED_APP_ID if "app_id" in required_scope else None,
-                                "session_id": request_context.session_id if "session_id" in required_scope else None,
-                            }
-                        elif isinstance(required_scope, dict):
-                            s_app = required_scope.get("app_id")
-                            s_sess = required_scope.get("session_id")
-                            if s_app is True:
-                                s_app = EXPECTED_APP_ID
-                            if s_sess is True:
-                                s_sess = request_context.session_id
-                            scope_to_verify = {
-                                "app_id": s_app,
-                                "session_id": s_sess,
-                            }
-
                         # Validate scope
-                        scope_valid, scope_err = verify_local_tool_scope(scope_to_verify, request_context)
+                        scope_valid, scope_err = verify_local_tool_scope(
+                            required_scope,
+                            request_context,
+                            tool_name=canonical_name or tool_name,
+                        )
                         if not scope_valid:
                             err_msg = scope_err or "Scope validation failed"
                             yield {
