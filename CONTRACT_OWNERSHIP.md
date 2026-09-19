@@ -72,3 +72,14 @@ To ensure zero downtime during multi-stream development, legacy aliases are mapp
 The following historical documents and code comments are explicitly superseded:
 - [`app/tools_schema.py`](file:///home/lazycat/github/projects/sun/HTML-Notes/app/tools_schema.py): Superseded by `app/tooling/manifests/html_notes.domain-tools.json` and this document.
 - Prior notes referencing generating flat schemas in sibling checkouts: Superseded by packaged in-repo manifests.
+
+---
+
+## 5. Developer 2 Production Runtime Cutover (Completed 2026-09-19)
+
+The shared runtime production route cutover is complete:
+- **Route Cutover**: `app/routes/message.py` now routes all shared runtime local tool execution through `execute_local_runtime_tool` → `local_tool_executor.execute()` → `sse_formatter.from_local_result()`, eliminating legacy `execute_mutation` callback bridges for the shared runtime path.
+- **Contract & Profile Preflight**: Handshake validation verifies `HTML_NOTES_CONTRACT_VERSION` compatibility with SDK and runtime before streaming commences.
+- **Degraded Mode & Terminal Invariants**: Guaranteed exactly one terminal `done` SSE frame per stream; outages and denials produce structured error events without fabricating components or receipts.
+- **Full Cutover Test Suite**: Verified with 20 comprehensive automated tests in `tests/test_runtime_cutover.py` covering scope validation, canonical tool dispatch, alias resolution, outage handling, and cancellation idempotency.
+
