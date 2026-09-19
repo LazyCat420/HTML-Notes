@@ -1,0 +1,387 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "catalog_version": "1.0.0",
+  "namespace": "html_notes.widgets",
+  "description": "Declarative catalog of server-rendered widgets supported by app/widgets/factory.py",
+  "canonical_spawner_tool": "html_notes.canvas.upsert_widget",
+  "widgets": [
+    {
+      "type": "clock",
+      "title": "Clock & Timer",
+      "renderer": "render_clock",
+      "is_singleton": false,
+      "description": "Clocks, stopwatches, and countdown timers. Config modes: 'clock' | 'stopwatch' | 'countdown'.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "mode": { "type": "string", "enum": ["clock", "stopwatch", "countdown"] },
+          "duration_seconds": { "type": "integer" },
+          "timezone": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "stock_card",
+      "title": "Stock / Crypto Ticker",
+      "renderer": "render_stock_card",
+      "is_singleton": false,
+      "description": "Comprehensive price, chart, technicals, and fundamentals widget for any ticker symbol.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" }
+        },
+        "required": ["symbol"]
+      }
+    },
+    {
+      "type": "weather",
+      "title": "Weather Forecast",
+      "renderer": "render_weather",
+      "is_singleton": true,
+      "description": "Current conditions and 5-day forecast. Singleton widget (re-use existing widget_id).",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "location": { "type": "string" }
+        },
+        "required": ["location"]
+      }
+    },
+    {
+      "type": "scoreboard",
+      "title": "Sports Scoreboard",
+      "renderer": "render_scoreboard",
+      "is_singleton": false,
+      "description": "Scores, fixtures, results, and standings for sports leagues.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "league": { "type": "string" }
+        },
+        "required": ["league"]
+      }
+    },
+    {
+      "type": "data_card",
+      "title": "Data Card / Research Summary",
+      "renderer": "render_data_card",
+      "is_singleton": false,
+      "description": "Structured rich text, news, recipes, search facts, and research results with citations.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "subtitle": { "type": "string" },
+          "search_query": { "type": "string" },
+          "news_topic": { "type": "string" },
+          "items": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Structured Data Table",
+      "renderer": "render_table",
+      "is_singleton": false,
+      "description": "Ranked or tabular rows with typed, formatted columns (number, currency, percent).",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "columns": { "type": "array" },
+          "rows": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "kpi_row",
+      "title": "KPI Metric Row",
+      "renderer": "render_kpi_row",
+      "is_singleton": false,
+      "description": "2-6 headline metric tiles with deltas, trend sparks, and direction indicators.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "metrics": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "timeline",
+      "title": "Chronological Timeline",
+      "renderer": "render_timeline",
+      "is_singleton": false,
+      "description": "Chronological milestone cards for unfolding events, mergers, or history.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "timeline_query": { "type": "string" },
+          "events": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "versus_card",
+      "title": "Entity Comparison",
+      "renderer": "render_versus_card",
+      "is_singleton": false,
+      "description": "Side-by-side comparison of 2-4 entities with aligned metric rows and winner highlight.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "entities": { "type": "array" },
+          "rows": { "type": "array" },
+          "verdict": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "profile_card",
+      "title": "Subject Profile Card",
+      "renderer": "render_profile_card",
+      "is_singleton": false,
+      "description": "Infobox biography or company summary with portrait and fast facts.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "profile_query": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "progress",
+      "title": "Goal Progress Bar",
+      "renderer": "render_progress",
+      "is_singleton": false,
+      "description": "Progress bars displaying percentage, current values vs target caps.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "items": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "chart",
+      "title": "Generic Data Chart",
+      "renderer": "render_chart",
+      "is_singleton": false,
+      "description": "Line, bar, or pie visualization for general numeric distributions.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "type": { "type": "string", "enum": ["line", "bar", "pie"] },
+          "labels": { "type": "array" },
+          "values": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "multi_chart",
+      "title": "Multi-Series Chart",
+      "renderer": "render_chart",
+      "is_singleton": false,
+      "description": "Multi-series comparison chart overlaying 2-8 datasets on one shared axis.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "labels": { "type": "array" },
+          "series": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "map",
+      "title": "Geographic Map",
+      "renderer": "render_map",
+      "is_singleton": true,
+      "description": "Interactive map with geocoded pins and optional live traffic overlay. Singleton widget.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "map_query": { "type": "string" },
+          "traffic": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "type": "checklist",
+      "title": "Interactive Checklist",
+      "renderer": "render_checklist",
+      "is_singleton": false,
+      "description": "Interactive to-do and checklist item cards.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "items": { "type": "array" }
+        }
+      }
+    },
+    {
+      "type": "notes",
+      "title": "Note Card",
+      "renderer": "render_notes",
+      "is_singleton": false,
+      "description": "Pinned markdown or rich note excerpt.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "content": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "iframe_app",
+      "title": "Embedded Web App",
+      "renderer": "render_iframe_app",
+      "is_singleton": false,
+      "description": "Sandboxed iframe embedding an external web application or portal service.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string" },
+          "title": { "type": "string" }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "type": "mini_music_player",
+      "title": "Music Player",
+      "renderer": "render_mini_music_player",
+      "is_singleton": true,
+      "description": "Embedded audio streamer for lo-fi and background genres. Singleton widget.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "genre": { "type": "string" },
+          "autoplay": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "type": "youtube_player",
+      "title": "YouTube Video Player",
+      "renderer": "render_youtube_player",
+      "is_singleton": false,
+      "description": "Embedded YouTube player given a resolved video ID.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "video_id": { "type": "string" },
+          "title": { "type": "string" }
+        },
+        "required": ["video_id"]
+      }
+    },
+    {
+      "type": "image",
+      "title": "Image Gallery",
+      "renderer": "render_image",
+      "is_singleton": false,
+      "description": "Image display card with caption and gallery views.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "converter",
+      "title": "Arithmetic / Unit Converter",
+      "renderer": "render_converter",
+      "is_singleton": false,
+      "description": "Instant arithmetic and unit conversion calculator.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "seed": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "reminder",
+      "title": "Reminder Alarm",
+      "renderer": "render_reminder",
+      "is_singleton": false,
+      "description": "Scheduled timer and alarm notification tile.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "offset_seconds": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "type": "app_grid",
+      "title": "App Hub Launcher",
+      "renderer": "render_app_grid",
+      "is_singleton": true,
+      "description": "Launcher grid showing the user's running portal services. Singleton widget.",
+      "config_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "type": "quality_profile",
+      "title": "Source Quality Profile",
+      "renderer": "render_quality_profile",
+      "is_singleton": true,
+      "description": "Source reputation metrics (trusted and burned sources). Singleton widget.",
+      "config_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "type": "settings",
+      "title": "Appearance & Settings Panel",
+      "renderer": "render_settings",
+      "is_singleton": true,
+      "description": "Theme selector and canvas configuration panel. Singleton widget.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "theme": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "crypto_card",
+      "title": "Crypto Asset Card",
+      "renderer": "render_crypto_card",
+      "is_singleton": false,
+      "description": "Live crypto market price, 24h volume, and change card.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" }
+        }
+      }
+    },
+    {
+      "type": "wallet_graph",
+      "title": "Crypto Wallet Graph",
+      "renderer": "render_wallet_graph",
+      "is_singleton": false,
+      "description": "Interactive node graph of crypto transaction flows.",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "address": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

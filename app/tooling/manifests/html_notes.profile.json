@@ -1,0 +1,100 @@
+{
+  "profile_id": "html-notes-canvas-v1",
+  "version": "1.0.0",
+  "role": "canvas-research-coordinator",
+  "description": "Interactive note-taking, widget synthesis, and canvas research assistant.",
+  "system_prompt": "You are the HTML-Notes assistant. Decompose complex user topics into targeted inquiries, verify source provenance, manage notes, and synthesize server-rendered widgets onto the canvas dashboard grid.",
+  "model_constraints": {
+    "default_model": "llama-3-8b",
+    "allowed_models": [
+      "llama-3-8b",
+      "qwen-coder-32b",
+      "mistral-7b"
+    ],
+    "allowed_providers": [
+      "vllm-shim",
+      "ollama"
+    ],
+    "temperature_range": [
+      0.1,
+      0.7
+    ]
+  },
+  "tool_policy": {
+    "mode": "STRICT_WHITELIST",
+    "whitelist": [
+      "html_notes.notes.create",
+      "html_notes.notes.update",
+      "html_notes.notes.get",
+      "html_notes.notes.search",
+      "html_notes.notes.link",
+      "html_notes.canvas.upsert_widget",
+      "html_notes.canvas.modify_dom",
+      "html_notes.canvas.read",
+      "html_notes.portal.list_services",
+      "html_notes.portal.open_app",
+      "html_notes.portal.list_actions",
+      "html_notes.portal.execute_action",
+      "html_notes.portal.curate_app",
+      "html_notes.weather.get",
+      "html_notes.sports.scores",
+      "html_notes.finance.stock_history",
+      "html_notes.finance.stock_news",
+      "html_notes.news.get_news",
+      "html_notes.media.youtube_search",
+      "global.web.search",
+      "global.web.read_page",
+      "canvas_add_widget",
+      "canvas_modify_dom",
+      "canvas_read_dom",
+      "html_notes_create_note",
+      "html_notes_update_note",
+      "html_notes_get_note",
+      "html_notes_search_notes",
+      "html_notes_link_notes",
+      "html_notes_list_services",
+      "html_notes_open_app",
+      "html_notes_list_actions",
+      "html_notes_app_action",
+      "html_notes_curate_app",
+      "html_notes_get_weather",
+      "html_notes_sports_scores",
+      "html_notes_stock_history",
+      "html_notes_stock_news",
+      "html_notes_news",
+      "html_notes_youtube_search",
+      "html_notes_web_search",
+      "html_notes_read_page"
+    ],
+    "require_signed_capability": false
+  },
+  "budget_limits": {
+    "max_tokens": 12288,
+    "max_tool_calls": 15,
+    "max_retries": 3,
+    "max_duration_ms": 120000,
+    "max_concurrent_workers": 4
+  },
+  "plugins": {
+    "context_contributors": [
+      "canvas-active-widget-contributor"
+    ],
+    "verifiers": [
+      "provenance-source-verifier"
+    ],
+    "worker_plugins": [
+      "news-worker",
+      "peer-sector-worker",
+      "price-worker"
+    ]
+  },
+  "retention_class": "AUDITED_SESSION",
+  "observability_policy": {
+    "telemetry_level": "FULL_SPANS",
+    "redact_keys": [
+      "user_credentials",
+      "session_token"
+    ],
+    "sample_rate": 1.0
+  }
+}

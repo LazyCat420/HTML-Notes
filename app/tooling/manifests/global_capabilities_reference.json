@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "namespace": "global",
+  "description": "Catalog of global capability providers owned by the shared agent runtime / lazy-agent-service.",
+  "capabilities": [
+    {
+      "id": "global.web.search",
+      "legacy_alias": "html_notes_web_search",
+      "owner": "lazy-agent-service",
+      "effect": "read",
+      "concurrency_safe": true,
+      "description": "App-neutral web retrieval capability. Returns ranked search hits with titles, URLs, and snippet texts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search query keywords" },
+          "limit": { "type": "integer", "default": 6, "description": "Max search results" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "id": "global.web.read_page",
+      "legacy_alias": "html_notes_read_page",
+      "owner": "lazy-agent-service",
+      "effect": "read",
+      "concurrency_safe": true,
+      "description": "App-neutral page extraction capability. Fetches and sanitizes clean markdown/text content from a URL.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "description": "Target webpage URL" },
+          "max_chars": { "type": "integer", "default": 6000 }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "id": "global.data.transform",
+      "legacy_alias": null,
+      "owner": "lazy-agent-service",
+      "effect": "read",
+      "concurrency_safe": true,
+      "description": "Pure app-neutral JSON-in / JSON-out data transformation, sorting, and filtering without side effects.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "data": { "type": "array" },
+          "operations": { "type": "array" }
+        },
+        "required": ["data", "operations"]
+      }
+    }
+  ]
+}
