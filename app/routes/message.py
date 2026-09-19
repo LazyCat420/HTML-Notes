@@ -2801,348 +2801,71 @@ async def send_message(req: MessageRequest):
                     "query": req.message}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": "connecting to agent...", "phase": _PHASE_ROUTING})}\n\n'
 
-                async with httpx.AsyncClient(timeout=600.0) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{target_url}/agent",
-                        json=payload,
-                        # prism scopes a request by the x-project / x-username
-                        # HEADERS, not the body fields — without them every
-                        # html-notes turn was attributed to "anonymous" and so never
-                        # showed up under admin in prism-client. Body fields are kept
-                        # in sync below for services that read them instead.
-                        headers={"Accept": "text/event-stream",
-                                 "x-project": AGENT_PROJECT,
-                                 "x-username": AGENT_USERNAME}
-                    ) as resp:
-                        if resp.status_code != 200:
-                            error_body = ""
-                            async for chunk in resp.aiter_text():
-                                error_body += chunk
-                            yield f'data: {json.dumps({"type": "error", "message": f"Prism error {resp.status_code}: {error_body[:500]}"})}\n\n'
-                            return
+                from app.services.dev2_sdk_adapter import mock_sdk
+                run_id = await mock_sdk.create_run({"input": req.message, "session_id": req.session_id})
+                
+                # State variables expected by the rest of the turn processing
+                buffer = ""
+                active_tool_name = None
+                active_tool_args = {}
+                pretool_buffer = ""
+                saw_tool_call = False
 
-                        buffer = ""
-                        active_tool_name = None
-                        active_tool_args = {}
-                        # PRE-TOOL PROSE IS DELIBERATION, NOT AN ANSWER. The model
-                        # has to think in tokens to decide which tool fits, but
-                        # rule 1 forbids preamble and rule 5 says the ONE sentence
-                        # comes AFTER the widget is up — so anything arriving
-                        # before the first tool call is working-out, and it was
-                        # being streamed straight into the chat pane and read
-                        # aloud by TTS. Hold it instead, and only release it if
-                        # the turn ends having called no tool at all (genuine
-                        # small talk). final_text still accumulates every token,
-                        # so the DB record and the prose->data_card fallback are
-                        # unaffected.
-                        pretool_buffer = ""
-                        saw_tool_call = False
-
-                        async for chunk in resp.aiter_text():
-                            buffer += chunk
-                            while "\n" in buffer:
-                                line, buffer = buffer.split("\n", 1)
-                                line = line.strip()
-
-                                if not line.startswith("data: "):
-                                    continue
-
-                                if canvas_settled or stream_cut:
+                async for event in mock_sdk.observe(run_id):
+                    if canvas_settled or stream_cut:
+                        await mock_sdk.cancel_run(run_id)
+                        break
+                        
+                    event_type = event.get("type")
+                    
+                    if event_type == "status":
+                        yield f'data: {{"type": "status", "message": event.get("status")}}\n\n'
+                        
+                    elif event_type == "tool_call":
+                        saw_tool_call = True
+                        tool_name = event.get("tool")
+                        # Normalize tool name for legacy execute_mutation
+                        if not tool_name.startswith("mcp__lazy-tool-service__"):
+                            tool_name = f"mcp__lazy-tool-service__{tool_name}"
+                        
+                        active_tool_name = tool_name
+                        active_tool_args = event.get("args", {})
+                        executed_active_tool = False
+                        
+                        tool_phase = _phase_for_tool(tool_name)
+                        yield f'data: {{"type": "tool_call", "tool": tool_name, "args": _summarize_tool_args(active_tool_args), "phase": tool_phase}}\n\n'
+                        yield f'data: {{"type": "status", "message": f"preparing {tool_name}...", "phase": tool_phase}}\n\n'
+                        
+                        # Execute the mutation immediately
+                        if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget", "mcp__lazy-tool-service__create_widget", "mcp__lazy-tool-service__update_widget"):
+                            failed_tool = active_tool_name
+                            async for evt in execute_mutation(active_tool_name, active_tool_args):
+                                yield evt
+                            executed_active_tool = True
+                            active_tool_name = None
+                            active_tool_args = {}
+                            
+                            if mutation_outcome["committed"]:
+                                last_committed = nonlocal_last_committed["v"]
+                                widgets_committed += 1
+                                if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
+                                    canvas_settled = True
                                     break
-
-                                try:
-                                    event = json.loads(line[6:])
-                                except json.JSONDecodeError:
-                                    continue
-
-                                event_type = event.get("type", "")
-                                logger.info(f"[SSE_PROXY] Received event_type: '{event_type}'")
-
-                                if event_type in ("chunk", "done") and active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
-                                    if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args):
-                                        failed_tool = active_tool_name
-                                        async for evt in execute_mutation(active_tool_name, active_tool_args):
-                                            yield evt
-                                        executed_active_tool = True
-                                        active_tool_name = None
-                                        active_tool_args = {}
-                                        if mutation_outcome["committed"]:
-                                            # Remember WHAT was committed: the fast loop
-                                            # cuts the model off before it describes it,
-                                            # so this config is all we have to speak from.
-                                            last_committed = nonlocal_last_committed["v"]
-                                            widgets_committed += 1
-                                            if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
-                                                canvas_settled = True
-                                                break
-                                        else:
-                                            # The mutation was a no-op (selector
-                                            # matched nothing / render failed).
-                                            # Do NOT count it or settle the turn —
-                                            # the prose fallback below still fires
-                                            # if nothing ever lands.
-                                            logger.warning(f"[AGENT] {failed_tool} produced no canvas change — not counted as committed")
-                                            yield f'data: {json.dumps({"type": "status", "message": "that edit did not match anything on the canvas"})}\n\n'
-
-                                if event_type == "chunk":
-                                    # Text token from LLM
-                                    token = event.get("content", "")
-                                    if saw_tool_call:
-                                        final_text += token
-                                        yield f'data: {json.dumps({"type": "chunk", "content": token})}\n\n'
-                                    else:
-                                        # Deliberation — hold it (see pretool_buffer).
-                                        # Deliberately NOT added to final_text: that
-                                        # variable is "what the user was told", and
-                                        # everything downstream reads it that way —
-                                        # the empty-bubble check below fires on it,
-                                        # and the prose->data_card safety net turns
-                                        # it into a card. Letting working-out in
-                                        # there would suppress the spoken summary
-                                        # AND render the working-out as the answer.
-                                        pretool_buffer += token
-
-                                elif event_type == "tool_execution":
-                                    status = event.get("status", "")
-                                    tool_info = event.get("tool", {})
-                                    tool_name = tool_info.get("name", "unknown")
-                                    args = tool_info.get("args", {})
-
-                                    if active_tool_name != tool_name:
-                                        # The turn is acting, so everything said
-                                        # before this was working-out. Drop it.
-                                        if not saw_tool_call and pretool_buffer.strip():
-                                            logger.info(
-                                                f"[AGENT] suppressed {len(pretool_buffer)} chars of "
-                                                f"pre-tool narration: {pretool_buffer.strip()[:80]!r}")
-                                        saw_tool_call = True
-                                        pretool_buffer = ""
-                                        active_tool_name = tool_name
-                                        active_tool_args = {}
-                                        executed_active_tool = False
-                                        # Args ride along: the name alone says
-                                        # "html_notes_web_search", which tells a
-                                        # watching user nothing about WHAT is
-                                        # being searched — and the browser has
-                                        # always read this field.
-                                        tool_phase = _phase_for_tool(tool_name)
-                                        yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name, "args": _summarize_tool_args(args), "phase": tool_phase})}\n\n'
-                                        yield f'data: {json.dumps({"type": "status", "message": f"preparing {tool_name}...", "phase": tool_phase})}\n\n'
-                                    
-                                    active_tool_args = args
-
-                                    # DESTRUCTIVE ACTION: the tool parked it and
-                                    # returned a pending_id; put the confirm card
-                                    # on the canvas so the user's click is the
-                                    # only thing that can fire it. Rendered here
-                                    # (not by canvas_add_widget) so the model
-                                    # cannot skip it or invent its own config.
-                                    if (active_tool_name == "mcp__lazy-tool-service__html_notes_app_action"
-                                            and not executed_active_tool
-                                            and status in ("done", "success")):
-                                        _act_app = str((args or {}).get("app_id") or "").strip()
-                                        _act_name = str((args or {}).get("action") or "").strip()
-                                        _act_spec = get_action_spec(_act_app, _act_name)
-                                        if _act_spec and _act_spec.get("destructive"):
-                                            executed_active_tool = True
-                                            _act_params = (args or {}).get("params") or {}
-                                            if isinstance(_act_params, str):
-                                                try:
-                                                    _act_params = json.loads(_act_params)
-                                                except Exception:
-                                                    _act_params = {}
-                                            _pid = park_pending_action(_act_app, _act_name, _act_params)
-                                            _cfg = build_action_confirm_config(
-                                                _act_app, _act_name, _act_params, _pid)
-
-                                            def _place_confirm(soup, _cfg=_cfg):
-                                                grid = soup.select_one('#dashboard-grid')
-                                                if grid is None:
-                                                    soup.append(BeautifulSoup(
-                                                        '<div id="dashboard-grid" class="dashboard-grid"></div>',
-                                                        'html.parser'))
-                                                    grid = soup.select_one('#dashboard-grid')
-                                                grid.insert(0, BeautifulSoup(render_widget(
-                                                    "action_confirm",
-                                                    f"confirm-{uuid.uuid4().hex[:8]}", _cfg),
-                                                    'html.parser'))
-
-                                            _evt = await commit_canvas(req.session_id, _place_confirm)
-                                            if _evt:
-                                                logger.info(f"[ACTIONS] confirm card for {_act_app}.{_act_name}")
-                                                yield _evt
-
-                                    # BROWSER OPEN: html_notes_open_app names an
-                                    # approved catalog app — resolve it server-side
-                                    # and hand the client its URL as a dedicated SSE
-                                    # frame (window.open + clickable-toast fallback,
-                                    # since an SSE callback has no user gesture).
-                                    # Emitted once per call; never a raw model URL.
-                                    if (active_tool_name == "mcp__lazy-tool-service__html_notes_open_app"
-                                            and not executed_active_tool
-                                            and status in ("calling", "done", "success")):
-                                        open_q = str((args or {}).get("app_id")
-                                                     or (args or {}).get("query") or "").strip()
-                                        if open_q:
-                                            executed_active_tool = True
-                                            hub_data = await get_portal_apps()
-                                            open_app, _ = resolve_portal_app(open_q, hub_data["apps"])
-                                            if (open_app and open_app.get("launch_url")
-                                                    and open_app["id"] not in emitted_open_apps):
-                                                emitted_open_apps.add(open_app["id"])
-                                                logger.info(f"[APP HUB] open_url → {open_app['id']}")
-                                                yield f'data: {json.dumps({"type": "open_url", "url": open_app["launch_url"], "name": open_app["name"]})}\n\n'
-
-                                    # FAST PATH: Execute immediately when arguments are available!
-                                    if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget", "mcp__lazy-tool-service__create_widget", "mcp__lazy-tool-service__update_widget"):
-                                        if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args) and status in ("calling", "done", "success"):
-                                            failed_tool = active_tool_name
-                                            async for evt in execute_mutation(active_tool_name, active_tool_args):
-                                                yield evt
-                                            executed_active_tool = True
-                                            active_tool_name = None
-                                            active_tool_args = {}
-                                            if mutation_outcome["committed"]:
-                                                # Same capture as the other commit site:
-                                                # this is the only record of what we
-                                                # rendered once the args are cleared.
-                                                last_committed = nonlocal_last_committed["v"]
-                                                widgets_committed += 1
-                                                if not wants_multiple or widgets_committed >= _MAX_AGENT_WIDGETS:
-                                                    canvas_settled = True
-                                                    break
-                                            else:
-                                                logger.warning(f"[AGENT] {failed_tool} produced no canvas change — not counted as committed")
-                                                yield f'data: {json.dumps({"type": "status", "message": "that edit did not match anything on the canvas"})}\n\n'
-                                        elif status in ("calling", "done", "success", "error"):
-                                            active_tool_name = None
-                                            active_tool_args = {}
-                                    elif status == "error":
-                                        error_msg = event.get("result", "Unknown tool error")
-                                        yield f'data: {json.dumps({"type": "status", "message": f"tool error: {tool_name}: {str(error_msg)[:200]}"})}\n\n'
-                                    elif status in ("calling", "done", "success"):
-                                        # Early preview: a whitelisted data tool just
-                                        # finished — put its articles on the canvas as
-                                        # a provisional widget before the model has
-                                        # even started composing. The runaway/budget
-                                        # accounting below still runs for this call.
-                                        if (status in ("done", "success")
-                                                and tool_name in _PROVISIONAL_TOOLS):
-                                            try:
-                                                async for evt in _commit_provisional_from_tool(
-                                                        tool_name, args, event):
-                                                    yield evt
-                                            except Exception as pe:
-                                                logger.warning(f"[PROVISIONAL] preview commit failed: {pe}")
-                                        # A tool we do not handle. Prism forces its
-                                        # core/system tools (create_artifact,
-                                        # execute_python, search_web…) into the set
-                                        # regardless of the enabledTools allowlist we
-                                        # send: coreToolsLocked defaults true and a
-                                        # CUSTOM agent's persona can't override it. So
-                                        # the model can and does pick create_artifact
-                                        # over canvas_add_widget on a research ask.
-                                        #
-                                        # This used to be a TOTAL silent no-op: the
-                                        # user saw a tool spinner, no component event
-                                        # ever fired, and active_tool_name was never
-                                        # reset — which also wedged the deferred-flush
-                                        # check for the rest of the turn. Log it, count
-                                        # it, and reset so the next tool is clean.
-                                        unhandled_tools.append(tool_name)
-                                        # Two very different cases, worth telling
-                                        # apart in the log: OUR research tools not
-                                        # mutating the canvas is EXPECTED (they
-                                        # gather data, then the model is supposed to
-                                        # call canvas_add_widget), whereas a prism
-                                        # core tool means the allowlist was bypassed.
-                                        is_ours = tool_name.startswith("mcp__lazy-tool-service__")
-                                        if not is_ours:
-                                            logger.warning(
-                                                f"[AGENT] prism core tool {tool_name!r} — outside our "
-                                                f"allowlist and cannot touch the canvas "
-                                                f"(coreToolsLocked is unreachable for CUSTOM agents)")
-                                        elif unhandled_tools.count(tool_name) in (1, 5, 10):
-                                            logger.info(
-                                                f"[AGENT] research tool {tool_name!r} "
-                                                f"(call #{unhandled_tools.count(tool_name)}) — "
-                                                f"no canvas mutation yet")
-                                        active_tool_name = None
-                                        active_tool_args = {}
-
-                                        # Runaway guard. We cannot stop prism from
-                                        # running a tool — we only observe — so the
-                                        # only lever is to stop consuming the stream,
-                                        # which drops through to the fallback card
-                                        # with whatever the turn produced. Better a
-                                        # card in 60s than a spinner for 5 minutes.
-                                        research_calls += 1
-                                        # The research budget is the one denominator
-                                        # this proxy always knows. Prism's own
-                                        # iteration_progress is better (it counts the
-                                        # agentic loop, not just research) and wins
-                                        # below when it arrives — but it does not
-                                        # arrive on every turn, and a bar with no
-                                        # denominator is the fake creep we are trying
-                                        # to stop showing.
-                                        yield f'data: {json.dumps({"type": "progress", "step": research_calls, "of": _MAX_RESEARCH_CALLS, "source": "research"})}\n\n'
-                                        key = _tool_repeat_key(tool_name, args)
-                                        tool_repeats[key] = tool_repeats.get(key, 0) + 1
-                                        if tool_repeats[key] >= _MAX_IDENTICAL_TOOL_CALLS:
-                                            logger.error(
-                                                f"[AGENT] RUNAWAY: {tool_name!r} called "
-                                                f"{tool_repeats[key]}× with identical args — "
-                                                f"cutting the turn short. A tool is almost "
-                                                f"certainly failing while telling the model "
-                                                f"to retry; check /health/app search status.")
-                                            yield f'data: {json.dumps({"type": "status", "message": "search is repeating itself — building from what I have", "phase": _PHASE_COMPOSING})}\n\n'
-                                            stream_cut = True
-                                            break
-                                        if research_calls >= _MAX_RESEARCH_CALLS:
-                                            logger.warning(
-                                                f"[AGENT] research budget spent "
-                                                f"({research_calls} calls) — cutting the turn "
-                                                f"short and rendering what we have")
-                                            yield f'data: {json.dumps({"type": "status", "message": "enough research — building the card", "phase": _PHASE_COMPOSING})}\n\n'
-                                            stream_cut = True
-                                            break
-
-                                elif event_type == "status":
-                                    # Prism's own telemetry. There was no branch
-                                    # here at all, so the ONE event carrying a real
-                                    # completion fraction was dropped on the floor
-                                    # and the browser drew a fake asymptotic creep
-                                    # instead. Forward that fraction and ignore the
-                                    # rest of the vocabulary (generation_progress,
-                                    # compaction, tool_set_changed, …) — this is a
-                                    # curated progress channel, not a firehose.
-                                    if event.get("message") == "iteration_progress":
-                                        step = event.get("iteration")
-                                        of = event.get("maxIterations")
-                                        if isinstance(step, int) and isinstance(of, int) and of > 0:
-                                            yield f'data: {json.dumps({"type": "progress", "step": step, "of": of, "source": "iteration"})}\n\n'
-
-                                elif event_type == "thinking":
-                                    # Deliberately NOT tagged with a phase: thinking
-                                    # happens *within* whatever phase the turn is in,
-                                    # and claiming a phase here would bounce the card
-                                    # backwards between "reading" and "researching".
-                                    yield f'data: {json.dumps({"type": "status", "message": "reasoning..."})}\n\n'
-
-                                elif event_type == "done":
-                                    # Prism finished the full agentic loop
-                                    pass
-
-                                elif event_type == "error":
-                                    yield f'data: {json.dumps({"type": "error", "message": event.get("message", "Agent error")})}\n\n'
-
-                            # The `break` above only escapes the inner line loop —
-                            # without this the outer chunk loop keeps pulling the
-                            # agent's stream and the turn runs to completion anyway.
-                            if canvas_settled or stream_cut:
-                                break
-
+                            else:
+                                logger.warning(f"[AGENT] {failed_tool} produced no canvas change")
+                                yield f'data: {{"type": "status", "message": "that edit did not match anything on the canvas"}}\n\n'
+                                
+                    elif event_type == "result":
+                        token = event.get("content", "")
+                        if saw_tool_call:
+                            final_text += token
+                            yield f'data: {{"type": "chunk", "content": token}}\n\n'
+                        else:
+                            pretool_buffer += token
+                            
+                    elif event_type == "error":
+                        yield f'data: {{"type": "error", "message": event.get("error", "SDK Error")}}\n\n'
+                        
             except Exception as e:
                 logger.error(f"Prism SSE proxy error: {e}")
                 yield f'data: {json.dumps({"type": "error", "message": f"Connection error: {str(e)}"})}\n\n'
