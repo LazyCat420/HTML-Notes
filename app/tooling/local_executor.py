@@ -251,11 +251,18 @@ class LocalToolExecutor:
         elif canonical_id == "html_notes.notes.search":
             return notes_service.search_notes(query=args.get("query", ""))
         elif canonical_id == "html_notes.notes.link":
-            fn = getattr(notes_service, "link_notes")
+            link_fn: Any = getattr(notes_service, "link_notes")
             try:
-                return fn(args.get("source_note_id", ""), args.get("target_note_id", ""), session_id)
+                return link_fn(
+                    source_note_id=args.get("source_note_id", ""),
+                    target_note_id=args.get("target_note_id", ""),
+                    session_id=session_id,
+                )
             except TypeError:
-                return fn(args.get("source_note_id", ""), args.get("target_note_id", ""))
+                return link_fn(
+                    source_note_id=args.get("source_note_id", ""),
+                    target_note_id=args.get("target_note_id", ""),
+                )
         elif canonical_id == "html_notes.notes.claim":
             return notes_service.claim_note(
                 note_id=args.get("note_id", ""),
