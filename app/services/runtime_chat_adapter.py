@@ -110,6 +110,7 @@ class RuntimeChatAdapter:
             timeout=timeout,
             project="html-notes",
             username="lazycat",
+            verify_contract=True,
         )
         client.connect_timeout = self.connect_timeout
         client.read_timeout = self.read_timeout
