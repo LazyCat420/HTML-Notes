@@ -3765,9 +3765,10 @@ from app.canvas_manager import *
 # globals. During the main↔canvas_manager circular import, wildcard exports can
 # otherwise omit get_session_canvas from the function namespace permanently.
 def get_session_canvas(session_id: str) -> str:
-    # Resolve lazily because canvas_manager is still initializing on first import.
-    from app.canvas_manager import get_session_canvas as _live_get_session_canvas
-    return _live_get_session_canvas(session_id)
+    # Read the canonical store directly: canvas_manager.get_session_canvas
+    # delegates to this compatibility hook, so calling it here would recurse.
+    from app.canvas_manager import _session_canvas as live_canvas_store
+    return live_canvas_store.get(session_id, "")
 
 # Kept under the old name: it's what the registered tool schema calls.
 stock_history = stock_snapshot
