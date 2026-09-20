@@ -51,6 +51,17 @@ class FakeStreamingClient:
     def __init__(self, events=None, raise_on_stream=None):
         self.events = events or []
         self.raise_on_stream = raise_on_stream
+        self.submitted_tool_results = []
+
+    async def submit_tool_result(self, run_id, tool_call_id, *, result, is_error=False, authorization_receipt=None):
+        self.submitted_tool_results.append({
+            "run_id": run_id,
+            "tool_call_id": tool_call_id,
+            "result": result,
+            "is_error": is_error,
+            "authorization_receipt": authorization_receipt,
+        })
+        return {"ok": True}
 
     async def stream_run(self, *args, **kwargs):
         if self.raise_on_stream:
