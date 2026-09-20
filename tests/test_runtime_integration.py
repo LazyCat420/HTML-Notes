@@ -30,6 +30,17 @@ class FakeTestRuntimeClient:
         self.events = events or []
         self.raise_on_stream = raise_on_stream
         self.cancelled_runs = []
+        self.submitted_tool_results = []
+
+    async def submit_tool_result(self, run_id, tool_call_id, *, result, is_error=False, authorization_receipt=None):
+        self.submitted_tool_results.append({
+            "run_id": run_id,
+            "tool_call_id": tool_call_id,
+            "result": result,
+            "is_error": is_error,
+            "authorization_receipt": authorization_receipt,
+        })
+        return {"ok": True}
 
     async def stream_run(self, request):
         if self.raise_on_stream:
@@ -201,6 +212,12 @@ def test_shared_runtime_canvas_widget_mutation(monkeypatch):
         components = [f for f in frames if f.get("type") == "component"]
         assert len(components) >= 1
         assert "card_solar_99" in components[0]["content"]
+        assert len(fake_client.submitted_tool_results) == 1
+        submitted = fake_client.submitted_tool_results[0]
+        assert submitted["run_id"] == "run_canvas_01"
+        assert submitted["tool_call_id"] == "canvas-call"
+        assert submitted["is_error"] is False
+        assert not [f for f in frames if f.get("type") == "error"]
 
 
 def test_shared_runtime_tool_denial_handling(monkeypatch):
