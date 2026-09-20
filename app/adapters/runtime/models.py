@@ -199,6 +199,7 @@ def verify_local_authorization(
     now: Optional[datetime] = None,
     replay_cache: Optional[ReplayCache] = None,
     signature_verifier: Optional[Callable[[LocalToolAuthorization], bool]] = None,
+    consume_replay: bool = True,
 ) -> AuthorizationVerificationResult:
     """
     Verifies a typed LocalToolAuthorization envelope against execution expectations.
@@ -389,6 +390,9 @@ def verify_local_authorization(
             error="Authorization signature verification failed",
             code="INVALID_SIGNATURE",
         )
+
+    if not consume_replay:
+        return AuthorizationVerificationResult(valid=True, authorization=auth)
 
     # 8. Replay prevention check
     cache = replay_cache or global_replay_cache

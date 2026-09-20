@@ -651,6 +651,51 @@ def _signed_wire_receipt(tool_args, session_id, call_id="call-wire", nonce=None,
     return receipt
 
 
+@pytest.mark.asyncio
+async def test_persistent_mutation_journal_replays_original_result_after_process_cache_loss(clean_db, monkeypatch):
+    """A duplicate signed write after restart returns the first outcome without dispatching again."""
+    from app.adapters.runtime.models import global_replay_cache
+    from app.tooling.local_executor import LocalToolExecutor
+    args = {"title": "Durable replay", "rendered_html": "<article><p>once</p></article>"}
+    session_id = "session-durable-replay"
+    receipt = _signed_wire_receipt(args, session_id, call_id="call-durable")
+    context = {"run_id": "run-wire", "profile_id": "html-notes-canvas-v1", "tool_call_id": "call-durable"}
+    executor = LocalToolExecutor()
+
+    first = await executor.execute("html_notes.notes.create", args, session_id=session_id,
+                                   authorization=receipt, runtime_context=context)
+    assert first["success"] is True
+    global_replay_cache.clear()  # model a fresh process; SQLite remains authoritative
+    second = await LocalToolExecutor().execute("html_notes.notes.create", args, session_id=session_id,
+                                               authorization=receipt, runtime_context=context)
+
+    assert second == first
+    assert len(database.list_all_notes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_mutation_after_restart_fails_unknown_without_redispatch(clean_db):
+    """A crash window is at-most-once: uncertain mutations are never repeated."""
+    from app.tooling.execution_journal import execution_journal
+    from app.tooling.local_executor import LocalToolExecutor
+    args = {"title": "Uncertain", "rendered_html": "<article><p>do not repeat</p></article>"}
+    session_id = "session-pending-replay"
+    receipt = _signed_wire_receipt(args, session_id, call_id="call-pending")
+    claim = execution_journal.claim(
+        app_id="html-notes", session_id=session_id, run_id="run-wire", tool_call_id="call-pending",
+        nonce=receipt["nonce"], tool_id="html_notes.notes.create", arguments_hash=receipt["arguments_hash"],
+    )
+    assert claim.state == "claimed"
+
+    result = await LocalToolExecutor().execute(
+        "html_notes.notes.create", args, session_id=session_id, authorization=receipt,
+        runtime_context={"run_id": "run-wire", "profile_id": "html-notes-canvas-v1", "tool_call_id": "call-pending"},
+    )
+    assert result["success"] is False
+    assert result["code"] == "EXECUTION_OUTCOME_UNKNOWN"
+    assert database.list_all_notes() == []
+
+
 @pytest.mark.parametrize("case,code", [
     ("valid", None), ("unsigned", "UNSIGNED_RECEIPT"), ("forged", "INVALID_SIGNATURE"),
     ("run", "RUN_MISMATCH"), ("call", "TOOL_CALL_MISMATCH"), ("profile", "PROFILE_MISMATCH"),

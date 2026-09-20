@@ -16,6 +16,7 @@ from app.adapters.runtime.models import (
     AuthorizationVerificationResult,
     LocalExecutionContext,
 )
+from app.tooling.execution_journal import execution_journal
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,8 @@ class LocalToolExecutor:
 
         # 9. Validate authorization receipt
         requires_receipt = self.policy.requires_authorization_receipt(tool_name)
+        durable_mutation = bool(tool_spec and tool_spec.get("effect") in ("write", "destructive"))
+        verified_authorization = None
         if requires_receipt or authorization is not None:
             expected_profile = (runtime_context or {}).get("profile_id")
             expected_run = (runtime_context or {}).get("run_id")
@@ -164,6 +167,7 @@ class LocalToolExecutor:
                 expected_run_id=expected_run,
                 expected_tool_call_id=expected_call,
                 expected_args=args,
+                consume_replay=not durable_mutation,
             )
             if not auth_res.valid:
                 return {
@@ -173,6 +177,7 @@ class LocalToolExecutor:
                     "code": auth_res.code or "UNAUTHORIZED",
                     "tool": tool_name
                 }
+            verified_authorization = auth_res.authorization
 
         # 10. Check confirmation requirement
         if self.policy.requires_confirmation(tool_name, args):
@@ -204,6 +209,25 @@ class LocalToolExecutor:
                     "tool": tool_name
                 }
 
+        durable_claim = None
+        if durable_mutation:
+            if verified_authorization is None:
+                return {"success": False, "is_error": True, "error": "Mutation lacks verified authorization", "code": "MISSING_RECEIPT", "tool": tool_name}
+            durable_claim = execution_journal.claim(
+                app_id=app_id, session_id=session_id or "", run_id=verified_authorization.run_id,
+                tool_call_id=verified_authorization.tool_call_id, nonce=verified_authorization.nonce,
+                tool_id=canonical_id, arguments_hash=verified_authorization.arguments_hash or "",
+            )
+            if durable_claim.state == "completed":
+                return durable_claim.result or {"success": False, "is_error": True, "code": "JOURNAL_CORRUPT", "error": "Cached mutation outcome is missing", "tool": tool_name}
+            if durable_claim.state != "claimed":
+                return {
+                    "success": False, "is_error": True,
+                    "error": durable_claim.error or "Mutation execution identity conflict",
+                    "code": "EXECUTION_OUTCOME_UNKNOWN" if durable_claim.state == "pending" else "REPLAYED_RECEIPT" if durable_claim.state == "replayed" else "EXECUTION_IDENTITY_CONFLICT",
+                    "tool": tool_name,
+                }
+
         # 11. Dispatch execution to domain services
         try:
             result = await self._dispatch(canonical_id, tool_name, args, session_id, canvas_html)
@@ -216,6 +240,11 @@ class LocalToolExecutor:
             }
             if is_err and isinstance(result, dict) and "error" in result:
                 out["error"] = result["error"]
+            if durable_claim is not None:
+                execution_journal.complete(
+                    app_id=app_id, session_id=session_id or "", run_id=verified_authorization.run_id,
+                    tool_call_id=verified_authorization.tool_call_id, result=out,
+                )
             return out
         except Exception as e:
             logger.exception(f"Execution failed for tool '{tool_name}': {e}")
