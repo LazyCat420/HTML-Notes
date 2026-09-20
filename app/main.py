@@ -3761,6 +3761,13 @@ from app.services.sports import *
 from app.services.youtube_helpers import *
 from app.config_builders import *
 from app.canvas_manager import *
+# Keep helpers defined before this late wildcard import bound in main's own
+# globals. During the main↔canvas_manager circular import, wildcard exports can
+# otherwise omit get_session_canvas from the function namespace permanently.
+def get_session_canvas(session_id: str) -> str:
+    # Resolve lazily because canvas_manager is still initializing on first import.
+    from app.canvas_manager import get_session_canvas as _live_get_session_canvas
+    return _live_get_session_canvas(session_id)
 
 # Kept under the old name: it's what the registered tool schema calls.
 stock_history = stock_snapshot

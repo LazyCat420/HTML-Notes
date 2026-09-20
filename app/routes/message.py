@@ -70,6 +70,11 @@ async def send_message(req: MessageRequest):
     import app.canvas_manager as _cm
     globals().update({k: v for k, v in _main.__dict__.items() if not k.startswith("__")})
     globals().update({k: v for k, v in _cm.__dict__.items() if not k.startswith("__")})
+    # The compatibility wildcard updates above run during the main↔message
+    # circular import.  Bind this live accessor explicitly so a partially
+    # initialized module cannot leave the final persistence path without it.
+    from app.canvas_manager import get_session_canvas as _live_get_session_canvas
+    globals()["get_session_canvas"] = _live_get_session_canvas
     from app.adapters.runtime.config import is_shared_runtime_enabled, check_runtime_readiness
     if is_shared_runtime_enabled():
         readiness = await check_runtime_readiness()
@@ -3511,5 +3516,4 @@ async def get_session_history(session_id: str):
     except Exception as e:
         logger.error(f"Error fetching history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
