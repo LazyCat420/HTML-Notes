@@ -513,8 +513,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // ─── APP RAIL ───────────────────────────────────────────────────────────
     // Collapsible launcher of the user's own apps so nobody has to REMEMBER
     // what containers exist: same curated /api/services list the App Hub grid
-    // polls (portal inventory ⊕ registry ⊕ DB overlay). Pinned first, then
-    // client frontends, then '-service' backends; hidden apps stay hidden.
+    // polls (portal inventory ⊕ registry ⊕ DB overlay). Strictly alphabetical
+    // by name; hidden apps stay hidden. (Pinned apps keep their 📌 display but
+    // no longer jump to the top — the rail must scan like an index.)
     (function initAppRail() {
         const rail = document.getElementById("app-rail");
         if (!rail) return;
@@ -586,8 +587,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 // not an inventory; backends live in the App Hub grid.
                 const all = ((d && d.apps) || []).filter(
                     (a) => a && !a.hidden && a.launch_url && (a.is_client === true || a.is_client !== false));
-                all.sort((x, y) => (y.pinned === true) - (x.pinned === true)
-                    || String(x.name).localeCompare(String(y.name)));
+                all.sort((x, y) => String(x.name).localeCompare(String(y.name),
+                    undefined, { sensitivity: "base" }));
                 assignMonograms(all);
                 apps = all;
             } catch (e) { /* keep the last good list — portal blips must not blank the rail */ }
