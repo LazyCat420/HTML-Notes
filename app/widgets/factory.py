@@ -1302,19 +1302,19 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
 
         <!-- Queue Panel (toggled by the queue_music button below) -->
         <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-2 divide-y divide-white/5" style="display: none;">
-            <template x-for="item in upcoming" :key="item.t.id">
-                <div class="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/5 cursor-pointer group/row" @click="playAt(item.i)">
-                    <span class="material-symbols-outlined text-[0.9rem] text-purple-300/60 shrink-0">music_note</span>
+            <template x-for="item in trackList" :key="item.t.id + '-' + item.i">
+                <div class="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer group/row transition-colors" :class="item.isCurrent ? 'bg-purple-500/20 text-purple-200 border-l-2 border-purple-400 pl-2' : 'hover:bg-white/5 text-white/90'" @click="playAt(item.i)">
+                    <span class="material-symbols-outlined text-[0.9rem] text-purple-300 shrink-0" :class="isPlaying && item.isCurrent ? 'animate-pulse' : ''" x-text="item.isCurrent ? 'equalizer' : 'music_note'"></span>
                     <div class="min-w-0 flex-grow">
-                        <div class="truncate text-white/90" x-text="item.t.title"></div>
-                        <div class="truncate text-purple-300/70 text-[10px] hover:text-purple-200" x-text="item.t.artist" :data-ask="'who is ' + item.t.artist" title="Ask about this artist"></div>
+                        <div class="truncate" :class="item.isCurrent ? 'text-purple-200 font-semibold' : 'text-white/90'" x-text="item.t.title"></div>
+                        <div class="truncate text-purple-300/70 text-[10px]" x-text="item.t.artist"></div>
                     </div>
-                    <button @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
+                    <button x-show="!item.isCurrent" @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
                         <span class="material-symbols-outlined text-[0.9rem]">close</span>
                     </button>
                 </div>
             </template>
-            <div x-show="!upcoming.length" class="px-3 py-2 text-xs text-white/40">Queue empty — more on the way…</div>
+            <div x-show="!trackList.length" class="px-3 py-2 text-xs text-white/40">Queue empty — more on the way…</div>
         </div>
 
         <!-- Progress Bar & Time -->

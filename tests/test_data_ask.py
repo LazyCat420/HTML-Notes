@@ -61,8 +61,8 @@ def test_map_popup_carries_an_ask_button_that_posts_to_the_parent():
     assert "'tell me about '" in doc and "'weather in '" in doc
 
 
-def test_music_queue_artist_and_app_tile_carry_bound_asks():
+def test_music_queue_has_no_ask_and_app_tile_carries_bound_asks():
     music = generate_widget_html("mini_music_player", "music-1", {"genre": "jazz"})
-    assert ":data-ask=\"'who is ' + item.t.artist\"" in music
+    assert ":data-ask=" not in music, "music queue must never carry data-ask to prevent click hijacking"
     grid = generate_widget_html("app_grid", "app-hub", {"apps": [], "curation": {}})
     assert ":data-ask=\"'tell me about ' + app.name\"" in grid

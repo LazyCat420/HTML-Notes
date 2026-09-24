@@ -161,14 +161,14 @@ test("factory renders the object x-data with kind + base, and the queue UI", () 
   assert.match(factoryPy, /kind: \{json_escape\(kind\)\}/, "kind flows into the widget");
   assert.match(factoryPy, /base: \{json_escape\(MUSIC_PLAYER_URL\)\}/, "base comes from config");
   assert.match(factoryPy, /queue_music/, "queue toggle button");
-  assert.match(factoryPy, /x-for="item in upcoming"/, "queue panel rows");
+  assert.match(factoryPy, /x-for="item in trackList"/, "queue panel rows");
 });
 
 test("self-heal template stays in sync (queue UI + object x-data)", () => {
   assert.match(indexJs, /musicPlayerWidget\(\{ genre: \$\{JSON\.stringify\(genre\)\}/,
     "healed nodes must use the object form");
   assert.match(indexJs, /queue_music/, "healed template must include the queue button");
-  assert.match(indexJs, /x-for="item in upcoming"/, "healed template must include the queue panel");
+  assert.match(indexJs, /x-for="item in trackList"/, "healed template must include the queue panel");
   // Old positional nodes must be detected as stale and rebuilt.
   assert.match(indexJs, /!widget\.getAttribute\('x-data'\)\.includes\('musicPlayerWidget\(\{'\)/,
     "positional x-data must count as old-format");

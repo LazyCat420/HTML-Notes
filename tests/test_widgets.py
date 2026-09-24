@@ -291,7 +291,7 @@ def test_music_player_carries_kind_base_and_queue_ui():
     assert "musicPlayerWidget({ genre: &quot;jungle&quot;, kind: &quot;genre&quot;," in out
     assert "base: &quot;http" in out, "service base URL must be baked in"
     assert "queue_music" in out, "queue toggle button missing"
-    assert 'x-for="item in upcoming"' in out, "queue panel rows missing"
+    assert 'x-for="item in trackList"' in out, "queue panel rows missing"
     assert "streamStatus" in out, "SSE progress line missing"
     assert "{{" not in out, "unsubstituted f-string braces leaked into HTML"
 

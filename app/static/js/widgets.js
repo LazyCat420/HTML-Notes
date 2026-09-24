@@ -1028,6 +1028,11 @@ document.addEventListener('alpine:init', () => {
             return null;
         },
 
+        // Full playlist for the queue panel: all tracks with current indicator
+        get trackList() {
+            return this.queue.map((t, i) => ({ t, i, isCurrent: i === this.currentIndex }));
+        },
+
         // Rows for the queue panel: everything after the current track, with
         // absolute indices preserved so playAt/removeAt address the real array.
         get upcoming() {
@@ -1282,26 +1287,13 @@ document.addEventListener('alpine:init', () => {
         },
 
         /** Jump to an absolute queue index. The one entry point for playback. */
-        async playAt(i, { auto = false } = {}) {
+        playAt(i, { auto = false } = {}) {
             if (!auto) this.cancelHandoff();
             if (i < 0 || i >= this.queue.length) return;
-            // Settle on a track that will actually stream BEFORE touching the
-            // audio element. Pruning ahead is not enough on its own: when most
-            // of a queue is refused, playback burns through the unprobed tail
-            // faster than the background probes complete, and every one of
-            // those is an audible failure (measured: 9 in a row, on a queue
-            // that still held playable tracks).
-            const target = await this.settleOnPlayable(i);
-            if (target < 0) {
-                this.error = 'Nothing in this queue would play. The source is refusing these streams.';
-                this.streamStatus = '';
-                this.isPlaying = false;
-                return;
-            }
-            this.currentIndex = target;
+            this.currentIndex = i;
             this.loadTrack();
             const shouldPlay = auto ? this.autoplayWanted : true;
-            if (shouldPlay) {
+            if (shouldPlay && this.audio) {
                 this.audio.play().catch(e => {
                     console.warn('[MusicPlayer] Autoplay prevented by browser policy.', e);
                     this.isPlaying = false;
@@ -1334,7 +1326,13 @@ document.addEventListener('alpine:init', () => {
             const wasPlaying = this.isPlaying;
             this.currentIndex = (this.currentIndex + 1) % this.queue.length;
             this.loadTrack();
-            if (wasPlaying) this.audio.play();
+            const shouldResume = wasPlaying || auto;
+            if (shouldResume && this.audio) {
+                this.audio.play().catch(e => {
+                    console.warn('[MusicPlayer] Play failed on advance:', e);
+                    this.isPlaying = false;
+                });
+            }
         },
 
         prevTrack() {
