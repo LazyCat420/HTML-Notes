@@ -1020,6 +1020,10 @@ document.addEventListener('alpine:init', () => {
         volume: 1.0,
         isMuted: false,
         prevVolume: 1.0,
+        watchdogTimer: null,
+        activeTab: 'queue',
+        recentHistory: [],
+        lastLoggedTrackId: null,
 
         get currentTrack() {
             if (this.currentIndex >= 0 && this.currentIndex < this.queue.length) {
@@ -1079,8 +1083,14 @@ document.addEventListener('alpine:init', () => {
                 console.error('[MusicPlayer] Native audio playback error:', e);
                 this.handleStreamError();
             });
+            try {
+                const cached = localStorage.getItem('hn_music_history');
+                if (cached) this.recentHistory = JSON.parse(cached);
+            } catch {}
+
             this.audio.addEventListener('playing', () => {
                 this.notePlaybackStarted();
+                this.recordPlayHistory(this.currentTrack);
             });
 
             const term = this.genreFilter || 'lo-fi';
@@ -1147,7 +1157,11 @@ document.addEventListener('alpine:init', () => {
             let transportRetried = false;
             // The cold genre pipeline emits its first tracks batch well inside
             // 60s; silence past that means it's wedged, not slow.
-            const watchdog = setTimeout(() => {
+            if (this.watchdogTimer) {
+                clearTimeout(this.watchdogTimer);
+                this.watchdogTimer = null;
+            }
+            this.watchdogTimer = setTimeout(() => {
                 if (!gotTracks) { this.closeStream(); this.failover(term, type); }
             }, 60000);
 
@@ -1167,7 +1181,10 @@ document.addEventListener('alpine:init', () => {
                 }
             });
             this.es.addEventListener('done', () => {
-                clearTimeout(watchdog);
+                if (this.watchdogTimer) {
+                    clearTimeout(this.watchdogTimer);
+                    this.watchdogTimer = null;
+                }
                 this.streamStatus = '';
                 // CRITICAL: close on done. EventSource auto-reconnects after a
                 // server-side close, which would re-run the entire discovery
@@ -1178,7 +1195,10 @@ document.addEventListener('alpine:init', () => {
             this.es.addEventListener('error', () => {
                 // Server-sent terminal error event (named "error" in the SSE
                 // protocol of the mix endpoint) — distinct from transport onerror.
-                clearTimeout(watchdog);
+                if (this.watchdogTimer) {
+                    clearTimeout(this.watchdogTimer);
+                    this.watchdogTimer = null;
+                }
                 this.closeStream();
                 if (!gotTracks) this.failover(term, type);
             });
@@ -1187,15 +1207,29 @@ document.addEventListener('alpine:init', () => {
                 // proxy blip); a second means the service is down or the stream
                 // closed uncleanly — stop and fail over if nothing played yet.
                 if (!this.es) return;
-                if (gotTracks) { clearTimeout(watchdog); this.closeStream(); return; }
+                if (gotTracks) {
+                    if (this.watchdogTimer) {
+                        clearTimeout(this.watchdogTimer);
+                        this.watchdogTimer = null;
+                    }
+                    this.closeStream();
+                    return;
+                }
                 if (!transportRetried) { transportRetried = true; return; }
-                clearTimeout(watchdog);
+                if (this.watchdogTimer) {
+                    clearTimeout(this.watchdogTimer);
+                    this.watchdogTimer = null;
+                }
                 this.closeStream();
                 this.failover(term, type, { transportDead: true });
             };
         },
 
         closeStream() {
+            if (this.watchdogTimer) {
+                clearTimeout(this.watchdogTimer);
+                this.watchdogTimer = null;
+            }
             if (this.es) {
                 this.es.close();
                 this.es = null;
@@ -1283,6 +1317,7 @@ document.addEventListener('alpine:init', () => {
                 const encodedPath = encodeURIComponent(this.currentTrack.path);
                 this.audio.src = `${this.base}/api/music/stream?path=${encodedPath}`;
             }
+            this.recordPlayHistory(this.currentTrack);
             this.maybeRefill();
         },
 
@@ -1457,6 +1492,89 @@ document.addEventListener('alpine:init', () => {
         // gets its own full set of retries.
         notePlaybackStarted() {
             this.deadInARow = 0;
+        },
+
+        recordPlayHistory(track) {
+            if (!track || !track.id || track.id === this.lastLoggedTrackId) return;
+            this.lastLoggedTrackId = track.id;
+            console.log(`[MusicPlayer] 🎵 Now Playing: "${track.title || 'Unknown'}" by "${track.artist || 'Unknown'}" (ID: ${track.id})`);
+
+            // Cache locally in localStorage['hn_music_history']
+            try {
+                const historyItem = {
+                    id: track.id,
+                    title: track.title || 'Unknown',
+                    artist: track.artist || 'Unknown',
+                    isYoutube: !!track.isYoutube,
+                    path: track.path || track.id,
+                    playedAt: new Date().toISOString()
+                };
+                let history = [];
+                const raw = localStorage.getItem('hn_music_history');
+                if (raw) history = JSON.parse(raw);
+                history = [historyItem, ...history.filter(h => h.id !== track.id)].slice(0, 50);
+                localStorage.setItem('hn_music_history', JSON.stringify(history));
+                this.recentHistory = history;
+            } catch (e) {
+                console.warn('[MusicPlayer] LocalStorage history error:', e);
+            }
+
+            // Dispatch to backend music service
+            try {
+                fetch(`${this.base}/api/music/history`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        track_path: track.path || track.id,
+                        title: track.title || 'Unknown',
+                        artist: track.artist || 'Unknown',
+                        is_youtube: !!track.isYoutube,
+                        youtube_id: track.isYoutube ? track.id : null,
+                        duration: Math.round(this.duration || 0),
+                        source: 'html-notes'
+                    })
+                }).catch(err => console.warn('[MusicPlayer] Failed to POST /api/music/history:', err));
+            } catch {}
+        },
+
+        async fetchHistory() {
+            try {
+                const res = await this.fetchJson(`${this.base}/api/music/history/recent?limit=20`, 8000);
+                if (res && Array.isArray(res.history) && res.history.length) {
+                    const serverTracks = res.history.map(h => ({
+                        id: h.youtube_id || h.track_path || h.id,
+                        title: h.title,
+                        artist: h.artist,
+                        isYoutube: h.is_youtube || !!h.youtube_id,
+                        path: h.track_path || h.id,
+                        playedAt: h.played_at
+                    }));
+                    const existingIds = new Set(serverTracks.map(t => t.id));
+                    const merged = [...serverTracks];
+                    (this.recentHistory || []).forEach(localTrack => {
+                        if (!existingIds.has(localTrack.id)) {
+                            merged.push(localTrack);
+                            existingIds.add(localTrack.id);
+                        }
+                    });
+                    this.recentHistory = merged.slice(0, 50);
+                    localStorage.setItem('hn_music_history', JSON.stringify(this.recentHistory));
+                }
+            } catch (e) {
+                console.warn('[MusicPlayer] Error fetching history:', e);
+            }
+        },
+
+        playHistoryTrack(track) {
+            if (!track) return;
+            const idx = this.queue.findIndex(t => t.id === track.id);
+            if (idx >= 0) {
+                this.playAt(idx);
+            } else {
+                const t = this.asTrack(track);
+                this.queue.splice(this.currentIndex + 1, 0, t);
+                this.playAt(this.currentIndex + 1);
+            }
         },
 
         // Hand the current track off to the full music-player app: open it at

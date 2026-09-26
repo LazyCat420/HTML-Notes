@@ -1798,10 +1798,13 @@ LIST_ITEM_REMOVE_RE = re.compile(
 # regenerating a fresh one. Guarded so an "add X to my list again" (an edit) and
 # item-removal don't get swallowed here.
 LIST_RESTORE_RE = re.compile(
-    r'\b(bring|get|put|pull|give)\b[^.]*\bback\b'
-    r'|\brestore\b|\breopen\b'
-    r'|\blists?\b[^.]*\bagain\b|\bagain\b[^.]*\blists?\b'
-    r'|\bback\b[^.]*\blists?\b')
+    r'\b(bring|get|put|pull|give)\b[^.]*\bback\b[^.]*\b(lists?|checklists?|todos?|to-dos?)\b'
+    r'|\b(bring|get|put|pull|give)\b[^.]*\b(lists?|checklists?|todos?|to-dos?)\b[^.]*\bback\b'
+    r'|\b(restore|reopen)\b[^.]*\b(lists?|checklists?|todos?|to-dos?)\b'
+    r'|\b(lists?|checklists?|todos?|to-dos?)\b[^.]*\b(restore|reopen)\b'
+    r'|\b(lists?|checklists?|todos?|to-dos?)\b[^.]*\bagain\b|\bagain\b[^.]*\b(lists?|checklists?|todos?|to-dos?)\b'
+    r'|\bback\b[^.]*\b(lists?|checklists?|todos?|to-dos?)\b'
+    r'|^\s*(?:bring|get|put|pull|give)\s+(?:it\s+)?back\s*$', re.I)
 # "close out everything", "clear the whole canvas", "get rid of all the widgets",
 # "wipe it", "start over" — clear the ENTIRE canvas in one server call. The agent
 # path can only remove one widget per iteration and stops after the first commit,
@@ -1906,10 +1909,13 @@ THEME_INTENT_RE = re.compile(
 # not a widget noun and not a data feed. Routed to build_answer_config so the
 # user gets the actual recipe/steps/definition instead of the ~30-60s agent loop.
 ANSWER_ASK_RE = re.compile(
-    r'\b(recipe|recipes|how to|how do|how does|how can|tutorial|guide|'
-    r'what is|what are|whats|what\'s|who is|who are|who was|when is|when was|'
-    r'why is|why do|why does|explain|difference between|'
-    r'vs\.?|versus|meaning of|definition of|instructions?|steps to)\b')
+    r'\b(recipe|recipes|how to|how do|how does|how can|how is|how are|how will|how would|how did|'
+    r'tutorial|guide|'
+    r'what is|what are|whats|what\'s|what will|what would|what did|'
+    r'who is|who are|who was|who will|who would|who did|'
+    r'when is|when was|when will|when would|'
+    r'why is|why do|why does|why will|why would|why did|explain|difference between|'
+    r'vs\.?|versus|meaning of|definition of|instructions?|steps to)\b', re.I)
 # A BROAD, rich informational ask that deserves a multi-modal COMPOSITION (an
 # explanation + supporting image/video/news), not a single card. High-precision so
 # it never steals a narrow single-intent ask (weather, a ticker, a timer, "how to
@@ -2769,7 +2775,8 @@ def _persist_list_state(config: dict) -> None:
 def _resolve_restorable_list(message: str) -> Optional[dict]:
     """Find the stored checklist the user wants back. Prefers a stored list whose
     slug shares a meaningful word with the request ('grocery' -> list:grocery-list);
-    falls back to the most recently saved list. Returns {title, items} or None."""
+    falls back to the most recently saved list ONLY when the user's message has
+    explicit list-related context. Returns {title, items} or None."""
     try:
         states = database.list_widget_states("list:")
     except Exception as e:
@@ -2779,7 +2786,8 @@ def _resolve_restorable_list(message: str) -> Optional[dict]:
     stop = {"list", "lists", "checklist", "the", "my", "our", "that", "this",
             "back", "bring", "again", "get", "give", "show", "put", "pull",
             "restore", "reopen", "a", "an", "please", "me", "it", "up", "want"}
-    words = {w for w in re.findall(r'[a-z]+', (message or "").lower()) if w not in stop}
+    msg_lower = (message or "").lower()
+    words = {w for w in re.findall(r'[a-z]+', msg_lower) if w not in stop}
     for s in named:
         slug_words = set(s["key"][len("list:"):].split("-"))
         if words & slug_words:
@@ -2787,6 +2795,15 @@ def _resolve_restorable_list(message: str) -> Optional[dict]:
                 return json.loads(s["value"])
             except Exception:
                 pass
+
+    # Only fall back to list:__last__ if the message explicitly mentions a list/todo
+    # or is a direct restore command ("bring it back", "bring back that list").
+    list_terms = {"list", "lists", "checklist", "checklists", "todo", "todos", "tasks"}
+    all_words = set(re.findall(r'[a-z]+', msg_lower))
+    has_list_context = bool(all_words & list_terms) or bool(re.search(r'\b(bring|give|get|pull)\b[^.]*\bback\b', msg_lower))
+    if not has_list_context:
+        return None
+
     last = database.get_widget_state("list:__last__")
     if last:
         try:

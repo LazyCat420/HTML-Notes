@@ -76,6 +76,26 @@ window.HN = (function () {
 })();
 
 // ─── LEGO: WIDGET MANAGER ─────────────────────────────────────────
+function teardownWidget(el) {
+    if (!el || !el.querySelectorAll) return;
+    try {
+        const targets = [el, ...Array.from(el.querySelectorAll('[x-data]'))];
+        targets.forEach(node => {
+            if (window.Alpine && typeof window.Alpine.$data === 'function') {
+                try {
+                    const data = window.Alpine.$data(node);
+                    if (data && typeof data.destroy === 'function') {
+                        data.destroy();
+                    }
+                } catch {}
+            }
+        });
+    } catch (e) {
+        console.warn('[Widget] Teardown error:', e);
+    }
+}
+window.teardownWidget = teardownWidget;
+
 window.WidgetManager = {
     getDismissed() {
         try {
@@ -94,13 +114,17 @@ window.WidgetManager = {
                 localStorage.setItem('dismissed_widgets', JSON.stringify(dismissed));
             }
         }
+        teardownWidget(widgetElement);
         // Collapse to a scanline and blink out, like a CRT losing power, then
         // detach. animationend can be missed if the element is re-rendered
         // mid-animation, so a timeout guarantees the node still goes away.
         if (widgetElement.classList.contains('crt-off')) return;
         widgetElement.classList.remove('crt-on');
         widgetElement.classList.add('crt-off');
-        const detach = () => widgetElement.remove();
+        const detach = () => {
+            teardownWidget(widgetElement);
+            widgetElement.remove();
+        };
         widgetElement.addEventListener('animationend', detach, { once: true });
         setTimeout(detach, 700);
     },
@@ -1486,6 +1510,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (existing.hasAttribute('data-turn-envelope')) return;
                 if (existing.id && !newIds.has(existing.id)) {
                     widgetSourceSnapshots.delete(existing.id);
+                    teardownWidget(existing);
                     existing.remove();
                 }
             });
@@ -1539,6 +1564,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 // old text into new, so frame one must still look like the answer
                 // the user was reading.
                 const outgoingText = captureWidgetText(existing);
+                teardownWidget(existing);
                 existing.replaceWith(newWidget);
                 flagCanvasChange(newWidget, 'is-updating');
                 // A follow-up rewrote this card in place. Print the new wording
@@ -3166,21 +3192,49 @@ document.addEventListener("DOMContentLoaded", () => {
                             </div>
                         </div>
 
-                        <!-- Queue Panel (toggled by the queue_music button below) -->
-                        <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-2 divide-y divide-white/5" style="display: none;">
-                            <template x-for="item in trackList" :key="item.t.id + '-' + item.i">
-                                <div class="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer group/row transition-colors" :class="item.isCurrent ? 'bg-purple-500/20 text-purple-200 border-l-2 border-purple-400 pl-2' : 'hover:bg-white/5 text-white/90'" @click="playAt(item.i)">
-                                    <span class="material-symbols-outlined text-[0.9rem] text-purple-300 shrink-0" :class="isPlaying && item.isCurrent ? 'animate-pulse' : ''" x-text="item.isCurrent ? 'equalizer' : 'music_note'"></span>
-                                    <div class="min-w-0 flex-grow">
-                                        <div class="truncate" :class="item.isCurrent ? 'text-purple-200 font-semibold' : 'text-white/90'" x-text="item.t.title"></div>
-                                        <div class="truncate text-purple-300/70 text-[10px]" x-text="item.t.artist"></div>
+                        <!-- Queue / History Panel (toggled by the queue_music button below) -->
+                        <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-2 flex flex-col" style="display: none;">
+                            <!-- Tabs: Queue vs History -->
+                            <div class="flex items-center border-b border-white/10 bg-black/20 text-xs px-2 py-1 gap-1 shrink-0">
+                                <button type="button" @click="activeTab = 'queue'" class="px-2.5 py-0.5 rounded-md font-medium transition-colors" :class="activeTab === 'queue' ? 'bg-purple-600/40 text-purple-200 border border-purple-400/30' : 'text-white/60 hover:text-white'">
+                                    Queue (<span x-text="queue.length"></span>)
+                                </button>
+                                <button type="button" @click="activeTab = 'history'; fetchHistory()" class="px-2.5 py-0.5 rounded-md font-medium transition-colors" :class="activeTab === 'history' ? 'bg-purple-600/40 text-purple-200 border border-purple-400/30' : 'text-white/60 hover:text-white'">
+                                    History
+                                </button>
+                            </div>
+
+                            <!-- Queue Tab Content -->
+                            <div x-show="activeTab === 'queue'" class="overflow-y-auto flex-grow divide-y divide-white/5">
+                                <template x-for="item in trackList" :key="item.t.id + '-' + item.i">
+                                    <div class="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer group/row transition-colors" :class="item.isCurrent ? 'bg-purple-500/20 text-purple-200 border-l-2 border-purple-400 pl-2' : 'hover:bg-white/5 text-white/90'" @click="playAt(item.i)">
+                                        <span class="material-symbols-outlined text-[0.9rem] text-purple-300 shrink-0" :class="isPlaying && item.isCurrent ? 'animate-pulse' : ''" x-text="item.isCurrent ? 'equalizer' : 'music_note'"></span>
+                                        <div class="min-w-0 flex-grow">
+                                            <div class="truncate" :class="item.isCurrent ? 'text-purple-200 font-semibold' : 'text-white/90'" x-text="item.t.title"></div>
+                                            <div class="truncate text-purple-300/70 text-[10px]" x-text="item.t.artist"></div>
+                                        </div>
+                                        <button x-show="!item.isCurrent" @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
+                                            <span class="material-symbols-outlined text-[0.9rem]">close</span>
+                                        </button>
                                     </div>
-                                    <button x-show="!item.isCurrent" @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
-                                        <span class="material-symbols-outlined text-[0.9rem]">close</span>
-                                    </button>
-                                </div>
-                            </template>
-                            <div x-show="!trackList.length" class="px-3 py-2 text-xs text-white/40">Queue empty — more on the way…</div>
+                                </template>
+                                <div x-show="!trackList.length" class="px-3 py-2 text-xs text-white/40">Queue empty — more on the way…</div>
+                            </div>
+
+                            <!-- History Tab Content -->
+                            <div x-show="activeTab === 'history'" class="overflow-y-auto flex-grow divide-y divide-white/5" style="display: none;">
+                                <template x-for="h in recentHistory" :key="h.id || h.playedAt || Math.random()">
+                                    <div class="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:bg-white/5 text-white/90 group/row transition-colors" @click="playHistoryTrack(h)">
+                                        <span class="material-symbols-outlined text-[0.9rem] text-purple-300 shrink-0">history</span>
+                                        <div class="min-w-0 flex-grow">
+                                            <div class="truncate text-white/90 font-medium" x-text="h.title"></div>
+                                            <div class="truncate text-purple-300/70 text-[10px]" x-text="h.artist"></div>
+                                        </div>
+                                        <span class="material-symbols-outlined text-[0.9rem] text-white/40 group-hover/row:text-purple-300 shrink-0">play_arrow</span>
+                                    </div>
+                                </template>
+                                <div x-show="!recentHistory || !recentHistory.length" class="px-3 py-2 text-xs text-white/40">No listening history yet</div>
+                            </div>
                         </div>
 
                         <!-- Progress Bar & Time -->
