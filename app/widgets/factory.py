@@ -1289,7 +1289,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
         </div>
         
         <!-- Track Info -->
-        <div class="relative z-10 flex items-center gap-4 mt-2">
+        <div class="relative z-10 flex items-center gap-3 mt-2">
             <div class="w-14 h-14 shrink-0 rounded-2xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
                 <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}}"></div>
                 <span class="material-symbols-outlined text-2xl text-white relative z-10">album</span>
@@ -1297,6 +1297,19 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
             <div class="flex-grow min-w-0 flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
                 <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
                 <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
+            </div>
+            <!-- Favorite Heart & Star Rating Actions -->
+            <div class="flex flex-col items-end shrink-0 gap-1" x-show="currentTrack">
+                <button type="button" @click.stop="toggleFavorite()" :title="isFavorite ? 'Remove from favorites' : 'Add to favorites'" class="p-1 rounded-full transition-transform active:scale-90" :class="isFavorite ? 'text-red-400' : 'text-white/40 hover:text-red-400'">
+                    <span class="material-symbols-outlined text-xl" :style="isFavorite ? 'font-variation-settings: \\'FILL\\' 1;' : ''" x-text="isFavorite ? 'favorite' : 'favorite_border'">favorite_border</span>
+                </button>
+                <div class="flex items-center gap-0.5" title="Rate track">
+                    <template x-for="star in [1, 2, 3, 4, 5]" :key="star">
+                        <button type="button" @click.stop="setRating(star)" class="transition-colors p-0.5 leading-none" :class="userRating >= star ? 'text-amber-400' : 'text-white/20 hover:text-amber-300'">
+                            <span class="material-symbols-outlined text-[0.85rem]" :style="userRating >= star ? 'font-variation-settings: \\'FILL\\' 1;' : ''">star</span>
+                        </button>
+                    </template>
+                </div>
             </div>
         </div>
 
@@ -1383,14 +1396,23 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
     <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[456px] group" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)}, {json_escape(candidates)}, {json_escape(query)})">
         <!-- Title Bar -->
         <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
-            <div class="flex items-center gap-2">
-                <span class="text-xl text-red-500">📺</span>
-                <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]" x-text="title"></h3>
-                <span x-show="isLoading" class="text-xs text-slate-400 italic animate-pulse">Resolving stream...</span>
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="text-xl text-red-500 shrink-0">📺</span>
+                <h3 class="font-bold text-white tracking-wide truncate max-w-[220px]" x-text="title"></h3>
+                <span x-show="isLoading" class="text-xs text-slate-400 italic animate-pulse shrink-0">Resolving stream...</span>
             </div>
-            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
-                <span class="material-symbols-outlined text-[1.2rem]">close</span>
-            </button>
+            <!-- Wallgarden Curation Voting Actions -->
+            <div class="flex items-center gap-1.5 shrink-0">
+                <button type="button" @click.stop="rateVideo(5)" title="Like video (syncs to Wallgarden)" class="p-1 rounded-full text-white/50 hover:text-emerald-400 transition-all active:scale-90" :class="userRating === 5 ? 'text-emerald-400 bg-emerald-500/20' : 'hover:bg-white/5'">
+                    <span class="material-symbols-outlined text-[1.1rem]" :style="userRating === 5 ? 'font-variation-settings: \\'FILL\\' 1;' : ''">thumb_up</span>
+                </button>
+                <button type="button" @click.stop="rateVideo(-5)" title="Dislike video (syncs to Wallgarden)" class="p-1 rounded-full text-white/50 hover:text-rose-400 transition-all active:scale-90" :class="userRating === -5 ? 'text-rose-400 bg-rose-500/20' : 'hover:bg-white/5'">
+                    <span class="material-symbols-outlined text-[1.1rem]" :style="userRating === -5 ? 'font-variation-settings: \\'FILL\\' 1;' : ''">thumb_down</span>
+                </button>
+                <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors p-1 ml-1">
+                    <span class="material-symbols-outlined text-[1.2rem]">close</span>
+                </button>
+            </div>
         </div>
         <!-- Video Embed -->
         <div class="w-full flex-grow bg-black relative flex items-center justify-center">

@@ -1,7 +1,14 @@
+import logging
+from typing import Optional
+from datetime import datetime, timezone
+import httpx
 from fastapi import APIRouter, Request, HTTPException, Response
+from pydantic import BaseModel
 import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -160,5 +167,70 @@ async def api_youtube_search(query: str):
     except Exception as e:
         logger.error(f"Failed to proxy YouTube search: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+from pydantic import BaseModel
+from datetime import datetime, timezone
+from app.config import WALLGARDEN_URL
+
+
+class WallgardenRateRequest(BaseModel):
+    video_id: str
+    title: str = "YouTube Video"
+    channel: Optional[str] = "YouTube Curation"
+    rating: int = 5  # 5 = like, -5 = dislike, 0 = clear
+
+
+@router.post("/api/wallgarden/rate")
+async def api_wallgarden_rate(req: WallgardenRateRequest):
+    """Proxy rating updates to YouTube Wallgarden's sync service."""
+    ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    payload = {
+        "fields": {
+            "ratings": {
+                req.video_id: {
+                    "r": req.rating,
+                    "t": ts,
+                    "v": {
+                        "id": req.video_id,
+                        "title": req.title,
+                        "channelName": req.channel or "YouTube Curation",
+                        "thumbnailUrl": f"https://i.ytimg.com/vi/{req.video_id}/hqdefault.jpg",
+                        "published": ts,
+                    },
+                }
+            }
+        }
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.put(f"{WALLGARDEN_URL}/sync/global", json=payload)
+            if resp.status_code in (200, 201):
+                return {"ok": True, "rating": req.rating, "video_id": req.video_id}
+            else:
+                logger.error(f"Wallgarden sync returned {resp.status_code}: {resp.text}")
+                return {"ok": False, "status": resp.status_code}
+    except Exception as e:
+        logger.error(f"Failed to sync rating to Wallgarden: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/api/wallgarden/rating/{video_id}")
+async def api_wallgarden_get_rating(video_id: str):
+    """Check if video has an existing rating in Wallgarden sync."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{WALLGARDEN_URL}/sync/global")
+            if resp.status_code == 200:
+                data = resp.json()
+                ratings = (data.get("fields") or {}).get("ratings") or {}
+                rec = ratings.get(video_id)
+                if rec and isinstance(rec, dict):
+                    return {"rated": True, "rating": rec.get("r", 0), "video_id": video_id}
+            return {"rated": False, "rating": 0, "video_id": video_id}
+    except Exception as e:
+        logger.warning(f"Failed to check Wallgarden rating: {e}")
+        return {"rated": False, "rating": 0, "video_id": video_id}
+
 
 

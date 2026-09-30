@@ -1020,6 +1020,9 @@ document.addEventListener('alpine:init', () => {
         volume: 1.0,
         isMuted: false,
         prevVolume: 1.0,
+        isFavorite: false,
+        userRating: 0,
+        ratingPending: false,
 
         get currentTrack() {
             if (this.currentIndex >= 0 && this.currentIndex < this.queue.length) {
@@ -1273,6 +1276,9 @@ document.addEventListener('alpine:init', () => {
         loadTrack() {
             this.pruneAhead();
             if (!this.currentTrack) return;
+            this.isFavorite = false;
+            this.userRating = 0;
+            this.checkFavoriteStatus();
             if (!this.audio) {
                 this.audio = new Audio();
             }
@@ -1457,6 +1463,108 @@ document.addEventListener('alpine:init', () => {
         // gets its own full set of retries.
         notePlaybackStarted() {
             this.deadInARow = 0;
+        },
+
+        // Check favorite status and current rating from music-player
+        async checkFavoriteStatus() {
+            const track = this.currentTrack;
+            if (!track) return;
+            const pathToCheck = track.isYoutube ? `youtube://${track.id}` : track.path;
+            try {
+                const res = await this.fetchJson(`${this.base}/api/favorites/check?path=${encodeURIComponent(pathToCheck)}`, 5000);
+                if (res && this.currentTrack && (this.currentTrack.id === track.id || this.currentTrack.path === track.path)) {
+                    this.isFavorite = !!res.is_favorite;
+                    this.userRating = typeof res.rating === 'number' ? res.rating : (res.is_favorite ? 5 : 0);
+                }
+            } catch (e) {
+                console.warn('[MusicPlayer] Failed to check favorite status:', e);
+            }
+        },
+
+        // Toggle favorite status (ratings sync)
+        async toggleFavorite() {
+            const track = this.currentTrack;
+            if (!track || this.ratingPending) return;
+            this.ratingPending = true;
+            const willFavorite = !this.isFavorite;
+            const targetRating = willFavorite ? (this.userRating > 0 ? this.userRating : 5) : 0;
+
+            // Optimistic update
+            this.isFavorite = willFavorite;
+            this.userRating = targetRating;
+
+            const path = track.isYoutube ? `youtube://${track.id}` : track.path;
+            try {
+                if (willFavorite) {
+                    await fetch(`${this.base}/api/favorites`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            path: path,
+                            title: track.title,
+                            artist: track.artist,
+                            album: track.album || '',
+                            source: track.isYoutube ? 'youtube' : 'local',
+                            youtube_id: track.isYoutube ? track.id : null,
+                            rating: targetRating,
+                            duration: this.duration || 0
+                        })
+                    });
+                } else {
+                    await fetch(`${this.base}/api/favorites`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: path })
+                    });
+                }
+            } catch (e) {
+                console.warn('[MusicPlayer] Failed to sync favorite to music-player:', e);
+            } finally {
+                this.ratingPending = false;
+            }
+        },
+
+        // Set star rating (1-5; clicking active star resets to 0)
+        async setRating(star) {
+            const track = this.currentTrack;
+            if (!track || this.ratingPending) return;
+            this.ratingPending = true;
+            const targetRating = this.userRating === star ? 0 : star;
+            const willFavorite = targetRating > 0;
+
+            // Optimistic update
+            this.userRating = targetRating;
+            this.isFavorite = willFavorite;
+
+            const path = track.isYoutube ? `youtube://${track.id}` : track.path;
+            try {
+                if (willFavorite) {
+                    await fetch(`${this.base}/api/favorites`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            path: path,
+                            title: track.title,
+                            artist: track.artist,
+                            album: track.album || '',
+                            source: track.isYoutube ? 'youtube' : 'local',
+                            youtube_id: track.isYoutube ? track.id : null,
+                            rating: targetRating,
+                            duration: this.duration || 0
+                        })
+                    });
+                } else {
+                    await fetch(`${this.base}/api/favorites`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: path })
+                    });
+                }
+            } catch (e) {
+                console.warn('[MusicPlayer] Failed to sync rating to music-player:', e);
+            } finally {
+                this.ratingPending = false;
+            }
         },
 
         // Hand the current track off to the full music-player app: open it at
@@ -1648,6 +1756,8 @@ document.addEventListener('alpine:init', () => {
         attemptedIds: [],
         fetchedMoreCandidates: false,
         player: null,
+        userRating: 0, // 5 = like, -5 = dislike, 0 = clear
+        ratePending: false,
 
         init() {
             if (this.videoId) {
@@ -1720,6 +1830,8 @@ document.addEventListener('alpine:init', () => {
             this.videoId = id;
             this.error = '';
             this.watchUrl = '';
+            this.userRating = 0;
+            this.checkRatingStatus(id);
             this.destroyPlayer();
             // Toggle embedUrl through '' so x-if rebuilds a fresh iframe for
             // each attempt — the IFrame API binds to one iframe per video.
@@ -1784,6 +1896,50 @@ document.addEventListener('alpine:init', () => {
                 this.embedUrl = '';
                 this.watchUrl = `https://www.youtube.com/watch?v=${this.attemptedIds[0] || this.videoId}`;
                 this.error = 'This video blocks embedding.';
+            }
+        },
+
+        async checkRatingStatus(id) {
+            if (!id) return;
+            try {
+                const res = await fetch(`/api/wallgarden/rating/${encodeURIComponent(id)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (this.videoId === id && data && typeof data.rating === 'number') {
+                        this.userRating = data.rating;
+                    }
+                }
+            } catch (e) {
+                // silent fallback
+            }
+        },
+
+        async rateVideo(rating) {
+            if (!this.videoId || this.ratePending) return;
+            this.ratePending = true;
+            // Toggle off if clicking the currently active rating
+            const targetRating = this.userRating === rating ? 0 : rating;
+            const prevRating = this.userRating;
+            this.userRating = targetRating;
+
+            try {
+                const res = await fetch('/api/wallgarden/rate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        video_id: this.videoId,
+                        title: this.title || 'YouTube Video',
+                        rating: targetRating
+                    })
+                });
+                if (!res.ok) {
+                    console.warn('[YouTubePlayer] Wallgarden rate returned non-ok status:', res.status);
+                }
+            } catch (e) {
+                console.warn('[YouTubePlayer] Wallgarden rate error:', e);
+                this.userRating = prevRating;
+            } finally {
+                this.ratePending = false;
             }
         },
 
