@@ -1910,7 +1910,7 @@ async def send_message(req: MessageRequest):
             # router gains nothing from chain-of-thought and the user is
             # watching a spinner while it streams.
             "thinkingEnabled": False,
-            "workspaceRoot": "/home/lazycat/github/projects/sun/HTML-Notes",
+            "workspaceRoot": "/home/lazycat/github/projects/sun/html-notes",
             "workspaceEnabled": False,
             "enabledTools": enabled_tools,
             "messages": messages,
