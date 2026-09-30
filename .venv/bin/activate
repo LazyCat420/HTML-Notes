@@ -39,10 +39,10 @@ deactivate nondestructive
 if [ "${OSTYPE:-}" = "cygwin" ] || [ "${OSTYPE:-}" = "msys" ] ; then
     # transform D:\path\to\venv to /d/path/to/venv on MSYS
     # and to /cygdrive/d/path/to/venv on Cygwin
-    export VIRTUAL_ENV=$(cygpath /home/lazycat/github/projects/sun/HTML-Notes/.venv)
+    export VIRTUAL_ENV=$(cygpath /home/lazycat/github/projects/sun/html-notes/.venv)
 else
     # use the path as-is
-    export VIRTUAL_ENV=/home/lazycat/github/projects/sun/HTML-Notes/.venv
+    export VIRTUAL_ENV=/home/lazycat/github/projects/sun/html-notes/.venv
 fi
 
 _OLD_VIRTUAL_PATH="$PATH"

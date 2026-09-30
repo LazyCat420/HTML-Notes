@@ -1,4 +1,4 @@
-#!/home/lazycat/github/projects/sun/HTML-Notes/.venv/bin/python3
+#!/home/lazycat/github/projects/sun/html-notes/.venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys
