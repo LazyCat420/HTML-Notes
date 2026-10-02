@@ -973,7 +973,13 @@ async def send_message(req: MessageRequest):
         # months; the default was flipped to True on 2026-08-16 because prism's
         # local registry came up empty.) News never reaches this block: the
         # pre-router above claims it first.
-        if req.use_lazy_agent:
+        # Serves the shared-runtime path too (2026-10-02): the builders are
+        # deterministic local code (no LLM) emitting the same SSE contract, so
+        # a "note widget" ask costs 2s instead of a 15s agent loop. Gated on
+        # runtime readiness so a canonical deploy with a down runtime still
+        # falls through to prism/agent rather than rendering from a broken
+        # local executor.
+        if req.use_lazy_agent or is_shared_runtime_enabled():
 
             # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
             #    the dislike forever. Checked before every other video path so a
