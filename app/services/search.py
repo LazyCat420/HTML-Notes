@@ -51,73 +51,32 @@ async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -
 
 
 
-async def _search_duckduckgo(query: str, limit: int) -> list:
-    """DuckDuckGo's lite endpoint: a plain HTML table, no JS, no bot wall.
+async def _search_shared_web(query: str, limit: int) -> list:
+    """Web search through lazy-agent-service's shared keyless search (Exa).
 
-    Fetched directly rather than through scraper-service — it is static markup, so
-    the crawl4ai round trip bought nothing but 20-60s of latency.
+    html-notes used to scrape DuckDuckGo directly (Lite first, then
+    scraper-service's DuckDuckGo collector). The free search engines bot-block
+    this network's one public IP, and every automated search from any project
+    makes that worse (docs/WEB_SEARCH.md). The shared search keeps one cache and
+    one rate limit for every project on the network, and never scrapes.
+
+    Raises when the shared search cannot answer — unreachable, rate-limited or
+    busy — so web_search_ex reports an outage instead of "no results".
     """
-    try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            resp = await client.get(
-                "https://lite.duckduckgo.com/lite/",
-                params={"q": query},
-                headers={"User-Agent": _BROWSER_UA},
-            )
-            resp.raise_for_status()
-            markup = resp.text
-    except Exception as e:
-        logger.warning(f"ddg lite search failed for {query!r}: {e}")
-        return []
-
-    soup = BeautifulSoup(markup, "html.parser")
-    results = []
-    for row in soup.find_all("tr"):
-        # DDG seeds the table with Microsoft ads; they carry snippets too, so they
-        # look exactly like results unless we drop them by row class.
-        if "sponsored" in " ".join(row.get("class") or []):
-            continue
-
-        link = row.find("a", class_="result-link")
-        if link is not None:
-            href = link.get("href") or ""
-            if href.startswith("//"):
-                href = "https:" + href
-            # Organic links are wrapped as /l/?uddg=<percent-encoded target>.
-            target = urllib.parse.parse_qs(
-                urllib.parse.urlparse(href).query).get("uddg", [""])[0]
-            href = target or href
-            title = link.get_text(" ", strip=True)
-            if title and href.startswith("http"):
-                results.append({"title": title, "url": href, "snippet": ""})
-            continue
-
-        cell = row.find("td", class_="result-snippet")
-        if cell is not None and results and not results[-1]["snippet"]:
-            results[-1]["snippet"] = cell.get_text(" ", strip=True)[:500]
-
-    return results[:limit]
-
-
-async def _search_scraper_ddg(query: str, limit: int) -> list:
-    """Second web-search engine: scraper-service's DuckDuckGo collector.
-
-    This collector hits DDG's `/html/` endpoint with an automated Playwright
-    fallback on block/captcha, running independently through scraper-service.
-    """
-    try:
-        client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
-        async with client_cls(timeout=20.0) as client:
-            resp = await client.post(
-                f"{SCRAPER_SERVICE_URL}/collect",
-                json={"source": "duckduckgo", "query": query, "limit": limit},
-            )
-            payload = resp.json()
-    except Exception as e:
-        logger.warning(f"scraper ddg collector failed for {query!r}: {e}")
-        return []
+    client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
+    # The shared search may queue a call for up to 20 s, then give Exa 15 s.
+    async with client_cls(timeout=40.0) as client:
+        resp = await client.post(
+            f"{LAZY_TOOL_SERVICE_URL}/execute/web_search",
+            json={"query": query, "limit": limit},
+        )
+        payload = resp.json()
+    status = payload.get("status")
+    if status != "ok":
+        raise RuntimeError(f"shared web search answered {status or resp.status_code}: "
+                           f"{payload.get('error') or payload.get('message') or ''}".strip())
     out = []
-    for it in (payload.get("items") or [])[:limit]:
+    for it in (payload.get("results") or [])[:limit]:
         url = it.get("url") or ""
         title = (it.get("title") or "").strip()
         if title and url.startswith("http"):
@@ -485,35 +444,6 @@ async def _shared_news_search(topic: str, limit: int, category: str = "",
     return items
 
 
-async def _scraper_service_news(topic: str, limit: int = 6) -> list:
-    """Collect news stories through scraper-service (DuckDuckGo or RSS)."""
-    try:
-        client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
-        async with client_cls(timeout=12.0) as client:
-            resp = await client.post(
-                f"{SCRAPER_SERVICE_URL}/collect",
-                json={"source": "duckduckgo", "query": f"{topic} news", "limit": limit},
-            )
-            payload = resp.json()
-        items = []
-        for it in (payload.get("items") or [])[:limit]:
-            url = it.get("url") or ""
-            title = (it.get("title") or "").strip()
-            if title and url.startswith("http"):
-                items.append({
-                    "title": title,
-                    "url": url,
-                    "image": "",
-                    "meta": _host_of(url),
-                    "snippet": (it.get("snippet") or "").strip()[:500],
-                    "date": "",
-                })
-        return items
-    except Exception as e:
-        logger.warning(f"scraper-service news collect failed for {topic!r}: {e}")
-        return []
-
-
 async def news_search(topic: str, limit: int = 6, category: str = "",
                       country: str = "") -> list:
     """Current headlines with real photos and summaries. Returns
@@ -550,8 +480,6 @@ async def news_search(topic: str, limit: int = 6, category: str = "",
     if not items:
         items, source = await _google_news_rss(
             topic, limit, category=category, country=country), "google-news"
-    if not items and topic:
-        items, source = await _scraper_service_news(topic, limit), "scraper-news"
     if not items and topic:
         items, source = await _gdelt_news(topic, limit), "gdelt"
     if not items and topic:

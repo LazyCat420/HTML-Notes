@@ -75,12 +75,13 @@ def test_first_engine_with_hits_wins(monkeypatch, no_backfill):
     assert "never" not in calls, "kept trying engines after one succeeded"
 
 
-def test_free_engines_are_primary():
-    """Brave is removed; free engines (ddg-lite, ddg-collector) are used."""
+def test_search_goes_only_to_the_shared_web_search():
+    """The search engines bot-block this network's IP; html-notes scraping
+    DuckDuckGo made it worse for every project (docs/WEB_SEARCH.md). One engine:
+    lazy-agent-service's shared keyless search."""
     names = [n for n, _ in m._SEARCH_ENGINES]
-    assert names[0] == "ddg-lite"
-    assert "ddg-collector" in names
-    assert "brave-api" not in names
+    assert names == ["shared-web"]
+    assert not any("ddg" in n or "duck" in n for n in names)
 
 
 def test_web_search_still_returns_a_plain_list(monkeypatch, no_backfill):
@@ -92,24 +93,14 @@ def test_web_search_still_returns_a_plain_list(monkeypatch, no_backfill):
     assert isinstance(out, list) and out[0]["title"] == "T"
 
 
-# ── Scraper-Service DDG collector normalization ─────────────────────────────
+# ── the shared web search (lazy-agent-service /execute/web_search) ──────────
 
-def test_scraper_ddg_normalizes_and_filters_results(monkeypatch):
-    """scraper-service DDG returns items; non-http or empty titles must be dropped."""
+def _client(reply=None, error=None, calls=None):
     class _Resp:
         status_code = 200
 
-        def raise_for_status(self):
-            pass
-
         def json(self):
-            return {"items": [
-                {"title": "Best Sandals",
-                 "url": "https://example.com/a",
-                 "snippet": "The best waterproof pick."},
-                {"title": "no url", "url": "", "snippet": "skip me"},
-                {"title": "", "url": "https://example.com/b", "snippet": "no title"},
-            ]}
+            return reply
 
     class _Client:
         def __init__(self, *a, **k):
@@ -121,34 +112,45 @@ def test_scraper_ddg_normalizes_and_filters_results(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, *a, **k):
+        async def post(self, url, json=None, **k):
+            if calls is not None:
+                calls.append((url, json))
+            if error:
+                raise error
             return _Resp()
-
-    monkeypatch.setattr(m.httpx, "AsyncClient", _Client)
-    out = _run(m._search_scraper_ddg("sandals", 5))
-    assert len(out) == 1, "only valid items with title and http url must be kept"
-    assert out[0]["title"] == "Best Sandals"
-    assert out[0]["url"] == "https://example.com/a"
-    assert out[0]["snippet"] == "The best waterproof pick."
+    return _Client
 
 
-def test_scraper_ddg_network_failure_returns_empty(monkeypatch):
-    """scraper-service unreachable should return empty list gracefully."""
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
+def test_shared_web_search_normalizes_and_filters_results(monkeypatch):
+    calls = []
+    monkeypatch.setattr(m.httpx, "AsyncClient", _client({"status": "ok", "results": [
+        {"title": "Best Sandals", "url": "https://example.com/a", "snippet": "The best waterproof pick."},
+        {"title": "no url", "url": "", "snippet": "skip me"},
+        {"title": "", "url": "https://example.com/b", "snippet": "no title"},
+    ]}, calls=calls))
+    out = _run(m._search_shared_web("sandals", 5))
+    assert out == [{"title": "Best Sandals", "url": "https://example.com/a",
+                    "snippet": "The best waterproof pick."}]
+    assert calls == [(f"{m.LAZY_TOOL_SERVICE_URL}/execute/web_search", {"query": "sandals", "limit": 5})]
 
-        async def __aenter__(self):
-            return self
 
-        async def __aexit__(self, *a):
-            return False
+def test_shared_web_search_with_nothing_found_is_an_empty_list(monkeypatch):
+    monkeypatch.setattr(m.httpx, "AsyncClient", _client({"status": "ok", "results": []}))
+    assert _run(m._search_shared_web("zxqw", 5)) == []
 
-        async def post(self, *a, **k):
-            raise OSError("scraper-service down")
 
-    monkeypatch.setattr(m.httpx, "AsyncClient", _Client)
-    assert _run(m._search_scraper_ddg("q", 5)) == []
+@pytest.mark.parametrize("reply,error", [
+    ({"status": "rate_limited", "error": "searches resume in 40 s"}, None),
+    ({"status": "busy", "error": "too many searches queued"}, None),
+    ({"status": "error", "error": "Exa unreachable"}, None),
+    (None, OSError("lazy-agent-service down")),
+])
+def test_shared_web_search_raises_when_it_cannot_answer(monkeypatch, reply, error):
+    """A refusal or an outage must read as "unreachable" to web_search_ex, not
+    as "no results", or the tool tells the model to retry a working query."""
+    monkeypatch.setattr(m.httpx, "AsyncClient", _client(reply, error))
+    with pytest.raises(Exception):
+        _run(m._search_shared_web("q", 5))
 
 
 # ── the tool contract: no retry advice on an outage ─────────────────────────

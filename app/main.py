@@ -51,10 +51,11 @@ _BROWSER_UA = (
 )
 
 _SEARCH_ENGINES = (
-    # Free, keyless engines: direct DuckDuckGo Lite first, scraper-service collector
-    # (with headless Playwright anti-bot fallback) second.
-    ("ddg-lite", lambda q, n: _search_duckduckgo(q, n)),
-    ("ddg-collector", lambda q, n: _search_scraper_ddg(q, n)),
+    # One engine: lazy-agent-service's shared keyless search (Exa), with one
+    # cache and one rate limit for the whole network. html-notes no longer
+    # scrapes DuckDuckGo: the search engines bot-block this network's IP, and
+    # every automated search made that worse (docs/WEB_SEARCH.md).
+    ("shared-web", lambda q, n: _search_shared_web(q, n)),
 )
 
 

@@ -48,10 +48,6 @@ def test_no_tier_invents_a_query_for_an_empty_topic(monkeypatch):
         called.append(("google", topic))
         return []
 
-    async def scraper(topic, limit=6):
-        called.append(("scraper", topic))
-        return []
-
     async def gdelt(topic, limit):
         called.append(("gdelt", topic))
         return []
@@ -62,14 +58,12 @@ def test_no_tier_invents_a_query_for_an_empty_topic(monkeypatch):
 
     monkeypatch.setattr(S, "_shared_news_search", dead_shared)
     monkeypatch.setattr(S, "_google_news_rss", dead_google)
-    monkeypatch.setattr(S, "_scraper_service_news", scraper)
     monkeypatch.setattr(S, "_gdelt_news", gdelt)
     monkeypatch.setattr(S, "web_search", web)
 
     assert run(S.news_search("", limit=8)) == []
     reached = [name for name, _ in called]
     assert "shared" in reached and "google" in reached
-    assert "scraper" not in reached, "a general ask reached the DuckDuckGo tier"
     assert "gdelt" not in reached, "a general ask reached the GDELT keyword tier"
     assert "web" not in reached, "a general ask reached the generic web search"
 
@@ -84,10 +78,6 @@ def test_a_subject_ask_still_uses_every_tier(monkeypatch):
     async def none_google(topic, limit, category="", country=""):
         return []
 
-    async def scraper(topic, limit=6):
-        called.append(("scraper", topic))
-        return []
-
     async def gdelt(topic, limit):
         called.append(("gdelt", topic))
         return []
@@ -98,12 +88,12 @@ def test_a_subject_ask_still_uses_every_tier(monkeypatch):
 
     monkeypatch.setattr(S, "_shared_news_search", none_shared)
     monkeypatch.setattr(S, "_google_news_rss", none_google)
-    monkeypatch.setattr(S, "_scraper_service_news", scraper)
     monkeypatch.setattr(S, "_gdelt_news", gdelt)
     monkeypatch.setattr(S, "web_search", web)
 
     run(S.news_search("israel hamas ceasefire", limit=6))
-    assert [n for n, _ in called] == ["scraper", "gdelt", "web"]
+    # The scraper-service DuckDuckGo tier is gone (docs/WEB_SEARCH.md).
+    assert [n for n, _ in called] == ["gdelt", "web"]
 
 
 def _search_source() -> str:
@@ -115,7 +105,7 @@ def _search_source() -> str:
     passed while both literal strings were still in the file it was meant to be
     guarding. The function's own code object knows where it really lives.
     """
-    return pathlib.Path(S._scraper_service_news.__code__.co_filename).read_text()
+    return pathlib.Path(S.news_search.__code__.co_filename).read_text()
 
 
 def _code_strings() -> list:
@@ -162,7 +152,7 @@ def test_this_guard_is_reading_the_right_file_and_can_still_fail():
     guard passed with both literals still in place.
     """
     src = _search_source()
-    assert "async def _scraper_service_news" in src
+    assert "async def _gdelt_news" in src
     assert "async def news_search" in src
     strings = _code_strings()
     # It can see real code strings...

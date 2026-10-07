@@ -208,10 +208,10 @@ async def test_health_reports_search_without_searching():
         assert calls["n"] == 0, f"health searched {calls['n']}x"
         assert status["ok"] is None and status["probe"] == "none"
         # After a real search, health reports its outcome, still without searching.
-        s._record_search(True, "ddg-lite")
+        s._record_search(True, "shared-web")
         status = await h._search_health()
         assert calls["n"] == 0
-        assert status["ok"] is True and status["last_engine"] == "ddg-lite"
+        assert status["ok"] is True and status["last_engine"] == "shared-web"
         # A human asking explicitly still gets one live probe.
         status = await h._search_health(force=True)
         assert calls["n"] == 1 and status["probe"] == "live"
