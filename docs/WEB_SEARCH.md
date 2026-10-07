@@ -42,6 +42,7 @@ Removes about 288 automated DuckDuckGo requests a day and one per restart.
   4. the shared web search.
 - When the shared search answers `rate_limited`, `busy` or `error`, or cannot be reached, `_search_shared_web` raises. `web_search_ex` therefore reports an outage, and the `html_notes_web_search` tool tells the model not to retry. It does not say "no results".
 - Everything that searched through `web_search` now goes through the shared search: research asks, the agent tool, widget builders and watches. The shared search caches identical queries for 30 minutes, so a watch that re-runs every 5 minutes asks Exa at most twice an hour.
+- The "brief" news and market cards (`build_news_brief_config` and `build_market_research_config` in `app/config_builders.py`) call lazycat-sdk's `grounded_research`. That function called the `ddgs` library, which scrapes DuckDuckGo. Since lazycat-sdk `17b8c90` it takes news from the shared `news_search` and web results from the shared `web_search` instead. The SDK is volume-mounted, not baked into the image; each html-notes deploy copies the SDK checkout to the NAS (`deploy.sh`, "Syncing lazycat-sdk").
 
 ### How it was verified
 
