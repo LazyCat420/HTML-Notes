@@ -173,3 +173,36 @@ def test_tool_allows_one_reword_on_a_genuine_miss(monkeypatch):
         tool="html_notes_web_search", args={"query": "zxqw"})))
     assert not out.get("is_error")
     assert "one more time" in out["message"].lower()
+
+
+# ── every real search records its outcome for /health/app ───────────────────
+
+def test_web_search_ex_records_each_outcome(monkeypatch):
+    from app.services import search as s
+    saved = dict(s.LAST_SEARCH)
+
+    async def hits(q, n):
+        return [{"title": "t", "url": "http://x", "snippet": "s"}]
+
+    async def nothing(q, n):
+        return []
+
+    async def boom(q, n):
+        raise RuntimeError("unreachable")
+
+    async def no_backfill(results):
+        return None
+
+    monkeypatch.setattr(s, "_backfill_snippets", no_backfill)
+    try:
+        monkeypatch.setattr(m, "_SEARCH_ENGINES", (("one", hits),))
+        _run(m.web_search_ex("q", 3))
+        assert s.LAST_SEARCH["ok"] is True and s.LAST_SEARCH["engine"] == "one"
+        monkeypatch.setattr(m, "_SEARCH_ENGINES", (("one", nothing),))
+        _run(m.web_search_ex("q", 3))
+        assert s.LAST_SEARCH["ok"] is True and s.LAST_SEARCH["engine"] is None
+        monkeypatch.setattr(m, "_SEARCH_ENGINES", (("one", boom),))
+        _run(m.web_search_ex("q", 3))
+        assert s.LAST_SEARCH["ok"] is False
+    finally:
+        s.LAST_SEARCH.update(saved)

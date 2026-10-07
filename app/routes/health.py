@@ -1,5 +1,3 @@
-import time
-
 from fastapi import APIRouter, Request, HTTPException, Response
 import sys
 import app.main as main
@@ -22,31 +20,27 @@ async def health_model():
         return {"status": "offline", "detail": str(e)}
 
 
-# The search probe is a REAL DuckDuckGo query, and docker-compose healthchecks
-# /health/app every 30s — roughly 2,880 live searches a day purely to answer
-# "is search up", which floods the log with `[SEARCH] ddg-lite served 'test'`
-# and is a good way to earn a rate-limit on the backend the app depends on.
-# Cache it: the probe's value is catching a sustained outage, and a 5-minute
-# resolution does that just as well as a 30-second one.
-_SEARCH_PROBE_TTL = 300.0
-_search_probe_cache: dict = {"at": 0.0, "result": None}
-
-
 async def _search_health(force: bool = False) -> dict:
-    now = time.monotonic()
-    cached = _search_probe_cache["result"]
-    if cached is not None and not force and (now - _search_probe_cache["at"]) < _SEARCH_PROBE_TTL:
-        return dict(cached, cached=True)
-    try:
-        hits, engines_down = await web_search_ex("test", 3)
-        result = {"ok": not engines_down, "hits": len(hits),
-                  "engines": [n for n, _ in _SEARCH_ENGINES]}
-        if engines_down:
-            result["error"] = "every search backend unreachable"
-    except Exception as e:
-        result = {"ok": False, "error": f"probe raised: {e}"}
-    _search_probe_cache.update({"at": now, "result": result})
-    return result
+    """Search status for /health/app, without searching.
+
+    docker-compose curls /health/app every 30 s. This used to run a real
+    search for "test" against DuckDuckGo, cached for 5 minutes: about 288
+    automated searches a day, from an IP the search engines were already
+    bot-blocking. It now reports the outcome of the last real search (an ask,
+    a tool call or a watch). `?fresh=1` still runs one live probe when a
+    person asks."""
+    engines = [n for n, _ in _SEARCH_ENGINES]
+    if force:
+        try:
+            hits, engines_down = await web_search_ex("test", 3)
+            result = {"ok": not engines_down, "hits": len(hits), "engines": engines, "probe": "live"}
+            if engines_down:
+                result["error"] = "every search backend unreachable"
+        except Exception as e:
+            result = {"ok": False, "error": f"probe raised: {e}", "engines": engines, "probe": "live"}
+        return result
+    return {"ok": LAST_SEARCH["ok"], "engines": engines, "probe": "none",
+            "last_search_at": LAST_SEARCH["at"], "last_engine": LAST_SEARCH["engine"]}
 
 
 @router.get("/health/app")

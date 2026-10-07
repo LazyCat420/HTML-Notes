@@ -126,6 +126,18 @@ async def _search_scraper_ddg(query: str, limit: int) -> list:
     return out
 
 
+# The outcome of the last real search, reported by /health/app. Health used to
+# run a search of its own (cached 5 min), which kept a search engine answering
+# "is search up" around the clock from an IP the engines were already
+# bot-blocking. Updated in place, never rebound: other modules share this dict.
+LAST_SEARCH: dict = {"at": None, "ok": None, "engine": None}
+
+
+def _record_search(ok: bool, engine) -> None:
+    import time as _time
+    LAST_SEARCH.update({"at": _time.time(), "ok": ok, "engine": engine})
+
+
 async def web_search_ex(query: str, limit: int = 6) -> tuple:
     """Web search returning (results, all_engines_failed).
 
@@ -146,13 +158,16 @@ async def web_search_ex(query: str, limit: int = 6) -> tuple:
         reached_any = True
         if results:
             logger.info(f"[SEARCH] {engine} served {query!r} ({len(results)} hits)")
+            _record_search(True, engine)
             await _backfill_snippets(results)
             return results, False
     if reached_any:
         logger.info(f"[SEARCH] no engine had hits for {query!r} (backends alive)")
+        _record_search(True, None)
         return [], False
     logger.error(f"[SEARCH] EVERY ENGINE UNREACHABLE for {query!r} — "
                  f"research is down, not the query")
+    _record_search(False, None)
     return [], True
 
 

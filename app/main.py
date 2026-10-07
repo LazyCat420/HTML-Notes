@@ -1295,24 +1295,12 @@ async def _warn_if_research_is_down() -> None:
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"[BOOT] agent dependency check failed to run: {e}")
         return
-    # MCP being up is not enough: with every search backend unreachable the agent
-    # has tools that all return nothing, which is what "research path OK" claimed
-    # for an unknown length of time while DuckDuckGo was unreachable.
-    try:
-        _hits, engines_down = await web_search_ex("test", 3)
-    except Exception as e:
-        _hits, engines_down = [], True
-        logger.warning(f"[BOOT] search probe raised: {e}")
-    if engines_down:
-        logger.error(
-            "[BOOT] WEB SEARCH IS DOWN — every search backend is unreachable. "
-            "Research asks will have no data to work from. Check "
-            "SCRAPER_SERVICE_URL and outbound network connectivity.")
-    if status.get("ok") and not engines_down:
-        logger.info(f"[BOOT] research path OK — {status.get('tool_count')} MCP tools "
-                    f"via {status.get('prism')}, web search reachable")
-        return
+    # No search probe here: a real query on every boot is an automated search
+    # nobody asked for. Every real search records its outcome, and
+    # /health/app reports the last one (`?fresh=1` probes on request).
     if status.get("ok"):
+        logger.info(f"[BOOT] research path OK — {status.get('tool_count')} MCP tools "
+                    f"via {status.get('prism')}; web search is checked by real searches only")
         return
     logger.error(
         "[BOOT] RESEARCH PATH DOWN: %s. Tier-2 asks (weather/stock/sports/map) "

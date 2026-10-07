@@ -181,15 +181,16 @@ def test_embeddinggemma_is_not_chat_capable():
     assert m._is_chat_capable_model("GLM-5.3-Flash-EXL3") is True
 
 
-# ── the healthcheck must not hammer the search backend ──────────────────────
+# ── the healthcheck must not search at all ───────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_health_search_probe_is_cached():
-    """docker-compose curls /health/app every 30s, and the probe is a REAL
-    DuckDuckGo query — ~2,880 live searches a day to answer "is search up",
-    which floods the log and invites a rate-limit on the backend the app
-    depends on."""
+async def test_health_reports_search_without_searching():
+    """docker-compose curls /health/app every 30 s. The probe used to be a REAL
+    DuckDuckGo query (cached 5 min): about 288 automated searches a day from an
+    IP the engines were already bot-blocking. Health now reports the last real
+    search and never queries an engine of its own."""
     import app.routes.health as h
+    from app.services import search as s
 
     calls = {"n": 0}
 
@@ -197,19 +198,23 @@ async def test_health_search_probe_is_cached():
         calls["n"] += 1
         return ([{"title": "t", "url": "http://x", "snippet": "s"}], False)
 
-    h._search_probe_cache.update({"at": 0.0, "result": None})
     real = h.web_search_ex
     h.web_search_ex = fake_search_ex
+    saved = dict(s.LAST_SEARCH)
     try:
-        first = await h._search_health()
-        for _ in range(5):
-            again = await h._search_health()
-        assert calls["n"] == 1, f"probe ran {calls['n']}x for 6 healthchecks"
-        assert again.get("cached") is True
-        assert first["ok"] is True
-        # ...but a human asking explicitly still gets a live answer.
-        await h._search_health(force=True)
-        assert calls["n"] == 2
+        s.LAST_SEARCH.update({"at": None, "ok": None, "engine": None})
+        for _ in range(6):
+            status = await h._search_health()
+        assert calls["n"] == 0, f"health searched {calls['n']}x"
+        assert status["ok"] is None and status["probe"] == "none"
+        # After a real search, health reports its outcome, still without searching.
+        s._record_search(True, "ddg-lite")
+        status = await h._search_health()
+        assert calls["n"] == 0
+        assert status["ok"] is True and status["last_engine"] == "ddg-lite"
+        # A human asking explicitly still gets one live probe.
+        status = await h._search_health(force=True)
+        assert calls["n"] == 1 and status["probe"] == "live"
     finally:
         h.web_search_ex = real
-        h._search_probe_cache.update({"at": 0.0, "result": None})
+        s.LAST_SEARCH.update(saved)
