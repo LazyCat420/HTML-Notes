@@ -3161,7 +3161,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     // queue panel can expand the card — strip any stale static one.
                     newWidget.className = widget.className.replace(/\bh-\[\d+px\]\b/g, '').replace(/\s+/g, ' ').trim();
                     if (!newWidget.className.includes('music-widget-root')) newWidget.className += ' music-widget-root';
-                    if (!newWidget.className.includes('col-span-3')) newWidget.className = newWidget.className.replace('col-span-2', 'col-span-2 lg:col-span-3');
+                    newWidget.className = newWidget.className.replace(/\blg:col-span-3\b/g, '').replace(/\s+/g, ' ').trim();
                     newWidget.setAttribute(':class', "showQueue ? 'h-[384px]' : 'h-[184px]'");
                     // kind unknown for a rehydrated node — '' means genre-first
                     // with artist failover. base omitted → hostname:8002 default.
@@ -3188,7 +3188,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}"></div>
                                 <span class="material-symbols-outlined text-lg text-white relative z-10">album</span>
                             </div>
-                            <div class="flex-grow min-w-0 flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
+                            <div class="min-w-0 max-w-[55%] flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
                                 <h4 class="music-title text-white font-bold leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-effect="if (currentTrack) { $nextTick(() => { const s = $el.querySelector('span'); titleOverflow = !!(s && s.scrollWidth > $el.clientWidth) }) }" :class="titleOverflow ? 'marquee' : ''"><span x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></span></h4>
                                 <p class="music-artist text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
                             </div>

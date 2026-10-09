@@ -1272,7 +1272,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
               f'webBase: {json_escape(MUSIC_PLAYER_WEB_URL)} }}')
 
     return f"""
-    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 lg:col-span-3 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-2.5 flex flex-col gap-1 group transition-all duration-300" :class="showQueue ? 'h-[384px]' : 'h-[184px]'" x-data="musicPlayerWidget({cfg_js})">
+    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-2.5 flex flex-col gap-1 group transition-all duration-300" :class="showQueue ? 'h-[384px]' : 'h-[184px]'" x-data="musicPlayerWidget({cfg_js})">
         <!-- Background Blur/Glow effect -->
         <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
         <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/40 to-transparent pointer-events-none"></div>
@@ -1294,7 +1294,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                 <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}}"></div>
                 <span class="material-symbols-outlined text-lg text-white relative z-10">album</span>
             </div>
-            <div class="flex-grow min-w-0 flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
+            <div class="min-w-0 max-w-[55%] flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
                 <h4 class="music-title text-white font-bold leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-effect="if (currentTrack) {{ $nextTick(() => {{ const s = $el.querySelector('span'); titleOverflow = !!(s && s.scrollWidth > $el.clientWidth) }}) }}" :class="titleOverflow ? 'marquee' : ''"><span x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></span></h4>
                 <p class="music-artist text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
             </div>
