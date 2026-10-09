@@ -2083,7 +2083,23 @@ async def build_router_widget(spec: dict, session_id: str, message: str,
                                         or _dflt.get("league") or message)
             # Off-season / empty → a synthesized answer card, never an empty board.
             if board.get("is_error"):
-                return ("data_card", "sports-answer", await build_answer_config(query or message))
+                # The spec's `query` is the NORMALIZED league name ("formula 1"),
+                # not the ask. Searching it served a generic "Formula 1 is an
+                # international category..." definition card for "who won the
+                # last f1 race and why" (observed live 2026-10-08) — and with an
+                # abbreviation that survives normalization ("f1") it searched a
+                # single token and answered "I couldn't find anything for f1."
+                # When the ask itself names the league (by ANY of its aliases —
+                # the router rewrites f1 → "formula 1", so literal containment
+                # can't be trusted), search the ASK; only a spec whose league
+                # came from somewhere else (canvas default, "any scores?")
+                # searches the league name.
+                if resolve_league(message or "") and \
+                        resolve_league(message) == resolve_league(query or ""):
+                    fallback_q = message
+                else:
+                    fallback_q = query or message
+                return ("data_card", "sports-answer", await build_answer_config(fallback_q))
             return ("scoreboard", "scores", board)
 
         if wtype == "map":

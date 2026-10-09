@@ -300,6 +300,14 @@ SPORTS_LEAGUES = {
     "nfl": "football/nfl", "football": "football/nfl",
     "mlb": "baseball/mlb", "baseball": "baseball/mlb",
     "nhl": "hockey/nhl", "hockey": "hockey/nhl",
+    # F1: the router normalizes the ask to "formula 1" and the fast lane sees
+    # the raw "f1"/"formula one" — without these every spelling 404'd ESPN and
+    # fell into the answer-card fallback searching the bare league name.
+    # NOTE: ESPN's racing scoreboards carry no per-competitor rows, so
+    # sports_scores() on racing/f1 deliberately reports "no fixtures" and the
+    # ask degrades to an answer card built from the USER'S QUESTION — which is
+    # the correct result for "who won the last f1 race and why".
+    "formula one": "racing/f1", "formula 1": "racing/f1", "f1": "racing/f1",
 }
 # Longest first so multi-word leagues win over the single word inside them.
 _SPORTS_KEYS = sorted(SPORTS_LEAGUES, key=len, reverse=True)
