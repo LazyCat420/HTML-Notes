@@ -1176,10 +1176,19 @@ document.addEventListener('alpine:init', () => {
                 try { d = JSON.parse(e.data); } catch { return; }
                 const landed = this.enqueue(d.tracks);
                 if (d.progress) this.streamStatus = `Loading artists ${d.progress}`;
-                if (!gotTracks && landed > 0) {
+                // A "provisional" batch is the fast-first seed (2 tracks from
+                // one direct search, sent before the real discovery). It may
+                // START playback, but must NOT count toward gotTracks: for an
+                // artist ask like "GWAR" the genre pipeline seeds fine but
+                // then fails discovery, and treating the seed as a real queue
+                // suppressed the artist-mix failover — the user got 2 songs
+                // and nothing else.
+                if (landed > 0 && !this.isPlaying && !this.currentTrack) {
+                    this.playAt(this.currentIndex >= 0 ? this.currentIndex : 0, { auto: true });
+                }
+                if (!gotTracks && landed > 0 && !d.provisional) {
                     gotTracks = true;
                     this.error = '';
-                    this.playAt(this.currentIndex >= 0 ? this.currentIndex : 0, { auto: true });
                 }
             });
             this.es.addEventListener('done', () => {
