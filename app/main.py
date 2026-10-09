@@ -2519,6 +2519,10 @@ def _normalise_news_item(n: dict) -> dict:
         "category": (n.get("category") or "").strip(),
         "consensus": n.get("consensus"),
         "stub": bool(n.get("stub")),
+        # Explicit badge ("Your watchlist") set by the market-news fetch;
+        # empty for every other provider, so raw_items falls back to its own
+        # section/ticker derivation.
+        "badge": (n.get("badge") or "").strip(),
     }
 
 

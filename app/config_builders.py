@@ -512,6 +512,17 @@ async def build_news_card(message: str, *, finance: bool = False,
         topic = "stock market" if finance else ""
         section = "" if finance else (category or "")
         display = "the market" if finance else _SECTION_LABEL.get(section, "Top Stories")
+        if finance:
+            # A subject for the relevance gate. The general path used to skip
+            # gating entirely (no subject → no gate), so keyword-matched junk
+            # — Sensex live blogs, Moscow Exchange recaps, "5 stocks to buy"
+            # listicles — flowed straight into the editor, which then kept the
+            # one worst story. The gate is what rejects them.
+            subject = "the US stock market"
+            g = {"negatives": [
+                "non-US markets (India Sensex/Nifty, Moscow Exchange, DAX, Nikkei, FTSE)",
+                "analyst price-target promos and stock-pick listicles",
+            ]}
     else:
         topic = subject
         section = ""
@@ -526,13 +537,46 @@ async def build_news_card(message: str, *, finance: bool = False,
     # page that shows six stories cannot span a day), the editor is allowed to
     # drop press releases, and duplicates still collapse — so the request has
     # to start wider than the card.
+    personal_tickers: list = []
+    personal_lists: list = []
+    if finance:
+        # The user's OWN tickers first (trading-service watchlist + positions).
+        # A bare "stock market news" previously had zero user grounding and
+        # keyword-matched global news APIs into Sensex live blogs; these reach
+        # the rich ticker providers (finnhub et al.) with real positions.
+        from app.services.finance import trading_service_tickers
+        try:
+            personal_tickers = await trading_service_tickers(limit=5)
+        except Exception:
+            personal_tickers = []
+        if personal_tickers:
+            try:
+                personal = await _finnews_articles(
+                    tickers=personal_tickers, query=" ".join(personal_tickers), limit=10)
+                if personal:
+                    for n in personal:
+                        n["badge"] = "Your watchlist"
+                    personal_lists.append(personal)
+            except Exception as e:
+                logger.info(f"finnews personal fetch failed: {e}")
     tasks = [news_fn(topic, limit=14 if (general and not finance) else 8,
                      category=section, country="us" if general else "")]
     if finance:
         finnews_fn = getattr(main, "_finnews_articles", None) or _finnews_articles
-        tasks.append(finnews_fn(query=topic, limit=8))
+        # A general finance ask must pull MARKET-wide coverage: the index
+        # tickers route the ticker-based providers at US-market movers, and
+        # the keyword providers get a query that says what we actually mean.
+        # The bare word "stock market" keyword-matched Sensex blogs and
+        # Moscow Exchange recaps (the "Indian equity benchmark" complaint).
+        if general:
+            tasks.append(finnews_fn(query="US stock market today", tickers=["SPY", "QQQ"], limit=8))
+        else:
+            tasks.append(finnews_fn(query=topic, limit=8))
     fetched = await asyncio.gather(*tasks, return_exceptions=True)
     lists = [r for r in fetched if isinstance(r, list)]
+    # Personal items go FIRST: the editor reads sources in order, so the
+    # user's own positions headline the card rather than trailing it.
+    lists = personal_lists + lists
     merge_fn = getattr(main, "_merge_news", None) or _merge_news
     raw = merge_fn(*lists) if lists else []
     if not raw and finance:
@@ -625,9 +669,10 @@ async def build_news_card(message: str, *, finance: bool = False,
                 # mixed front page reads as a front page — World next to
                 # Business next to Technology — instead of ten rows all
                 # labelled "News".
-                "badge": ((tickers[:24] or "Markets") if finance
-                          else (_SECTION_LABEL.get(it.get("category") or "", "News")
-                                if general else "News")),
+                "badge": (it.get("badge")
+                          or ((tickers[:24] or "Markets") if finance
+                              else (_SECTION_LABEL.get(it.get("category") or "", "News")
+                                    if general else "News"))),
                 "_quality_score": it.get("_quality_score", 0.0),
                 "_quality_class": it.get("_quality_class", "GENUINE"),
                 "_quality_flags": it.get("_quality_flags", []),
@@ -668,8 +713,12 @@ async def build_news_card(message: str, *, finance: bool = False,
         '"items": [{"index": <the [N] number of the source>, '
         '"title": "<tightened headline>", '
         '"summary": "<2-3 sentences: what happened and why it matters>"}]}\n'
-        + (f'Brief: today\'s {display.lower()} headlines, for a reader catching up.\n\n'
+        + ((f'Brief: today\'s {display.lower()} headlines, for a reader catching up.\n\n'
            if (general and not finance) else f'Topic: "{display}"\n\n')
+           if not (general and finance) else
+           "Brief: today's US market headlines, for a reader catching up. "
+           "Stories about the user's own watchlist tickers (badge 'Your watchlist') "
+           "lead the write-up.\n\n")
         + "RULES FOR EVERY FIELD, INCLUDING overview:\n"
         "- Ground every claim in a listed source and cite it by [N]. Never invent "
         "a fact, name, figure or move that is not in the sources.\n"
@@ -680,12 +729,13 @@ async def build_news_card(message: str, *, finance: bool = False,
         "from the sources.\n"
         "- Base each summary ONLY on that source's text. If a source is only a "
         "headline, keep its summary to a faithful one-line restatement.\n"
-        + ((
-            # A general ask has no topic to be off, so the subject-relevance
-            # omit rule below does not apply — and applied anyway it cost
-            # stories: the owner's card showed FOUR because the editor was told
-            # that returning fewer entries is correct. Here the ONLY reason to
-            # drop a source is that it is not news.
+        + ((  # A general ask (top stories OR a general market brief) has no
+            # topic to be off, so the subject-relevance omit rule below does
+            # not apply — and applied anyway it cost stories: the owner's card
+            # showed FOUR because the editor was told that returning fewer
+            # entries is correct. Here the ONLY reason to drop a source is
+            # that it is not news. Upstream, the relevance gate (finance) or
+            # the ranking (top stories) already owns subject relevance.
             "- These are today's headlines: every genuine news story here "
             "belongs in the write-up. Do NOT drop a story for being about a "
             "different subject from the others - a front page is meant to be "
@@ -695,7 +745,7 @@ async def build_news_card(message: str, *, finance: bool = False,
             "newsrooms led with them.\n"
             "- The overview is a two-sentence catch-up naming the biggest two or "
             "three stories, not a description of the news in general.\n\n"
-        ) if (general and not finance) else (
+        ) if general else (
             "- OMIT a source entirely rather than write it up if it is not about "
             "the topic, is a press release or advertisement, or mentions the "
             "topic only in passing. Returning FEWER, on-topic entries is correct "
@@ -734,7 +784,7 @@ async def build_news_card(message: str, *, finance: bool = False,
         # A SUBJECT ask is different — there the model is the only thing that
         # can tell an off-subject story from an on-subject one, so its omissions
         # are the gate and are still honoured.
-        if not (general and not finance):
+        if not general:
             kept = [i for i in sorted(summaries) if 0 <= i < len(out_items)]
             if kept:
                 out_items = [out_items[i] for i in kept]

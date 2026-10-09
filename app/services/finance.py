@@ -379,27 +379,69 @@ async def stock_news(query: str, limit: int = 8) -> dict:
         return {"error": str(e), "is_error": True}
 
 
+async def trading_service_tickers(limit: int = 5) -> list:
+    """The user's own tickers from trading-service (watchlist + open positions),
+    for personalizing market news. Best-effort: [] on any failure — a down
+    trading-service must never break the news card.
+
+    The general 'stock market news' path previously had NO user grounding at
+    all: it keyword-matched 'stock market' against global news APIs and served
+    Sensex live blogs and Moscow Exchange recaps. These tickers are what the
+    finnews ticker providers (finnhub et al., the richest tier) should see.
+    """
+    import httpx
+    out: list = []
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            base = "http://10.0.0.16:8888/api/v1"
+            r1, r2 = await asyncio.gather(
+                client.get(f"{base}/watchlist"),
+                client.get(f"{base}/portfolio"),
+                return_exceptions=True,
+            )
+        if not isinstance(r1, Exception):
+            for w in (r1.json() or []):
+                t = (w.get("ticker") or "").strip().upper() if isinstance(w, dict) else ""
+                if t and t not in out:
+                    out.append(t)
+        if not isinstance(r2, Exception):
+            for p in ((r2.json() or {}).get("positions") or []):
+                t = (p.get("ticker") or "").strip().upper() if isinstance(p, dict) else ""
+                if t and t not in out:
+                    out.append(t)
+    except Exception as e:
+        logger.info(f"trading_service_tickers unavailable: {e}")
+        return []
+    return out[:limit]
+
+
 async def _finnews_articles(query: str = "", tickers: Optional[list] = None,
                             limit: int = 12) -> list:
     """Multi-provider financial news via scraper-service's finnews collector.
 
     Yahoo's search returns only a handful of hits from one source; finnews fans
-    out across ~10 keyed financial-news APIs (finnhub, marketaux, polygon,
-    newsapi, ...) and returns ticker-tagged, provider-SUMMARISED articles. Pass
-    `tickers` to reach the ticker-based providers (finnhub etc., the richest),
-    else `query` for the keyword providers. Normalised to the stock_news item
+    out to across ~10 keyed financial-news APIs (finnhub, marketaux, polygon,
+    newsapi, ...) and returns ticker-tagged, provider-SUMMARISED articles.
+    Ticker-based providers receive `tickers`, keyword providers receive
+    `query` — pass both to cover all tiers (e.g. the general market brief:
+    SPY/QQQ tickers + a market query). Normalised to the stock_news item
     shape; `og_desc` is seeded from the provider summary so the editor has real
     material even when the article page won't scrape. Best-effort — [] on failure.
     """
     payload: dict = {"source": "finnews", "days_back": 7}
     if tickers:
         payload["tickers"] = [t for t in tickers if t][:5]
-    elif query:
+    if query:
+        # Sent ALONGSIDE tickers: the collector dispatches tickers to the
+        # ticker-based providers and the query to the keyword providers.
         payload["query"] = query
-    else:
+    if not payload.get("tickers") and not payload.get("query"):
         return []
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # 20s: the collector fans out to ~10 keyed APIs in parallel and the
+        # slowest tier (keyword providers) routinely lands past 10s — the old
+        # 10s timeout aborted the whole merged result, not just the slow tier.
+        async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(f"{SCRAPER_SERVICE_URL}/collect", json=payload)
             data = resp.json()
     except Exception as e:
