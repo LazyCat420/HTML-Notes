@@ -1272,7 +1272,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
               f'webBase: {json_escape(MUSIC_PLAYER_WEB_URL)} }}')
 
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-3 flex flex-col justify-between group transition-all duration-300" :class="showQueue ? 'h-[420px]' : 'h-[280px]'" x-data="musicPlayerWidget({cfg_js})">
+    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 lg:col-span-3 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-2.5 flex flex-col gap-1 group transition-all duration-300" :class="showQueue ? 'h-[384px]' : 'h-[184px]'" x-data="musicPlayerWidget({cfg_js})">
         <!-- Background Blur/Glow effect -->
         <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
         <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/40 to-transparent pointer-events-none"></div>
@@ -1295,8 +1295,8 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                 <span class="material-symbols-outlined text-lg text-white relative z-10">album</span>
             </div>
             <div class="flex-grow min-w-0 flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
-                <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
-                <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
+                <h4 class="music-title text-white font-bold leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-effect="if (currentTrack) {{ $nextTick(() => {{ const s = $el.querySelector('span'); titleOverflow = !!(s && s.scrollWidth > $el.clientWidth) }}) }}" :class="titleOverflow ? 'marquee' : ''"><span x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></span></h4>
+                <p class="music-artist text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
             </div>
             <!-- Thumbs feedback: rates the ARTIST on the music-player radio and
                  the TRACK on wallgarden in one click. syncThumbState re-runs on
@@ -1357,54 +1357,52 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
             </div>
         </div>
 
-        <!-- Progress Bar & Time -->
-        <div class="relative z-10 w-full mt-1.5">
-            <div class="w-full relative group/progress cursor-pointer py-1" @click="handleSeek($event)">
-                <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner relative">
+        <!-- Progress Bar & Controls: one compact row each — the old stacked
+             time row + 44px buttons + justify-between stretch wasted ~90px. -->
+        <div class="relative z-10 w-full mt-0.5">
+            <div class="w-full relative group/progress cursor-pointer py-0.5" @click="handleSeek($event)">
+                <div class="h-1 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner relative">
                     <div class="h-full bg-gradient-to-r from-purple-400 to-fuchsia-400 rounded-full shadow-[0_0_10px_rgba(216,180,254,0.5)] transition-all duration-100" :style="'width: ' + progress + '%'"></div>
                 </div>
             </div>
-            <div class="flex justify-between text-[10px] text-purple-300 font-mono mt-1 px-0.5">
-                <span x-text="formatTime(currentTime)">0:00</span>
-                <span x-text="formatTime(duration)">0:00</span>
-            </div>
         </div>
 
-        <!-- Controls -->
-        <div class="relative z-10 flex items-center justify-between px-1 mt-1">
+        <div class="relative z-10 flex items-center gap-0.5 px-0.5 mt-0.5">
+            <span class="text-[9px] text-purple-300 font-mono shrink-0" x-text="formatTime(currentTime)">0:00</span>
             <button @click="toggleShuffle()" class="transition-colors p-1 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isShuffle, 'text-white/50 hover:text-white': !isShuffle}}" title="Shuffle">
-                <span class="material-symbols-outlined text-lg">shuffle</span>
+                <span class="material-symbols-outlined text-base">shuffle</span>
             </button>
-            
-            <!-- Volume Slider -->
+
+            <!-- Volume Slider: collapsed to the mute icon; expands on hover -->
             <div class="flex items-center gap-1 group/volume">
                 <button @click="toggleMute()" class="text-white/50 hover:text-white transition-colors p-1" title="Mute">
-                    <span class="material-symbols-outlined text-lg" x-text="isMuted ? 'volume_off' : (volume > 0.5 ? 'volume_up' : 'volume_down')">volume_up</span>
+                    <span class="material-symbols-outlined text-base" x-text="isMuted ? 'volume_off' : (volume > 0.5 ? 'volume_up' : 'volume_down')">volume_up</span>
                 </button>
-                <input type="range" min="0" max="1" step="0.05" x-model="volume" @input="setVolume(volume)" class="w-10 h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-purple-400 group-hover/volume:w-16 transition-all duration-200">
+                <input type="range" min="0" max="1" step="0.05" x-model="volume" @input="setVolume(volume)" class="w-0 group-hover/volume:w-14 h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-purple-400 transition-all duration-200">
             </div>
-            
-            <div class="flex items-center gap-2">
+
+            <div class="flex items-center gap-1 mx-auto">
                 <button @click="prevTrack()" class="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
                     <span class="material-symbols-outlined text-base">skip_previous</span>
                 </button>
-                
-                <button @click="playPause()" class="w-9 h-9 rounded-2xl bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-lg transition-all active:scale-95" :disabled="!currentTrack">
-                    <span class="material-symbols-outlined text-lg" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+
+                <button @click="playPause()" class="w-8 h-8 rounded-2xl bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-lg transition-all active:scale-95" :disabled="!currentTrack">
+                    <span class="material-symbols-outlined text-base" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
                 </button>
-                
+
                 <button @click="nextTrack()" class="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
                     <span class="material-symbols-outlined text-base">skip_next</span>
                 </button>
             </div>
-            
+
             <button @click="toggleRepeat()" class="transition-colors p-1 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isRepeat, 'text-white/50 hover:text-white': !isRepeat}}" title="Repeat">
-                <span class="material-symbols-outlined text-lg">repeat</span>
+                <span class="material-symbols-outlined text-base">repeat</span>
             </button>
 
             <button @click="showQueue = !showQueue" class="transition-colors p-1 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': showQueue, 'text-white/50 hover:text-white': !showQueue}}" title="Queue">
-                <span class="material-symbols-outlined text-lg">queue_music</span>
+                <span class="material-symbols-outlined text-base">queue_music</span>
             </button>
+            <span class="text-[9px] text-purple-300 font-mono shrink-0" x-text="formatTime(duration)">0:00</span>
         </div>
         
         <div x-show="error" x-transition class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-md whitespace-nowrap shadow-lg z-20" x-text="error" style="display: none;"></div>

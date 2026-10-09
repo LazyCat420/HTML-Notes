@@ -2700,3 +2700,29 @@ body.has-rail .live-canvas { padding-left: calc(52px + 1.5rem); }
    delegateAsks). Quiet until hovered, so cards do not read as link soup. */
 .widget-container [data-ask] { cursor: pointer; }
 .widget-container [data-ask]:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+
+/* ── Music player widget: compact, fluid, no-clip text ─────────────────
+   container-type lets font sizes scale with the widget's own width (cqi):
+   as the widget narrows, text shrinks to keep max words per row instead of
+   cutting off. The title marquees (slides, then returns) when it overflows
+   instead of truncating — every word eventually visible. */
+.music-widget-root {
+    container-type: inline-size;
+}
+.music-widget-root .music-title {
+    font-size: clamp(0.78rem, 4.6cqi, 1rem);
+    overflow: hidden;
+    white-space: nowrap;
+}
+.music-widget-root .music-title.marquee > span {
+    display: inline-block;
+    padding-right: 2.5rem;
+    animation: music-marquee 14s linear infinite alternate;
+}
+@keyframes music-marquee {
+    0%, 12% { transform: translateX(0); }
+    88%, 100% { transform: translateX(calc(-1 * max(0px, 100% - 100cqi))); }
+}
+.music-widget-root .music-artist {
+    font-size: clamp(0.62rem, 3.4cqi, 0.78rem);
+}
