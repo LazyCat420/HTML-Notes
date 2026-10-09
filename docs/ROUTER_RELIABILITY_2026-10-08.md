@@ -45,3 +45,14 @@ search BEFORE the LLM discovery phase (music-player `03b4102`, Phase 0 in
 full mix never replays them. Measured cold genre (`zamrock`): first tracks at
 **3.9s** (was ~30-50s: LLM discovery 10-30s + first artist search + 10s
 extraction).
+
+## Q&A answer failure (2026-10-08, same wave)
+
+"who won the last f1 race and why" produced a generic F1-definition card (or
+"I couldn't find anything for f1."): `SPORTS_LEAGUES` had no F1 keys, so the
+sports fallback web-searched the NORMALIZED LEAGUE NAME instead of the user's
+ask. Fixed (`a0309c2`): F1 aliases -> racing/f1, and the sports fallback now
+searches the user's ask whenever the ask names the spec's league. Verified
+live: the question returns "Winner Max Verstappen won the 2026 Bahrain Grand
+Prix" in 15.3s. The shared-runtime agent loop and its post-tool text forwarding
+were verified healthy (direct gateway repro streamed the full answer).
