@@ -9,3 +9,4 @@ pytest-asyncio==1.4.0
 respx==0.22.0
 beautifulsoup4==4.12.3
 ddgs==9.14.4
+pymongo==4.10.1

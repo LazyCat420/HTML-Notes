@@ -1,6 +1,7 @@
 import sys
 import app.config as config
 import app.main as main
+from app.services.news_corpus import corpus_news
 sys.modules[__name__].__dict__.update(main.__dict__)
 
 async def build_stock_compare_config(symbols: list, range_: str = "6mo") -> Optional[dict]:
@@ -443,6 +444,26 @@ _SECTION_LABEL = {
 }
 
 
+def _corpus_task(corpus_fn, *, tickers=None, query="", limit=8, badge=""):
+    """Run one corpus_news call as a gather-able task; badge its items.
+
+    The corpus serves full article bodies, so its items ride the same
+    'summary' channel the editor reads. Fails open to [].
+    """
+    async def _run():
+        try:
+            items = await asyncio.to_thread(
+                corpus_fn, query=query, tickers=tickers, limit=limit) or []
+        except Exception as e:
+            logger.info(f"[NEWS] corpus fetch failed: {e}")
+            return []
+        if badge:
+            for n in items:
+                n.setdefault("badge", badge)
+        return items
+    return _run()
+
+
 def _rank_finance_items(items: list) -> list:
     """Watchlist badge first (stable), then dated items newest-first, undated last.
 
@@ -611,6 +632,22 @@ async def build_news_card(message: str, *, finance: bool = False,
                      category=section, country="us" if general else "")]
     if finance:
         finnews_fn = getattr(main, "_finnews_articles", None) or _finnews_articles
+        # CORPUS FIRST: trading-service's MongoDB store already holds
+        # quality-gated, full-body articles (scraper-service keeps them
+        # fresh). Read it before fanning out to external APIs — the point of
+        # a collection system is to not re-scrape what was already pulled.
+        corpus_fn = getattr(main, "corpus_news", None) or corpus_news
+        if general:
+            # Market-wide ask: watchlist tickers first (badged), then the
+            # corpus's own broad-coverage rows (the collector stores those
+            # under ticker=None now).
+            if personal_tickers:
+                tasks.append(_corpus_task(
+                    corpus_fn, tickers=personal_tickers, query="stock market",
+                    limit=8, badge="Your watchlist"))
+            tasks.append(_corpus_task(corpus_fn, query="stock market", limit=8))
+        else:
+            tasks.append(_corpus_task(corpus_fn, query=display, limit=8))
         # A general finance ask must pull MARKET-wide coverage: the index
         # tickers route the ticker-based providers at US-market movers, and
         # the keyword providers get a query that says what we actually mean.
