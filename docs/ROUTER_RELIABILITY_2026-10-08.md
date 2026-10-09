@@ -36,3 +36,12 @@
 time-to-first-widget. Post-deploy: `play smooth jazz` → tier2 in **0.3s**
 (was 105s/flaky); zero errors across the music/news/clock set. Visual checks:
 video 826×520, music 826×265 in headless Chromium against the deployed canvas.
+
+## Fast-first audio (2026-10-08, later wave)
+
+Genre radio now yields 2 genre-seeded tracks from a single direct YouTube
+search BEFORE the LLM discovery phase (music-player `03b4102`, Phase 0 in
+`get_genre_radio_mix_stream`); the ids are seeded into Phase 2 dedup so the
+full mix never replays them. Measured cold genre (`zamrock`): first tracks at
+**3.9s** (was ~30-50s: LLM discovery 10-30s + first artist search + 10s
+extraction).
