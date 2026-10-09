@@ -1272,27 +1272,27 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
               f'webBase: {json_escape(MUSIC_PLAYER_WEB_URL)} }}')
 
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-5 flex flex-col justify-between group transition-all duration-300" :class="showQueue ? 'h-[420px]' : 'h-[280px]'" x-data="musicPlayerWidget({cfg_js})">
+    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white p-3 flex flex-col justify-between group transition-all duration-300" :class="showQueue ? 'h-[420px]' : 'h-[280px]'" x-data="musicPlayerWidget({cfg_js})">
         <!-- Background Blur/Glow effect -->
         <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
         <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/40 to-transparent pointer-events-none"></div>
         
         <!-- Top Bar: Genre / Close -->
         <div class="relative z-10 flex justify-between items-start">
-            <div class="bg-black/40 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
+            <div class="bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
                 <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
                 <span class="text-xs font-semibold tracking-wider text-purple-200 uppercase" x-text="genreFilter || 'Radio'"></span>
             </div>
-            <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1.5 backdrop-blur-sm transition-all shadow-sm z-20">
+            <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1 backdrop-blur-sm transition-all shadow-sm z-20">
                 <span class="material-symbols-outlined text-[1rem]">close</span>
             </button>
         </div>
         
         <!-- Track Info -->
-        <div class="relative z-10 flex items-center gap-4 mt-2">
-            <div class="w-14 h-14 shrink-0 rounded-2xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
+        <div class="relative z-10 flex items-center gap-3 mt-1.5">
+            <div class="w-10 h-10 shrink-0 rounded-xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
                 <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}}"></div>
-                <span class="material-symbols-outlined text-2xl text-white relative z-10">album</span>
+                <span class="material-symbols-outlined text-lg text-white relative z-10">album</span>
             </div>
             <div class="flex-grow min-w-0 flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
                 <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
@@ -1301,7 +1301,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
         </div>
 
         <!-- Queue / History Panel (toggled by the queue_music button below) -->
-        <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-2 flex flex-col" style="display: none;">
+        <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-1.5 flex flex-col" style="display: none;">
             <!-- Tabs: Queue vs History -->
             <div class="flex items-center border-b border-white/10 bg-black/20 text-xs px-2 py-1 gap-1 shrink-0">
                 <button type="button" @click="activeTab = 'queue'" class="px-2.5 py-0.5 rounded-md font-medium transition-colors" :class="activeTab === 'queue' ? 'bg-purple-600/40 text-purple-200 border border-purple-400/30' : 'text-white/60 hover:text-white'">
@@ -1346,7 +1346,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
         </div>
 
         <!-- Progress Bar & Time -->
-        <div class="relative z-10 w-full mt-2">
+        <div class="relative z-10 w-full mt-1.5">
             <div class="w-full relative group/progress cursor-pointer py-1" @click="handleSeek($event)">
                 <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner relative">
                     <div class="h-full bg-gradient-to-r from-purple-400 to-fuchsia-400 rounded-full shadow-[0_0_10px_rgba(216,180,254,0.5)] transition-all duration-100" :style="'width: ' + progress + '%'"></div>
@@ -1360,7 +1360,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
 
         <!-- Controls -->
         <div class="relative z-10 flex items-center justify-between px-1 mt-1">
-            <button @click="toggleShuffle()" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isShuffle, 'text-white/50 hover:text-white': !isShuffle}}" title="Shuffle">
+            <button @click="toggleShuffle()" class="transition-colors p-1 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isShuffle, 'text-white/50 hover:text-white': !isShuffle}}" title="Shuffle">
                 <span class="material-symbols-outlined text-lg">shuffle</span>
             </button>
             
@@ -1373,24 +1373,24 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
             </div>
             
             <div class="flex items-center gap-2">
-                <button @click="prevTrack()" class="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                <button @click="prevTrack()" class="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
                     <span class="material-symbols-outlined text-base">skip_previous</span>
                 </button>
                 
-                <button @click="playPause()" class="w-10 h-10 rounded-2xl bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-lg transition-all active:scale-95" :disabled="!currentTrack">
-                    <span class="material-symbols-outlined text-xl" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+                <button @click="playPause()" class="w-9 h-9 rounded-2xl bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-lg transition-all active:scale-95" :disabled="!currentTrack">
+                    <span class="material-symbols-outlined text-lg" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
                 </button>
                 
-                <button @click="nextTrack()" class="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
+                <button @click="nextTrack()" class="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
                     <span class="material-symbols-outlined text-base">skip_next</span>
                 </button>
             </div>
             
-            <button @click="toggleRepeat()" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isRepeat, 'text-white/50 hover:text-white': !isRepeat}}" title="Repeat">
+            <button @click="toggleRepeat()" class="transition-colors p-1 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': isRepeat, 'text-white/50 hover:text-white': !isRepeat}}" title="Repeat">
                 <span class="material-symbols-outlined text-lg">repeat</span>
             </button>
 
-            <button @click="showQueue = !showQueue" class="transition-colors p-1.5 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': showQueue, 'text-white/50 hover:text-white': !showQueue}}" title="Queue">
+            <button @click="showQueue = !showQueue" class="transition-colors p-1 rounded-lg" :class="{{'text-purple-300 font-bold bg-white/5': showQueue, 'text-white/50 hover:text-white': !showQueue}}" title="Queue">
                 <span class="material-symbols-outlined text-lg">queue_music</span>
             </button>
         </div>
@@ -1408,11 +1408,11 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
     query = config.get("query", "") or title
 
     return f"""
-    <div id="{widget_id}" class="widget-container col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col h-[456px] group" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)}, {json_escape(candidates)}, {json_escape(query)})">
+    <div id="{widget_id}" class="widget-container youtube-player col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col group" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)}, {json_escape(candidates)}, {json_escape(query)})">
         <!-- Title Bar -->
-        <div class="flex items-center justify-between bg-black/30 p-3 border-b border-white/10 relative z-20">
-            <div class="flex items-center gap-2">
-                <span class="text-xl text-red-500">📺</span>
+        <div class="flex items-center justify-between bg-black/30 px-3 py-1.5 border-b border-white/10 relative z-20">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="text-base text-red-500">📺</span>
                 <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]" x-text="title"></h3>
                 <span x-show="isLoading" class="text-xs text-slate-400 italic animate-pulse">Resolving stream...</span>
             </div>
@@ -1420,8 +1420,10 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
                 <span class="material-symbols-outlined text-[1.2rem]">close</span>
             </button>
         </div>
-        <!-- Video Embed -->
-        <div class="w-full flex-grow bg-black relative flex items-center justify-center">
+        <!-- Video Embed: 16:9 area sized by the grid column width; the slim
+             title bar rides on top, so the widget tracks the video, not a
+             fixed pixel height (exempted from the generic max-height cap). -->
+        <div class="w-full aspect-video bg-black relative flex items-center justify-center">
             <!-- Loading state overlay -->
             <div x-show="isLoading" class="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center z-10">
                 <span class="material-symbols-outlined text-4xl text-purple-400 animate-spin mb-2">sync</span>

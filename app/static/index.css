@@ -311,6 +311,14 @@ body::after {
     overflow-y: auto;
     max-height: 440px;
 }
+/* The video player's height is driven by the 16:9 embed area (aspect-video +
+   a slim title bar), so it already scales with its column width. The generic
+   540px cap above would letterbox it on wide columns — exempt it. */
+.dashboard-grid > .widget-container.youtube-player:not(.is-resizing):not([style*="height"]) {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+}
 
 /* ─── Feed-Aging Progressive Compression ────────────────────────── */
 /* As cards age down the feed, older cards compress so 4-8+ boxes fit on screen. */

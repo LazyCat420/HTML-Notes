@@ -1024,6 +1024,8 @@ document.addEventListener('alpine:init', () => {
         activeTab: 'queue',
         recentHistory: [],
         lastLoggedTrackId: null,
+        // Next-track cache warmer (see prefetchUpcoming). One 30s timer max.
+        prefetchTimer: null,
 
         get currentTrack() {
             if (this.currentIndex >= 0 && this.currentIndex < this.queue.length) {
@@ -1492,6 +1494,31 @@ document.addEventListener('alpine:init', () => {
         // gets its own full set of retries.
         notePlaybackStarted() {
             this.deadInARow = 0;
+            // Track N just started: warm the stream-info cache for N+1 now,
+            // and for N+2 too if N is still playing 30s later. The GET only
+            // primes the music service's 5h extraction cache — the reply is
+            // discarded and every error is swallowed, so playback is never
+            // touched.
+            this.prefetchUpcoming(1);
+            clearTimeout(this.prefetchTimer);
+            this.prefetchTimer = setTimeout(() => {
+                this.prefetchTimer = null;
+                this.prefetchUpcoming(2);
+            }, 30000);
+        },
+
+        // Fire-and-forget prefetch of the upcoming tracks' stream-info. Pure
+        // cache warming on the music service; failures are expected (offline
+        // service, dead id, aborted page) and silently ignored by design.
+        prefetchUpcoming(depth) {
+            try {
+                for (let n = 1; n <= depth; n++) {
+                    const t = this.queue[this.currentIndex + n];
+                    if (!t || !t.isYoutube || !t.id) continue;
+                    fetch(`${this.base}/api/youtube/stream-info/${encodeURIComponent(t.id)}`)
+                        .catch(() => {});
+                }
+            } catch (e) { /* never let prefetch throw into the audio path */ }
         },
 
         recordPlayHistory(track) {
