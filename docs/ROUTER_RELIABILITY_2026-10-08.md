@@ -56,3 +56,20 @@ searches the user's ask whenever the ask names the spec's league. Verified
 live: the question returns "Winner Max Verstappen won the 2026 Bahrain Grand
 Prix" in 15.3s. The shared-runtime agent loop and its post-tool text forwarding
 were verified healthy (direct gateway repro streamed the full answer).
+
+## Thumbs feedback + provisional seed (2026-10-08, evening wave)
+
+- **Thumbs up/down** in the mini music player (`2b93c90`): one click rates the
+  ARTIST on music-player (`POST /api/radio/preference`, plus add-node on
+  like) and the TRACK on wallgarden (`PUT :8007/sync/global` ratings map,
+  exact extension payload shape, LWW merge). Persisted per artist in
+  localStorage `hn_music_prefs`; fire-and-forget, never touches playback.
+- **Provisional seed** (`d57b787` music-player / `dda0e48` html-notes): the
+  fast-first seed suppressed the artist-mix failover — "play GWAR" yielded 2
+  songs and stopped. The seed event now carries `provisional: true`; the
+  widget starts playback on it but only a real discovery batch sets
+  gotTracks, so a failed genre pipeline still fails over. Verified: GWAR
+  genre stream = seed@0.3s(provisional) -> error; artist mix = 100 tracks.
+- All three feed endpoints verified live: preference save/readback,
+  sync/global write/readback (tombstone cleanup works), thumbs rendered in
+  the deployed widget.
