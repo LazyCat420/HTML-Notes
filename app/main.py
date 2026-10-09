@@ -1424,6 +1424,10 @@ MUSIC_FILLER_WORDS = {
     "a", "an", "the", "some", "any", "to", "on", "for", "with", "in", "at", "of", "by",
     # Conversational filler
     "please", "now", "here", "thanks", "thank", "you", "would", "like", "want", "need", "can", "could", "me", "us", "hey", "hi",
+    # Pronouns / verbs from keywordless asks ("I want smooth jazz", "listen to
+    # reggae"). No artist or genre is a bare "i"/"listen", so filtering them is
+    # safe — but "i" alone must never survive as the genre.
+    "i", "im", "ive", "wanna", "listen", "listening", "hear", "it", "that", "this",
     # Music/widget descriptors that aren't genres
     "widget", "player", "music", "radio", "song", "songs", "audio", "track", "tracks", "tune", "tunes", "playlist", "station",
 }

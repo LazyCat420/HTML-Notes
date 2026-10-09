@@ -472,11 +472,26 @@ class RuntimeChatAdapter:
                         "run_id": active_run_id,
                     }
 
+        except asyncio.CancelledError:
+            # The BROWSER hung up (user typed a new message, navigated, or the
+            # client aborted the SSE request) — not a runtime outage. In
+            # Python 3.8+ CancelledError is BaseException, but httpx can also
+            # surface client aborts as plain exceptions with empty str()
+            # ("peer closed connection..."); either way re-raising here means
+            # the SSE generator dies quietly instead of lying to the user with
+            # "Shared agent runtime unavailable" for a healthy runtime.
+            logger.info(
+                "[RUNTIME ADAPTER] Turn aborted by client (cancelled) — run %s",
+                active_run_id,
+            )
+            raise
+
         except Exception as exc:
-            logger.error(f"[RUNTIME ADAPTER] Error in agent runtime stream: {exc}")
+            err_text = str(exc).strip()
+            logger.error(f"[RUNTIME ADAPTER] Error in agent runtime stream: {type(exc).__name__}: {err_text}")
             yield {
                 "type": "error",
-                "message": f"Shared agent runtime unavailable: {exc}",
+                "message": f"Shared agent runtime unavailable: {err_text or type(exc).__name__}",
                 "code": getattr(exc, "code", "RUNTIME_UNAVAILABLE"),
             }
             yield {
@@ -489,8 +504,17 @@ class RuntimeChatAdapter:
             if active_run_id and not terminal:
                 try:
                     await client.cancel_run(active_run_id)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
-                    logger.warning("Could not cancel interrupted runtime run %s", active_run_id)
+                    # The run may have already finalized server-side (the
+                    # 2026-10-08 probe hit this: finalize landed between the
+                    # client abort and the cancel) — that is expected, not a
+                    # lost run. Log at info, not warning.
+                    logger.info(
+                        "Cancel for interrupted runtime run %s not accepted "
+                        "(likely already finalized)", active_run_id,
+                    )
             if event_stream is not None and hasattr(event_stream, "aclose"):
                 await event_stream.aclose()
 

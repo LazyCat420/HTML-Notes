@@ -26,6 +26,12 @@ sys.modules[__name__].__dict__.update(main.__dict__)
 #: budget a router can afford (550 -> content_len 0, finish=length).
 NO_THINKING = {"enable_thinking": False, "thinking": False}
 
+#: url -> monotonic-ish wall time of its last timeout/connection failure.
+#: Endpoints with a failure inside the demote window sort last (see the sticky
+#: failover note in fast_llm_json). Deliberately module-level, like _fast_model.
+import time as _time
+_ENDPOINT_LAST_FAILURE: dict = {}
+
 
 async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[dict]:
     """One tool-free completion against the local vLLM, parsed as JSON.
@@ -49,6 +55,13 @@ async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[di
     for u in list(configured_urls) + default_pool:
         if u and u not in urls:
             urls.append(u)
+
+    # Sticky failover: a box that just ReadTimeout'd (dev workstation under a
+    # build, Jetson mid-quantize) demotes itself for 60s so it stops costing
+    # every caller its 20s timeout first. Measured 2026-10-08: 10.0.0.141 went
+    # ReadTimeout mid-day while 10.0.0.30 served the same prompt in 0.4-0.9s.
+    now = time.time()
+    urls.sort(key=lambda u: _ENDPOINT_LAST_FAILURE.get(u, 0.0) > now - 60)
 
     # The caller's budget is the budget. This used to be max(max_tokens, 4096)
     # because a reasoning trace left no room for content; with the trace off, 550
@@ -119,6 +132,11 @@ async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[di
         except Exception as e:
             if target_url in _fast_model:
                 _fast_model[target_url] = None
+            # Timeouts and dropped connections are load symptoms worth
+            # demoting for; an HTTP 200 with garbage is not (handled above).
+            if isinstance(e, (httpx.ReadTimeout, httpx.ConnectTimeout,
+                              httpx.ConnectError, httpx.RemoteProtocolError)):
+                _ENDPOINT_LAST_FAILURE[target_url] = _time.time()
             logger.warning(f"fast_llm_json failed on {target_url}: {type(e).__name__}: {e}")
             continue
 

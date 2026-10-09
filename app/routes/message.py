@@ -1298,9 +1298,28 @@ async def send_message(req: MessageRequest):
                 # 3. Music — asking for a music widget always means "start playing
                 # it", so autoplay unconditionally instead of requiring the word
                 # "play" in the request.
+                # "play smooth jazz" / "listen to some reggae" name NO medium word,
+                # yet are unambiguous music asks. Requiring \b(music|player|radio)\b
+                # routed them to the agent, which measured at 105s+ to first widget
+                # (2026-10-08 probe) and dies when the runtime hiccups. A play-verb
+                # plus a residual genre is deterministic enough to build directly.
                 has_custom_url = "http" in text_clean or "www" in text_clean
-                if re.search(r'\b(music|player|radio)\b', text_clean) and not has_custom_url:
-                    genre = extract_music_genre(req.message) or "lofi"
+                genre_candidate = extract_music_genre(req.message)
+                # Residuals that are real asks but NOT music — "play the news",
+                # "play a podcast" must never become a genre radio widget.
+                _NON_MUSIC_SUBJECTS = {
+                    "news", "video", "videos", "podcast", "podcasts", "weather",
+                    "movie", "movies", "trailer", "trailers", "sports", "game",
+                    "games", "stream", "show", "shows", "episode", "interview",
+                }
+                _play_verb = re.search(
+                    r'\b(play|plays|playing|listen|listening|hear|put on)\b', text_clean)
+                _medium_word = re.search(r'\b(music|player|radio)\b', text_clean)
+                if (not has_custom_url
+                        and (_medium_word
+                             or (_play_verb and genre_candidate
+                                 and genre_candidate not in _NON_MUSIC_SUBJECTS))):
+                    genre = genre_candidate or "lofi"
                     # "X music/radio" phrasing is genre-shaped ("jungle music"
                     # means the genre, not the band Jungle) — default the mix
                     # pipeline to genre. Named acts come through the LLM router,
