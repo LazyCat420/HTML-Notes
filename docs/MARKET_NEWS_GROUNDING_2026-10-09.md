@@ -66,3 +66,34 @@ path of `build_news_card`:
 - `finnews` keyword providers still interpolate the query verbatim — a
   subject ask ("news about nvidia earnings") is fine, but garbage-in for
   nonsense queries is unchanged.
+
+## 2026-10-09 (later): Article bodies + recency — trading-client parity
+
+Comparative audit across trading-client (the quality bar), prism-service's
+agentic harness, and lazy-agent-service found the two decisive deltas:
+
+- **trading-client's chat** (`app/services/web_search.py`,
+  `app/chat/chat_context.py`) ranks a MongoDB corpus of pre-scraped
+  articles with quality scores and 48h/30-day freshness tiers, and its
+  worker agents enqueue per-ticker scrapes so articles carry full bodies.
+- **prism agents** run a tool loop: search, then `read_url` the article
+  before writing. They never summarise a headline.
+- **html-notes** was the only one writing summaries from provider
+  snippets (~400–600 chars; finnhub's are often one line), unranked by
+  recency.
+
+Fix (commit `33b9a03`): finance cards now
+1. rank watchlist-badged items first, then dated items newest-first,
+   undated last (`_rank_finance_items`); and
+2. scrape full article bodies for the top 8 sources in ONE
+   `/scrape/batch` call (12s cap, fail-open to snippets) and feed up to
+   1800 chars per source to the editor (`_attach_article_bodies`).
+
+Note: `finnhub.io/api/news?id=…` URLs are fine — they 302 to the real
+publisher; they were never the quality problem. General top-story cards
+stay snippet-only by design (ten sources; scraping was the old 14s path).
+
+Verified live post-deploy: `article bodies scraped for 6/8 sources`,
+gate kept 16/22, summaries cite body-level facts ($2.5T September market
+cap, $1.5T of it tech; PJM wholesale power +41%). Tests: 161 news/finance
+tests green.
