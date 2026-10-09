@@ -1494,16 +1494,25 @@ document.addEventListener('alpine:init', () => {
         // gets its own full set of retries.
         notePlaybackStarted() {
             this.deadInARow = 0;
-            // Track N just started: warm the stream-info cache for N+1 now,
-            // and for N+2 too if N is still playing 30s later. The GET only
-            // primes the music service's 5h extraction cache — the reply is
-            // discarded and every error is swallowed, so playback is never
-            // touched.
+            // Track N just started: warm the stream-info cache for the next
+            // five queue entries — N+1 immediately (the most likely next
+            // click), then N+2..N+5 staggered so a user jumping to any
+            // nearby song still hits a warm cache. Each GET only primes the
+            // music service's 5h extraction cache — replies are discarded
+            // and every error is swallowed, so playback is never touched.
             this.prefetchUpcoming(1);
+            (this.prefetchTimers || []).forEach(clearTimeout);
             clearTimeout(this.prefetchTimer);
+            // Stagger 2-5 over ~45s: scraper-service extractions cost 8-15s
+            // each, and firing five at once would queue them against
+            // whatever extraction the player itself needs right now.
+            const delays = [15000, 25000, 35000, 45000];
+            this.prefetchTimers = delays.map((ms, i) => setTimeout(() => {
+                this.prefetchUpcoming(2 + i);
+            }, ms));
             this.prefetchTimer = setTimeout(() => {
                 this.prefetchTimer = null;
-                this.prefetchUpcoming(2);
+                this.prefetchUpcoming(1);
             }, 30000);
         },
 
