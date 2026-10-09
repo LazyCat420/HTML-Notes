@@ -443,6 +443,54 @@ _SECTION_LABEL = {
 }
 
 
+def _rank_finance_items(items: list) -> list:
+    """Watchlist badge first (stable), then dated items newest-first, undated last.
+
+    Dates are normalised to "YYYY-MM-DD HH:MM …" by _normalise_news_item, so
+    lexicographic order is chronological order.
+    """
+    watch = [it for it in items if (it.get("badge") or "") == "Your watchlist"]
+    rest = [it for it in items if (it.get("badge") or "") != "Your watchlist"]
+    dated = sorted([it for it in rest if it.get("date")],
+                   key=lambda it: it["date"], reverse=True)
+    undated = [it for it in rest if not it.get("date")]
+    return watch + dated + undated
+
+
+async def _attach_article_bodies(items: list, max_items: int = 8,
+                                 max_chars: int = 2500) -> list:
+    """Fill `body` for the top-N items via scraper-service /scrape/batch.
+
+    One batched call, 12s hard cap, fail-open: on any failure every item keeps
+    its provider snippet and the card is exactly as good as before. Results
+    come back in job order (asyncio.gather), so positions match.
+    """
+    targets = [it for it in items if it.get("url")][:max_items]
+    if not targets:
+        return items
+    jobs = [{"url": it["url"], "engine": "auto",
+             "options": {"max_chars": max_chars}} for it in targets]
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=5.0)) as client:
+            resp = await client.post(
+                f"{SCRAPER_SERVICE_URL}/scrape/batch",
+                json={"jobs": jobs, "max_concurrency": min(5, len(jobs))})
+            if resp.status_code != 200:
+                logger.info(f"[NEWS] article body scrape HTTP {resp.status_code}")
+                return items
+            results = (resp.json() or {}).get("results") or []
+    except Exception as e:
+        logger.info(f"[NEWS] article body scrape failed: {e}")
+        return items
+    got = 0
+    for it, r in zip(targets, results):
+        if isinstance(r, dict) and r.get("success") and r.get("content"):
+            it["body"] = str(r["content"])[:max_chars]
+            got += 1
+    logger.info(f"[NEWS] article bodies scraped for {got}/{len(targets)} sources")
+    return items
+
+
 async def build_news_card(message: str, *, finance: bool = False,
                           general: Optional[bool] = None,
                           depth: str = "card",
@@ -628,6 +676,22 @@ async def build_news_card(message: str, *, finance: bool = False,
     except Exception as e:
         logger.warning(f"[NEWS] content quality ranking failed, failing open: {e}")
 
+    # 6c. FINANCE-CARD ENRICHMENT — the two deltas that trading-client's chat
+    #     (the good one) has and this card lacked:
+    #     a. RECENCY ORDER. Providers return their own ordering; without a
+    #        date sort a two-day-old SeekingAlpha promo ranks level with
+    #        this morning's tape. Watchlist items stay first (the badge is
+    #        the point), then dated items newest-first, undated last.
+    #     b. ARTICLE BODIES. The editor wrote 2-3 sentence summaries from
+    #        ~400-600 char provider snippets — finnhub summaries are often
+    #        one line — so the card paraphrased headlines. trading-client
+    #        and the prism agents both read the actual article before
+    #        writing. Scrape the top 8 in ONE /scrape/batch call (12s cap,
+    #        fail-open to snippets) and give the editor real text.
+    if finance:
+        items = _rank_finance_items(items)
+        items = await _attach_article_bodies(items)
+
     if finance:
         title = ("Market News" if general else f"Market News: {display}").title()[:60]
     elif general:
@@ -680,9 +744,10 @@ async def build_news_card(message: str, *, finance: bool = False,
         return out
 
 
-    # 7. NO SCRAPING on the card path. The old stock builder read six article
-    #    pages (up to 14s) and the snippets the providers already supply are
-    #    what the summariser needs. Depth asks take the brief path instead.
+    # 7. ARTICLE BODIES — finance cards scrape the top sources (step 6c) so the
+    #    editor writes from real article text, matching trading-client's chat.
+    #    General top-story cards stay snippet-only: ten sources, and the
+    #    snippets the providers already supply are what the summariser needs.
 
     # 8. ONE summariser call. The grounding and concreteness rules bind EVERY
     #    field — the previous prompt scoped all of them to `summary` and left
@@ -700,7 +765,7 @@ async def build_news_card(message: str, *, finance: bool = False,
             head += f" [tickers: {tickers}]"
         if general and not finance and it.get("category"):
             head += f" [section: {_SECTION_LABEL.get(it['category'], it['category'])}]"
-        body = (it.get("snippet") or "")[:600]
+        body = (it.get("body") or it.get("snippet") or "")[:1800]
         source_lines.append(head + ("\n" + body if body else ""))
     editor = "financial news editor" if finance else "news editor"
     llm_fn = getattr(main, "fast_llm_json", None) or fast_llm_json
@@ -727,8 +792,10 @@ async def build_news_card(message: str, *, finance: bool = False,
         '("markets are focused on catalysts and rotation", "several developments '
         'are unfolding") is a FAILURE - it must name at least one specific story '
         "from the sources.\n"
-        "- Base each summary ONLY on that source's text. If a source is only a "
-        "headline, keep its summary to a faithful one-line restatement.\n"
+        "- Base each summary ONLY on that source's text. Sources marked with "
+        "full article text carry it after the headline — summarise from that. "
+        "If a source is only a headline, keep its summary to a faithful "
+        "one-line restatement.\n"
         + ((  # A general ask (top stories OR a general market brief) has no
             # topic to be off, so the subject-relevance omit rule below does
             # not apply — and applied anyway it cost stories: the owner's card

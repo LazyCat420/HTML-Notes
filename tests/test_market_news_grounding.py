@@ -101,3 +101,54 @@ async def test_personalization_fails_open_when_trading_service_down(fake_provide
     monkeypatch.setattr(finance, "trading_service_tickers", dead_tickers)
     cfg = await cb.build_news_card("stock market news", finance=True, general=True)
     assert cfg["items"], "a down trading-service must not empty the card"
+
+
+def test_rank_finance_items_recency_and_watchlist():
+    """Watchlist first, then dated newest-first, undated last."""
+    from app.config_builders import _rank_finance_items
+    items = [
+        {"title": "old", "date": "2026-10-07 10:00 UTC"},
+        {"title": "watch", "date": "2026-10-05 09:00 UTC", "badge": "Your watchlist"},
+        {"title": "undated"},
+        {"title": "fresh", "date": "2026-10-09 09:30 UTC"},
+    ]
+    out = _rank_finance_items(items)
+    assert [it["title"] for it in out] == ["watch", "fresh", "old", "undated"]
+
+
+@pytest.mark.asyncio
+async def test_attach_article_bodies_fills_body_fail_open(monkeypatch):
+    """Bodies attach in job order; on HTTP failure every item keeps its snippet."""
+    from app.config_builders import _attach_article_bodies
+    items = [{"title": "a", "url": "https://x.example/a"},
+             {"title": "b", "url": "https://finnhub.io/api/news?id=z"}]
+
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"results": [
+                {"url": "https://x.example/a", "success": True, "content": "FULL BODY TEXT " * 300},
+                {"url": "https://finnhub.io/api/news?id=z", "success": False, "error": "timeout"},
+            ]}
+
+    class FakeClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None):
+            assert url.endswith("/scrape/batch")
+            assert len(json["jobs"]) == 2
+            return FakeResp()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+    out = await _attach_article_bodies([dict(it) for it in items])
+    assert out[0]["body"].startswith("FULL BODY TEXT")
+    assert "body" not in out[1]
+
+    class DeadClient(FakeClient):
+        async def post(self, url, json=None):
+            class R: status_code = 500
+            return R()
+    monkeypatch.setattr("httpx.AsyncClient", lambda **kw: DeadClient())
+    out2 = await _attach_article_bodies([dict(it) for it in items])
+    assert "body" not in out2[0]
