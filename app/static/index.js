@@ -3190,6 +3190,18 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <h4 class="text-base font-bold text-white truncate leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></h4>
                                 <p class="text-xs text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
                             </div>
+                            <!-- Thumbs feedback: rates the ARTIST on the music-player radio and
+                                 the TRACK on wallgarden in one click. syncThumbState re-runs on
+                                 every track change via x-effect. -->
+                            <div class="relative z-10 flex items-center gap-0.5 shrink-0" x-effect="syncThumbState(currentTrack)">
+                                <button @click="sendThumb('up')" title="Like this artist" class="p-1 rounded-lg transition-colors" :class="thumbState === 'up' ? 'text-emerald-400 bg-white/10' : 'text-white/40 hover:text-white'">
+                                    <span class="material-symbols-outlined text-base">thumb_up</span>
+                                </button>
+                                <button @click="sendThumb('down')" title="Dislike this artist" class="p-1 rounded-lg transition-colors" :class="thumbState === 'down' ? 'text-red-400 bg-white/10' : 'text-white/40 hover:text-white'">
+                                    <span class="material-symbols-outlined text-base">thumb_down</span>
+                                </button>
+                                <span x-show="thumbStatus" x-text="thumbStatus" class="text-[10px] text-purple-300/80 whitespace-nowrap max-w-[80px] truncate" style="display: none;"></span>
+                            </div>
                         </div>
 
                         <!-- Queue / History Panel (toggled by the queue_music button below) -->

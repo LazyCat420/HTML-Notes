@@ -1026,6 +1026,11 @@ document.addEventListener('alpine:init', () => {
         lastLoggedTrackId: null,
         // Next-track cache warmer (see prefetchUpcoming). One 30s timer max.
         prefetchTimer: null,
+        // Thumbs feedback for the CURRENT ARTIST ('up' | 'down' | null),
+        // persisted per artist in localStorage 'hn_music_prefs'.
+        thumbState: null,
+        thumbStatus: '',
+        thumbStatusTimer: null,
 
         get currentTrack() {
             if (this.currentIndex >= 0 && this.currentIndex < this.queue.length) {
@@ -1619,6 +1624,110 @@ document.addEventListener('alpine:init', () => {
                 const t = this.asTrack(track);
                 this.queue.splice(this.currentIndex + 1, 0, t);
                 this.playAt(this.currentIndex + 1);
+            }
+        },
+
+        // ---- Thumbs feedback (artist -> music-player, video -> wallgarden) ----
+
+        // Re-run whenever the current track changes (x-effect on the thumb
+        // buttons): load the artist's persisted preference and reset the
+        // transient status line.
+        syncThumbState(track) {
+            this.thumbState = this.loadThumbPref(track && track.artist);
+            this.thumbStatus = '';
+        },
+
+        loadThumbPref(artist) {
+            if (!artist) return null;
+            try {
+                const prefs = JSON.parse(localStorage.getItem('hn_music_prefs') || '{}');
+                return prefs[artist] || null;
+            } catch (e) {
+                return null;
+            }
+        },
+
+        persistThumbPref(artist, sentiment) {
+            try {
+                const prefs = JSON.parse(localStorage.getItem('hn_music_prefs') || '{}');
+                if (sentiment) prefs[artist] = sentiment;
+                else delete prefs[artist];
+                localStorage.setItem('hn_music_prefs', JSON.stringify(prefs));
+            } catch (e) {}
+        },
+
+        showThumbStatus(text) {
+            this.thumbStatus = text;
+            clearTimeout(this.thumbStatusTimer);
+            this.thumbStatusTimer = setTimeout(() => { this.thumbStatus = ''; }, 2500);
+        },
+
+        // Optimistic: update UI + storage first, then fire-and-forget the two
+        // feeds. Every failure is swallowed — feedback must never disturb
+        // playback. Thumbs act on the ARTIST for music-player and on the
+        // TRACK (video) for wallgarden; one click sends both.
+        sendThumb(sentiment) {
+            const track = this.currentTrack;
+            if (!track) return;
+            const artist = track.artist || '';
+
+            this.thumbState = this.thumbState === sentiment ? null : sentiment;
+            if (artist) this.persistThumbPref(artist, this.thumbState);
+            this.showThumbStatus(
+                this.thumbState === 'up' ? 'Saved — thanks!'
+                : this.thumbState === 'down' ? 'Noted — less of that.'
+                : 'Rating cleared.'
+            );
+
+            if (this.thumbState === null) return; // toggled off: UI-only
+
+            const sentimentWord = sentiment === 'up' ? 'liked' : 'disliked';
+
+            // Music-player feed: preference on the artist, and on a thumbs-up
+            // also pin the artist into the radio graph.
+            if (artist) {
+                const prefBody = {
+                    genre: this.genreFilter,
+                    artist,
+                    sentiment: sentimentWord,
+                };
+                fetch(`${this.base}/api/radio/preference`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(prefBody),
+                }).catch(() => {});
+                if (sentiment === 'up') {
+                    fetch(`${this.base}/api/artists/add-node`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: artist,
+                            genre: this.genreFilter,
+                            source: 'manual_add',
+                        }),
+                    }).catch(() => {});
+                }
+            }
+
+            // Wallgarden feed: rate the video. Only the ratings key — the
+            // server merges fields (last write wins per entry), exactly the
+            // shape the wallgarden extension writes for LIKE/DISLIKE.
+            if (track.isYoutube && track.id) {
+                fetch('http://10.0.0.16:8007/sync/global', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        fields: {
+                            ratings: {
+                                [track.id]: {
+                                    r: sentiment === 'up' ? 5 : -5,
+                                    t: Date.now(),
+                                    v: { title: track.title, channelName: artist },
+                                },
+                            },
+                        },
+                    }),
+                }).catch(() => {});
             }
         },
 
