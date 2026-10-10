@@ -54,7 +54,7 @@ def test_range_from_message():
 
 
 # ── Builder (feeds mocked) ───────────────────────────────────────────────────
-def test_build_trending_compare_uses_feed_symbols(monkeypatch):
+def test_build_trending_compare_uses_feed_symbols(patch_server):
     feed = ["AMC", "IREN", "ACHR", "NBIS", "BABA", "CIFR", "HUT", "CLSK"]
     seen = {}
 
@@ -67,8 +67,8 @@ def test_build_trending_compare_uses_feed_symbols(monkeypatch):
         return {"title": "x", "compare_symbols": list(symbols), "range": range_,
                 "chart": {}}
 
-    monkeypatch.setattr(m, "_trending_symbols", fake_feed)
-    monkeypatch.setattr(m, "build_stock_compare_config", fake_compare)
+    patch_server("_trending_symbols",fake_feed)
+    patch_server("build_stock_compare_config",fake_compare)
 
     cfg = asyncio.run(m.build_trending_compare_config(
         "compare the top trending stocks this last month. compare the top 5 on a chart."))
@@ -79,10 +79,10 @@ def test_build_trending_compare_uses_feed_symbols(monkeypatch):
     assert cfg["title"].startswith("Top 5 trending stocks")
 
 
-def test_build_trending_compare_none_when_feeds_down(monkeypatch):
+def test_build_trending_compare_none_when_feeds_down(patch_server):
     async def empty_feed(kind="trending", limit=10):
         return []
-    monkeypatch.setattr(m, "_trending_symbols", empty_feed)
+    patch_server("_trending_symbols",empty_feed)
     assert asyncio.run(m.build_trending_compare_config("top trending stocks")) is None
 
 
@@ -118,7 +118,7 @@ def _compare_stub(labels_by_sym):
     return fake_compare
 
 
-def test_build_trending_scopes_to_index_and_tags_provenance(monkeypatch):
+def test_build_trending_scopes_to_index_and_tags_provenance(patch_server):
     """'top 5 stocks in the s&p' keeps ONLY S&P members, in screener rank order,
     and tags provenance so a follow-up knows where the list came from."""
     members = frozenset({"DHR", "MMM", "MSCI", "AAPL", "NVDA"})
@@ -133,10 +133,10 @@ def test_build_trending_scopes_to_index_and_tags_provenance(monkeypatch):
         # A realistic day_gainers pool: mostly non-members (the old bug's junk).
         return ["CPHI", "VIVK", "DHR", "NBIS", "MMM", "CBRS", "MSCI", "AAPL"]
 
-    monkeypatch.setattr(m, "_index_constituents", fake_members)
-    monkeypatch.setattr(m, "_trending_symbols", fake_feed)
-    monkeypatch.setattr(m, "build_stock_compare_config",
-                        _compare_stub({"DHR": "DHR  +4.2%", "MMM": "MMM  +3.1%"}))
+    patch_server("_index_constituents",fake_members)
+    patch_server("_trending_symbols",fake_feed)
+    patch_server("build_stock_compare_config",
+_compare_stub({"DHR": "DHR  +4.2%", "MMM": "MMM  +3.1%"}))
 
     cfg = asyncio.run(m.build_trending_compare_config("top 5 stocks that were in the s&p"))
     assert cfg is not None
@@ -154,11 +154,11 @@ def test_build_trending_scopes_to_index_and_tags_provenance(monkeypatch):
     assert "DHR  +4.2%" in prov  # per-ticker move rides along for the follow-up
 
 
-def test_build_trending_unscoped_flags_unfiltered_provenance(monkeypatch):
+def test_build_trending_unscoped_flags_unfiltered_provenance(patch_server):
     async def fake_feed(kind="trending", limit=10):
         return ["CPHI", "VIVK", "NBIS", "DHR", "CBRS"]
-    monkeypatch.setattr(m, "_trending_symbols", fake_feed)
-    monkeypatch.setattr(m, "build_stock_compare_config", _compare_stub({}))
+    patch_server("_trending_symbols",fake_feed)
+    patch_server("build_stock_compare_config",_compare_stub({}))
 
     cfg = asyncio.run(m.build_trending_compare_config("top trending stocks"))
     assert cfg is not None
@@ -166,7 +166,7 @@ def test_build_trending_unscoped_flags_unfiltered_provenance(monkeypatch):
     assert cfg["title"].startswith("Top 5 trending stocks")
 
 
-def test_build_trending_degrades_when_index_filter_empties_pool(monkeypatch):
+def test_build_trending_degrades_when_index_filter_empties_pool(patch_server):
     """If none of the ranked names are members, don't dead-end — fall back to the
     unscoped feed and DROP the index scope from the title/provenance."""
     async def fake_members(name):
@@ -178,9 +178,9 @@ def test_build_trending_degrades_when_index_filter_empties_pool(monkeypatch):
         seen.append((kind, limit))
         return ["CPHI", "VIVK", "NBIS", "AMC"]  # zero members
 
-    monkeypatch.setattr(m, "_index_constituents", fake_members)
-    monkeypatch.setattr(m, "_trending_symbols", fake_feed)
-    monkeypatch.setattr(m, "build_stock_compare_config", _compare_stub({}))
+    patch_server("_index_constituents",fake_members)
+    patch_server("_trending_symbols",fake_feed)
+    patch_server("build_stock_compare_config",_compare_stub({}))
 
     cfg = asyncio.run(m.build_trending_compare_config("top s&p gainers today"))
     assert cfg is not None
@@ -190,7 +190,7 @@ def test_build_trending_degrades_when_index_filter_empties_pool(monkeypatch):
     assert "filtered to index members" not in cfg["provenance"]
 
 
-def test_widget_detail_appends_provenance(monkeypatch):
+def test_widget_detail_appends_provenance(patch_server):
     """The ledger gist carries provenance LAST so anaphora names aren't clipped."""
     detail = m._widget_detail({"answer": "Apple beat on earnings.",
                                "provenance": "tickers picked via S&P 500 gainers today"})
@@ -200,12 +200,12 @@ def test_widget_detail_appends_provenance(monkeypatch):
 
 
 # ── Router integration: a 'stock' classification still lands in discovery ────
-def test_router_stock_spec_reroutes_discovery_ask(monkeypatch):
+def test_router_stock_spec_reroutes_discovery_ask(patch_server):
     async def fake_trend_cfg(message):
         return {"title": "Top 5 trending stocks — 1mo % change",
                 "compare_symbols": ["AMC", "IREN", "ACHR", "NBIS", "BABA"],
                 "range": "1mo", "chart": {}}
-    monkeypatch.setattr(m, "build_trending_compare_config", fake_trend_cfg)
+    patch_server("build_trending_compare_config",fake_trend_cfg)
 
     out = asyncio.run(m.build_router_widget(
         {"type": "stock", "query": "top trending stocks"},
@@ -216,26 +216,26 @@ def test_router_stock_spec_reroutes_discovery_ask(monkeypatch):
     assert cfg["compare_symbols"][0] == "AMC"
 
 
-def test_router_stock_trending_type_builds_chart(monkeypatch):
+def test_router_stock_trending_type_builds_chart(patch_server):
     async def fake_trend_cfg(message):
         return {"title": "t", "compare_symbols": ["A", "B"], "range": "1d", "chart": {}}
-    monkeypatch.setattr(m, "build_trending_compare_config", fake_trend_cfg)
+    patch_server("build_trending_compare_config",fake_trend_cfg)
     out = asyncio.run(m.build_router_widget(
         {"type": "stock_trending", "query": "biggest gainers today"}, "sess-x",
         "biggest gainers today"))
     assert out and out[0] == "chart" and out[1] == "stock-trending"
 
 
-def test_router_explicit_tickers_beat_discovery(monkeypatch):
+def test_router_explicit_tickers_beat_discovery(patch_server):
     """'top performers: NVDA vs SPY' compares the user's tickers, not the feed."""
     async def fail_trend(message):
         raise AssertionError("discovery must not run when tickers are explicit")
-    monkeypatch.setattr(m, "build_trending_compare_config", fail_trend)
+    patch_server("build_trending_compare_config",fail_trend)
 
     async def fake_compare(symbols, range_="6mo"):
         return {"title": "x", "compare_symbols": list(symbols), "range": range_,
                 "chart": {}}
-    monkeypatch.setattr(m, "build_stock_compare_config", fake_compare)
+    patch_server("build_stock_compare_config",fake_compare)
 
     out = asyncio.run(m.build_router_widget(
         {"type": "stock", "query": "top performers: NVDA vs SPY"}, "sess-x",

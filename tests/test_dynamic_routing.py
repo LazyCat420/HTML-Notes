@@ -1,8 +1,17 @@
 """Tests for dynamic question routing, list restore precision, and interrogative matching."""
 import json
+import os
+
+# Own DB: collection imports run before any test, and other modules force-set
+# DATABASE_URL at import time (test_canvas_context.py) — without a seed this
+# module's request hit a DB with no chat_sessions table (500).
+os.environ.setdefault("DATABASE_URL", "data/test_notes_dynamic.db")
+
 import pytest
 from app import main as m
 from app import database
+
+database.init_db()
 
 
 def test_list_restore_re_precision():

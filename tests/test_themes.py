@@ -153,6 +153,8 @@ def test_pre_paint_theme_script_in_head():
 
 def test_system_prompt_teaches_the_settings_route():
     assert "APPEARANCE / theme" in m.SYSTEM_PROMPT if hasattr(m, "SYSTEM_PROMPT") else True
-    src = pathlib.Path(ROOT / "app/main.py").read_text()
+    # The system prompt moved from app/main.py into app/routes/message.py
+    # (see tests/_sources.py) — read it where it actually lives.
+    src = pathlib.Path(ROOT / "app/routes/message.py").read_text()
     assert "widget_type='settings'" in src
     assert "closest palette" in src.lower() or "CLOSEST palette" in src

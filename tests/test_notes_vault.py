@@ -13,12 +13,22 @@ _VAULT = tempfile.mkdtemp()
 os.environ["OBSIDIAN_VAULT_DIR"] = _VAULT
 
 from app import main as m
+from app.routes import notes as notes_routes
+from app import utils as app_utils
 from app.widgets.factory import generate_widget_html
 
 # main may have been imported (with the default vault) by an earlier test in the
-# suite, so config's env override wouldn't have taken. Force main's vault dir to
-# our temp dir directly — the endpoints read this module global.
-m.OBSIDIAN_VAULT_DIR = _VAULT
+# suite, so config's env override wouldn't have taken. main, routes.notes and
+# utils each snapshot main.__dict__ at import (the sys.modules hack), so the
+# override must land in every namespace that reads OBSIDIAN_VAULT_DIR.
+for _mod in (m, notes_routes, app_utils):
+    _mod.OBSIDIAN_VAULT_DIR = _VAULT
+
+# The vault endpoints moved from app.main to app.routes.notes; the api_notes_*
+# names were re-exported from neither, so tests import the handlers here.
+api_notes_save = notes_routes.api_notes_save
+api_notes_list = notes_routes.api_notes_list
+api_notes_load = notes_routes.api_notes_load
 
 
 def test_slug_is_filesystem_safe():
@@ -56,29 +66,29 @@ def test_parse_frontmatter_tolerates_no_block():
 @pytest.mark.asyncio
 async def test_save_list_load_and_upsert_preserves_created():
     body = "- [ ] milk\n- [x] eggs\n\n| a | b |\n|---|---|\n| 1 | 2 |"
-    r = await m.api_notes_save(m.SaveNoteRequest(title="Grocery Run", content=body, tags=["shopping"]))
+    r = await api_notes_save(m.SaveNoteRequest(title="Grocery Run", content=body, tags=["shopping"]))
     assert r["ok"] and r["slug"] == "grocery-run" and r["file"] == "grocery-run.md"
 
-    lst = await m.api_notes_list()
+    lst = await api_notes_list()
     row = next(n for n in lst["notes"] if n["slug"] == "grocery-run")
     assert row["title"] == "Grocery Run" and row["tags"] == ["shopping"]
 
-    loaded = await m.api_notes_load(slug="grocery-run")
+    loaded = await api_notes_load(slug="grocery-run")
     assert loaded["content"] == body and loaded["tags"] == ["shopping"]
 
     # Re-save preserves created, bumps nothing that would lose the body.
     await asyncio.sleep(0.01)
-    r2 = await m.api_notes_save(m.SaveNoteRequest(title="Grocery Run", content="new body",
+    r2 = await api_notes_save(m.SaveNoteRequest(title="Grocery Run", content="new body",
                                                   tags=["shopping", "done"], slug="grocery-run"))
     assert r2["created"] == r["created"]
-    reloaded = await m.api_notes_load(slug="grocery-run")
+    reloaded = await api_notes_load(slug="grocery-run")
     assert reloaded["content"] == "new body" and set(reloaded["tags"]) == {"shopping", "done"}
 
 
 @pytest.mark.asyncio
 async def test_save_rejects_traversal_and_writes_inside_vault():
     import pathlib
-    r = await m.api_notes_save(m.SaveNoteRequest(title="../../escape", content="x"))
+    r = await api_notes_save(m.SaveNoteRequest(title="../../escape", content="x"))
     # slug sanitizes to a safe name; the file lands in the vault, not outside.
     p = pathlib.Path(_VAULT) / f"{r['slug']}.md"
     assert p.exists()
@@ -89,7 +99,7 @@ async def test_save_rejects_traversal_and_writes_inside_vault():
 async def test_load_missing_note_404s():
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as ei:
-        await m.api_notes_load(slug="does-not-exist-xyz")
+        await api_notes_load(slug="does-not-exist-xyz")
     assert ei.value.status_code == 404
 
 

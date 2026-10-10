@@ -75,30 +75,35 @@ def test_readiness_is_ok_when_tools_are_serving(patch_server):
     assert res.json()["status"] == "ok"
 
 def test_note_apis():
-    # Direct Create Note via API
+    # Direct Create Note via API. session_id is mandatory since the notes
+    # routes moved into app/routes/notes.py (401 without it).
     payload = {
         "title": "API Created Note",
         "tags": ["api"],
         "links": [],
         "canonical_blocks": [{"type": "paragraph", "text": "API text"}],
-        "rendered_html": "<article><p>API text</p></article>"
+        "rendered_html": "<article><p>API text</p></article>",
+        "session_id": "test-session-notes-api",
     }
-    
+    # The guard itself: no session → 401, not a silent create.
+    assert client.post("/notes/create", json={k: v for k, v in payload.items() if k != "session_id"}).status_code == 401
+
     res = client.post("/notes/create", json=payload)
     assert res.status_code == 200
     data = res.json()
     assert data["title"] == "API Created Note"
     note_id = data["id"]
-    
+
     # Get note details
     res = client.get(f"/notes/{note_id}")
     assert res.status_code == 200
     assert res.json()["note"]["id"] == note_id
-    
+
     # Direct update via API
     update_payload = {
         "note_id": note_id,
-        "title": "API Created Note (Updated)"
+        "title": "API Created Note (Updated)",
+        "session_id": "test-session-notes-api"
     }
     res = client.post("/notes/update", json=update_payload)
     assert res.status_code == 200

@@ -40,6 +40,11 @@ def _seed():
     cur.execute("INSERT INTO chat_sessions (id, title, created_at) VALUES (?, ?, ?)",
                 (SESSION, "Watches", "2026-09-07T00:00:00Z"))
     cur.execute("DELETE FROM watches WHERE session_id = ?", (SESSION,))
+    # due_watches() is global by design (the scheduler scans every session), and
+    # data/test_notes.db persists across runs — other watch tests' rows would
+    # leak into the "exactly one due row" assertions. This file IS the test DB;
+    # clearing it wholesale keeps the DAO test deterministic.
+    cur.execute("DELETE FROM watches")
     conn.commit()
     conn.close()
     cm.set_session_canvas(SESSION, EMPTY)

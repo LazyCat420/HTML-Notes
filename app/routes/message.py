@@ -949,7 +949,12 @@ async def send_message(req: MessageRequest):
         # "Fast answer now, evidence gathering continues" dual-track execution.
         # Handles single-stock catalysts ("why is NVDA down today?"), company event
         # reports, peer comparisons, and deep bull/bear dossiers deterministically.
-        if not wants_removal and not is_video_ask and not wants_music:
+        # "compare these" is exempt: it is canvas anaphora (the context bus rewrites
+        # it to the two most recent tickers), and the comparison classifier matches
+        # the bare word "compare" — without this guard the research lane swallowed
+        # the ask with zero entities before the anaphora branch could resolve it.
+        if (not wants_removal and not is_video_ask and not wants_music
+                and not COMPARE_THESE_RE.search(text_clean)):
             from app.services.research.intent import classify_research_intent
             from app.services.research.budget import calculate_research_budget
 

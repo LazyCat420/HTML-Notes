@@ -183,7 +183,7 @@ def test_compare_ticker_extraction():
 
 
 @pytest.mark.asyncio
-async def test_compare_config_normalizes_and_aligns(monkeypatch):
+async def test_compare_config_normalizes_and_aligns(patch_server):
     async def fake_snapshot(sym, range_="1mo"):
         data = {"NVDA": [100, 110, 121], "SPY": [50, 51, 52, 53],
                 "BAD": {"is_error": True}}
@@ -192,7 +192,7 @@ async def test_compare_config_normalizes_and_aligns(monkeypatch):
             return v
         return {"symbol": sym, "values": v,
                 "labels": [f"d{i}" for i in range(len(v))]}
-    monkeypatch.setattr(m, "stock_snapshot", fake_snapshot)
+    patch_server("stock_snapshot", fake_snapshot)
     cfg = await m.build_stock_compare_config(["NVDA", "SPY", "BAD"], "6mo")
     ds = cfg["chart"]["data"]["datasets"]
     assert [d["label"].split()[0] for d in ds] == ["NVDA", "SPY"], "failed ticker dropped"

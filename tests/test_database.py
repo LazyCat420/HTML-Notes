@@ -11,13 +11,14 @@ def setup_and_teardown_db():
     # Setup: Ensure schema is initialized
     database.init_db()
     yield
-    # Teardown: Clean up the test database file
+    # Clean up THIS test's rows — not the shared schema. Dropping chat_sessions/
+    # chat_messages/notes here left every later module (collection order) with a
+    # schema missing those tables: "no such table: chat_sessions" → 500s that
+    # only appeared in the full-suite run.
     conn = database.get_connection()
     cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS note_versions;")
-    cursor.execute("DROP TABLE IF EXISTS notes;")
-    cursor.execute("DROP TABLE IF EXISTS chat_messages;")
-    cursor.execute("DROP TABLE IF EXISTS chat_sessions;")
+    cursor.execute("DELETE FROM note_versions WHERE note_id = 'test_note_999'")
+    cursor.execute("DELETE FROM notes WHERE id = 'test_note_999'")
     conn.commit()
     conn.close()
 
