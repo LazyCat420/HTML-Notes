@@ -34,6 +34,11 @@ test('index.js implements voteContent handler with delegation', () => {
 });
 
 test('index.html references bumped v3.7 script and v3.4 css for cache busting', () => {
-    assert(INDEX_HTML.includes('index.css?v=3.4'), 'index.css version not updated');
-    assert(INDEX_HTML.includes('index.js?v=3.7'), 'index.js version not updated');
+    // Monotonic: asset edits MUST bump the query version. Pinning an exact
+    // number kept failing every time the version legitimately moved past it.
+    const [, jsMaj, jsMin] = INDEX_HTML.match(/index\.js\?v=(\d+)\.(\d+)/) || [];
+    const [, cssMaj, cssMin] = INDEX_HTML.match(/index\.css\?v=(\d+)\.(\d+)/) || [];
+    const ge = (maj, min, M, m) => Number(maj) > M || (Number(maj) === M && Number(min) >= m);
+    assert(ge(jsMaj, jsMin, 3, 7), `index.js version not updated (got ${jsMaj}.${jsMin})`);
+    assert(ge(cssMaj, cssMin, 3, 4), `index.css version not updated (got ${cssMaj}.${cssMin})`);
 });

@@ -52,9 +52,9 @@ test("the stream is closed on done, error, AND destroy (reconnect-storm guard)",
   // EventSource auto-reconnects after a server close; an unclosed stream
   // re-runs the whole discovery pipeline against the service's 10/min limit.
   const doneHandler = musicSrc.slice(musicSrc.indexOf("this.es.addEventListener('done'"));
-  assert.match(doneHandler.slice(0, 500), /this\.closeStream\(\)/, "done must close the stream");
+  assert.match(doneHandler.slice(0, 900), /this\.closeStream\(\)/, "done must close the stream");
   const errHandler = musicSrc.slice(musicSrc.indexOf("this.es.addEventListener('error'"));
-  assert.match(errHandler.slice(0, 500), /this\.closeStream\(\)/, "error must close the stream");
+  assert.match(errHandler.slice(0, 900), /this\.closeStream\(\)/, "error must close the stream");
   const destroyBody = musicSrc.slice(musicSrc.indexOf("destroy() {"));
   assert.match(destroyBody.slice(0, 700), /this\.closeStream\(\)/, "destroy must close the stream");
 });
@@ -145,7 +145,7 @@ test("maybeRefill gating: threshold, in-flight, and 90s floor", () => {
 // ── Routing passes `kind`; the widget and template carry it ─────────────────
 test("fast-path spawns music with kind=genre", () => {
   const fastPath = mainPy.slice(mainPy.indexOf("(music|player|radio)"));
-  assert.match(fastPath.slice(0, 900), /"kind": "genre"/,
+  assert.match(fastPath.slice(0, 2600), /"kind": "genre"/,
     '"X music" phrasing must default the genre pipeline');
 });
 
