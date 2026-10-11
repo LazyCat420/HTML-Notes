@@ -21,6 +21,21 @@ PRISM_URL = os.getenv("PRISM_URL", "http://10.0.0.16:7777")
 LAZY_AGENT_URL = os.getenv("LAZY_AGENT_URL", "http://10.0.0.16:5591")
 DATABASE_URL = os.getenv("DATABASE_URL", "data/notes.db")
 LAZY_TOOL_SERVICE_URL = os.getenv("LAZY_TOOL_SERVICE_URL", "http://10.0.0.16:5591")
+# Optional shared key for lazy-tool-service POST /execute/* (W3 of the harness
+# audit). Blank keeps today's keyless behaviour; when the server sets
+# EXECUTE_API_KEY, set the same value here so searches are authorized.
+EXECUTE_API_KEY = os.getenv("EXECUTE_API_KEY", "").strip()
+
+
+def execute_headers() -> dict:
+    """x-api-key header for /execute/* when EXECUTE_API_KEY is set, else {}."""
+    return {"x-api-key": EXECUTE_API_KEY} if EXECUTE_API_KEY else {}
+
+
+def execute_post_kwargs() -> dict:
+    """`headers=` kwarg for httpx post() only when a key is set (no-key calls unchanged)."""
+    h = execute_headers()
+    return {"headers": h} if h else {}
 TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "http://10.0.0.16:3032")
 MUSIC_PLAYER_URL = os.getenv("MUSIC_PLAYER_URL", "http://10.0.0.16:8002")
 # The music-player WEB app, not its API — the mini player hands a track off to

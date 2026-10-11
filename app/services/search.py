@@ -2,6 +2,7 @@ import sys
 import app.main as main
 sys.modules[__name__].__dict__.update(main.__dict__)
 from app.utils import _fetch_secret
+from app.config import execute_post_kwargs
 
 async def _scrape(url: str, engine: str = "crawl4ai", timeout: float = 90.0) -> str:
     """Fetch a URL through scraper-service. Returns page content ('' on failure)."""
@@ -69,6 +70,7 @@ async def _search_shared_web(query: str, limit: int) -> list:
         resp = await client.post(
             f"{LAZY_TOOL_SERVICE_URL}/execute/web_search",
             json={"query": query, "limit": limit},
+            **execute_post_kwargs(),
         )
         payload = resp.json()
     status = payload.get("status")
@@ -405,6 +407,7 @@ async def _shared_news_search(topic: str, limit: int, category: str = "",
             resp = await client.post(
                 f"{LAZY_TOOL_SERVICE_URL}/execute/news_search",
                 json=body,
+                **execute_post_kwargs(),
             )
         if resp.status_code != 200:
             logger.warning(f"[news] shared news_search HTTP {resp.status_code}")

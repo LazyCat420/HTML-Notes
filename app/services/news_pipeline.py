@@ -368,7 +368,7 @@ async def collect_candidates(req: NewsRequest) -> List[CandidateArticle]:
             body["category"] = req.category
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(endpoint, json=body)
+                resp = await client.post(endpoint, json=body, **config.execute_post_kwargs())
                 if resp.status_code == 200:
                     payload = resp.json()
                     body_dict = payload.get("result", payload) if isinstance(payload, dict) else {}
