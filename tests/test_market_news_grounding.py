@@ -118,18 +118,21 @@ def test_rank_finance_items_recency_and_watchlist():
 
 @pytest.mark.asyncio
 async def test_attach_article_bodies_fills_body_fail_open(monkeypatch):
-    """Bodies attach in job order; on HTTP failure every item keeps its snippet."""
+    """Bodies attach per item; on HTTP failure every item keeps its snippet."""
     from app.config_builders import _attach_article_bodies
     items = [{"title": "a", "url": "https://x.example/a"},
              {"title": "b", "url": "https://finnhub.io/api/news?id=z"}]
 
+    replies = {
+        "https://x.example/a": {"success": True, "content": "FULL BODY TEXT " * 300},
+        "https://finnhub.io/api/news?id=z": {"success": False, "error": "timeout"},
+    }
+
     class FakeResp:
         status_code = 200
+        def __init__(self, url): self.url = url
         def json(self):
-            return {"results": [
-                {"url": "https://x.example/a", "success": True, "content": "FULL BODY TEXT " * 300},
-                {"url": "https://finnhub.io/api/news?id=z", "success": False, "error": "timeout"},
-            ]}
+            return {"results": [dict(replies[self.url], url=self.url)]}
 
     class FakeClient:
         def __init__(self, **kw): pass
@@ -137,8 +140,9 @@ async def test_attach_article_bodies_fills_body_fail_open(monkeypatch):
         async def __aexit__(self, *a): return False
         async def post(self, url, json=None):
             assert url.endswith("/scrape/batch")
-            assert len(json["jobs"]) == 2
-            return FakeResp()
+            # One job per call, so one slow URL can't time out the others.
+            assert len(json["jobs"]) == 1
+            return FakeResp(json["jobs"][0]["url"])
 
     monkeypatch.setattr("httpx.AsyncClient", FakeClient)
     out = await _attach_article_bodies([dict(it) for it in items])

@@ -482,34 +482,73 @@ async def _attach_article_bodies(items: list, max_items: int = 8,
                                  max_chars: int = 2500) -> list:
     """Fill `body` for the top-N items via scraper-service /scrape/batch.
 
-    One batched call, 12s hard cap, fail-open: on any failure every item keeps
-    its provider snippet and the card is exactly as good as before. Results
-    come back in job order (asyncio.gather), so positions match.
+    One single-job batch call per item, concurrently, each with its own 12s
+    cap, fail-open: an item whose scrape fails or times out keeps its provider
+    snippet. One shared batch let a single slow URL (a Google News redirect
+    took ~24s to fail) time out the whole call and drop every body.
     """
     targets = [it for it in items if it.get("url")][:max_items]
     if not targets:
         return items
-    jobs = [{"url": it["url"], "engine": "auto",
-             "options": {"max_chars": max_chars}} for it in targets]
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=5.0)) as client:
+
+    async def one(client, it):
+        try:
             resp = await client.post(
                 f"{SCRAPER_SERVICE_URL}/scrape/batch",
-                json={"jobs": jobs, "max_concurrency": min(5, len(jobs))})
+                json={"jobs": [{"url": it["url"], "engine": "auto",
+                                "options": {"max_chars": max_chars}}],
+                      "max_concurrency": 1})
             if resp.status_code != 200:
-                logger.info(f"[NEWS] article body scrape HTTP {resp.status_code}")
-                return items
-            results = (resp.json() or {}).get("results") or []
-    except Exception as e:
-        logger.info(f"[NEWS] article body scrape failed: {e}")
-        return items
-    got = 0
-    for it, r in zip(targets, results):
+                return f"HTTP {resp.status_code}"
+            r = ((resp.json() or {}).get("results") or [None])[0]
+        except Exception as e:
+            return f"{type(e).__name__}"
         if isinstance(r, dict) and r.get("success") and r.get("content"):
             it["body"] = str(r["content"])[:max_chars]
-            got += 1
-    logger.info(f"[NEWS] article bodies scraped for {got}/{len(targets)} sources")
+            return None
+        return (r.get("error") if isinstance(r, dict) else None) or "no content"
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=5.0)) as client:
+        errors = await asyncio.gather(*(one(client, it) for it in targets))
+    got = sum(1 for e in errors if e is None)
+    misses = [f"{urllib.parse.urlparse(it['url']).netloc}: {e}" for it, e in zip(targets, errors) if e]
+    logger.info(f"[NEWS] article bodies scraped for {got}/{len(targets)} sources"
+                + (f" (missed {'; '.join(misses)})" if misses else ""))
     return items
+
+
+async def _summarize_sources_individually(items: list, topic: str,
+                                          concurrency: int = 3) -> list:
+    """One small grounded-summary call per source, run concurrently.
+
+    The fallback for the batch editor pass: a weak model that drops entries
+    from a long JSON list still summarises a single article faithfully.
+    Returns one string per item ("" when there is too little text, or the
+    call failed — the caller keeps the provider snippet then)."""
+    llm_fn = getattr(main, "fast_llm_json", None) or fast_llm_json
+    strip_cites = getattr(main, "_strip_citation_markers", None) or _strip_citation_markers
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(it: dict) -> str:
+        text = (it.get("body") or it.get("snippet") or "").strip()
+        if len(text) < 80:
+            return ""
+        prompt = (
+            "Summarise this news article in 2-3 sentences: what happened and why "
+            f"it matters{' for ' + repr(topic) if topic else ''}. Use ONLY facts "
+            "stated in the text below; never add any. Return ONLY JSON: "
+            '{"summary": "<2-3 sentences>"}\n\n'
+            f"HEADLINE: {it.get('title', '')}\nTEXT:\n{text[:1800]}")
+        async with sem:
+            try:
+                data = await llm_fn(prompt, max_tokens=300)
+            except Exception as e:
+                logger.info(f"[NEWS] single-source summary failed: {e}")
+                return ""
+        summary = (data or {}).get("summary") if isinstance(data, dict) else ""
+        return strip_cites(summary.strip()) if isinstance(summary, str) else ""
+
+    return list(await asyncio.gather(*(one(it) for it in items)))
 
 
 async def build_news_card(message: str, *, finance: bool = False,
@@ -687,6 +726,7 @@ async def build_news_card(message: str, *, finance: bool = False,
     #    min_keep=0: "every story is off-subject" is a verdict about the RESULT
     #    SET; hand it back as [] and go to another source rather than showing
     #    six confident summaries of things the user did not ask about.
+    gated = False
     if items and subject:
         gate = getattr(main, "filter_items_by_relevance", None) or filter_items_by_relevance
         vetted = await gate(subject, g.get("negatives") or [], items,
@@ -705,6 +745,7 @@ async def build_news_card(message: str, *, finance: bool = False,
                 vetted = await gate(subject, g.get("negatives") or [], retry,
                                     min_keep=0, hyde=g.get("hyde") or "")
         items = vetted
+        gated = bool(vetted)
 
     # 6b. CONTENT QUALITY SCORING & PAROLE FILTER (Wallgarden pattern)
     try:
@@ -728,6 +769,11 @@ async def build_news_card(message: str, *, finance: bool = False,
     if finance:
         items = _rank_finance_items(items)
         items = await _attach_article_bodies(items)
+    elif not general and items:
+        # A TOPIC card summarised ~200-char provider snippets, so its write-ups
+        # paraphrased headlines. Read the articles too (same one batched
+        # scraper call, 12 s cap, fail-open to snippets) — at most 6 stories.
+        items = await _attach_article_bodies(items[:6], max_items=6)
 
     if finance:
         title = ("Market News" if general else f"Market News: {display}").title()[:60]
@@ -865,6 +911,7 @@ async def build_news_card(message: str, *, finance: bool = False,
         logger.info(f"[DEGRADED] news editor pass empty for {topic!r} — serving "
                     "provider snippets")
         out_items = raw_items()
+        summaries = {}
     else:
         summaries = {it.get("index"): strip_cites((it.get("summary") or "").strip())
                      for it in data["items"] if isinstance(it.get("index"), int)}
@@ -888,10 +935,32 @@ async def build_news_card(message: str, *, finance: bool = False,
         # A SUBJECT ask is different — there the model is the only thing that
         # can tell an off-subject story from an on-subject one, so its omissions
         # are the gate and are still honoured.
-        if not general:
+        #
+        # A subject ask whose stories the relevance gate (step 6) ALREADY
+        # vetted gets the same rule: two model filters in a row is what turned
+        # "news about ai regulation" into ONE story (the gate kept 3 of 8,
+        # nemotron35 then wrote up 1 and the other 2 vanished). The editor's
+        # omissions are honoured only when no gate ran.
+        if not general and not gated:
             kept = [i for i in sorted(summaries) if 0 <= i < len(out_items)]
             if kept:
                 out_items = [out_items[i] for i in kept]
+                items = [items[i] for i in kept]
+                summaries = {n: summaries[i] for n, i in enumerate(kept)}
+    # Weak models drop entries from one long JSON list but summarise ONE
+    # article reliably: every story the batch pass skipped gets its own
+    # small call, from its article text when we have it.
+    if not general:
+        missing = [i for i in range(len(out_items)) if not summaries.get(i)]
+        if missing:
+            filled = await _summarize_sources_individually(
+                [items[i] for i in missing], display)
+            for i, text in zip(missing, filled):
+                if text:
+                    out_items[i]["description"] = text[:500]
+            logger.info(f"[NEWS] filled {sum(1 for t in filled if t)}/"
+                        f"{len(missing)} summaries the editor skipped "
+                        f"for {topic!r}")
 
     overview = strip_cites((data or {}).get("overview") or "").strip() if data else ""
     if not overview or not grounded_fn(overview, out_items):

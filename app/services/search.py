@@ -212,6 +212,65 @@ _GOOGLE_SECTION = {
 }
 
 
+_GN_SIG_RE = re.compile(r'data-n-a-sg="([^"]+)"')
+_GN_TS_RE = re.compile(r'data-n-a-ts="([^"]+)"')
+
+
+async def _decode_google_news_link(client, url: str) -> str:
+    """Turn a news.google.com/rss/articles/CBMi... link into the publisher URL.
+
+    These links never redirect server-side (they 200 with a JS page), so the
+    scraper can't read them and the card's link pointed at Google. The page
+    carries a signature + timestamp that Google's own batchexecute endpoint
+    trades for the real URL. Returns '' when anything about that fails.
+    """
+    aid = urllib.parse.urlparse(url).path.rstrip("/").split("/")[-1]
+    if not aid:
+        return ""
+    try:
+        page = (await client.get(f"https://news.google.com/rss/articles/{aid}",
+                                 headers={"User-Agent": _BROWSER_UA})).text
+        sig, ts = _GN_SIG_RE.search(page), _GN_TS_RE.search(page)
+        if not (sig and ts):
+            return ""
+        inner = ["garturlreq", [["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None, 1,
+                                 None, None, None, None, None, 0, 1],
+                                "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0],
+                 aid, int(ts.group(1)), sig.group(1)]
+        resp = await client.post(
+            "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+            data={"f.req": json.dumps([[["Fbv4je", json.dumps(inner), None, "generic"]]])},
+            headers={"User-Agent": _BROWSER_UA,
+                     "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"})
+        decoded = json.loads(json.loads(resp.text.split("\n\n", 1)[-1])[0][2])[1]
+    except Exception:
+        return ""
+    return decoded if isinstance(decoded, str) and decoded.startswith("http") else ""
+
+
+async def _resolve_google_news_links(items: list, timeout: float = 8.0) -> None:
+    """Swap each item's Google redirect for the publisher URL, in place.
+
+    Concurrent and fail-open: an item that can't be decoded in time keeps its
+    Google link. Live 2026-10-11, 3 of 5 "news about ai regulation" stories had
+    no summary because their Google links were unscrapable.
+    """
+    todo = [it for it in items if "news.google.com/" in (it.get("url") or "")]
+    if not todo:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            urls = await asyncio.wait_for(asyncio.gather(
+                *(_decode_google_news_link(client, it["url"]) for it in todo)), timeout)
+    except Exception as e:
+        logger.info(f"google news link decode gave up: {e}")
+        return
+    for it, real in zip(todo, urls):
+        if real:
+            it["url"] = real
+    logger.info(f"google news links decoded {sum(1 for u in urls if u)}/{len(todo)}")
+
+
 async def _google_news_rss(topic: str, limit: int, category: str = "",
                            country: str = "") -> list:
     """Fallback headlines from Google News RSS. Real and dated, but the links are
@@ -275,6 +334,7 @@ async def _google_news_rss(topic: str, limit: int, category: str = "",
         })
         if len(items) >= limit:
             break
+    await _resolve_google_news_links(items)
     return items
 
 

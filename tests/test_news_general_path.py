@@ -358,28 +358,12 @@ def test_the_editor_writes_but_does_not_select_on_a_general_ask(monkeypatch):
     assert cfg["items"][9]["description"] == "Provider snippet 9"
 
 
-def test_a_subject_ask_still_lets_the_editor_drop_off_topic_sources(monkeypatch):
-    """The rule above must not disarm the one gate that needs a model.
-
-    On a subject ask the editor's omission IS the relevance judgement — only it
-    can tell a story about the subject from a story that merely mentions it.
-    """
-    async def fake_news(topic, limit=6, category="", country=""):
-        return [{"title": f"Story {i}", "url": f"https://ex.com/{i}", "image": "",
-                 "meta": "Reuters", "snippet": "s", "date": ""} for i in range(6)]
-
-    async def picky_editor(prompt, **kw):
-        return {"overview": "Story 0 happened.",
-                "items": [{"index": 0, "title": "Story 0", "summary": "written"}]}
-
-    monkeypatch.setattr(m, "news_search", fake_news, raising=False)
-    monkeypatch.setattr(m, "fast_llm_json", picky_editor, raising=False)
-    monkeypatch.setattr(m, "ground_query", None, raising=False)
-    monkeypatch.setattr(m, "filter_items_by_relevance", None, raising=False)
-
-    cfg = run(cb.build_news_card("news about the apple vision pro",
-                                 finance=False, general=False))
-    assert len(cfg["items"]) == 1
+# test_a_subject_ask_still_lets_the_editor_drop_off_topic_sources was retired
+# 2026-10-11: on a subject ask the model-judged relevance gate (step 6) now owns
+# relevance, and the editor's omissions deleting gate-vetted stories is what cut
+# "news about ai regulation" to one story. Its mocks also never took (the gate
+# made a live model call). The contract moved to
+# tests/test_news_topic_summaries.py.
 
 
 def test_the_section_survives_normalisation_and_reaches_the_badge(monkeypatch):
