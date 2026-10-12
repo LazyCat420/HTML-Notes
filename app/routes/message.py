@@ -1080,6 +1080,15 @@ async def send_message(req: MessageRequest):
                 # livestreams" returned nothing, so live asks silently died while the
                 # plain "dunkey videos" path worked.
                 lquery = clean_video_query(req.message)
+                # A named news network plays only from its OWN channels (or says
+                # it is not live and plays its newest upload) — never the top
+                # keyword hit, which was CNN-News18 / a FOX 10 webcam feed.
+                net_cfg = await pick_news_network_live(req.message)
+                if net_cfg:
+                    _remember_current_video(req.session_id, net_cfg, net_cfg["query"])
+                    return spawn_widget_stream(
+                        "youtube_player", "live", net_cfg,
+                        status=f"finding {net_cfg['query']}...")
                 live_hits = filter_blocked_videos(
                     await search_youtube_videos(lquery, limit=6, order="live"))
                 if live_hits:

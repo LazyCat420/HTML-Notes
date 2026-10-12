@@ -386,4 +386,182 @@ async def _recency_video_pick(message: str, session_id: str,
     return cfg
 
 
+
+# ── Live news networks ────────────────────────────────────────────────────
+# "cnn live news" played Times Now / CNN-News18 and "fox live news" played a
+# FOX 10 Phoenix webcam feed (live, 2026-10-11): the live path took the top
+# keyword hit under YouTube's live filter, and nothing checked that the
+# CHANNEL was the network the user named. Keyword search did not even surface
+# CNN's own 24/7 stream ("CNN Headlines: 24/7 Live News") or ABC News Live,
+# both live at the time — the channel's /live page did, authoritatively.
+# A big network also streams from sibling channels (Fox News on "FOX One" and
+# "LiveNOW from FOX") that a name match cannot bind, while look-alikes
+# ("CNN-News18", "FOX 10 Phoenix") must never pass. A fixed table is the
+# guardrail: deterministic, model-free, exact on the channel.
+#   (ask pattern, display name, official channel names in preference order,
+#    whether the ask must also say "news" — "fox"/"abc"/"sky" alone are words,
+#    channel handles whose /live page is checked first, in preference order)
+_NEWS_NETWORKS = (
+    (r"\bfox\s+business\b", "Fox Business", ("Fox Business",), False, ("FoxBusiness",)),
+    (r"\bcnn\b", "CNN", ("CNN",), False, ("CNN",)),
+    (r"\bfox\b", "Fox News", ("Fox News", "FOX News", "FOX One", "LiveNOW from FOX"), True,
+     ("FoxNews", "LiveNOWFOX")),
+    (r"\bmsnbc\b|\bms\s?now\b", "MSNBC", ("MSNBC", "MS NOW"), False, ("msnbc",)),
+    (r"\babc\b", "ABC News", ("ABC News",), True, ("ABCNews",)),
+    (r"\bnbc\b", "NBC News", ("NBC News",), True, ("NBCNews",)),
+    (r"\bcbs\b", "CBS News", ("CBS News",), True, ("CBSNews",)),
+    (r"\bbbc\b", "BBC News", ("BBC News",), True, ("BBCNews",)),
+    (r"\bsky\b", "Sky News", ("Sky News",), True, ("SkyNews",)),
+    (r"\bal\s?jazeera\b", "Al Jazeera", ("Al Jazeera English",), False, ("aljazeeraenglish",)),
+    (r"\bbloomberg\b", "Bloomberg", ("Bloomberg Television", "Bloomberg Originals"), False, ("markets",)),
+    (r"\bcnbc\b", "CNBC", ("CNBC Television", "CNBC"), False, ("CNBCtelevision",)),
+    (r"\breuters\b", "Reuters", ("Reuters",), False, ("Reuters",)),
+    (r"\bpbs\b", "PBS NewsHour", ("PBS NewsHour",), False, ("PBSNewsHour",)),
+    (r"\bnewsmax\b", "Newsmax", ("Newsmax",), False, ("NEWSMAX",)),
+    (r"\bnewsnation\b", "NewsNation", ("NewsNation",), False, ("NewsNation",)),
+    (r"\bc-?span\b", "C-SPAN", ("C-SPAN",), False, ("cspan",)),
+    (r"\bfrance\s?24\b", "France 24", ("FRANCE 24 English",), False, ("France24_en",)),
+    (r"\bdw\b", "DW News", ("DW News",), True, ("dwnews",)),
+    (r"\beuronews\b", "Euronews", ("euronews",), False, ("euronews",)),
+)
+
+
+def match_news_network(text: str):
+    """(display name, official channel names, handles) for an ask naming a
+    major news network, else None. 'cnn live' → CNN; 'fox live news' → Fox
+    News; 'fox livestream' → None (no "news": the animal, a game, a person)."""
+    t = (text or "").lower()
+    has_news = bool(re.search(r"\bnews\b", t))
+    for pattern, name, channels, needs_news, handles in _NEWS_NETWORKS:
+        if re.search(pattern, t) and (has_news or not needs_news):
+            return name, channels, handles
+    return None
+
+
+def _official_channel_rank(hit: dict, channels) -> int:
+    """Index of the hit's channel in the network's official list; -1 if it is
+    not one of them. Exact (case-insensitive) — 'CNN-News18' is not 'CNN'."""
+    ch = (hit.get("channel") or "").strip().lower()
+    for i, c in enumerate(channels):
+        if ch == c.lower():
+            return i
+    return -1
+
+
+_CANONICAL_WATCH_RE = re.compile(
+    r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"')
+_PAGE_TITLE_RE = re.compile(r'<meta name="title" content="([^"]*)"|<title>([^<]*)</title>')
+
+
+def parse_channel_live_page(html: str) -> Optional[dict]:
+    """A channel's /live page resolves to its current stream's watch page when
+    it is live (canonical watch?v= plus isLiveNow:true) and to the channel page
+    when it is not. Returns {video_id, title} or None."""
+    if not html or '"isLiveNow":true' not in html:
+        return None
+    m = _CANONICAL_WATCH_RE.search(html)
+    if not m:
+        return None
+    t = _PAGE_TITLE_RE.search(html)
+    title = html_lib.unescape((t.group(1) or t.group(2) or "") if t else "")
+    title = re.sub(r"\s*-\s*YouTube\s*$", "", title).strip()
+    return {"video_id": m.group(1), "title": title}
+
+
+async def _channel_live_now(handle: str) -> Optional[dict]:
+    html = await _yt_fetch_html(f"https://www.youtube.com/@{handle}/live",
+                                timeout=10.0, scraper_fallback=False)
+    return parse_channel_live_page(html)
+
+
+def _newest_first(hits: list) -> list:
+    """Date-sorted search hits mostly carry NO age, so trust YouTube's own
+    order and only push KNOWN-old items back (a 510-day-old clip led one
+    'Bloomberg' date search; sorting None as 'oldest' would have served it)."""
+    return sorted(hits, key=lambda h: h["age_days"]
+                  if isinstance(h.get("age_days"), (int, float)) else 0.0)
+
+
+async def pick_news_network_live(message: str) -> Optional[dict]:
+    """youtube_player config for a live ask naming a news network, or None
+    when the ask names none (the caller keeps its generic live search).
+
+    Only the network's own channels count, in this order of trust:
+      1. its channels' /live pages (authoritative: the 24/7 streams keyword
+         search never surfaced),
+      2. live keyword search kept to its official channel names,
+      3. its newest upload, titled so the user knows it is not live — a
+         stranger's stream is the wrong answer, an honest "not live, here is
+         their latest" is the right one.
+    """
+    found = match_news_network(message)
+    if not found:
+        return None
+    name, channels, handles = found
+
+    lives = await asyncio.gather(*[_channel_live_now(h) for h in handles],
+                                 return_exceptions=True)
+    streams = [x for x in lives if isinstance(x, dict) and x.get("video_id")]
+    streams = filter_blocked_videos(streams)
+    if streams:
+        top = streams[0]
+        logger.info(f"[LIVE] {name}: live via channel page — {top['title'][:60]!r}")
+        return {"video_id": top["video_id"], "title": top["title"] or f"{name} live",
+                "query": f"{name} live",
+                "candidates": [x["video_id"] for x in streams[1:]]}
+
+    queries = [f"{name} live", clean_video_query(message)]
+    batches = await asyncio.gather(
+        *[search_youtube_videos(q, limit=12, order="live") for q in dict.fromkeys(queries)],
+        return_exceptions=True)
+    live, seen = [], set()
+    for batch in batches:
+        if isinstance(batch, Exception):
+            continue
+        for pos, h in enumerate(filter_blocked_videos(batch or [])):
+            rank = _official_channel_rank(h, channels)
+            vid = h.get("video_id")
+            if rank < 0 or not vid or vid in seen:
+                continue
+            seen.add(vid)
+            live.append((rank, pos, h))
+    live.sort(key=lambda x: (x[0], x[1]))
+    if live:
+        hits = [h for _, _, h in live]
+        top = hits[0]
+        logger.info(f"[LIVE] {name}: {len(hits)} official stream(s) via search; "
+                    f"playing {top.get('channel')!r} {top.get('title', '')[:60]!r}")
+        return {"video_id": top["video_id"],
+                "title": top.get("title") or f"{name} live",
+                "query": f"{name} live",
+                "candidates": [h["video_id"] for h in hits[1:]]}
+
+    # Not live on YouTube right now: the network's newest upload instead.
+    try:
+        recent = filter_blocked_videos(await search_youtube_videos(
+            name, limit=15, order="date"))
+    except Exception as e:
+        logger.warning(f"[LIVE] {name}: newest-upload search failed: {e}")
+        recent = []
+    vods = _newest_first([h for h in recent
+                          if _official_channel_rank(h, channels) >= 0
+                          and not h.get("is_short") and h.get("video_id")])
+    if not vods:
+        logger.info(f"[LIVE] {name}: no official live stream or upload found")
+        return None
+    top = vods[0]
+    if top.get("is_live"):
+        return {"video_id": top["video_id"], "title": top.get("title") or f"{name} live",
+                "query": f"{name} live", "candidates": [h["video_id"] for h in vods[1:6]]}
+    logger.info(f"[LIVE] {name} is not live on YouTube; serving its newest "
+                f"upload {top.get('title', '')[:60]!r}")
+    # A past livestream's VOD keeps its "LIVE:" title (CBS: isLiveNow false,
+    # isLiveContent true) — drop the word rather than contradict ourselves.
+    vod_title = re.sub(r"^\W*live\b\W*", "", top.get("title") or "", flags=re.I)
+    return {"video_id": top["video_id"],
+            "title": f"{name} isn't live on YouTube right now — latest: {vod_title}".strip(),
+            "query": name,
+            "not_live": True,
+            "candidates": [h["video_id"] for h in vods[1:6]]}
+
 __all__ = [k for k in globals().keys() if not k.startswith('__')]
