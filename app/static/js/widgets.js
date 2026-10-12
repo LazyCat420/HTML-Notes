@@ -1031,6 +1031,10 @@ document.addEventListener('alpine:init', () => {
         thumbState: null,
         thumbStatus: '',
         thumbStatusTimer: null,
+        // Music inherited from the widget this one replaced (see destroy()).
+        // It keeps playing until THIS widget's first track is audible, so a
+        // new music ask changes the song instead of cutting to silence.
+        carry: null,
 
         get currentTrack() {
             if (this.currentIndex >= 0 && this.currentIndex < this.queue.length) {
@@ -1057,6 +1061,7 @@ document.addEventListener('alpine:init', () => {
         async init() {
             console.log(`[MusicPlayer] Init. term="${this.genreFilter}" kind="${this.kind}" base=${this.base}`);
             this.seenIds = new Set();
+            this.adoptCarry();
             this.audio = new Audio();
             this.audio.volume = this.volume;
 
@@ -1096,6 +1101,8 @@ document.addEventListener('alpine:init', () => {
             } catch {}
 
             this.audio.addEventListener('playing', () => {
+                // Our own track is audible now: the inherited music can stop.
+                this.releaseCarry();
                 this.notePlaybackStarted();
                 this.recordPlayHistory(this.currentTrack);
             });
@@ -1361,6 +1368,13 @@ document.addEventListener('alpine:init', () => {
 
         playPause() {
             this.cancelHandoff();
+            // Nothing of ours is loaded yet but the previous widget's music is
+            // still going: the button controls what the user actually hears.
+            if (this.carry && !this.currentTrack) {
+                const a = this.carry.audio;
+                if (a) a.paused ? a.play() : a.pause();
+                return;
+            }
             if (!this.audio.src) return;
             if (this.audio.paused) {
                 this.audio.play();
@@ -1896,11 +1910,80 @@ document.addEventListener('alpine:init', () => {
             // and re-running the discovery pipeline against the rate limit.
             this.closeStream();
             this.cancelHandoff();
+            // A swap (a new music ask) must not cut to silence while the new
+            // mix is still being discovered — that can take 5-20 s. Park what
+            // is audible for the replacement to adopt; it stops once the new
+            // widget's first track actually plays. A user dismissal stops
+            // everything at once (WidgetManager.dismiss marks the element).
+            const dismissed = !!(this.$el && this.$el.dataset
+                && this.$el.dataset.userDismissed === '1');
+            if (!dismissed) {
+                if (this.audio && this.audio.src && !this.audio.paused) {
+                    this.releaseCarry();
+                    this.parkForSuccessor();
+                    return;
+                }
+                if (this.carry) {
+                    // Replaced again before our own track started: hand the
+                    // still-playing inherited music on, don't drop it.
+                    const c = this.carry;
+                    this.carry = null;
+                    c.park();
+                    this.stopAudio();
+                    return;
+                }
+            }
+            this.releaseCarry();
+            this.stopAudio();
+        },
+
+        stopAudio() {
             if (this.audio) {
                 this.audio.pause();
                 this.audio.src = '';
                 this.audio = null;
             }
+        },
+
+        // Leave this widget's audio playing in a page-level slot. Nobody
+        // claiming it within the window means the widget was removed, not
+        // replaced — then it stops.
+        parkForSuccessor() {
+            const owner = this;
+            const carry = {
+                audio: this.audio,
+                track: this.currentTrack,
+                timer: null,
+                park() {
+                    const prev = window.__hnMusicCarry;
+                    if (prev && prev !== carry) prev.stop();
+                    clearTimeout(carry.timer);
+                    carry.timer = setTimeout(() => carry.stop(), 2000);
+                    window.__hnMusicCarry = carry;
+                },
+                stop() {
+                    clearTimeout(carry.timer);
+                    if (window.__hnMusicCarry === carry) window.__hnMusicCarry = null;
+                    owner.stopAudio();
+                },
+            };
+            carry.park();
+        },
+
+        adoptCarry() {
+            const carry = window.__hnMusicCarry;
+            if (!carry) return;
+            clearTimeout(carry.timer);
+            window.__hnMusicCarry = null;
+            this.carry = carry;
+            const t = carry.track;
+            if (t && t.title) console.log(`[MusicPlayer] Keeping "${t.title}" playing until the new mix starts.`);
+        },
+
+        releaseCarry() {
+            const c = this.carry;
+            this.carry = null;
+            if (c) c.stop();
         }
         };
     });

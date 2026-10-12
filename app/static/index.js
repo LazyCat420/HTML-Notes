@@ -106,6 +106,9 @@ window.WidgetManager = {
     },
     dismiss(widgetElement) {
         if (!widgetElement) return;
+        // Tells media widgets this is the USER closing them: the music player
+        // otherwise keeps its audio going for a replacement to adopt.
+        if (widgetElement.dataset) widgetElement.dataset.userDismissed = '1';
         const id = widgetElement.id;
         if (id) {
             const dismissed = this.getDismissed();
