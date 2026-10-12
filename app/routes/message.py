@@ -655,6 +655,8 @@ async def send_message(req: MessageRequest):
         # "video of a clock" or "news about checklists" must reach the agent,
         # not spawn a clock/checklist off a substring match.
         is_video_ask = bool(VIDEO_ASK_RE.search(text_clean))
+        # "cnn live news" AND "put on fox news": both want a stream.
+        is_live_ask = bool(LIVE_ASK_RE.search(text_clean)) or is_network_live_ask(text_clean)
         is_data_ask = bool(DATA_ASK_RE.search(text_clean))
         # A grocery/shopping/checklist ask ("add potato salad to the grocery list")
         # names "grocery", which is ALSO a POI noun in POI_MAP_RE — so the map
@@ -920,8 +922,10 @@ async def send_message(req: MessageRequest):
         # to receive "stock market for the day please" and compose three
         # widgets including a chart of five random trending tickers; now that
         # ask is a market-news card, deterministically.
+        # A live/tune-in ask ("put on fox news") is something to WATCH: it must
+        # not be answered with a headline card just because it says "news".
         news_ask = classify_news_ask(req.message, wants_removal=wants_removal,
-                                     is_video_ask=is_video_ask,
+                                     is_video_ask=is_video_ask or is_live_ask,
                                      wants_music=wants_music, league=league)
         if news_ask:
             if news_ask.kind == "stock_report":
@@ -1055,7 +1059,7 @@ async def send_message(req: MessageRequest):
             # upload. The picker returns None when no channel binds, so topic
             # asks ("a cookie recipe video") fall through to normal search.
             if (is_video_ask and not is_compound_ask
-                    and not wants_removal and not LIVE_ASK_RE.search(text_clean)):
+                    and not wants_removal and not is_live_ask):
                 # Channel- and date-verified: "fox news video newest about the
                 # stock market" must come from the FOX News uploads feed, not
                 # whatever a date-sorted keyword search surfaces (live failure:
@@ -1073,7 +1077,7 @@ async def send_message(req: MessageRequest):
             #    contains "news" and was being sent down the data_card path (a text
             #    list of headlines) when the user wanted something to watch. "live
             #    music"/"live radio" still belongs to the music player, not YouTube.
-            if LIVE_ASK_RE.search(text_clean) and not wants_removal and not wants_music:
+            if is_live_ask and not wants_removal and not wants_music:
                 # Search the CLEANED subject, not the raw message: "dunkey livestreams"
                 # must search "dunkey" under YouTube's live filter (the filter, not the
                 # word, is what finds a stream). Searching the literal "dunkey
@@ -1445,10 +1449,10 @@ async def send_message(req: MessageRequest):
         # player — the same guards the old fast-path branch used.
         if (not wants_removal and not wants_music
                 and (is_video_ask
-                     or (LIVE_ASK_RE.search(text_clean)
+                     or (is_live_ask
                          and not league
                          and not TRAFFIC_MAP_RE.search(text_clean)))):
-            _live = bool(LIVE_ASK_RE.search(text_clean))
+            _live = is_live_ask
             logger.info(f"[ROUTER] tier2-local ['video'] — deterministic "
                         f"{'live-' if _live else ''}video override")
             return spawn_router_stream(

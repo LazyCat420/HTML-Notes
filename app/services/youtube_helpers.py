@@ -438,6 +438,28 @@ def match_news_network(text: str):
     return None
 
 
+# Tuning in to a network names it with a "put it on" verb and no sign of a
+# specific clip: "put on fox news", "watch cnn", "turn on msnbc". Those want
+# the channel itself — live — not a headline card ("put on fox news" was a
+# data_card) or one of its clips ("watch cnn" played a polling segment).
+_TUNE_IN_RE = re.compile(
+    r"\b(?:put on|turn on|tune (?:in )?(?:to|into)|switch (?:over )?to|flip to|watch|stream)\b")
+_SPECIFIC_CLIP_RE = re.compile(
+    r"\b(?:video|videos|clip|clips|segment|interview|episode|about|newest|latest|"
+    r"recent|yesterday|last night|highlights?)\b")
+
+
+def is_network_live_ask(text: str) -> bool:
+    """A live ask that names a news network, worded either way: 'cnn live
+    news' or 'put on fox news'. Gates the network picker on both routes."""
+    t = (text or "").lower()
+    if not match_news_network(t):
+        return False
+    if LIVE_ASK_RE.search(t):
+        return True
+    return bool(_TUNE_IN_RE.search(t)) and not _SPECIFIC_CLIP_RE.search(t)
+
+
 def _official_channel_rank(hit: dict, channels) -> int:
     """Index of the hit's channel in the network's official list; -1 if it is
     not one of them. Exact (case-insensitive) — 'CNN-News18' is not 'CNN'."""

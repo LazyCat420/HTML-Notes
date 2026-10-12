@@ -165,3 +165,52 @@ def test_newest_first_trusts_youtube_order_when_ages_are_missing():
     hits = [H("old", "X", "", age=510), H("a", "X", "", age=None), H("b", "X", "", age=None),
             H("fresh", "X", "", age=0.1)]
     assert [h["video_id"] for h in _newest_first(hits)] == ["a", "b", "fresh", "old"]
+
+
+def test_tuning_in_to_a_network_is_a_live_ask():
+    from app.services.youtube_helpers import is_network_live_ask
+    for ask in ["cnn live news", "fox live news", "put on fox news", "watch cnn",
+                "turn on msnbc", "tune in to bbc news", "switch to sky news"]:
+        assert is_network_live_ask(ask), ask
+    for ask in ["watch cnn video about the senate", "latest fox news clip",
+                "what is cnn saying about the election", "fox livestream",
+                "watch dunkey", "cnn headlines today"]:
+        assert not is_network_live_ask(ask), ask
+
+
+def _route(message):
+    client = TestClient(fastapi_app)
+    body = {"session_id": f"live-net-{abs(hash(message))}", "message": message,
+            "current_canvas": '<div id="dashboard-grid"></div>', "canvas_version": 0,
+            "provider": "vllm", "model": "nemotron35"}
+    with client.stream("POST", "/session/message", json=body) as r:
+        text = "".join(r.iter_text())
+    return [json.loads(l[6:]) for l in text.splitlines() if l.startswith("data: ")]
+
+
+def test_put_on_fox_news_plays_the_stream_not_a_headline_card(patch_server):
+    patch_server("_channel_live_now", _no_stream)
+    patch_server("search_youtube_videos", fake_search({("fox", "live"): FOX_LIVE}))
+    patch_server("filter_blocked_videos", lambda hits: hits)
+    events = _route("put on fox news")
+    debug = [e for e in events if e.get("type") == "debug"]
+    assert debug and debug[0].get("id_prefix") == "live", debug
+    html = "".join(e.get("content", "") for e in events if e.get("type") == "component")
+    assert "bs4rhXlRGC4" in html
+
+
+def test_the_router_built_live_widget_uses_the_network_picker_too(patch_server):
+    """The tier-2/agent route builds the widget in config_builders — the twin
+    path took the top keyword hit as well."""
+    import asyncio
+    from app.config_builders import build_router_widget
+    patch_server("_channel_live_now", _no_stream)
+    patch_server("search_youtube_videos", fake_search({("cnn", "live"): CNN_LIVE,
+                                                       ("cnn", "date"): CNN_UPLOADS}))
+    patch_server("filter_blocked_videos", lambda hits: hits)
+    got = asyncio.run(build_router_widget(
+        {"type": "video", "query": "cnn live news", "modifiers": {"live": True}},
+        "router-live-test", "cnn live news"))
+    wtype, prefix, cfg = got
+    assert (wtype, prefix) == ("youtube_player", "live")
+    assert cfg["video_id"] == "new1", "CNN's own upload, never CNN-News18 / Times Now"

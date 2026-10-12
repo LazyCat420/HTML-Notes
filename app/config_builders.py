@@ -2281,7 +2281,14 @@ async def build_router_widget(spec: dict, session_id: str, message: str,
             # the literal word "livestream" returns nothing) and take the top hit.
             # Falls through to a normal video search when nothing is live, so
             # "cnn live news" still returns something watchable off-air.
-            if (mods or {}).get("live"):
+            if (mods or {}).get("live") or is_network_live_ask(query or message):
+                # A named network plays only from its own channels — the twin
+                # of the fast path's check (this route used to take the top
+                # keyword hit too: CNN-News18 for "cnn live news").
+                net_cfg = await pick_news_network_live(query or message)
+                if net_cfg:
+                    _remember_current_video(session_id, net_cfg, net_cfg["query"])
+                    return ("youtube_player", "live", net_cfg)
                 lq = clean_video_query(query or message)
                 live_hits = filter_blocked_videos(
                     await search_youtube_videos(lq, limit=6, order="live"))
