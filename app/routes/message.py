@@ -980,7 +980,7 @@ async def send_message(req: MessageRequest):
         # The builders are deterministic local code (no LLM) emitting the same
         # SSE contract, so a "note widget" ask costs 2s instead of a 15s agent
         # loop.
-
+        if True:  # lazy-agent-service is the ONLY harness; prism mode removed 2026-10-15
             # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
             #    the dislike forever. Checked before every other video path so a
             #    "find me another video" isn't misread as a fresh search for the
@@ -1530,24 +1530,11 @@ async def send_message(req: MessageRequest):
                 return _stream_reply(router_plan["reply"])
             if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
                 widgets = router_plan["widgets"]
-                research = [w["type"] for w in widgets if w["type"] in _AGENT_RESEARCH_TYPES]
-                if True:  # research deferral was a prism-mode path; removed
-                    router_status = "local"
-                    logger.info(f"[ROUTER] tier2-local {[w['type'] for w in widgets]} "
-                                f"q={[w['query'][:40] for w in widgets]} "
-                                f"— {router_plan.get('reason','')}")
-                    return spawn_router_stream(widgets, router_plan.get("reason"))
-                # The classification is USABLE and we are about to hand the ask to
-                # the agent, which re-derives intent from the raw message with no
-                # hint. Carry it. The WHOLE plan, not just the research half: a
-                # composite ("weather + answer") defers entirely, so the
-                # non-research specs were being dropped here silently too.
-                router_specs = widgets
-                router_status = "deferred"
-                logger.info(f"[ROUTER] tier3-agent: deferring research {research} "
-                            f"(of {[w['type'] for w in widgets]}) to the prism agent "
-                            f"— hint={[(w['type'], w['query'][:40]) for w in widgets]} "
-                            f"checks={router_checks or '{}'}")
+                router_status = "local"
+                logger.info(f"[ROUTER] tier2-local {[w['type'] for w in widgets]} "
+                            f"q={[w['query'][:40] for w in widgets]} "
+                            f"— {router_plan.get('reason','')}")
+                return spawn_router_stream(widgets, router_plan.get("reason"))
             elif router_plan and router_plan.get("defer"):
                 router_status = "defer"
                 logger.info(f"[ROUTER] tier3-agent: classifier deferred "
