@@ -585,10 +585,10 @@ import itertools
 import json
 import os
 
-# Scope every agent turn is attributed to on prism. Sent BOTH as x-project /
-# x-username HEADERS (what prism actually reads) and in the payload body. The
-# username must be `admin` so html-notes turns show up under admin in
-# prism-client — with no headers prism recorded them as "anonymous", which is
+# Scope every agent turn is attributed to on lazy-agent-service. Sent BOTH as x-project /
+# x-username HEADERS (what the agent actually reads) and in the payload body. The
+# username must be `admin` so html-notes turns show up under admin in the
+# agent's client — with no headers the agent recorded them as "anonymous", which is
 # why they looked like they were never arriving.
 AGENT_PROJECT = os.getenv("AGENT_PROJECT", "html-notes-client")
 AGENT_USERNAME = os.getenv("AGENT_USERNAME", "admin")
@@ -3244,13 +3244,13 @@ ROUTER_WIDGETS = {
 }
 
 # These router widget types are RESEARCH asks
-# and get handed to the prism agent (which runs the lazy-agent-service MCP
-# web_search/read_page harnesses → a synthesised, sourced answer) instead of a local
+# and get handed to the agent (lazy-agent-service, which runs the
+# web_search/read_page MCP harnesses → a synthesised, sourced answer) instead of a local
 # search-scrape builder. Everything else (weather/stock/sports/map/traffic/music/
 # clock/list/notes/trip) stays on the fast local path — deterministic, fast, and
 # already high quality, so a 30-60s research loop would only make it worse.
-# NOTE: "products" is deliberately NOT here. With it in this set, prism mode
-# (the default) deferred every shopping ask to the agent, whose prompt renders a
+# NOTE: "products" is deliberately NOT here. While it was in this set, prism mode
+# (the default until 2026-10-15) deferred every shopping ask to the agent, whose prompt renders a
 # data_card — so render_products, its reuse plumbing and class map serviced a
 # type nothing could emit, and the same ask produced a photo grid in lazy-agent
 # mode but a text card in prism mode. The router's local products builder is
@@ -3481,8 +3481,12 @@ async def _agent_dependency_status() -> dict:
     """
     detail = {"gateway": LAZY_AGENT_URL}
     try:
+        # Same header contract as the /agent call: without these the gateway
+        # logs every ~2/min probe as default/anonymous.
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{LAZY_AGENT_URL}/config")
+            resp = await client.get(f"{LAZY_AGENT_URL}/config",
+                                    headers={"x-project": AGENT_PROJECT,
+                                             "x-username": AGENT_USERNAME})
             if resp.status_code != 200:
                 return {**detail, "ok": False,
                         "error": f"gateway /config returned HTTP {resp.status_code}"}

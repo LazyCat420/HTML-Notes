@@ -87,3 +87,13 @@ Tests: `tests/test_news_topic_summaries.py` (3),
   harness.
 - Answer cards can leak raw citations ("Sources : 0, 1, 2").
 - "what happened with hurricane simon" routes to a map.
+
+## Agent routing (2026-10-16 cleanup)
+
+Every agent path already targeted lazy-agent-service (`LAZY_AGENT_URL`,
+:5591) since the 2026-10-15 prism exit. This wave removed the last stale
+"prism" references (comments, log strings, the `if True:` prism-mode wrapper
+in `app/routes/message.py`) and made the health probes
+(`/health/app` → `_agent_dependency_status` and `GET /models`) send the same
+`x-project` / `x-username` attribution headers as the `/agent` call, so the
+gateway no longer logs html-notes' ~2/min probes as `default/anonymous`.

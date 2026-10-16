@@ -49,7 +49,7 @@ async def health_app(fresh: bool = False):
 
     Deliberately still 200 when the agent dependency is down. docker-compose
     healthchecks this with `curl -f`, and a non-2xx marks the container
-    unhealthy and restarts it — which cannot fix a Prism-side outage and would
+    unhealthy and restarts it — which cannot fix an agent-side outage and would
     just loop. The dependency is reported in the body, and /health/agent is the
     endpoint that actually fails when research is broken.
     """

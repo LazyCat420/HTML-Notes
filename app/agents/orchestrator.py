@@ -209,10 +209,15 @@ async def process_user_turn(
             
             # Apply self-review loop from lazycat SDK
             from lazycat.validators import Validator
-            from lazycat.llm import prism_client
+            from lazycat.llm import PrismClient
+            from app.config import LAZY_AGENT_URL
+            # Own client pointed at lazy-agent-service — the shared `prism_client`
+            # singleton defaults to PRISM_URL (:7777), which was retired 2026-10-15.
+            review_client = PrismClient()
+            review_client.url = LAZY_AGENT_URL
             assistant_reply = await Validator.self_review_html(
-                raw_html, 
-                prism_client, 
+                raw_html,
+                review_client,
                 project="HTML-Notes"
             )
             

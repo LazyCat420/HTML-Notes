@@ -2024,7 +2024,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // not (yet) told us which path it took. The fast lane's slowest members —
     // weather, a video search — settle inside this, so they never spawn one.
     const ENVELOPE_EXPAND_AFTER_MS = 2500;
-    // Floor between two visible detail-line updates. Prism can fire tool events
+    // Floor between two visible detail-line updates. The agent can fire tool events
     // in bursts; without this the line flickers unreadably and reads as noise
     // rather than progress.
     const ENVELOPE_DETAIL_MIN_MS = 600;
@@ -2220,7 +2220,7 @@ document.addEventListener("DOMContentLoaded", () => {
             },
 
             // A REAL fraction from the server. The bar only ever moves forward:
-            // prism's iteration counter and the research budget both report here
+            // the agent's iteration counter and the research budget both report here
             // and they run at different rates, so a raw assignment would visibly
             // rewind mid-turn.
             progress(step, of) {

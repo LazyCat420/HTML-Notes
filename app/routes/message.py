@@ -25,7 +25,11 @@ router = APIRouter()
 async def get_models():
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{LAZY_AGENT_URL}/config?includeLocal=true")
+            # Same header contract as the /agent call, so the gateway does not
+            # log this probe as default/anonymous.
+            resp = await client.get(f"{LAZY_AGENT_URL}/config?includeLocal=true",
+                                    headers={"x-project": AGENT_PROJECT,
+                                             "x-username": AGENT_USERNAME})
             if resp.status_code != 200:
                 raise HTTPException(status_code=500, detail="Failed to fetch models from lazy-agent-service")
             
@@ -684,15 +688,15 @@ async def send_message(req: MessageRequest):
         wants_music = bool(re.search(r'\b(music|radio|song|songs|playlist)\b', text_clean))
         league = resolve_league(text_clean)
 
-        # ── Canvas-control intercepts: ALWAYS ON, prism mode included ───────
+        # ── Canvas-control intercepts: ALWAYS ON, before any agent turn ─────
         # NOT latency shortcuts — capability workarounds, so they deliberately
-        # sit OUTSIDE the prism-mode guard below. The agent removes ONE widget
+        # sit ABOVE the agent call below. The agent removes ONE widget
         # per iteration and stops after the first mutation, so it structurally
         # CANNOT clear a full canvas ("close everything" silently failed while
         # these were gated). A list-item edit sent to the agent decomposes the
         # whole widget instead of editing it. These are unambiguous imperatives
         # about LOCAL UI state needing no knowledge, tools or research, so a
-        # 60-90s agent turn is worse on every axis. Content asks go to prism.
+        # 60-90s agent turn is worse on every axis. Content asks go to the agent.
         # LIST ITEM REMOVE — "delete the veggies from the grocery list" edits the
         # list in place. Checked before CLEAR_ALL and before wants_removal sends it
         # to the agent (which would decompose the whole widget).
@@ -864,10 +868,10 @@ async def send_message(req: MessageRequest):
                             "items": restored["items"]},
                     status="bringing your list back...")
 
-        # ── CRYPTO / ON-CHAIN — ALWAYS ON (prism mode included) ──────────────
-        # Deliberately OUTSIDE the prism-mode guard below, like the canvas-control
+        # ── CRYPTO / ON-CHAIN — ALWAYS ON (before any agent turn) ────────────
+        # Deliberately ABOVE the agent call below, like the canvas-control
         # intercepts: these are fully deterministic (regex + keyless on-chain APIs)
-        # and need NO LLM. In prism mode a crypto ask would otherwise depend on the
+        # and need NO LLM. Without this lane a crypto ask would depend on the
         # LLM router's classify pass — which silently fails to the agent whenever
         # the fast-LLM backend is down (observed after a power outage). The holder
         # graph is also something the agent literally cannot build. Conservative
@@ -980,422 +984,423 @@ async def send_message(req: MessageRequest):
         # The builders are deterministic local code (no LLM) emitting the same
         # SSE contract, so a "note widget" ask costs 2s instead of a 15s agent
         # loop.
-        if True:  # lazy-agent-service is the ONLY harness; prism mode removed 2026-10-15
-            # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
-            #    the dislike forever. Checked before every other video path so a
-            #    "find me another video" isn't misread as a fresh search for the
-            #    literal words. Only fires when a video is actually on screen.
-            current_vid = _session_current_video.get(req.session_id)
-            if (current_vid and not wants_removal and not wants_music
-                    and (ANOTHER_VIDEO_RE.search(text_clean) or CHANNEL_DISLIKE_RE.search(text_clean))):
-                vquery = current_vid.get("query") or clean_video_query(req.message)
-                disliked_channel = current_vid.get("channel")
-                if CHANNEL_DISLIKE_RE.search(text_clean) and disliked_channel:
-                    block_channel(disliked_channel, reason=f"disliked via: {req.message[:80]}")
-                    status = f"got it — never showing {disliked_channel} again. finding another..."
-                    logger.info(f"[VIDEO PREF] blocked channel {disliked_channel!r}")
-                else:
-                    block_video(current_vid.get("video_id"), reason=f"disliked via: {req.message[:80]}")
-                    status = "finding you a different one..."
-                    logger.info(f"[VIDEO PREF] blocked video {current_vid.get('video_id')!r}")
+        # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
+        #    the dislike forever. Checked before every other video path so a
+        #    "find me another video" isn't misread as a fresh search for the
+        #    literal words. Only fires when a video is actually on screen.
+        current_vid = _session_current_video.get(req.session_id)
+        if (current_vid and not wants_removal and not wants_music
+                and (ANOTHER_VIDEO_RE.search(text_clean) or CHANNEL_DISLIKE_RE.search(text_clean))):
+            vquery = current_vid.get("query") or clean_video_query(req.message)
+            disliked_channel = current_vid.get("channel")
+            if CHANNEL_DISLIKE_RE.search(text_clean) and disliked_channel:
+                block_channel(disliked_channel, reason=f"disliked via: {req.message[:80]}")
+                status = f"got it — never showing {disliked_channel} again. finding another..."
+                logger.info(f"[VIDEO PREF] blocked channel {disliked_channel!r}")
+            else:
+                block_video(current_vid.get("video_id"), reason=f"disliked via: {req.message[:80]}")
+                status = "finding you a different one..."
+                logger.info(f"[VIDEO PREF] blocked video {current_vid.get('video_id')!r}")
 
-                async def _find_another():
-                    # The replacement inherits the ORIGINAL ask's time constraint
-                    # (it lives in the remembered query): "another one" after
-                    # "a new video about X" must stay new.
-                    hits = await search_youtube_videos(
-                        vquery, limit=12, freshness=parse_freshness(vquery),
-                        form=parse_video_form(req.message) or _stashed_turn_form())
-                    hits = filter_blocked_videos(hits)
-                    top, cands = pick_best_video(hits, exclude_ids=_shown_video_ids(req.session_id))
-                    if not top:
-                        return None
-                    _remember_current_video(req.session_id, top, vquery)
-                    return {
-                        "video_id": top["video_id"],
-                        "title": top.get("title") or vquery,
-                        "query": vquery,
-                        "candidates": cands,
-                    }
-                return spawn_widget_stream("youtube_player", "video",
-                                           config_builder=_find_another, status=status)
-
-            # 1. SPORTS SCORES — "fifa scores", "ufc card", "who's playing in the nba".
-            #    A scoreboard is structured data, not prose: a text card of headlines
-            #    cannot show you who is playing whom.
-            if (league and not wants_removal and not is_video_ask
-                    and (SCORE_ASK_RE.search(text_clean) or text_clean in SPORTS_LEAGUES)):
-                # Resolved before returning so an off-season/empty league falls through
-                # to the agent instead of spawning an empty scoreboard.
-                board = await sports_scores(league)
-                if not board.get("is_error"):
-                    return spawn_widget_stream("scoreboard", "scores", board,
-                                               status=f"pulling {board.get('title', 'scores')}...")
-                # Off-season / no fixtures today: ESPN has nothing to put on a
-                # scoreboard, so rather than silently falling through to the slow
-                # agent loop (which for "fifa game current stats" rendered NOTHING),
-                # synthesize an answer card — standings, upcoming fixtures, recent
-                # results — from a web search. The user always gets something.
-                return spawn_widget_stream(
-                    "data_card", "sports-answer",
-                    config_builder=lambda: build_answer_config(req.message),
-                    status="the league is between games — finding the latest...")
-
-            # 2. NEWS VIDEO — "fifa news video". Searched by relevance this returns the
-            #    most-watched clip for those words (a years-old recap); news means the
-            #    NEWEST upload, so sort by date and drop the medium words from the query.
-            fresh_ask = parse_freshness(req.message)
-            # Fires for ANY video ask, not just one carrying a recency word:
-            # naming a channel is itself a request for that channel's newest
-            # upload. The picker returns None when no channel binds, so topic
-            # asks ("a cookie recipe video") fall through to normal search.
-            if (is_video_ask and not is_compound_ask
-                    and not wants_removal and not is_live_ask):
-                # Channel- and date-verified: "fox news video newest about the
-                # stock market" must come from the FOX News uploads feed, not
-                # whatever a date-sorted keyword search surfaces (live failure:
-                # a 40-view unrelated clip). parse_freshness also carries an
-                # explicit window ("this week") into the search. Falls through
-                # to the generic video branch below when the picker finds nothing.
-                rcfg = await _recency_video_pick(req.message, req.session_id,
-                                                 freshness=fresh_ask)
-                if rcfg:
-                    return spawn_widget_stream(
-                        "youtube_player", "news-video", rcfg,
-                        status=f"finding the latest '{rcfg.get('query') or clean_video_query(req.message)}' video...")
-
-            # 3. LIVE STREAMS — checked before the data guard, because "cnn live news"
-            #    contains "news" and was being sent down the data_card path (a text
-            #    list of headlines) when the user wanted something to watch. "live
-            #    music"/"live radio" still belongs to the music player, not YouTube.
-            if is_live_ask and not wants_removal and not wants_music:
-                # Search the CLEANED subject, not the raw message: "dunkey livestreams"
-                # must search "dunkey" under YouTube's live filter (the filter, not the
-                # word, is what finds a stream). Searching the literal "dunkey
-                # livestreams" returned nothing, so live asks silently died while the
-                # plain "dunkey videos" path worked.
-                lquery = clean_video_query(req.message)
-                # A named news network plays only from its OWN channels (or says
-                # it is not live and plays its newest upload) — never the top
-                # keyword hit, which was CNN-News18 / a FOX 10 webcam feed.
-                net_cfg = await pick_news_network_live(req.message)
-                if net_cfg:
-                    _remember_current_video(req.session_id, net_cfg, net_cfg["query"])
-                    return spawn_widget_stream(
-                        "youtube_player", "live", net_cfg,
-                        status=f"finding {net_cfg['query']}...")
-                live_hits = filter_blocked_videos(
-                    await search_youtube_videos(lquery, limit=6, order="live"))
-                if live_hits:
-                    top = live_hits[0]
-                    _remember_current_video(req.session_id, top, lquery)
-                    return spawn_widget_stream("youtube_player", "live", {
-                        "video_id": top["video_id"],
-                        "title": top.get("title") or lquery,
-                        "query": lquery,
-                        # Label-owned/geo-blocked streams refuse to embed; the player
-                        # hops through these on an embed error.
-                        "candidates": [v["video_id"] for v in live_hits[1:] if v.get("video_id")],
-                    }, status=f"finding a '{lquery}' live stream...")
-                # Nobody's live right now: fall back to a regular (varied) video of the
-                # same subject rather than falling through to the agent (which broke).
-                # "dunkey livestreams" when dunkey is offline → a dunkey video.
-                vod_hits = filter_blocked_videos(
-                    await search_youtube_videos(lquery, limit=10,
-                                                form=parse_video_form(req.message)))
-                top, cands = pick_best_video(vod_hits, exclude_ids=_shown_video_ids(req.session_id))
-                if top:
-                    _remember_current_video(req.session_id, top, lquery)
-                    return spawn_widget_stream("youtube_player", "video", {
-                        "video_id": top["video_id"],
-                        "title": top.get("title") or lquery,
-                        "query": lquery,
-                        "candidates": cands,
-                    }, status=f"no live stream right now — pulling a '{lquery}' video...")
-
-            # 3b. GENERAL VIDEO — a plain "show me a video of X" / "X video" that is
-            #     neither a live stream (handled above, deterministic — bloomberg live
-            #     is always THE stream) nor a dated news clip. Broad topic asks like
-            #     "a cookie recipe video" used to fall through to the agent, which
-            #     picked the #1 hit every time, so a repeat ask replayed the identical
-            #     video. Fast-path it AND vary among the top handful so it stays
-            #     interesting. Music videos keep going to the player, not here.
-            if is_video_ask and not is_compound_ask and not wants_removal and not wants_music:
-                vquery = clean_video_query(req.message)
-                vhits = await search_youtube_videos(vquery, limit=10, rerank=True,
-                                                    freshness=fresh_ask,
-                                                    form=parse_video_form(req.message))
-                vhits = filter_blocked_videos(vhits)
-                top, cands = pick_best_video(vhits, exclude_ids=_shown_video_ids(req.session_id))
-                if top:
-                    _remember_current_video(req.session_id, top, vquery)
-                    return spawn_widget_stream("youtube_player", "video", {
-                        "video_id": top["video_id"],
-                        "title": top.get("title") or vquery,
-                        "query": vquery,
-                        "candidates": cands,
-                    }, status=f"finding a '{vquery}' video...")
-
-            # 4. WEATHER — "weather in Tokyo", "forecast for London", "sf weather".
-            #    A real Open-Meteo pull (keyless) rendered as the dedicated weather
-            #    widget, not a text card of search results about weather.
-            if WEATHER_ASK_RE.search(text_clean) and not wants_removal and not is_video_ask:
-                weather = await get_weather(extract_location(
-                    req.message,
-                    default=canvas_defaults(req.session_id, req.current_canvas or "").get("place", "")))
-                if not weather.get("is_error"):
-                    return spawn_widget_stream(
-                        "weather", "weather", weather,
-                        status=f"checking the weather in {weather.get('location', '')}...",
-                        widget_id=find_existing_widget(req.session_id, "weather"))
-                # An unresolved place falls through to the agent instead of a dead card.
-
-            # News, market news, stock reports and briefs are all claimed by the
-            # PRE-ROUTER stage above (classify_news_ask), before this cascade.
-
-            # 5a. WIKIPEDIA — "open a random wikipedia page", "wikipedia about X".
-            #     Rendered as a data_card from the REST summary API, NOT an iframe:
-            #     en.wikipedia.org sends X-Frame-Options and refuses to embed, which
-            #     rendered a solid-black "App Window".
-            if (WIKI_ASK_RE.search(text_clean)
-                    and not wants_removal and not is_video_ask):
-                return spawn_widget_stream(
-                    "data_card", "wikipedia",
-                    config_builder=lambda: build_wikipedia_config(req.message),
-                    status="opening a Wikipedia article...")
-
-            # 5b. DIRECTIONS / TRAVEL-TIME — "how long to the airport", "traffic to
-            #     downtown", "directions to X". No routing widget yet, so synthesise a
-            #     real answer card instead of a blank map. Checked BEFORE the map fast
-            #     path (a travel question isn't a "where is X" marker map) and OUTSIDE
-            #     the is_data_ask gate so a "weather AND how long to..." still resolves.
-            if (DIRECTIONS_ASK_RE.search(text_clean)
-                    and not EAT_MAP_RE.search(text_clean)
-                    and not wants_removal and not is_video_ask):
-                # "traffic in X", "directions to Y", "from A to B" → a real Google Maps
-                # embed (keyless, client-side, traffic-aware) instead of a text card.
-                # A pure travel-TIME ask ("how long to the airport") keeps the answer
-                # card, which gives the actual minutes.
-                if TRAFFIC_MAP_RE.search(text_clean):
-                    # Gated by TRAFFIC_MAP_RE above, so intent is already settled.
-                    # A bare "traffic" means the newest place on the canvas
-                    # (context bus) — the router branch already did this; the
-                    # fast lane must agree or the two tiers answer differently.
-                    traffic_widget, traffic_cfg = await build_traffic_widget(
-                        req.message, force_traffic=True,
-                        default_place=canvas_defaults(req.session_id, req.current_canvas or "").get("place", ""))
-                    if traffic_cfg:
-                        # Reuse is handled centrally by the "traffic" id prefix —
-                        # see SINGLETON_ROLE_PREFIXES — so both this fast path and
-                        # the router branch collapse onto the same open widget.
-                        return spawn_widget_stream(
-                            traffic_widget, "traffic", config=traffic_cfg,
-                            status="pulling up the map and live traffic...")
-                return spawn_widget_stream(
-                    "data_card", "directions",
-                    config_builder=lambda: build_answer_config(req.message),
-                    status="checking the route and travel time...")
-
-            # 5c. TRIP PLANNING — "plan a trip to Japan", "3 days in Rome". Builds a real
-            #     day-by-day itinerary card AND a map pinned with the actual places it
-            #     names (via build_trip_widgets). Checked BEFORE the map branch so
-            #     "trip to japan" isn't grabbed as a bare place map, and reuses
-            #     spawn_router_stream so both widgets land in one commit.
-            if (TRIP_ASK_RE.search(text_clean)
-                    and not wants_removal and not is_video_ask and not is_list_ask):
-                return spawn_router_stream(
-                    [{"type": "trip", "query": req.message}], reason="planning your trip")
-
-            # 5d. SHOPPING / PRODUCT PICKS — "good outdoor shoes", "best budget laptop".
-            #     A grid of reference-photo cards, each linking to its source, instead of
-            #     a wall of links. Checked before the map/POI branch (a product ask names
-            #     no place) and outside the is_data_ask gate.
-            if (SHOP_ASK_RE.search(text_clean)
-                    and not wants_removal and not is_video_ask and not is_list_ask):
-                # PRISM MODE skips this: a shopping ask is real RESEARCH, so it falls
-                # through to the prism agent (web_search + read_page harnesses → a
-                # synthesised, sourced pick list) instead of a local search-scrape grid.
-                return spawn_widget_stream(
-                    "products", "products",
-                    config_builder=lambda: build_products_config(req.message),
-                    status="finding recommendations with photos...")
-
-            # 5e. WORLD / SPACE / MARKETS from tools-service (:5590) — keyless and
-            #     already cached there: earthquakes, wildfires, the ISS, rocket
-            #     launches, NASA's picture of the day, the moon, tides, solar
-            #     flares, commodity movers, what's trending. Sits BEFORE the map
-            #     lane because MAP_ASK_RE claims "earthquakes|wildfires" for the
-            #     web-search map. Resolved before returning so a dead source
-            #     falls through to the next tier instead of rendering a dead card.
-            _tsk = toolsvc_kind_for(text_clean)
-            if _tsk and not wants_removal and not is_video_ask:
-                _built = await build_toolsvc_config(_tsk)
-                if _built:
-                    _wt, _pfx, _cfg = _built
-                    return spawn_widget_stream(
-                        _wt, _pfx, _cfg,
-                        status=f"pulling {_tsk.replace('_', ' ')}...",
-                        widget_id=find_existing_widget_by_id_prefix(req.session_id, _pfx),
-                        debug_extra={"toolsvc": _tsk})
-                logger.info(f"[TOOLSVC] {_tsk} source did not answer — falling through")
-
-            # 6. MAP — geo/location queries, and business/POI asks ("coffee shops in
-            #    Seattle") which have NO map/where token so MAP_ASK_RE misses them and
-            #    they fell through to the agent (a wall-of-links data_card). Pulled OUT
-            #    of the is_data_ask gate so "weather in X and a map of Y" still draws a
-            #    map; the POI branch stays gated so "restaurant news" still goes to news.
-            if ((MAP_ASK_RE.search(text_clean)
-                 or ((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
-                     and not is_data_ask and not is_list_ask))
-                    and not wants_removal and not is_video_ask):
-                # A POI/eat ask ("where can I get food", "coffee near me") with no place
-                # named and no saved city would otherwise map the SERVER's region. Ask
-                # the user where they are instead of guessing. Hazard/"where is X" asks
-                # (MAP_ASK_RE only) name their own places and skip this.
-                _is_poi = bool((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
-                               and not _NON_POI_GEO_RE.search(text_clean))
-                if _is_poi and not poi_query_has_location(req.message):
-                    return spawn_widget_stream(
-                        "data_card", "askloc",
-                        config=build_location_prompt_config(req.message),
-                        status="one sec — which city are you in?")
-                return spawn_widget_stream(
-                    "map", "map",
-                    config_builder=lambda: build_map_config(req.message),
-                    status="finding the places and building your map...",
-                    widget_id=find_existing_widget(req.session_id, "map"))
-
-            # 6b. LIST EDIT — "add greek salad to the grocery list", "also add milk".
-            #     Merge into the EXISTING checklist (reuse its widget_id) rather than
-            #     spawning a second list. Only fires when a checklist is actually on
-            #     the canvas; otherwise falls through to the normal create path.
-            if (LIST_EDIT_RE.search(text_clean)
-                    and not wants_removal and not is_video_ask):
-                existing_list = _extract_existing_checklist(req.session_id)
-                if existing_list:
-                    ex_id, ex_title, ex_items = existing_list
-                    return spawn_widget_stream(
-                        "checklist", "checklist",
-                        config_builder=lambda: build_list_add_config(
-                            req.message, ex_title, ex_items),
-                        status=f"adding to “{ex_title}”...",
-                        widget_id=ex_id)
-
-            if not wants_removal and not is_video_ask and not is_data_ask:
-                is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
-                topic = extract_topic(req.message)
-
-                # 2. TIME / CLOCK / TIMER — broadened from bare "clock", which missed
-                #    every "time"-phrased ask ("what time is it", "time in tokyo") so
-                #    they fell to the agent and "just broke". Also handles timers and
-                #    stopwatches, and resolves a place name to an IANA timezone.
-                if (re.search(r'\bclock\b|\bwhat\'?s? ?(the )?time\b|\b(the|current) time\b'
-                              r'|\btime in\b|\btimer\b|\bcountdown\b|\bstopwatch\b|\bpomodoro\b',
-                              text_clean) and not is_searching):
-                    if re.search(r'\b(timer|countdown|pomodoro)\b', text_clean):
-                        secs = _parse_duration_seconds(req.message) or (
-                            25 * 60 if "pomodoro" in text_clean else 60)
-                        return spawn_widget_stream("clock", "clock",
-                            {"mode": "countdown", "duration_seconds": secs},
-                            status=f"starting a {secs//60 or secs}-{'min' if secs>=60 else 'sec'} timer...")
-                    if "stopwatch" in text_clean:
-                        return spawn_widget_stream("clock", "clock", {"mode": "stopwatch"})
-                    tz = _resolve_timezone(req.message)
-                    return spawn_widget_stream("clock", "clock",
-                                               {"timezone": tz} if tz else {})
-
-                # 3. Music — asking for a music widget always means "start playing
-                # it", so autoplay unconditionally instead of requiring the word
-                # "play" in the request.
-                # "play smooth jazz" / "listen to some reggae" name NO medium word,
-                # yet are unambiguous music asks. Requiring \b(music|player|radio)\b
-                # routed them to the agent, which measured at 105s+ to first widget
-                # (2026-10-08 probe) and dies when the runtime hiccups. A play-verb
-                # plus a residual genre is deterministic enough to build directly.
-                has_custom_url = "http" in text_clean or "www" in text_clean
-                genre_candidate = extract_music_genre(req.message)
-                # Residuals that are real asks but NOT music — "play the news",
-                # "play a podcast" must never become a genre radio widget.
-                _NON_MUSIC_SUBJECTS = {
-                    "news", "video", "videos", "podcast", "podcasts", "weather",
-                    "movie", "movies", "trailer", "trailers", "sports", "game",
-                    "games", "stream", "show", "shows", "episode", "interview",
+            async def _find_another():
+                # The replacement inherits the ORIGINAL ask's time constraint
+                # (it lives in the remembered query): "another one" after
+                # "a new video about X" must stay new.
+                hits = await search_youtube_videos(
+                    vquery, limit=12, freshness=parse_freshness(vquery),
+                    form=parse_video_form(req.message) or _stashed_turn_form())
+                hits = filter_blocked_videos(hits)
+                top, cands = pick_best_video(hits, exclude_ids=_shown_video_ids(req.session_id))
+                if not top:
+                    return None
+                _remember_current_video(req.session_id, top, vquery)
+                return {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or vquery,
+                    "query": vquery,
+                    "candidates": cands,
                 }
-                _play_verb = re.search(
-                    r'\b(play|plays|playing|listen|listening|hear|put on)\b', text_clean)
-                _medium_word = re.search(r'\b(music|player|radio)\b', text_clean)
-                if (not has_custom_url
-                        and (_medium_word
-                             or (_play_verb and genre_candidate
-                                 and genre_candidate not in _NON_MUSIC_SUBJECTS))):
-                    genre = genre_candidate or "lofi"
-                    # "X music/radio" phrasing is genre-shaped ("jungle music"
-                    # means the genre, not the band Jungle) — default the mix
-                    # pipeline to genre. Named acts come through the LLM router,
-                    # which can set kind=artist; a wrong guess here self-corrects
-                    # via the widget's genre→artist failover.
-                    return spawn_widget_stream("mini_music_player", "music",
-                                               {"genre": genre, "kind": "genre", "autoplay": True})
+            return spawn_widget_stream("youtube_player", "video",
+                                       config_builder=_find_another, status=status)
 
-                # 4. LISTS — checked BEFORE notes, so "notes for a grocery list" is a
-                #    list, not a blank notepad. A list always gets real items written
-                #    into it; an empty checklist is never what anyone asked for.
-                if LIST_INTENT_RE.search(text_clean) and not is_searching:
-                    return spawn_widget_stream(
-                        "checklist", "checklist",
-                        config_builder=lambda: build_list_config(req.message),
-                        status="writing your list...",
-                    )
+        # 1. SPORTS SCORES — "fifa scores", "ufc card", "who's playing in the nba".
+        #    A scoreboard is structured data, not prose: a text card of headlines
+        #    cannot show you who is playing whom.
+        if (league and not wants_removal and not is_video_ask
+                and (SCORE_ASK_RE.search(text_clean) or text_clean in SPORTS_LEAGUES)):
+            # Resolved before returning so an off-season/empty league falls through
+            # to the agent instead of spawning an empty scoreboard.
+            board = await sports_scores(league)
+            if not board.get("is_error"):
+                return spawn_widget_stream("scoreboard", "scores", board,
+                                           status=f"pulling {board.get('title', 'scores')}...")
+            # Off-season / no fixtures today: ESPN has nothing to put on a
+            # scoreboard, so rather than silently falling through to the slow
+            # agent loop (which for "fifa game current stats" rendered NOTHING),
+            # synthesize an answer card — standings, upcoming fixtures, recent
+            # results — from a web search. The user always gets something.
+            return spawn_widget_stream(
+                "data_card", "sports-answer",
+                config_builder=lambda: build_answer_config(req.message),
+                status="the league is between games — finding the latest...")
 
-                # 5. NOTES — a bare "notes"/"notepad" means a blank surface to type on.
-                #    "notes about X" means the note should already say something.
-                if NOTES_INTENT_RE.search(text_clean) and not is_searching:
-                    if not topic:
-                        return spawn_widget_stream("notes", "notes", {})
-                    return spawn_widget_stream(
-                        "notes", "notes",
-                        config_builder=lambda: build_notes_config(req.message),
-                        status="writing your note...",
-                    )
-
-                # (MAP now runs earlier, outside the is_data_ask gate — see above.)
-
-
-            # ── Lanes 6.9 and 7 sit OUTSIDE the `not is_data_ask` gate (H9). ──
-            # The gate protects clock/music/list/notes from substring hits like
-            # "clock for video"; it made compose/answer unreachable for any ask
-            # containing a data word — "what is a stock split" fell through to
-            # the LLM router. Compose plans its own modalities; answer yields
-            # only to a word that names a FETCH (LIVE_LOOKUP_RE), not to "stock".
-            # 6.9 COMPOSE — a BROAD "tell me about X / give me the rundown on X" ask
-            #     deserves the whole picture: an explanation PLUS supporting media
-            #     (image, video, recent news), not a lone text card. Plan the
-            #     modalities and fan them out as ONE atomic multi-widget commit.
-            #     Falls through to the single-widget answer/router when planning
-            #     yields <2 modalities (i.e. it's really a narrow ask).
-            if ((COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
-                    and not wants_removal and not is_video_ask):
-                plan = await build_composition_plan(req.message)
-                if len(plan) >= 2:
-                    logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
-                                f"{[w['type'] for w in plan]}")
-                    return spawn_router_stream(plan, reason="composed answer")
-
-            # 7. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
-            #    Synthesised into a readable answer card (Markdown answer + demoted
-            #    sources) instead of dumping the user into the ~30-60s agent loop
-            #    that returns a wall of links.
-            if (ANSWER_ASK_RE.search(text_clean)
-                    and not wants_removal and not is_video_ask
-                    and not LIVE_LOOKUP_RE.search(text_clean)):
-                # PRISM MODE skips this too: a fact/how-to/definition ask is research —
-                # the prism agent searches + reads pages + synthesises, rather than the
-                # local one-shot answer builder.
+        # 2. NEWS VIDEO — "fifa news video". Searched by relevance this returns the
+        #    most-watched clip for those words (a years-old recap); news means the
+        #    NEWEST upload, so sort by date and drop the medium words from the query.
+        fresh_ask = parse_freshness(req.message)
+        # Fires for ANY video ask, not just one carrying a recency word:
+        # naming a channel is itself a request for that channel's newest
+        # upload. The picker returns None when no channel binds, so topic
+        # asks ("a cookie recipe video") fall through to normal search.
+        if (is_video_ask and not is_compound_ask
+                and not wants_removal and not is_live_ask):
+            # Channel- and date-verified: "fox news video newest about the
+            # stock market" must come from the FOX News uploads feed, not
+            # whatever a date-sorted keyword search surfaces (live failure:
+            # a 40-view unrelated clip). parse_freshness also carries an
+            # explicit window ("this week") into the search. Falls through
+            # to the generic video branch below when the picker finds nothing.
+            rcfg = await _recency_video_pick(req.message, req.session_id,
+                                             freshness=fresh_ask)
+            if rcfg:
                 return spawn_widget_stream(
-                    "data_card", "answer",
-                    config_builder=lambda: build_answer_config(req.message),
-                    status="researching and writing your answer...",
+                    "youtube_player", "news-video", rcfg,
+                    status=f"finding the latest '{rcfg.get('query') or clean_video_query(req.message)}' video...")
+
+        # 3. LIVE STREAMS — checked before the data guard, because "cnn live news"
+        #    contains "news" and was being sent down the data_card path (a text
+        #    list of headlines) when the user wanted something to watch. "live
+        #    music"/"live radio" still belongs to the music player, not YouTube.
+        if is_live_ask and not wants_removal and not wants_music:
+            # Search the CLEANED subject, not the raw message: "dunkey livestreams"
+            # must search "dunkey" under YouTube's live filter (the filter, not the
+            # word, is what finds a stream). Searching the literal "dunkey
+            # livestreams" returned nothing, so live asks silently died while the
+            # plain "dunkey videos" path worked.
+            lquery = clean_video_query(req.message)
+            # A named news network plays only from its OWN channels (or says
+            # it is not live and plays its newest upload) — never the top
+            # keyword hit, which was CNN-News18 / a FOX 10 webcam feed.
+            net_cfg = await pick_news_network_live(req.message)
+            if net_cfg:
+                _remember_current_video(req.session_id, net_cfg, net_cfg["query"])
+                return spawn_widget_stream(
+                    "youtube_player", "live", net_cfg,
+                    status=f"finding {net_cfg['query']}...")
+            live_hits = filter_blocked_videos(
+                await search_youtube_videos(lquery, limit=6, order="live"))
+            if live_hits:
+                top = live_hits[0]
+                _remember_current_video(req.session_id, top, lquery)
+                return spawn_widget_stream("youtube_player", "live", {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or lquery,
+                    "query": lquery,
+                    # Label-owned/geo-blocked streams refuse to embed; the player
+                    # hops through these on an embed error.
+                    "candidates": [v["video_id"] for v in live_hits[1:] if v.get("video_id")],
+                }, status=f"finding a '{lquery}' live stream...")
+            # Nobody's live right now: fall back to a regular (varied) video of the
+            # same subject rather than falling through to the agent (which broke).
+            # "dunkey livestreams" when dunkey is offline → a dunkey video.
+            vod_hits = filter_blocked_videos(
+                await search_youtube_videos(lquery, limit=10,
+                                            form=parse_video_form(req.message)))
+            top, cands = pick_best_video(vod_hits, exclude_ids=_shown_video_ids(req.session_id))
+            if top:
+                _remember_current_video(req.session_id, top, lquery)
+                return spawn_widget_stream("youtube_player", "video", {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or lquery,
+                    "query": lquery,
+                    "candidates": cands,
+                }, status=f"no live stream right now — pulling a '{lquery}' video...")
+
+        # 3b. GENERAL VIDEO — a plain "show me a video of X" / "X video" that is
+        #     neither a live stream (handled above, deterministic — bloomberg live
+        #     is always THE stream) nor a dated news clip. Broad topic asks like
+        #     "a cookie recipe video" used to fall through to the agent, which
+        #     picked the #1 hit every time, so a repeat ask replayed the identical
+        #     video. Fast-path it AND vary among the top handful so it stays
+        #     interesting. Music videos keep going to the player, not here.
+        if is_video_ask and not is_compound_ask and not wants_removal and not wants_music:
+            vquery = clean_video_query(req.message)
+            vhits = await search_youtube_videos(vquery, limit=10, rerank=True,
+                                                freshness=fresh_ask,
+                                                form=parse_video_form(req.message))
+            vhits = filter_blocked_videos(vhits)
+            top, cands = pick_best_video(vhits, exclude_ids=_shown_video_ids(req.session_id))
+            if top:
+                _remember_current_video(req.session_id, top, vquery)
+                return spawn_widget_stream("youtube_player", "video", {
+                    "video_id": top["video_id"],
+                    "title": top.get("title") or vquery,
+                    "query": vquery,
+                    "candidates": cands,
+                }, status=f"finding a '{vquery}' video...")
+
+        # 4. WEATHER — "weather in Tokyo", "forecast for London", "sf weather".
+        #    A real Open-Meteo pull (keyless) rendered as the dedicated weather
+        #    widget, not a text card of search results about weather.
+        if WEATHER_ASK_RE.search(text_clean) and not wants_removal and not is_video_ask:
+            weather = await get_weather(extract_location(
+                req.message,
+                default=canvas_defaults(req.session_id, req.current_canvas or "").get("place", "")))
+            if not weather.get("is_error"):
+                return spawn_widget_stream(
+                    "weather", "weather", weather,
+                    status=f"checking the weather in {weather.get('location', '')}...",
+                    widget_id=find_existing_widget(req.session_id, "weather"))
+            # An unresolved place falls through to the agent instead of a dead card.
+
+        # News, market news, stock reports and briefs are all claimed by the
+        # PRE-ROUTER stage above (classify_news_ask), before this cascade.
+
+        # 5a. WIKIPEDIA — "open a random wikipedia page", "wikipedia about X".
+        #     Rendered as a data_card from the REST summary API, NOT an iframe:
+        #     en.wikipedia.org sends X-Frame-Options and refuses to embed, which
+        #     rendered a solid-black "App Window".
+        if (WIKI_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask):
+            return spawn_widget_stream(
+                "data_card", "wikipedia",
+                config_builder=lambda: build_wikipedia_config(req.message),
+                status="opening a Wikipedia article...")
+
+        # 5b. DIRECTIONS / TRAVEL-TIME — "how long to the airport", "traffic to
+        #     downtown", "directions to X". No routing widget yet, so synthesise a
+        #     real answer card instead of a blank map. Checked BEFORE the map fast
+        #     path (a travel question isn't a "where is X" marker map) and OUTSIDE
+        #     the is_data_ask gate so a "weather AND how long to..." still resolves.
+        if (DIRECTIONS_ASK_RE.search(text_clean)
+                and not EAT_MAP_RE.search(text_clean)
+                and not wants_removal and not is_video_ask):
+            # "traffic in X", "directions to Y", "from A to B" → a real Google Maps
+            # embed (keyless, client-side, traffic-aware) instead of a text card.
+            # A pure travel-TIME ask ("how long to the airport") keeps the answer
+            # card, which gives the actual minutes.
+            if TRAFFIC_MAP_RE.search(text_clean):
+                # Gated by TRAFFIC_MAP_RE above, so intent is already settled.
+                # A bare "traffic" means the newest place on the canvas
+                # (context bus) — the router branch already did this; the
+                # fast lane must agree or the two tiers answer differently.
+                traffic_widget, traffic_cfg = await build_traffic_widget(
+                    req.message, force_traffic=True,
+                    default_place=canvas_defaults(req.session_id, req.current_canvas or "").get("place", ""))
+                if traffic_cfg:
+                    # Reuse is handled centrally by the "traffic" id prefix —
+                    # see SINGLETON_ROLE_PREFIXES — so both this fast path and
+                    # the router branch collapse onto the same open widget.
+                    return spawn_widget_stream(
+                        traffic_widget, "traffic", config=traffic_cfg,
+                        status="pulling up the map and live traffic...")
+            return spawn_widget_stream(
+                "data_card", "directions",
+                config_builder=lambda: build_answer_config(req.message),
+                status="checking the route and travel time...")
+
+        # 5c. TRIP PLANNING — "plan a trip to Japan", "3 days in Rome". Builds a real
+        #     day-by-day itinerary card AND a map pinned with the actual places it
+        #     names (via build_trip_widgets). Checked BEFORE the map branch so
+        #     "trip to japan" isn't grabbed as a bare place map, and reuses
+        #     spawn_router_stream so both widgets land in one commit.
+        if (TRIP_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask and not is_list_ask):
+            return spawn_router_stream(
+                [{"type": "trip", "query": req.message}], reason="planning your trip")
+
+        # 5d. SHOPPING / PRODUCT PICKS — "good outdoor shoes", "best budget laptop".
+        #     A grid of reference-photo cards, each linking to its source, instead of
+        #     a wall of links. Checked before the map/POI branch (a product ask names
+        #     no place) and outside the is_data_ask gate.
+        if (SHOP_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask and not is_list_ask):
+            # This local grid ALWAYS builds: prism mode was removed
+            # 2026-10-15, so nothing defers a shopping ask to the agent any
+            # more (web_search + read_page harnesses → a synthesised pick
+            # list) instead of a local search-scrape grid.
+            return spawn_widget_stream(
+                "products", "products",
+                config_builder=lambda: build_products_config(req.message),
+                status="finding recommendations with photos...")
+
+        # 5e. WORLD / SPACE / MARKETS from tools-service (:5590) — keyless and
+        #     already cached there: earthquakes, wildfires, the ISS, rocket
+        #     launches, NASA's picture of the day, the moon, tides, solar
+        #     flares, commodity movers, what's trending. Sits BEFORE the map
+        #     lane because MAP_ASK_RE claims "earthquakes|wildfires" for the
+        #     web-search map. Resolved before returning so a dead source
+        #     falls through to the next tier instead of rendering a dead card.
+        _tsk = toolsvc_kind_for(text_clean)
+        if _tsk and not wants_removal and not is_video_ask:
+            _built = await build_toolsvc_config(_tsk)
+            if _built:
+                _wt, _pfx, _cfg = _built
+                return spawn_widget_stream(
+                    _wt, _pfx, _cfg,
+                    status=f"pulling {_tsk.replace('_', ' ')}...",
+                    widget_id=find_existing_widget_by_id_prefix(req.session_id, _pfx),
+                    debug_extra={"toolsvc": _tsk})
+            logger.info(f"[TOOLSVC] {_tsk} source did not answer — falling through")
+
+        # 6. MAP — geo/location queries, and business/POI asks ("coffee shops in
+        #    Seattle") which have NO map/where token so MAP_ASK_RE misses them and
+        #    they fell through to the agent (a wall-of-links data_card). Pulled OUT
+        #    of the is_data_ask gate so "weather in X and a map of Y" still draws a
+        #    map; the POI branch stays gated so "restaurant news" still goes to news.
+        if ((MAP_ASK_RE.search(text_clean)
+             or ((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
+                 and not is_data_ask and not is_list_ask))
+                and not wants_removal and not is_video_ask):
+            # A POI/eat ask ("where can I get food", "coffee near me") with no place
+            # named and no saved city would otherwise map the SERVER's region. Ask
+            # the user where they are instead of guessing. Hazard/"where is X" asks
+            # (MAP_ASK_RE only) name their own places and skip this.
+            _is_poi = bool((POI_MAP_RE.search(text_clean) or EAT_MAP_RE.search(text_clean))
+                           and not _NON_POI_GEO_RE.search(text_clean))
+            if _is_poi and not poi_query_has_location(req.message):
+                return spawn_widget_stream(
+                    "data_card", "askloc",
+                    config=build_location_prompt_config(req.message),
+                    status="one sec — which city are you in?")
+            return spawn_widget_stream(
+                "map", "map",
+                config_builder=lambda: build_map_config(req.message),
+                status="finding the places and building your map...",
+                widget_id=find_existing_widget(req.session_id, "map"))
+
+        # 6b. LIST EDIT — "add greek salad to the grocery list", "also add milk".
+        #     Merge into the EXISTING checklist (reuse its widget_id) rather than
+        #     spawning a second list. Only fires when a checklist is actually on
+        #     the canvas; otherwise falls through to the normal create path.
+        if (LIST_EDIT_RE.search(text_clean)
+                and not wants_removal and not is_video_ask):
+            existing_list = _extract_existing_checklist(req.session_id)
+            if existing_list:
+                ex_id, ex_title, ex_items = existing_list
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config_builder=lambda: build_list_add_config(
+                        req.message, ex_title, ex_items),
+                    status=f"adding to “{ex_title}”...",
+                    widget_id=ex_id)
+
+        if not wants_removal and not is_video_ask and not is_data_ask:
+            is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
+            topic = extract_topic(req.message)
+
+            # 2. TIME / CLOCK / TIMER — broadened from bare "clock", which missed
+            #    every "time"-phrased ask ("what time is it", "time in tokyo") so
+            #    they fell to the agent and "just broke". Also handles timers and
+            #    stopwatches, and resolves a place name to an IANA timezone.
+            if (re.search(r'\bclock\b|\bwhat\'?s? ?(the )?time\b|\b(the|current) time\b'
+                          r'|\btime in\b|\btimer\b|\bcountdown\b|\bstopwatch\b|\bpomodoro\b',
+                          text_clean) and not is_searching):
+                if re.search(r'\b(timer|countdown|pomodoro)\b', text_clean):
+                    secs = _parse_duration_seconds(req.message) or (
+                        25 * 60 if "pomodoro" in text_clean else 60)
+                    return spawn_widget_stream("clock", "clock",
+                        {"mode": "countdown", "duration_seconds": secs},
+                        status=f"starting a {secs//60 or secs}-{'min' if secs>=60 else 'sec'} timer...")
+                if "stopwatch" in text_clean:
+                    return spawn_widget_stream("clock", "clock", {"mode": "stopwatch"})
+                tz = _resolve_timezone(req.message)
+                return spawn_widget_stream("clock", "clock",
+                                           {"timezone": tz} if tz else {})
+
+            # 3. Music — asking for a music widget always means "start playing
+            # it", so autoplay unconditionally instead of requiring the word
+            # "play" in the request.
+            # "play smooth jazz" / "listen to some reggae" name NO medium word,
+            # yet are unambiguous music asks. Requiring \b(music|player|radio)\b
+            # routed them to the agent, which measured at 105s+ to first widget
+            # (2026-10-08 probe) and dies when the runtime hiccups. A play-verb
+            # plus a residual genre is deterministic enough to build directly.
+            has_custom_url = "http" in text_clean or "www" in text_clean
+            genre_candidate = extract_music_genre(req.message)
+            # Residuals that are real asks but NOT music — "play the news",
+            # "play a podcast" must never become a genre radio widget.
+            _NON_MUSIC_SUBJECTS = {
+                "news", "video", "videos", "podcast", "podcasts", "weather",
+                "movie", "movies", "trailer", "trailers", "sports", "game",
+                "games", "stream", "show", "shows", "episode", "interview",
+            }
+            _play_verb = re.search(
+                r'\b(play|plays|playing|listen|listening|hear|put on)\b', text_clean)
+            _medium_word = re.search(r'\b(music|player|radio)\b', text_clean)
+            if (not has_custom_url
+                    and (_medium_word
+                         or (_play_verb and genre_candidate
+                             and genre_candidate not in _NON_MUSIC_SUBJECTS))):
+                genre = genre_candidate or "lofi"
+                # "X music/radio" phrasing is genre-shaped ("jungle music"
+                # means the genre, not the band Jungle) — default the mix
+                # pipeline to genre. Named acts come through the LLM router,
+                # which can set kind=artist; a wrong guess here self-corrects
+                # via the widget's genre→artist failover.
+                return spawn_widget_stream("mini_music_player", "music",
+                                           {"genre": genre, "kind": "genre", "autoplay": True})
+
+            # 4. LISTS — checked BEFORE notes, so "notes for a grocery list" is a
+            #    list, not a blank notepad. A list always gets real items written
+            #    into it; an empty checklist is never what anyone asked for.
+            if LIST_INTENT_RE.search(text_clean) and not is_searching:
+                return spawn_widget_stream(
+                    "checklist", "checklist",
+                    config_builder=lambda: build_list_config(req.message),
+                    status="writing your list...",
                 )
+
+            # 5. NOTES — a bare "notes"/"notepad" means a blank surface to type on.
+            #    "notes about X" means the note should already say something.
+            if NOTES_INTENT_RE.search(text_clean) and not is_searching:
+                if not topic:
+                    return spawn_widget_stream("notes", "notes", {})
+                return spawn_widget_stream(
+                    "notes", "notes",
+                    config_builder=lambda: build_notes_config(req.message),
+                    status="writing your note...",
+                )
+
+            # (MAP now runs earlier, outside the is_data_ask gate — see above.)
+
+
+        # ── Lanes 6.9 and 7 sit OUTSIDE the `not is_data_ask` gate (H9). ──
+        # The gate protects clock/music/list/notes from substring hits like
+        # "clock for video"; it made compose/answer unreachable for any ask
+        # containing a data word — "what is a stock split" fell through to
+        # the LLM router. Compose plans its own modalities; answer yields
+        # only to a word that names a FETCH (LIVE_LOOKUP_RE), not to "stock".
+        # 6.9 COMPOSE — a BROAD "tell me about X / give me the rundown on X" ask
+        #     deserves the whole picture: an explanation PLUS supporting media
+        #     (image, video, recent news), not a lone text card. Plan the
+        #     modalities and fan them out as ONE atomic multi-widget commit.
+        #     Falls through to the single-widget answer/router when planning
+        #     yields <2 modalities (i.e. it's really a narrow ask).
+        if ((COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
+                and not wants_removal and not is_video_ask):
+            plan = await build_composition_plan(req.message)
+            if len(plan) >= 2:
+                logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
+                            f"{[w['type'] for w in plan]}")
+                return spawn_router_stream(plan, reason="composed answer")
+
+        # 7. ANSWER — recipes, how-tos, definitions, "what/who/when is X".
+        #    Synthesised into a readable answer card (Markdown answer + demoted
+        #    sources) instead of dumping the user into the ~30-60s agent loop
+        #    that returns a wall of links.
+        if (ANSWER_ASK_RE.search(text_clean)
+                and not wants_removal and not is_video_ask
+                and not LIVE_LOOKUP_RE.search(text_clean)):
+            # This lane ALWAYS builds: prism mode was removed 2026-10-15, so
+            # nothing defers a fact/how-to/definition ask to the agent any
+            # more (the agent searches + reads pages + synthesises, rather
+            # than this local one-shot answer builder).
+            return spawn_widget_stream(
+                "data_card", "answer",
+                config_builder=lambda: build_answer_config(req.message),
+                status="researching and writing your answer...",
+            )
 
         # Adopting the client's snapshot is _run_turn's job now (it only does so
         # when no other turn is in flight, so a concurrent turn's stale snapshot
@@ -1454,8 +1459,8 @@ async def send_message(req: MessageRequest):
         # TIER 2 — the classifier backstop. One ~1s classify pass decides whether
         # this ask is a DETERMINISTIC single-source widget (weather, a ticker, a
         # timer, scores, a map, music: exactly one right answer from one API) or
-        # RESEARCH. Deterministic ones build locally in ~1-2s; research defers to
-        # the prism agent below.
+        # RESEARCH. Deterministic ones build locally in ~1-2s; research goes to
+        # the agent below.
         #
         # This ran only in legacy mode after the bypass removal, so EVERY ask —
         # including "set a 5 minute timer" — paid a 60-90s agent turn. An agent
@@ -1834,8 +1839,8 @@ async def send_message(req: MessageRequest):
                     break
 
         # The lazy-agent-service gateway runs the agentic loop and executes the
-        # mcp__lazy-agent-service__* widget tools; plain Prism has no such
-        # catalog registered, so LazyAgent is the default.
+        # mcp__lazy-agent-service__* widget tools; plain prism-service never had
+        # such a catalog registered, so LazyAgent is the default.
         target_url = LAZY_AGENT_URL
 
         # Build /agent payload — NO tools array (the gateway uses its own catalog)
@@ -1918,7 +1923,7 @@ async def send_message(req: MessageRequest):
         # REMOVED: a PUT {target_url}/settings that rewrote the gateway's GLOBAL
         # memory.extractionModel on EVERY turn. Three problems: (1) a client has no
         # business mutating a shared gateway's global config — it raced every other
-        # project on prism; (2) it was sent with no x-project/x-username headers, so
+        # project on the old prism gateway; (2) it was sent with no x-project/x-username headers, so
         # it landed in prism's "default" project and helped make that bucket
         # unattributable; (3) it used a BLOCKING httpx.Client inside this async
         # handler, stalling the event loop up to 1s per turn. We send
@@ -2014,7 +2019,7 @@ async def send_message(req: MessageRequest):
             # stream is drained to the end. Kept separate from canvas_settled
             # because that flag also selects the spoken-summary branch.
             stream_cut = False
-            # Tool names prism handed the model that we have no canvas handler for.
+            # Tool names the agent handed the model that we have no canvas handler for.
             # Collected so a turn that commits nothing can say WHY in the logs.
             unhandled_tools: List[str] = []
             # Provisional widgets: real tool results committed to the canvas the
@@ -2062,7 +2067,7 @@ async def send_message(req: MessageRequest):
                     return
                 cfg = get_cached_tool_result(cache_key)
                 if not isinstance(cfg, dict):
-                    # Fallback: the result prism echoed on the wire. May be
+                    # Fallback: the result the agent echoed on the wire. May be
                     # MCP-wrapped, so only accept a plain renderable dict.
                     wire = (event.get("tool") or {}).get("result")
                     cfg = wire if isinstance(wire, dict) else None
@@ -2418,9 +2423,9 @@ async def send_message(req: MessageRequest):
                                         ev.pop("thumbnail", None)
                         elif widget_type == "image":
                             # A picture ask. The prompt advertised
-                            # widget_type='image' and "image" is in
-                            # _AGENT_RESEARCH_TYPES, so in prism mode every image
-                            # ask is DEFERRED to the agent — but the agent's
+                            # widget_type='image'. While "image" was in
+                            # _AGENT_RESEARCH_TYPES (prism mode, removed
+                            # 2026-10-15) every image ask was DEFERRED to the agent — but the agent's
                             # 21-tool scope has no image-search tool. The model's
                             # only options were to invent a URL or scrape one, so
                             # its cards came out broken, empty, or WRONG.
@@ -2963,10 +2968,10 @@ async def send_message(req: MessageRequest):
                             "POST",
                             f"{target_url}/agent",
                             json=payload,
-                            # prism scopes a request by the x-project / x-username
+                            # lazy-agent-service scopes a request by the x-project / x-username
                             # HEADERS, not the body fields — without them every
                             # html-notes turn was attributed to "anonymous" and so never
-                            # showed up under admin in prism-client. Body fields are kept
+                            # showed up under admin in the agent's client. Body fields are kept
                             # in sync below for services that read them instead.
                             headers={"Accept": "text/event-stream",
                                      "x-project": AGENT_PROJECT,
@@ -2976,7 +2981,7 @@ async def send_message(req: MessageRequest):
                                 error_body = ""
                                 async for chunk in resp.aiter_text():
                                     error_body += chunk
-                                yield f'data: {json.dumps({"type": "error", "message": f"Prism error {resp.status_code}: {error_body[:500]}"})}\n\n'
+                                yield f'data: {json.dumps({"type": "error", "message": f"Agent error {resp.status_code}: {error_body[:500]}"})}\n\n'
                                 return
 
                             buffer = ""
@@ -3192,7 +3197,7 @@ async def send_message(req: MessageRequest):
                                                         yield evt
                                                 except Exception as pe:
                                                     logger.warning(f"[PROVISIONAL] preview commit failed: {pe}")
-                                            # A tool we do not handle. Prism forces its
+                                            # A tool we do not handle. The agent forces its
                                             # core/system tools (create_artifact,
                                             # execute_python, search_web…) into the set
                                             # regardless of the enabledTools allowlist we
@@ -3212,12 +3217,12 @@ async def send_message(req: MessageRequest):
                                             # apart in the log: OUR research tools not
                                             # mutating the canvas is EXPECTED (they
                                             # gather data, then the model is supposed to
-                                            # call canvas_add_widget), whereas a prism
+                                            # call canvas_add_widget), whereas a forced
                                             # core tool means the allowlist was bypassed.
                                             is_ours = tool_name.startswith(("mcp__lazy-agent-service__", "mcp__lazy-tool-service__"))  # legacy prefix kept: persisted rows may carry it
                                             if not is_ours:
                                                 logger.warning(
-                                                    f"[AGENT] prism core tool {tool_name!r} — outside our "
+                                                    f"[AGENT] forced core tool {tool_name!r} — outside our "
                                                     f"allowlist and cannot touch the canvas "
                                                     f"(coreToolsLocked is unreachable for CUSTOM agents)")
                                             elif unhandled_tools.count(tool_name) in (1, 5, 10):
@@ -3228,7 +3233,7 @@ async def send_message(req: MessageRequest):
                                             active_tool_name = None
                                             active_tool_args = {}
 
-                                            # Runaway guard. We cannot stop prism from
+                                            # Runaway guard. We cannot stop the agent from
                                             # running a tool — we only observe — so the
                                             # only lever is to stop consuming the stream,
                                             # which drops through to the fallback card
@@ -3236,7 +3241,7 @@ async def send_message(req: MessageRequest):
                                             # card in 60s than a spinner for 5 minutes.
                                             research_calls += 1
                                             # The research budget is the one denominator
-                                            # this proxy always knows. Prism's own
+                                            # this proxy always knows. The agent's own
                                             # iteration_progress is better (it counts the
                                             # agentic loop, not just research) and wins
                                             # below when it arrives — but it does not
@@ -3266,7 +3271,7 @@ async def send_message(req: MessageRequest):
                                                 break
 
                                     elif event_type == "status":
-                                        # Prism's own telemetry. There was no branch
+                                        # The agent's own telemetry. There was no branch
                                         # here at all, so the ONE event carrying a real
                                         # completion fraction was dropped on the floor
                                         # and the browser drew a fake asymptotic creep
@@ -3288,7 +3293,7 @@ async def send_message(req: MessageRequest):
                                         yield f'data: {json.dumps({"type": "status", "message": "reasoning..."})}\n\n'
 
                                     elif event_type == "done":
-                                        # Prism finished the full agentic loop
+                                        # The agent finished the full agentic loop
                                         pass
 
                                     elif event_type == "error":
@@ -3301,7 +3306,7 @@ async def send_message(req: MessageRequest):
                                     break
 
             except Exception as e:
-                logger.error(f"Prism SSE proxy error: {e}")
+                logger.error(f"Agent SSE proxy error: {e}")
                 yield f'data: {json.dumps({"type": "error", "message": f"Connection error: {str(e)}"})}\n\n'
 
             # The turn called NO tool at all — so what we held back was never
@@ -3382,7 +3387,7 @@ async def send_message(req: MessageRequest):
             # Before this, that turn was invisible — the answer was spoken by TTS and
             # streamed into the chat, while the canvas stayed empty and the user was
             # left thinking the widget "failed to appear". It happens whenever the
-            # model picks one of prism's forced core tools (create_artifact,
+            # model picks one of the agent's forced core tools (create_artifact,
             # execute_python) over canvas_add_widget, which we cannot prevent from
             # this side: coreToolsLocked defaults true and a CUSTOM agent's persona
             # can't override it.
@@ -3481,7 +3486,7 @@ async def send_message(req: MessageRequest):
 @router.post("/session/transcribe")
 async def transcribe_audio(req: TranscribeRequest):
     """
-    Proxies base64 audio transcription to Prism service STT endpoint.
+    Proxies base64 audio transcription to the lazy-agent-service STT endpoint.
     """
     try:
         url = f"{LAZY_AGENT_URL}/audio-to-text"
@@ -3493,15 +3498,15 @@ async def transcribe_audio(req: TranscribeRequest):
             "username": AGENT_USERNAME
         }
         async with httpx.AsyncClient(timeout=45.0) as client:
-            # Same header contract as the /agent call: prism attributes by the
+            # Same header contract as the /agent call: lazy-agent-service attributes by the
             # x-project / x-username HEADERS, so without them voice transcription
             # was also being filed under the unattributable "default" project.
             res = await client.post(url, json=payload,
                                     headers={"x-project": AGENT_PROJECT,
                                              "x-username": AGENT_USERNAME})
             if res.status_code != 200:
-                logger.error(f"Prism STT failed with code {res.status_code}: {res.text}")
-                raise HTTPException(status_code=500, detail=f"Prism transcription failed: {res.text}")
+                logger.error(f"Agent STT failed with code {res.status_code}: {res.text}")
+                raise HTTPException(status_code=500, detail=f"Agent transcription failed: {res.text}")
             return res.json()
     except Exception as e:
         logger.error(f"Failed proxying to STT service: {e}")

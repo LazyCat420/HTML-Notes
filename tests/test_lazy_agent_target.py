@@ -30,6 +30,10 @@ async def test_agent_dependency_status_targets_lazy_agent():
     assert status["ok"] is True
     assert status["gateway"] == LAZY_AGENT_URL
     assert route.called
+    # Attribution: the gateway must see html-notes/admin, not default/anonymous.
+    headers = route.calls.last.request.headers
+    assert headers["x-project"] == m.AGENT_PROJECT
+    assert headers["x-username"] == m.AGENT_USERNAME
 
 
 @respx.mock
@@ -48,6 +52,10 @@ async def test_models_route_fetches_config_from_lazy_agent():
         200, json={"textToText": {"models": {}}})
     await message_route.get_models()
     assert route.called
+    # Attribution: the gateway must see html-notes/admin, not default/anonymous.
+    headers = route.calls.last.request.headers
+    assert headers["x-project"] == m.AGENT_PROJECT
+    assert headers["x-username"] == m.AGENT_USERNAME
 
 
 def test_agent_turn_targets_lazy_agent_only():

@@ -763,7 +763,7 @@ async def build_news_card(message: str, *, finance: bool = False,
     #     b. ARTICLE BODIES. The editor wrote 2-3 sentence summaries from
     #        ~400-600 char provider snippets — finnhub summaries are often
     #        one line — so the card paraphrased headlines. trading-client
-    #        and the prism agents both read the actual article before
+    #        and the lazy-agent-service agents both read the actual article before
     #        writing. Scrape the top 8 in ONE /scrape/batch call (12s cap,
     #        fail-open to snippets) and give the editor real text.
     if finance:
@@ -2445,7 +2445,7 @@ async def build_router_widget(spec: dict, session_id: str, message: str,
 
         if wtype == "converter":
             # The classifier picks converter off surface shape, and "converter" is
-            # deliberately NOT in _AGENT_RESEARCH_TYPES — so in prism mode this spec
+            # deliberately NOT in _AGENT_RESEARCH_TYPES — so this spec
             # is built and shipped without the agent ever seeing it. There is also
             # no net underneath: build_converter_config is pure regex, so it never
             # returns None and never reaches the "all builds empty -> answer card"
