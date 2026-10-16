@@ -15,7 +15,7 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return val.strip().lower() in ("true", "1", "yes", "on")
 
 
-# Feature flag: toggles shared runtime vs legacy prism / local agent
+# Feature flag: shared runtime (/runs API) instead of the lazy-agent /agent path
 USE_SHARED_RUNTIME: bool = _bool_env("USE_SHARED_RUNTIME", default=False)
 
 # Runtime connection URL
