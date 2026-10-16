@@ -68,7 +68,7 @@ async def _search_shared_web(query: str, limit: int) -> list:
     # The shared search may queue a call for up to 20 s, then give Exa 15 s.
     async with client_cls(timeout=40.0) as client:
         resp = await client.post(
-            f"{LAZY_TOOL_SERVICE_URL}/execute/web_search",
+            f"{LAZY_AGENT_SERVICE_URL}/execute/web_search",
             json={"query": query, "limit": limit},
             **execute_post_kwargs(),
         )
@@ -439,7 +439,7 @@ async def _enrich_news(items: list, timeout: float = 5.0) -> None:
 
 async def _shared_news_search(topic: str, limit: int, category: str = "",
                               country: str = "") -> list:
-    """The shared multi-provider news tool in lazy-tool-service.
+    """The shared multi-provider news tool in lazy-agent-service.
 
     PRIMARY source, ahead of the Google News RSS path below, because it returns
     what that path structurally cannot: the PUBLISHER's own URL and THAT STORY's
@@ -465,7 +465,7 @@ async def _shared_news_search(topic: str, limit: int, category: str = "",
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(
-                f"{LAZY_TOOL_SERVICE_URL}/execute/news_search",
+                f"{LAZY_AGENT_SERVICE_URL}/execute/news_search",
                 json=body,
                 **execute_post_kwargs(),
             )
@@ -517,7 +517,7 @@ async def news_search(topic: str, limit: int = 6, category: str = "",
     technology...) and is meaningless for a keyword search.
 
     Order for a TOPIC:
-    1. The SHARED news_search tool in lazy-tool-service (~1s).
+    1. The SHARED news_search tool in lazy-agent-service (~1s).
     2. Google News RSS (~0.1s, reliable, keyless).
     3. scraper-service news/DDG collector.
     4. GDELT (keyless).
@@ -539,7 +539,7 @@ async def news_search(topic: str, limit: int = 6, category: str = "",
     # layers away, inside an `asyncio.gather(..., return_exceptions=True)` that
     # silently converts it into "no news".
     items, source = await _shared_news_search(
-        topic, limit, category=category, country=country), "lazy-tool"
+        topic, limit, category=category, country=country), "lazy-agent"
     if not items:
         items, source = await _google_news_rss(
             topic, limit, category=category, country=country), "google-news"

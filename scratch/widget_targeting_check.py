@@ -12,7 +12,7 @@ Checks, against the real factory + real canvas helpers:
 """
 import sys
 
-sys.path.insert(0, "/home/lazycat/github/projects/sun/HTML-Notes")
+sys.path.insert(0, "/home/lazycat/github/projects/sun/apps/html-notes")
 
 from bs4 import BeautifulSoup
 

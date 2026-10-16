@@ -102,7 +102,7 @@ def test_reports_failure_when_connect_does_not_take(monkeypatch):
 
 
 def test_unregistered_server_is_not_our_problem_to_fix(monkeypatch):
-    """lazy-tool-service registers itself on ITS boot; we can't do it for it."""
+    """lazy-agent-service registers itself on ITS boot; we can't do it for it."""
     prism = _FakePrism([{"name": "someone-else", "id": "x", "connected": True}])
     _install(monkeypatch, prism)
     assert _run(m._try_reconnect_mcp()) is False

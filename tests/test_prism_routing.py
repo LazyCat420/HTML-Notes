@@ -353,7 +353,7 @@ def test_generic_google_news_thumb_is_not_treated_as_a_photo():
 
 
 def test_news_prefers_the_shared_provider_tool():
-    """News must try lazy-tool-service's shared news_search BEFORE Google News
+    """News must try lazy-agent-service's shared news_search BEFORE Google News
     RSS. Google News links are redirect stubs: they don't resolve to the
     publisher and every one serves Google's own logo as og:image, so a card
     built from them cites news.google.com and shows N identical pictures. The
@@ -370,11 +370,11 @@ def test_news_prefers_the_shared_provider_tool():
 
 
 def test_shared_news_search_degrades_instead_of_raising(patch_server):
-    """lazy-tool-service being down must not take news down with it — the
+    """lazy-agent-service being down must not take news down with it — the
     remaining chain still works, so this returns [] rather than propagating.
 
     The outage has to be SIMULATED. This test used to call the real service and
-    assert []: it therefore passed only while lazy-tool-service happened to be
+    assert []: it therefore passed only while lazy-agent-service happened to be
     down, and against a healthy service it failed with six real articles. A test
     whose premise is an outage must create the outage."""
     import asyncio
@@ -384,7 +384,7 @@ def test_shared_news_search_degrades_instead_of_raising(patch_server):
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def post(self, *a, **kw):
-            raise httpx.ConnectError("simulated lazy-tool-service outage")
+            raise httpx.ConnectError("simulated lazy-agent-service outage")
 
     patch_server("httpx", type("_hx", (), {"AsyncClient": _Down,
                                            "ConnectError": httpx.ConnectError})())

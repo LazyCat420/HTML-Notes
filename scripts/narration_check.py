@@ -7,7 +7,7 @@ without ever swallowing a real answer.
 import re, sys
 from playwright.sync_api import sync_playwright
 
-JS = open("/home/lazycat/github/projects/sun/HTML-Notes/app/static/index.js").read()
+JS = open("/home/lazycat/github/projects/sun/apps/html-notes/app/static/index.js").read()
 def block(name):
     m = re.search(rf"const {name} =\s*(/.+?/i);", JS, re.S)
     if not m: raise SystemExit(f"could not find {name}")

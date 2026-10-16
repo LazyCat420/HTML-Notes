@@ -16,12 +16,12 @@ VLLM_ENDPOINTS = [
     ).split(",") if url.strip()
 ]
 PRISM_URL = os.getenv("PRISM_URL", "http://10.0.0.16:7777")
-# lazy-tool-service gateway (runs the agentic loop + widget tool execution).
+# lazy-agent-service gateway (runs the agentic loop + widget tool execution).
 # Host port 5591 maps to the container's 7778.
 LAZY_AGENT_URL = os.getenv("LAZY_AGENT_URL", "http://10.0.0.16:5591")
 DATABASE_URL = os.getenv("DATABASE_URL", "data/notes.db")
-LAZY_TOOL_SERVICE_URL = os.getenv("LAZY_TOOL_SERVICE_URL", "http://10.0.0.16:5591")
-# Optional shared key for lazy-tool-service POST /execute/* (W3 of the harness
+LAZY_AGENT_SERVICE_URL = os.getenv("LAZY_AGENT_SERVICE_URL", "http://10.0.0.16:5591")
+# Optional shared key for lazy-agent-service POST /execute/* (W3 of the harness
 # audit). Blank keeps today's keyless behaviour; when the server sets
 # EXECUTE_API_KEY, set the same value here so searches are authorized.
 EXECUTE_API_KEY = os.getenv("EXECUTE_API_KEY", "").strip()

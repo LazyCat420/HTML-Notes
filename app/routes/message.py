@@ -1617,25 +1617,25 @@ async def send_message(req: MessageRequest):
             "7. FOLLOW-UPS UPDATE, THEY DON'T STACK. The CANVAS section below lists what is already on screen, each with its id. If this ask REFINES what is already there — filtering it ('only show waterproof ones'), narrowing it, changing or adding to it, or is a bare comparative/pronoun ask ('what about the cheaper ones', 'make it a table') — call canvas_add_widget with that widget's EXISTING id so the server rewrites it IN PLACE. Only mint a new id when the ask opens a genuinely NEW subject.\n\n"
             "ROUTING — pick one and execute it:\n"
             "- content quality profile, trusted sources, burned sources, learning status → canvas_add_widget(widget_type='quality_profile', config={})\n"
-            "- stock, share price, ticker, crypto → mcp__lazy-tool-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
+            "- stock, share price, ticker, crypto → mcp__lazy-agent-service__html_notes_stock_history, then canvas_add_widget(widget_type='stock_card')\n"
 
             "- COMPARE tickers ('NVDA vs SPY vs TSM', 'which performed better') → ONE widget, never a stock_card per ticker: canvas_add_widget(widget_type='chart', config={'compare_symbols': ['NVDA','SPY','TSM'], 'range': '6mo'}). The server fetches every ticker and draws a single normalized %-change chart with a legend. Ranges: 1d,5d,1mo,3mo,6mo,1y,5y,10y,max. To add a ticker to an existing comparison, call it again with the SAME widget_id and the full new symbol list.\n"
             "- stock/company/market NEWS, or 'find me stocks' (no specific ticker yet) → RESEARCH IT, same discipline as general news:\n"
-            "    1. mcp__lazy-tool-service__html_notes_stock_news(query='<company or ticker>') — its 'matches' array also gives you tickers to feed into html_notes_stock_history.\n"
-            "    2. mcp__lazy-tool-service__html_notes_read_page on the 2-3 stories that actually move the thesis.\n"
+            "    1. mcp__lazy-agent-service__html_notes_stock_news(query='<company or ticker>') — its 'matches' array also gives you tickers to feed into html_notes_stock_history.\n"
+            "    2. mcp__lazy-agent-service__html_notes_read_page on the 2-3 stories that actually move the thesis.\n"
             "    3. canvas_add_widget(widget_type='data_card', config={'stock_news_query': '<the SAME query>', 'answer': '<your brief>'}) — the server re-pulls the stories and writes a summary per story; do NOT hand-build items from raw title+link rows. Your 'answer' sits on top.\n"
             "    The brief must separate FACT from EXPECTATION: what was actually reported/filed/announced (with dates and figures) vs what analysts merely predict. Name the outlet on any contested or single-sourced claim, and say plainly when the move has no clear reported cause rather than inventing one. Never present a price move as explained when the sources do not explain it.\n"
             "    Never use html_notes_stock_history for news (prices only) or html_notes_web_search for stock news (this is cleaner).\n"
-            "- sports scores, fixtures, standings → mcp__lazy-tool-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
-            "- video, watch, clip, live stream → mcp__lazy-tool-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. If the user constrains WHEN ('new', 'newest', 'this week', 'yesterday', 'latest'), copy that time phrase VERBATIM into the tool's freshness parameter and keep it in the query — never drop or paraphrase time words. A plain 'video' ask means a REGULAR video, never a Short: only pass format='short' when the user actually says short/shorts, and pass format='long' when they say 'full video' or 'not a short'. 'cnn live news' is a video request, not headlines.\n"
-            "- weather, forecast, temperature → mcp__lazy-tool-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
+            "- sports scores, fixtures, standings → mcp__lazy-agent-service__html_notes_sports_scores, then canvas_add_widget(widget_type='scoreboard')\n"
+            "- video, watch, clip, live stream → mcp__lazy-agent-service__html_notes_youtube_search, then canvas_add_widget(widget_type='youtube_player'). order='live' for a live stream, order='date' for latest news. If the user constrains WHEN ('new', 'newest', 'this week', 'yesterday', 'latest'), copy that time phrase VERBATIM into the tool's freshness parameter and keep it in the query — never drop or paraphrase time words. A plain 'video' ask means a REGULAR video, never a Short: only pass format='short' when the user actually says short/shorts, and pass format='long' when they say 'full video' or 'not a short'. 'cnn live news' is a video request, not headlines.\n"
+            "- weather, forecast, temperature → mcp__lazy-agent-service__html_notes_get_weather(location='<city>'), then canvas_add_widget(widget_type='weather', config={'location':'<city>'}) — config is JUST the location; the server fills in the conditions and 5-day forecast. Never render weather as a data_card and never web-search for it.\n"
             "- news, headlines, 'what's happening with X', 'top stories' → RESEARCH IT. Do not stop at a list of headlines:\n"
-            "    1. mcp__lazy-tool-service__html_notes_news(topic='<topic>', or topic='' for top stories) — returns current stories, each already carrying a photo and a summary.\n"
-            "    2. mcp__lazy-tool-service__html_notes_read_page on the 2-3 MOST IMPORTANT stories. Never write the brief from headlines alone: headlines are where outlets differ most and detail is thinnest.\n"
+            "    1. mcp__lazy-agent-service__html_notes_news(topic='<topic>', or topic='' for top stories) — returns current stories, each already carrying a photo and a summary.\n"
+            "    2. mcp__lazy-agent-service__html_notes_read_page on the 2-3 MOST IMPORTANT stories. Never write the brief from headlines alone: headlines are where outlets differ most and detail is thinnest.\n"
             "    3. canvas_add_widget(widget_type='data_card', config={'news_topic': '<the SAME topic>', 'answer': '<your brief>'}). Passing news_topic makes the server attach the sourced stories with their photos — do NOT re-type them. Your 'answer' is the value you add ON TOP of them.\n"
             "    The brief is GitHub-flavored Markdown, ~120-200 words, and MUST: lead with WHAT HAPPENED and WHEN (absolute dates, not 'today'); say what MULTIPLE outlets agree on; explicitly flag where they DISAGREE, where a claim is single-sourced, or where something is still unconfirmed; attribute contested claims ('Reuters reports…'); and close with what to watch next. Never state as settled what only one outlet claims, and never invent a detail that was not in what you actually read.\n"
             "    Do NOT use html_notes_web_search for news (it returns news-site homepages, not stories, and no photos).\n"
-            "- facts, recipes, how-tos, 'what/who/when is X', comparisons, product picks ('best X under $Y') → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph, a comparison a Markdown table) and attaches each page as a source WITH ITS PHOTO. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
+            "- facts, recipes, how-tos, 'what/who/when is X', comparisons, product picks ('best X under $Y') → mcp__lazy-agent-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). The server reads the top pages, WRITES a summarised Markdown answer (a recipe becomes ingredients+steps, a definition a short paragraph, a comparison a Markdown table) and attaches each page as a source WITH ITS PHOTO. Do NOT hand-build items and do NOT re-type the results — just pass the query back.\n"
             "  Use 'search_query' for these, never 'news_topic'. news_topic is ONLY for current-events asks you researched with html_notes_news; on anything else it costs you the sources and the pictures.\n"
             "- WHERE something is / a map / locations ('where are the fires in California', 'map of X') → canvas_add_widget(widget_type='map', config={'map_query': '<the query>'}). The server web-searches, geocodes the places and drops the markers — do NOT type coordinates.\n"
             "- picture of X → canvas_add_widget(widget_type='image', config={'image_query': '<what to show>'}). You have NO image tool and CANNOT know real image URLs — NEVER write 'url' or 'images' entries; a URL you produce is fabricated and renders as the wrong picture or a broken frame. The server searches, vision-checks and captions real pictures from image_query. 'Show me X vs Y' is still ONE image widget: image_query='X vs Y'.\n"
@@ -1647,17 +1647,17 @@ async def send_message(req: MessageRequest):
             "- 'who is X' / 'tell me about <person/company/place>' → canvas_add_widget(widget_type='profile_card', config={'profile_query':'<the subject>'}). The server builds the portrait + facts infobox — never type an image url.\n"
             "- goals / tracking / percentage breakdowns ('savings goals', 'EV market share by maker') → canvas_add_widget(widget_type='progress', config={'title':…, 'items':[{'label':…, 'value':8200, 'target':10000, 'unit':'$'} or {'label':…, 'pct':48}]}).\n"
             "- clock, checklist, notes → canvas_add_widget with that widget_type; music/radio → widget_type='mini_music_player' (config={'genre':…}); embed a site/app → widget_type='iframe_app' (config={'url':…})\n"
-            "- the user's OWN apps/services ('show my apps', 'app hub', 'what's running') → canvas_add_widget(widget_type='app_grid', config={}) — the server fills the live app list from portal-service; never hand-build it. mcp__lazy-tool-service__html_notes_list_services shows what exists; html_notes_curate_app(app_id, hidden=…/pinned=…) hides or pins a tile on the hub.\n"
-            "- OPEN / LAUNCH / 'pull up' / 'go to' SOMETHING THAT NAMES OR RESEMBLES AN APP IN 'YOUR APPS' BELOW → mcp__lazy-tool-service__html_notes_open_app(app_id='<id or the name they said>') and NOTHING ELSE. Check YOUR APPS FIRST, before you consider any widget: those names are the user's own containers. 'open the trading bot', 'pull up the music player app', 'go to braindeadbot' are all app opens. NEVER spawn a widget for an app name, never web-search it, never hand-build a data_card about it, and never paste a URL expecting it to open — this tool is the only way. Prefer the CLIENT (`*-client`, or a standalone repo like music-player): a `*-service` backend is only ever opened when the user names it in full ('open trading service'). The tab opens by itself, so just confirm in ONE short sentence. If the result carries 'candidates', list them as markdown links and ask which — never guess.\n"
-            "- A QUESTION THAT HAPPENS TO CONTAIN NUMBERS IS NOT A CALCULATION. 'how long until my 145F chicken hits 165 in a 400F oven', 'is 10 more minutes enough', 'what temp should I pull the brisket at', 'how long to drive to SF', 'is 3 drinks over the limit' — the user wants a JUDGEMENT that needs real-world knowledge, not arithmetic. Cooking times, doneness and food safety, dosages, travel times and legal limits are ALL research asks → mcp__lazy-tool-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). A converter cannot answer any of them.\n"
+            "- the user's OWN apps/services ('show my apps', 'app hub', 'what's running') → canvas_add_widget(widget_type='app_grid', config={}) — the server fills the live app list from portal-service; never hand-build it. mcp__lazy-agent-service__html_notes_list_services shows what exists; html_notes_curate_app(app_id, hidden=…/pinned=…) hides or pins a tile on the hub.\n"
+            "- OPEN / LAUNCH / 'pull up' / 'go to' SOMETHING THAT NAMES OR RESEMBLES AN APP IN 'YOUR APPS' BELOW → mcp__lazy-agent-service__html_notes_open_app(app_id='<id or the name they said>') and NOTHING ELSE. Check YOUR APPS FIRST, before you consider any widget: those names are the user's own containers. 'open the trading bot', 'pull up the music player app', 'go to braindeadbot' are all app opens. NEVER spawn a widget for an app name, never web-search it, never hand-build a data_card about it, and never paste a URL expecting it to open — this tool is the only way. Prefer the CLIENT (`*-client`, or a standalone repo like music-player): a `*-service` backend is only ever opened when the user names it in full ('open trading service'). The tab opens by itself, so just confirm in ONE short sentence. If the result carries 'candidates', list them as markdown links and ask which — never guess.\n"
+            "- A QUESTION THAT HAPPENS TO CONTAIN NUMBERS IS NOT A CALCULATION. 'how long until my 145F chicken hits 165 in a 400F oven', 'is 10 more minutes enough', 'what temp should I pull the brisket at', 'how long to drive to SF', 'is 3 drinks over the limit' — the user wants a JUDGEMENT that needs real-world knowledge, not arithmetic. Cooking times, doneness and food safety, dosages, travel times and legal limits are ALL research asks → mcp__lazy-agent-service__html_notes_web_search(query='<the question>'), then canvas_add_widget(widget_type='data_card', config={'search_query': '<the SAME query>'}). A converter cannot answer any of them.\n"
             "- CONVERT or CALCULATE — only when the ask IS the arithmetic and nothing else: an explicit 'convert'/'calculate' ('convert 10 kg to lb'), a bare expression ('what is 15*23', '(3+4)*2'), a percentage ('40% of 1250'), or a bare '<amount> <unit> to <unit>' ('5 miles in km', '20 usd to eur') → canvas_add_widget(widget_type='converter', config={'seed':'<the whole ask>'}). The widget does the math client-side and stays interactive — never compute it yourself in prose. NEVER pick converter because the message merely CONTAINS numbers, temperatures, weights, times or currency; if the ask is a question about what those numbers MEAN or what to DO, use the research route on the line above.\n"
             "- REMIND / alarm ('remind me in 20 min', 'remind me at 3pm to call mom', 'set an alarm for 7am') → canvas_add_widget(widget_type='reminder', config={'label':'<what to remind>', 'offset_seconds':<N for a relative time, else 0>, 'at_time':'<HH:MM 24h for an absolute time, else empty>'}). The widget counts down and alerts.\n"
             "- APPEARANCE / theme / colors ('dark mode', 'forest theme', 'make it pastel', 'egg colors'), OR settings/preferences → canvas_add_widget(widget_type='settings', config={'theme':'<what the user asked — e.g. dark, forest, pastel, egg, sunset, purple>'}). The server picks the CLOSEST palette from what you pass and applies it; omit 'theme' to just open settings without changing the look. This is the ONLY way to change the theme — never hand-edit colors. It's a singleton, so it updates in place.\n"
             "- timer, countdown, pomodoro → canvas_add_widget(widget_type='clock', config={'mode':'countdown','duration_seconds':N}); stopwatch → config={'mode':'stopwatch'}; 'time in <city>' → config={'mode':'clock','timezone':'<IANA tz>'}. NEVER spawn a plain clock for a timer request.\n"
             "- EDIT an existing widget (change a timer's duration, a clock's timezone, a chart's data, swap the stock) → call canvas_add_widget AGAIN with the SAME widget_id from CURRENT CANVAS and the full updated config. It re-renders that widget in place — no duplicate. This is the ONLY way to change a clock/timer/stock/scoreboard/chart: canvas_modify_dom CANNOT rebuild these (they are server-rendered) and will break them. Example: to set the timer #clock-1 to 30s → canvas_add_widget(widget_type='clock', widget_id='clock-1', config={'mode':'countdown','duration_seconds':30}).\n"
-            "- earthquakes, wildfires, the ISS, rocket launches, NASA's picture of the day, the moon, tides, solar flares, commodity movers, what's trending → canvas_add_widget(widget_type='map', config={'toolsvc': '<earthquakes|wildfires|iss|launches|apod|moon|tides|space_weather|commodities|trends|spark|portfolio|positions|watchlist|market_regime|garden>'}) — the last six are the user's OWN services (the DGX Sparks, the trading bot, the SmartGarden) — JUST the kind; the server fetches from tools-service, fills the widget and picks the right widget_type for it. To quote a number in your sentence first, mcp__lazy-tool-service__html_notes_app_action(app_id='tools-service', action='<the same kind>').\n"
-            "- BUILD something that is not in the catalog ('build me a widget that…', 'add an audio box', a counter, a tracker, a tiny game) → mcp__lazy-tool-service__plan_widget(widgetType='custom', title, description) FIRST, then mcp__lazy-tool-service__create_widget(widgetType='custom', title, htmlContent, cssContent, jsContent). Your HTML+JS run inside a sandboxed frame of their own: `container` is the root element, style it dark-on-transparent, keep state in JS variables, no external scripts, no fetch. To change it later call mcp__lazy-tool-service__update_widget(widgetId='<its id from CURRENT CANVAS>', …) with only the fields that change.\n"
-            "- REMOVE something → mcp__lazy-tool-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove') using an id from CURRENT CANVAS\n\n"
+            "- earthquakes, wildfires, the ISS, rocket launches, NASA's picture of the day, the moon, tides, solar flares, commodity movers, what's trending → canvas_add_widget(widget_type='map', config={'toolsvc': '<earthquakes|wildfires|iss|launches|apod|moon|tides|space_weather|commodities|trends|spark|portfolio|positions|watchlist|market_regime|garden>'}) — the last six are the user's OWN services (the DGX Sparks, the trading bot, the SmartGarden) — JUST the kind; the server fetches from tools-service, fills the widget and picks the right widget_type for it. To quote a number in your sentence first, mcp__lazy-agent-service__html_notes_app_action(app_id='tools-service', action='<the same kind>').\n"
+            "- BUILD something that is not in the catalog ('build me a widget that…', 'add an audio box', a counter, a tracker, a tiny game) → mcp__lazy-agent-service__plan_widget(widgetType='custom', title, description) FIRST, then mcp__lazy-agent-service__create_widget(widgetType='custom', title, htmlContent, cssContent, jsContent). Your HTML+JS run inside a sandboxed frame of their own: `container` is the root element, style it dark-on-transparent, keep state in JS variables, no external scripts, no fetch. To change it later call mcp__lazy-agent-service__update_widget(widgetId='<its id from CURRENT CANVAS>', …) with only the fields that change.\n"
+            "- REMOVE something → mcp__lazy-agent-service__canvas_modify_dom(css_selector='#<widget-id>', action='remove') using an id from CURRENT CANVAS\n\n"
             "ANSWER FROM DATA, NEVER FROM MEMORY\n"
             "You know nothing current. If the answer is not already in this conversation, call html_notes_web_search before answering — never claim you cannot find or cannot access something without having searched first.\n"
             "For a data_card, prefer the search_query path above: pass config={'search_query': '<query>'} and let the server write the summarised answer with sources. Only hand-build config.items when you have specific structured rows that no search summary would capture — and then every item still needs a 'description' with the real information, never just a title and a link.\n\n"
@@ -1743,20 +1743,20 @@ async def send_message(req: MessageRequest):
 
         # Ensure all possible tools are enabled
         enabled_tools = [
-            "mcp__lazy-tool-service__html_notes_create_note",
-            "mcp__lazy-tool-service__html_notes_update_note",
-            "mcp__lazy-tool-service__html_notes_get_note",
-            "mcp__lazy-tool-service__html_notes_search_notes",
-            "mcp__lazy-tool-service__html_notes_link_notes",
-            "mcp__lazy-tool-service__canvas_read_dom",
-            "mcp__lazy-tool-service__canvas_add_widget",
-            "mcp__lazy-tool-service__canvas_modify_dom",
-            "mcp__lazy-tool-service__html_notes_youtube_search",
-            "mcp__lazy-tool-service__create_widget",
-            "mcp__lazy-tool-service__update_widget",
-            "mcp__lazy-tool-service__validate_widget_html",
-            "mcp__lazy-tool-service__list_widget_types",
-            "mcp__lazy-tool-service__plan_widget",
+            "mcp__lazy-agent-service__html_notes_create_note",
+            "mcp__lazy-agent-service__html_notes_update_note",
+            "mcp__lazy-agent-service__html_notes_get_note",
+            "mcp__lazy-agent-service__html_notes_search_notes",
+            "mcp__lazy-agent-service__html_notes_link_notes",
+            "mcp__lazy-agent-service__canvas_read_dom",
+            "mcp__lazy-agent-service__canvas_add_widget",
+            "mcp__lazy-agent-service__canvas_modify_dom",
+            "mcp__lazy-agent-service__html_notes_youtube_search",
+            "mcp__lazy-agent-service__create_widget",
+            "mcp__lazy-agent-service__update_widget",
+            "mcp__lazy-agent-service__validate_widget_html",
+            "mcp__lazy-agent-service__list_widget_types",
+            "mcp__lazy-agent-service__plan_widget",
             # Web research. These are served by HTML-Notes itself (via
             # scraper-service) because every tools-api data tool — search_web,
             # search_news, read_web_page, get_weather, get_time_in_timezone —
@@ -1764,21 +1764,21 @@ async def send_message(req: MessageRequest):
             # python bridge has no interpreter in the image, so they all return
             # "Unknown tool". Enabling them just gave the model phantom tools to
             # fail against, which is why it kept answering "I couldn't get one".
-            "mcp__lazy-tool-service__html_notes_web_search",
-            "mcp__lazy-tool-service__html_notes_read_page",
-            "mcp__lazy-tool-service__html_notes_news",
-            "mcp__lazy-tool-service__html_notes_stock_history",
-            "mcp__lazy-tool-service__html_notes_stock_news",
-            "mcp__lazy-tool-service__html_notes_sports_scores",
-            "mcp__lazy-tool-service__html_notes_get_weather",
+            "mcp__lazy-agent-service__html_notes_web_search",
+            "mcp__lazy-agent-service__html_notes_read_page",
+            "mcp__lazy-agent-service__html_notes_news",
+            "mcp__lazy-agent-service__html_notes_stock_history",
+            "mcp__lazy-agent-service__html_notes_stock_news",
+            "mcp__lazy-agent-service__html_notes_sports_scores",
+            "mcp__lazy-agent-service__html_notes_get_weather",
             # App Hub: list the user's own services, open one in a new browser
             # tab (approved catalog ids only — never raw URLs), hide/pin tiles.
-            "mcp__lazy-tool-service__html_notes_list_services",
-            "mcp__lazy-tool-service__html_notes_open_app",
-            "mcp__lazy-tool-service__html_notes_curate_app",
+            "mcp__lazy-agent-service__html_notes_list_services",
+            "mcp__lazy-agent-service__html_notes_open_app",
+            "mcp__lazy-agent-service__html_notes_curate_app",
             # Control plane: run registered actions on the other containers.
-            "mcp__lazy-tool-service__html_notes_app_action",
-            "mcp__lazy-tool-service__html_notes_list_actions",
+            "mcp__lazy-agent-service__html_notes_app_action",
+            "mcp__lazy-agent-service__html_notes_list_actions",
         ]
 
         # Build messages array — use system role at index 0.
@@ -1855,8 +1855,8 @@ async def send_message(req: MessageRequest):
                                 f"of #{followup_target}")
                     break
 
-        # The lazy-tool-service gateway runs the agentic loop and executes the
-        # mcp__lazy-tool-service__* widget tools; plain Prism has no such
+        # The lazy-agent-service gateway runs the agentic loop and executes the
+        # mcp__lazy-agent-service__* widget tools; plain Prism has no such
         # catalog registered, so LazyAgent is the default.
         target_url = LAZY_AGENT_URL if req.use_lazy_agent else PRISM_URL
 
@@ -1953,7 +1953,7 @@ async def send_message(req: MessageRequest):
             # router gains nothing from chain-of-thought and the user is
             # watching a spinner while it streams.
             "thinkingEnabled": False,
-            "workspaceRoot": "/home/lazycat/github/projects/sun/html-notes",
+            "workspaceRoot": "/home/lazycat/github/projects/sun/apps/html-notes",
             "workspaceEnabled": False,
             "enabledTools": enabled_tools,
             "messages": messages,
@@ -1983,8 +1983,8 @@ async def send_message(req: MessageRequest):
         # run to the widget tool set, thinking off) ships ONLY in the :5591 fork.
         # Canonical prism (:7777) 404s on it ("unknown agent: html_notes"). When we
         # target prism we run persona-less: the explicit SYSTEM_PROMPT + enabledTools
-        # already scope the turn, and the connected lazy-tool-service MCP server
-        # supplies the same mcp__lazy-tool-service__* research tools (verified live).
+        # already scope the turn, and the connected lazy-agent-service MCP server
+        # supplies the same mcp__lazy-agent-service__* research tools (verified live).
         #
         # 2026-08-16: the gateway is ALSO persona-less for now. The newly ported
         # agentic-loop harness returns an EMPTY stream on iteration 1 whenever
@@ -2164,7 +2164,7 @@ async def send_message(req: MessageRequest):
                     return event
 
                 try:
-                    if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
+                    if tool_name == "mcp__lazy-agent-service__canvas_modify_dom":
                         css_selector = tool_args.get("css_selector", "")
                         action = tool_args.get("action", "")
                         html_snippet = tool_args.get("html_snippet", "")
@@ -2225,7 +2225,7 @@ async def send_message(req: MessageRequest):
 
                         logger.info("[FAST LOOP] Terminating early after canvas_modify_dom to save latency")
 
-                    elif tool_name == "mcp__lazy-tool-service__canvas_add_widget":
+                    elif tool_name == "mcp__lazy-agent-service__canvas_add_widget":
                         if isinstance(tool_args, str):
                             try:
                                 tool_args = json.loads(tool_args)
@@ -2722,7 +2722,7 @@ async def send_message(req: MessageRequest):
                             yield event
 
                         logger.info("[FAST LOOP] Terminating early after canvas_add_widget to save latency")
-                    elif tool_name == "mcp__lazy-tool-service__create_widget":
+                    elif tool_name == "mcp__lazy-agent-service__create_widget":
                         # A model-built widget is a FACTORY widget now: its
                         # {title, html, css, js} is persisted and rendered as
                         # chrome around a sandboxed iframe (render_custom /
@@ -2754,7 +2754,7 @@ async def send_message(req: MessageRequest):
                             yield event
                         logger.info(f"[WIDGET INJECTOR] created sandboxed custom widget #{widget_id} ({cfg['kind']})")
                         logger.info("[FAST LOOP] Terminating early after create_widget to save latency")
-                    elif tool_name == "mcp__lazy-tool-service__update_widget":
+                    elif tool_name == "mcp__lazy-agent-service__update_widget":
                         widget_id = tool_args.get("widgetId")
                         title = tool_args.get("title")
                         html_content = tool_args.get("htmlContent")
@@ -3045,7 +3045,7 @@ async def send_message(req: MessageRequest):
                                     event_type = event.get("type", "")
                                     logger.info(f"[SSE_PROXY] Received event_type: '{event_type}'")
 
-                                    if event_type in ("chunk", "done") and active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget"):
+                                    if event_type in ("chunk", "done") and active_tool_name in ("mcp__lazy-agent-service__canvas_modify_dom", "mcp__lazy-agent-service__canvas_add_widget"):
                                         if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args):
                                             failed_tool = active_tool_name
                                             async for evt in execute_mutation(active_tool_name, active_tool_args):
@@ -3124,7 +3124,7 @@ async def send_message(req: MessageRequest):
                                         # only thing that can fire it. Rendered here
                                         # (not by canvas_add_widget) so the model
                                         # cannot skip it or invent its own config.
-                                        if (active_tool_name == "mcp__lazy-tool-service__html_notes_app_action"
+                                        if (active_tool_name == "mcp__lazy-agent-service__html_notes_app_action"
                                                 and not executed_active_tool
                                                 and status in ("done", "success")):
                                             _act_app = str((args or {}).get("app_id") or "").strip()
@@ -3165,7 +3165,7 @@ async def send_message(req: MessageRequest):
                                         # frame (window.open + clickable-toast fallback,
                                         # since an SSE callback has no user gesture).
                                         # Emitted once per call; never a raw model URL.
-                                        if (active_tool_name == "mcp__lazy-tool-service__html_notes_open_app"
+                                        if (active_tool_name == "mcp__lazy-agent-service__html_notes_open_app"
                                                 and not executed_active_tool
                                                 and status in ("calling", "done", "success")):
                                             open_q = str((args or {}).get("app_id")
@@ -3181,7 +3181,7 @@ async def send_message(req: MessageRequest):
                                                     yield f'data: {json.dumps({"type": "open_url", "url": open_app["launch_url"], "name": open_app["name"]})}\n\n'
 
                                         # FAST PATH: Execute immediately when arguments are available!
-                                        if active_tool_name in ("mcp__lazy-tool-service__canvas_modify_dom", "mcp__lazy-tool-service__canvas_add_widget", "mcp__lazy-tool-service__create_widget", "mcp__lazy-tool-service__update_widget"):
+                                        if active_tool_name in ("mcp__lazy-agent-service__canvas_modify_dom", "mcp__lazy-agent-service__canvas_add_widget", "mcp__lazy-agent-service__create_widget", "mcp__lazy-agent-service__update_widget"):
                                             if not executed_active_tool and is_valid_tool_args(active_tool_name, active_tool_args) and status in ("calling", "done", "success"):
                                                 failed_tool = active_tool_name
                                                 async for evt in execute_mutation(active_tool_name, active_tool_args):
@@ -3243,7 +3243,7 @@ async def send_message(req: MessageRequest):
                                             # gather data, then the model is supposed to
                                             # call canvas_add_widget), whereas a prism
                                             # core tool means the allowlist was bypassed.
-                                            is_ours = tool_name.startswith("mcp__lazy-tool-service__")
+                                            is_ours = tool_name.startswith(("mcp__lazy-agent-service__", "mcp__lazy-tool-service__"))  # legacy prefix kept: persisted rows may carry it
                                             if not is_ours:
                                                 logger.warning(
                                                     f"[AGENT] prism core tool {tool_name!r} — outside our "

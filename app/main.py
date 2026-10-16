@@ -343,7 +343,7 @@ _tool_results: Dict[str, tuple] = {}
 # already a renderable config belong here — html_notes_news caches a full
 # data_card config; raw web-search hits do NOT qualify (wall-of-links).
 _PROVISIONAL_TOOLS = {
-    "mcp__lazy-tool-service__html_notes_news": (
+    "mcp__lazy-agent-service__html_notes_news": (
         lambda a: f"news:{str(a.get('topic') or a.get('query') or '').strip()}",
         "data_card",
     ),
@@ -445,7 +445,7 @@ _PHASE_READING     = "reading"
 _PHASE_COMPOSING   = "composing"
 
 # Which phase a tool call puts the turn in, keyed on the BARE tool name (the
-# mcp__lazy-tool-service__ prefix is stripped first). Unlisted means research:
+# mcp__lazy-agent-service__ prefix is stripped first). Unlisted means research:
 # the only tools that aren't research are the canvas/notes mutators, and every
 # one of those is named here, so the default is safe rather than merely likely.
 _TOOL_PHASES = {
@@ -576,7 +576,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_TOOL_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL
+from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL
 import asyncio
 import contextvars
 import datetime
@@ -602,21 +602,21 @@ AGENT_USERNAME = os.getenv("AGENT_USERNAME", "admin")
 # observed calling execute_python + read_page for 219s and never touching the
 # canvas. The persona scopes the run to the widget tool set.
 PRISM_AGENT_ID = os.getenv("PRISM_AGENT_ID", "CUSTOM_HTML_NOTES_CANVAS")
-# The MCP server name lazy-tool-service registers itself under in Prism. The
-# tool prefix (mcp__lazy-tool-service__*) derives from it, so it is load-bearing
-# — see lazy-tool-service/src/services/PrismRegistrationService.ts.
-MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "lazy-tool-service")
+# The MCP server name lazy-agent-service registers itself under in Prism. The
+# tool prefix (mcp__lazy-agent-service__*) derives from it, so it is load-bearing
+# — see lazy-agent-service/src/services/PrismRegistrationService.ts.
+MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "lazy-agent-service")
 
 # Names that identify OUR MCP server in a gateway's registry, for health lookups
 # ONLY. The registration was renamed to `lazy-agent-service` (measured on prism
-# 2026-09-05: that row is connected with 91 tools, and no `lazy-tool-service` row
+# 2026-09-05: that row is connected with 91 tools, and no `lazy-agent-service` row
 # exists), so a lookup on the single name reported
-#     agent.ok=false "lazy-tool-service is not registered for this scope"
+#     agent.ok=false "lazy-agent-service is not registered for this scope"
 # on a stack whose agent path demonstrably works — a health endpoint saying the
 # thing is broken while it serves tools is worse than no health endpoint.
 #
 # MCP_SERVER_NAME itself must NOT change: the tool-call prefix
-# `mcp__lazy-tool-service__*` derives from it and is baked into enabledTools
+# `mcp__lazy-agent-service__*` derives from it and is baked into enabledTools
 # here, into the gateway's own catalog, and into personas across several repos.
 # This tuple is only for "is our server present in that registry".
 MCP_SERVER_NAMES = tuple(
@@ -1239,7 +1239,7 @@ async def _try_reconnect_mcp() -> bool:
             if not mine:
                 logger.error(f"[MCP] {MCP_SERVER_NAME} is not registered for "
                              f"{AGENT_PROJECT}/{AGENT_USERNAME} — cannot reconnect; "
-                             f"lazy-tool-service registers itself on ITS boot.")
+                             f"lazy-agent-service registers itself on ITS boot.")
                 return False
             if mine.get("connected") and int(mine.get("toolCount") or 0) > 0:
                 return True
@@ -1341,7 +1341,7 @@ class MessageRequest(BaseModel):
     # carries it, so a rewrite can never loop.
     rewritten_from: Optional[str] = None
     # False (default) = PRISM MODE: the agent runs on prism-service (:7777) with the
-    # lazy-tool-service MCP research tools/harnesses, AND research/content asks
+    # lazy-agent-service MCP research tools/harnesses, AND research/content asks
     # (products, general answers, images) are routed to that agent instead of being
     # short-circuited by local search-scrape builders. True = legacy: the :5591 fork
     # gateway + local fast-path builders (faster, but no real research).
@@ -3166,13 +3166,13 @@ _PLACE_TYPE_EMOJI = {
 def is_valid_tool_args(tool_name: str, args: dict) -> bool:
     if not args:
         return False
-    if tool_name == "mcp__lazy-tool-service__canvas_add_widget":
+    if tool_name == "mcp__lazy-agent-service__canvas_add_widget":
         return bool(args.get("widget_type"))
-    if tool_name == "mcp__lazy-tool-service__canvas_modify_dom":
+    if tool_name == "mcp__lazy-agent-service__canvas_modify_dom":
         return bool(args.get("css_selector") and args.get("action"))
-    if tool_name == "mcp__lazy-tool-service__create_widget":
+    if tool_name == "mcp__lazy-agent-service__create_widget":
         return bool(args.get("widgetType") and args.get("htmlContent"))
-    if tool_name == "mcp__lazy-tool-service__update_widget":
+    if tool_name == "mcp__lazy-agent-service__update_widget":
         return bool(args.get("widgetId"))
     return False
 
@@ -3352,7 +3352,7 @@ ROUTER_WIDGETS = {
 }
 
 # In PRISM MODE (use_lazy_agent=False), these router widget types are RESEARCH asks
-# and get handed to the prism agent (which runs the lazy-tool-service MCP
+# and get handed to the prism agent (which runs the lazy-agent-service MCP
 # web_search/read_page harnesses → a synthesised, sourced answer) instead of a local
 # search-scrape builder. Everything else (weather/stock/sports/map/traffic/music/
 # clock/list/notes/trip) stays on the fast local path — deterministic, fast, and
@@ -3380,13 +3380,13 @@ _AGENT_RESEARCH_TYPES = {"answer", "image", "wikipedia",
 # no hint: it burns iterations failing against a phantom (the same failure the
 # enabled_tools comment describes for the tools-api data tools).
 _PREFLIGHT_RECIPE = {
-    "answer":     ("mcp__lazy-tool-service__html_notes_web_search",
+    "answer":     ("mcp__lazy-agent-service__html_notes_web_search",
                    "canvas_add_widget(widget_type='data_card', config={'search_query': <query>})"),
-    "wikipedia":  ("mcp__lazy-tool-service__html_notes_web_search",
+    "wikipedia":  ("mcp__lazy-agent-service__html_notes_web_search",
                    "canvas_add_widget(widget_type='data_card', config={'search_query': <query>})"),
-    "news":       ("mcp__lazy-tool-service__html_notes_news",
+    "news":       ("mcp__lazy-agent-service__html_notes_news",
                    "canvas_add_widget(widget_type='data_card', config={'news_topic': <query>})"),
-    "stock_news": ("mcp__lazy-tool-service__html_notes_stock_news",
+    "stock_news": ("mcp__lazy-agent-service__html_notes_stock_news",
                    "canvas_add_widget(widget_type='data_card', config={'stock_news_query': <query>})"),
     # No tool: the agent has no image tool at all — the server searches and
     # vision-checks from image_query.
@@ -3577,7 +3577,7 @@ async def get_graph():
 
 
 async def _mcp_scopes_serving_us(client: httpx.AsyncClient) -> list:
-    """Scopes where lazy-tool-service IS connected, for diagnosing a mismatch.
+    """Scopes where lazy-agent-service IS connected, for diagnosing a mismatch.
 
     Prism scopes /mcp-servers by the x-project/x-username headers, so there is
     no "list every scope" call — we probe the scopes we know this ecosystem
@@ -3606,13 +3606,13 @@ async def _agent_dependency_status() -> dict:
     """Can a research ask actually work right now?
 
     Every tier-3 ask runs on Prism against the CUSTOM_HTML_NOTES_CANVAS persona,
-    using tools served over MCP by lazy-tool-service. None of that lives in this
+    using tools served over MCP by lazy-agent-service. None of that lives in this
     repo, and when it breaks this app keeps answering /health/app with "ok"
     while every research ask dies on `Unknown tool error`. So check the thing
     that actually has to be true:
 
       1. Prism is reachable at all,
-      2. the lazy-tool-service MCP server is CONNECTED for our scope and serving
+      2. the lazy-agent-service MCP server is CONNECTED for our scope and serving
          a non-zero tool count (a connected server with 0 tools is the shape a
          half-dead SSE link takes),
       3. our persona exists — without it the run is unscoped, which is not an

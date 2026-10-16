@@ -4,7 +4,7 @@
 //
 // 1. HUMANIZATION. The envelope's one detail line is the only place a user
 //    learns what the agent is doing. Printing the raw MCP name there
-//    ("mcp__lazy-tool-service__html_notes_web_search") is not a progress
+//    ("mcp__lazy-agent-service__html_notes_web_search") is not a progress
 //    report — it is the thing that made the UI feel opaque in the first place.
 //
 // 2. CANVAS HYGIENE, which is the dangerous one because it fails SILENTLY and
@@ -49,7 +49,7 @@ const humanizeTool = new Function(`${humanizeSrc}; return humanizeTool;`)();
 
 test("a search reads as a search, with what it is searching for", () => {
   assert.equal(
-    humanizeTool("mcp__lazy-tool-service__html_notes_web_search",
+    humanizeTool("mcp__lazy-agent-service__html_notes_web_search",
                  { query: "nvidia q3 earnings" }),
     "searching: nvidia q3 earnings"
   );
@@ -58,7 +58,7 @@ test("a search reads as a search, with what it is searching for", () => {
 test("a page read names the site, not the whole URL", () => {
   // The URL is mostly tracking noise; the site is the informative part.
   assert.equal(
-    humanizeTool("mcp__lazy-tool-service__html_notes_read_page",
+    humanizeTool("mcp__lazy-agent-service__html_notes_read_page",
                  { url: "https://www.reuters.com/markets/some/very/long/path?x=1" }),
     "reading: reuters.com"
   );
@@ -66,9 +66,9 @@ test("a page read names the site, not the whole URL", () => {
 
 test("the raw MCP name never reaches the card", () => {
   for (const tool of [
-    "mcp__lazy-tool-service__html_notes_web_search",
-    "mcp__lazy-tool-service__canvas_add_widget",
-    "mcp__lazy-tool-service__some_tool_added_next_year",
+    "mcp__lazy-agent-service__html_notes_web_search",
+    "mcp__lazy-agent-service__canvas_add_widget",
+    "mcp__lazy-agent-service__some_tool_added_next_year",
   ]) {
     const out = humanizeTool(tool, { query: "x" });
     assert.doesNotMatch(out, /mcp__/, `leaked the MCP prefix for ${tool}`);
@@ -77,24 +77,24 @@ test("the raw MCP name never reaches the card", () => {
 });
 
 test("an unknown tool still says something readable", () => {
-  assert.equal(humanizeTool("mcp__lazy-tool-service__html_notes_do_a_thing", {}),
+  assert.equal(humanizeTool("mcp__lazy-agent-service__html_notes_do_a_thing", {}),
                "do a thing");
 });
 
 test("a missing or malformed arg degrades to the verb alone", () => {
-  const t = "mcp__lazy-tool-service__html_notes_web_search";
+  const t = "mcp__lazy-agent-service__html_notes_web_search";
   assert.equal(humanizeTool(t, {}), "searching");
   assert.equal(humanizeTool(t, null), "searching");
   assert.equal(humanizeTool(t, { query: "   " }), "searching");
   // A non-URL in a url slot must not throw — args come off the wire.
   assert.equal(
-    humanizeTool("mcp__lazy-tool-service__html_notes_read_page", { url: "not a url" }),
+    humanizeTool("mcp__lazy-agent-service__html_notes_read_page", { url: "not a url" }),
     "reading: not a url"
   );
 });
 
 test("a long argument is truncated, so one line stays one line", () => {
-  const out = humanizeTool("mcp__lazy-tool-service__html_notes_web_search",
+  const out = humanizeTool("mcp__lazy-agent-service__html_notes_web_search",
                            { query: "n".repeat(400) });
   assert.ok(out.length < 70, `detail line too long: ${out.length} chars`);
   assert.match(out, /…$/);

@@ -136,7 +136,7 @@ def _drive(events, canvas='<div id="dashboard-grid" class="dashboard-grid"></div
 
 def _tool(name, args):
     return {"type": "tool_execution", "status": "done",
-            "tool": {"name": f"mcp__lazy-tool-service__{name}", "args": args, "result": "ok"}}
+            "tool": {"name": f"mcp__lazy-agent-service__{name}", "args": args, "result": "ok"}}
 
 
 def test_create_widget_commits_a_sandboxed_custom_widget(patch_server):

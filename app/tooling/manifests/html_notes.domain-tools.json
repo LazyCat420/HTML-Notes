@@ -76,7 +76,7 @@
       "requires_confirmation": false,
       "legacy_aliases": [
         "canvas_add_widget",
-        "mcp__lazy-tool-service__canvas_add_widget"
+        "mcp__lazy-agent-service__canvas_add_widget"
       ],
       "legacy_name": "canvas_add_widget",
       "timeout_ms": 10000,

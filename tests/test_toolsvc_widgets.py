@@ -348,7 +348,7 @@ def test_agent_can_ask_for_a_kind_and_the_server_fills_the_widget(fake_toolsvc, 
         return None
     patch_server("route_with_llm", _no_plan)
     ev = {"type": "tool_execution", "status": "done",
-          "tool": {"name": "mcp__lazy-tool-service__canvas_add_widget",
+          "tool": {"name": "mcp__lazy-agent-service__canvas_add_widget",
                    "args": {"widget_type": "data_card", "config": {"toolsvc": "iss"}}, "result": "ok"}}
     with patch("httpx.AsyncClient.stream", return_value=_Stream([ev])):
         res = _post("Add an audio box please")

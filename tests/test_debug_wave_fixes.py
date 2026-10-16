@@ -181,10 +181,10 @@ def test_unhandled_tool_names_are_not_canvas_tools():
     """Pins the four-name whitelist. If a canvas tool is ever renamed, this fails
     rather than silently becoming a no-op turn."""
     handled = {
-        "mcp__lazy-tool-service__canvas_modify_dom",
-        "mcp__lazy-tool-service__canvas_add_widget",
-        "mcp__lazy-tool-service__create_widget",
-        "mcp__lazy-tool-service__update_widget",
+        "mcp__lazy-agent-service__canvas_modify_dom",
+        "mcp__lazy-agent-service__canvas_add_widget",
+        "mcp__lazy-agent-service__create_widget",
+        "mcp__lazy-agent-service__update_widget",
     }
     src = open(os.path.join(os.path.dirname(__file__), "..", "app", "main.py")).read()
     for name in handled:

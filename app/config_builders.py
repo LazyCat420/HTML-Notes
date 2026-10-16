@@ -1008,7 +1008,7 @@ async def build_market_research_config(message: str) -> dict:
     """A DEEP, multi-source market-research brief rendered as an answer data_card.
 
     Where the fast stock-news card is 6 Yahoo headlines + one summarize pass, this
-    drives the shared DEEP_RESEARCH agent on the lazy-tool-service gateway: it
+    drives the shared DEEP_RESEARCH agent on the lazy-agent-service gateway: it
     decomposes the ask, fans out parallel sub-researchers across the web/news,
     reads sources, and synthesizes a structured brief. Slower (~30-90s) but
     genuinely researched.

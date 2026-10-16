@@ -45,7 +45,7 @@ def test_sse_no_duplicate_widget(mock_stream):
 
     # Define mock SSE stream returned by Prism
     mock_events = [
-        'data: {"type": "tool_execution", "status": "preparing", "tool": {"name": "mcp__lazy-tool-service__canvas_add_widget", "args": {"widget_type": "mini_music_player", "widget_id": "widget-music-player-1", "config": {"autoplay": true, "genre": "jazz"}}}}\n',
+        'data: {"type": "tool_execution", "status": "preparing", "tool": {"name": "mcp__lazy-agent-service__canvas_add_widget", "args": {"widget_type": "mini_music_player", "widget_id": "widget-music-player-1", "config": {"autoplay": true, "genre": "jazz"}}}}\n',
         'data: {"type": "chunk", "content": "I "}\n',
         'data: {"type": "chunk", "content": "have "}\n',
         'data: {"type": "chunk", "content": "added "}\n',
@@ -116,7 +116,7 @@ def test_youtube_widget_in_place_replacement(mock_stream, mock_yt_search):
 
     # Stream adding a youtube widget when one already exists with a different ID
     mock_events = [
-        'data: {"type": "tool_execution", "status": "success", "tool": {"name": "mcp__lazy-tool-service__canvas_add_widget", "args": {"widget_type": "youtube_player", "widget_id": "fireship-video-latest", "config": {"video_id": "new_video_id", "title": "New Video Title"}}}}\n',
+        'data: {"type": "tool_execution", "status": "success", "tool": {"name": "mcp__lazy-agent-service__canvas_add_widget", "args": {"widget_type": "youtube_player", "widget_id": "fireship-video-latest", "config": {"video_id": "new_video_id", "title": "New Video Title"}}}}\n',
         'data: {"type": "chunk", "content": "Updated "}\n',
         'data: {"type": "done"}\n'
     ]

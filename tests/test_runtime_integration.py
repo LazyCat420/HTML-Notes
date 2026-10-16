@@ -166,7 +166,7 @@ def test_shared_runtime_canvas_widget_mutation(monkeypatch):
             type="tool.invoked",
             timestamp="2026-09-19T12:00:01Z",
             data={
-                "tool_name": "mcp__lazy-tool-service__canvas_add_widget",
+                "tool_name": "mcp__lazy-agent-service__canvas_add_widget",
                 "arguments": {
                     "widget_type": "data_card",
                     "widget_id": "card_solar_99",

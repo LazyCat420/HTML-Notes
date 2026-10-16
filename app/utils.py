@@ -406,7 +406,7 @@ def _summarize_tool_args(args) -> dict:
 def _phase_for_tool(tool_name: str) -> str:
     """Phase implied by a tool call. Split on the MCP prefix rather than a
     prefix-strip so a bare name (the fork serves some tools unprefixed) keys the
-    same as its mcp__lazy-tool-service__ form."""
+    same as its mcp__lazy-agent-service__ form."""
     return _TOOL_PHASES.get((tool_name or "").rsplit("__", 1)[-1], _PHASE_RESEARCHING)
 
 

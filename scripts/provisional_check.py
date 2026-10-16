@@ -15,13 +15,13 @@ Run: .venv/bin/python scripts/provisional_check.py
 import re
 import sys
 
-sys.path.insert(0, "/home/lazycat/github/projects/sun/HTML-Notes")
+sys.path.insert(0, "/home/lazycat/github/projects/sun/apps/html-notes")
 
 from playwright.sync_api import sync_playwright
 
 from app.widgets.factory import generate_widget_html
 
-ROOT = "/home/lazycat/github/projects/sun/HTML-Notes"
+ROOT = "/home/lazycat/github/projects/sun/apps/html-notes"
 JS = open(f"{ROOT}/app/static/index.js").read()
 CSS = open(f"{ROOT}/app/static/index.css").read()
 

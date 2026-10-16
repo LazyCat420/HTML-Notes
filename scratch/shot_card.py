@@ -14,7 +14,7 @@ import base64
 import io
 import sys
 
-sys.path.insert(0, "/home/lazycat/github/projects/sun/HTML-Notes")
+sys.path.insert(0, "/home/lazycat/github/projects/sun/apps/html-notes")
 
 from PIL import Image, ImageDraw
 from playwright.sync_api import sync_playwright
@@ -22,7 +22,7 @@ from playwright.sync_api import sync_playwright
 from app.widgets.factory import render_data_card
 
 OUT = "/tmp/claude-1000/-home-lazycat-github-projects-sun/d6eeae79-b23c-4682-96f5-177348115221/scratchpad"
-CSS = "/home/lazycat/github/projects/sun/HTML-Notes/app/static/index.css"
+CSS = "/home/lazycat/github/projects/sun/apps/html-notes/app/static/index.css"
 
 
 def img_uri(w, h, label):

@@ -4,7 +4,7 @@ import re, sys
 from playwright.sync_api import sync_playwright
 
 OUT = "/tmp/claude-1000/-home-lazycat-github-projects-sun/d6eeae79-b23c-4682-96f5-177348115221/scratchpad"
-ROOT = "/home/lazycat/github/projects/sun/HTML-Notes/app/static"
+ROOT = "/home/lazycat/github/projects/sun/apps/html-notes/app/static"
 
 card = open(f"{OUT}/card_links.html").read()
 # Pull the canvas config out of index.js so this tests what SHIPS, not a copy.

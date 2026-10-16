@@ -27,11 +27,11 @@ To prevent divergence, race conditions, and duplicated schema copies, ownership 
 Historical test suites relied on relative sibling filesystem paths:
 ```python
 # DEFECTIVE HISTORICAL PATTERN:
-schema_path = pathlib.Path("../lazy-agent-service/tool_schemas.json")
+schema_path = pathlib.Path("../../agents/lazy-agent-service/tool_schemas.json")
 ```
 
 This violated isolated deployment and container hermeticity rules. The following rules are now strictly enforced:
-1. **Zero Cross-Repo Filesystem Traversals**: No test, import, or deployment step may reference `../lazy-agent-service` or sibling checkouts.
+1. **Zero Cross-Repo Filesystem Traversals**: No test, import, or deployment step may reference `../../agents/lazy-agent-service` or sibling checkouts.
 2. **Packaged Manifest Authority**: HTML-Notes reads its application profile, domain tool schemas, and widget catalog from in-repo manifests in `app/tooling/manifests/`.
 3. **External Protocol Verification**: Contract parity tests validate against packaged schema definitions or shared artifacts.
 

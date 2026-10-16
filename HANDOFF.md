@@ -1038,7 +1038,7 @@ The widget is now a thin client over that service:
 - Deploy note: the working tree had another session's in-progress HUD work, so
   this was deployed from a pinned sibling worktree
   (`git worktree add ../html-notes-deploy <sha>` → deploy.sh → remove), per
-  the trading-service recipe. `../deploy-kit` and `../lazycat-sdk` resolve
+  the trading-service recipe. `../../deploy-kit` and `../../platform/lazycat-sdk` resolve
   because the worktree sits in the sun root.
 
 ## Verification

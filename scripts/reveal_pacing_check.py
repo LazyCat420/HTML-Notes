@@ -10,7 +10,7 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-JS = open("/home/lazycat/github/projects/sun/HTML-Notes/app/static/index.js").read()
+JS = open("/home/lazycat/github/projects/sun/apps/html-notes/app/static/index.js").read()
 
 
 def fn(name):

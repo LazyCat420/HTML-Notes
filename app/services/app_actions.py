@@ -220,7 +220,7 @@ async def build_actions_prompt_block(limit: int = 40) -> str:
         flag = " [CONFIRM REQUIRED]" if r["destructive"] else ""
         lines.append(f"- {r['app_id']}.{r['action']}{flag} — {r['description'][:150]}")
     return ("\n\nYOU CAN DO (run these with "
-            "mcp__lazy-tool-service__html_notes_app_action(app_id, action, params)):\n"
+            "mcp__lazy-agent-service__html_notes_app_action(app_id, action, params)):\n"
             + "\n".join(lines) + "\n")
 
 

@@ -131,7 +131,7 @@ def test_shared_web_search_normalizes_and_filters_results(monkeypatch):
     out = _run(m._search_shared_web("sandals", 5))
     assert out == [{"title": "Best Sandals", "url": "https://example.com/a",
                     "snippet": "The best waterproof pick."}]
-    assert calls == [(f"{m.LAZY_TOOL_SERVICE_URL}/execute/web_search", {"query": "sandals", "limit": 5})]
+    assert calls == [(f"{m.LAZY_AGENT_SERVICE_URL}/execute/web_search", {"query": "sandals", "limit": 5})]
 
 
 def test_shared_web_search_with_nothing_found_is_an_empty_list(monkeypatch):

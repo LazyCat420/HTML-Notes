@@ -63,7 +63,7 @@ def test_cached_tool_result_not_mutated_by_provisional_copy():
 
 
 def test_news_tool_is_whitelisted_with_topic_key():
-    key_fn, wtype = _PROVISIONAL_TOOLS["mcp__lazy-tool-service__html_notes_news"]
+    key_fn, wtype = _PROVISIONAL_TOOLS["mcp__lazy-agent-service__html_notes_news"]
     assert wtype == "data_card"
     assert key_fn({"topic": " ai "}) == "news:ai"
     assert key_fn({"query": "markets"}) == "news:markets"

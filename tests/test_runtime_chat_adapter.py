@@ -47,7 +47,7 @@ async def test_runtime_chat_adapter_event_translation():
             type="tool.invoked",
             timestamp="2026-09-19T12:00:02Z",
             data={
-                "tool_name": "mcp__lazy-tool-service__news_search",
+                "tool_name": "mcp__lazy-agent-service__news_search",
                 "arguments": {"query": "clean energy"},
             },
         ),
@@ -93,7 +93,7 @@ async def test_runtime_chat_adapter_event_translation():
     assert "done" in received_types
 
     assert any("Synthesizing research notes" in c for c in chunks)
-    assert "mcp__lazy-tool-service__news_search" in tool_calls
+    assert "mcp__lazy-agent-service__news_search" in tool_calls
     assert receipt == {"status": "verified"}
 
 

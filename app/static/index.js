@@ -2038,7 +2038,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     // Bare tool name -> how to say it out loud. Keys are matched AFTER the
-    // mcp__lazy-tool-service__ prefix is stripped. `arg` names the args field
+    // mcp__lazy-agent-service__ prefix is stripped. `arg` names the args field
     // worth showing; the server only ever sends a summarized handful.
     const TOOL_LABELS = {
         html_notes_web_search:    { verb: "searching",      arg: "query" },
@@ -2059,7 +2059,7 @@ document.addEventListener("DOMContentLoaded", () => {
         validate_widget_html:     { verb: "checking the card" }
     };
 
-    // "mcp__lazy-tool-service__html_notes_web_search" + {query:"nvidia q3"}
+    // "mcp__lazy-agent-service__html_notes_web_search" + {query:"nvidia q3"}
     //   -> "searching: nvidia q3"
     // The raw name is never shown here — it is already in the Activity log, and
     // an MCP-prefixed identifier is not a progress report.
@@ -2514,9 +2514,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     // this comment said "False = PRISM MODE" — that was wrong.)
                     //
                     // It used to be pinned to `true` (the :5591 fork) because prism
-                    // dropped the mcp__lazy-tool-service__* widget tools ("not in
+                    // dropped the mcp__lazy-agent-service__* widget tools ("not in
                     // schema") and never rendered. That premise is dead:
-                    // lazy-tool-service is now a CONNECTED MCP server in prism, so
+                    // lazy-agent-service is now a CONNECTED MCP server in prism, so
                     // prism serves all html_notes_*/canvas_* tools and runs the real
                     // research harnesses (verified live). Hardcoding it here silently
                     // overrode the server default and forced every browser turn back

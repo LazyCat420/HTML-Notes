@@ -83,7 +83,7 @@ def test_summary_survives_junk():
 
 def test_phase_reads_through_the_mcp_prefix():
     assert _phase_for_tool(
-        "mcp__lazy-tool-service__html_notes_read_page") == _PHASE_READING
+        "mcp__lazy-agent-service__html_notes_read_page") == _PHASE_READING
     # The fork serves some tools unprefixed; both forms must key the same.
     assert _phase_for_tool("html_notes_read_page") == _PHASE_READING
 
@@ -216,7 +216,7 @@ def test_malformed_iteration_progress_emits_nothing(agent_turn):
 def test_tool_call_carries_args_and_phase(agent_turn):
     sse = agent_turn([
         {"type": "tool_execution", "status": "calling",
-         "tool": {"name": "mcp__lazy-tool-service__html_notes_web_search",
+         "tool": {"name": "mcp__lazy-agent-service__html_notes_web_search",
                   "args": {"query": "nvidia q3 earnings", "limit": 6}}},
     ])
     calls = _events_of(sse, "tool_call")
@@ -230,7 +230,7 @@ def test_research_budget_also_reports_progress(agent_turn):
     denominator is the fake creep being removed."""
     sse = agent_turn([
         {"type": "tool_execution", "status": "done",
-         "tool": {"name": "mcp__lazy-tool-service__html_notes_web_search",
+         "tool": {"name": "mcp__lazy-agent-service__html_notes_web_search",
                   "args": {"query": "a"}, "result": "ok"}},
     ])
     prog = [p for p in _events_of(sse, "progress") if p.get("source") == "research"]

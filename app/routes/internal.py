@@ -8,13 +8,13 @@ router = APIRouter()
 @app.post("/internal/execute")
 async def internal_tool_execute(req: InternalToolRequest, request: Request = None):
     """
-    Internal tool dispatcher. Called by lazy-tool-service when the model
+    Internal tool dispatcher. Called by lazy-agent-service when the model
     fires an html_notes_* or render_component tool call.
 
     Auth: when INTERNAL_EXECUTE_TOKEN is configured (env or vault), the caller
     must send it in the x-internal-token header. When it is not configured the
     endpoint stays open for compatibility but warns once per boot — provision
-    the token in both this service's and lazy-tool-service's .env to close it.
+    the token in both this service's and lazy-agent-service's .env to close it.
     """
     global _internal_execute_auth_warned
     expected = await _fetch_secret("INTERNAL_EXECUTE_TOKEN")
@@ -28,7 +28,7 @@ async def internal_tool_execute(req: InternalToolRequest, request: Request = Non
         _internal_execute_auth_warned = True
         logger.warning("[SECURITY] /internal/execute is UNAUTHENTICATED — set "
                        "INTERNAL_EXECUTE_TOKEN in this service's and "
-                       "lazy-tool-service's env to enforce auth")
+                       "lazy-agent-service's env to enforce auth")
 
     if req.tool not in _INTERNAL_EXECUTE_TOOLS:
         return {"error": f"Tool not allowed: {req.tool}", "is_error": True}

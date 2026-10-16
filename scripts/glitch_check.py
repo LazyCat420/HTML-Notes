@@ -10,7 +10,7 @@ import re
 import pathlib
 from playwright.sync_api import sync_playwright
 
-ROOT = pathlib.Path("/home/lazycat/github/projects/sun/HTML-Notes")
+ROOT = pathlib.Path("/home/lazycat/github/projects/sun/apps/html-notes")
 SRC = (ROOT / "app/static/index.js").read_text()
 CSS = (ROOT / "app/static/index.css").read_text()
 

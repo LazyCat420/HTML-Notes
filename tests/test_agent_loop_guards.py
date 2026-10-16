@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 client = TestClient(app)
 
 TAIL = 25
-SEARCH = "mcp__lazy-tool-service__html_notes_web_search"
+SEARCH = "mcp__lazy-agent-service__html_notes_web_search"
 
 
 class _CountingResponse:

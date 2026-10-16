@@ -356,9 +356,9 @@ async def collect_candidates(req: NewsRequest) -> List[CandidateArticle]:
         except Exception as e:
             logger.debug(f"[NEWS PIPELINE] finnews fetch failed: {e}")
 
-    # 3. Direct HTTP fallback to LAZY_TOOL_SERVICE_URL if no candidates collected yet
+    # 3. Direct HTTP fallback to LAZY_AGENT_SERVICE_URL if no candidates collected yet
     if not candidates:
-        endpoint = f"{config.LAZY_TOOL_SERVICE_URL}/execute/news_search"
+        endpoint = f"{config.LAZY_AGENT_SERVICE_URL}/execute/news_search"
         body = {
             "topic": clean_topic,
             "limit": max(req.limit * 2, 12),

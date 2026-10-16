@@ -15,7 +15,7 @@ Two self-checks, because both halves of this probe have failed before:
 """
 
 import asyncio, json, re, sys, time, uuid, httpx
-sys.path.insert(0, "/home/lazycat/github/projects/sun/HTML-Notes")
+sys.path.insert(0, "/home/lazycat/github/projects/sun/apps/html-notes")
 import os; os.environ.setdefault("DATABASE_URL", "data/bench_news.db")
 from bench.news import editorial_ref as E
 from bs4 import BeautifulSoup
