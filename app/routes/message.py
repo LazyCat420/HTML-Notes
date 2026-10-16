@@ -1972,11 +1972,6 @@ async def send_message(req: MessageRequest):
         }
         # The HTML_NOTES persona (personas/clients/HtmlNotesPersona.ts — scopes the
         # run to the widget tool set, thinking off) ships ONLY in the :5591 fork.
-        # Canonical prism (:7777) 404s on it ("unknown agent: html_notes"). When we
-        # target prism we run persona-less: the explicit SYSTEM_PROMPT + enabledTools
-        # already scope the turn, and the connected lazy-agent-service MCP server
-        # supplies the same mcp__lazy-agent-service__* research tools (verified live).
-        #
         # 2026-08-16: the gateway is ALSO persona-less for now. The newly ported
         # agentic-loop harness returns an EMPTY stream on iteration 1 whenever
         # `agent` names a persona (bisected live: identical payload with the
