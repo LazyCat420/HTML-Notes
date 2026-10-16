@@ -16,7 +16,7 @@ DISPLAY_NAME="📝 HTML-Notes Engine"
 EXTRA_SSH_SYNC() {
   info "Syncing lazycat-sdk to remote host..."
   tar --exclude='lazycat-sdk/.venv' --exclude='lazycat-sdk/__pycache__' \
-    -czC "${SCRIPT_DIR}/../" lazycat-sdk \
+    -czC "${SCRIPT_DIR}/../../platform/" lazycat-sdk \
     | ssh "$DEPLOY_SSH_HOST" "sudo mkdir -p '${DEPLOY_COMPOSE_ROOT}/lazycat-sdk' && sudo tar -xzC '${DEPLOY_COMPOSE_ROOT}'"
 }
 
