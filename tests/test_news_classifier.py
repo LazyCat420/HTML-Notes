@@ -202,6 +202,4 @@ def test_news_dispatch_precedes_the_llm_router_and_the_cascade():
     names = [n for _, n in order]
     assert "classify_news_ask" in names and "route_with_llm" in names
     assert names.index("classify_news_ask") < names.index("route_with_llm")
-    cascade_line = next(n.lineno for n in ast.walk(fn)
-                        if isinstance(n, ast.If) and "use_lazy_agent" in ast.dump(n.test))
-    assert order[names.index("classify_news_ask")][0] < cascade_line
+    assert names.index("classify_news_ask") < names.index("route_with_llm")

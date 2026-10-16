@@ -25,9 +25,9 @@ router = APIRouter()
 async def get_models():
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{PRISM_URL}/config?includeLocal=true")
+            resp = await client.get(f"{LAZY_AGENT_URL}/config?includeLocal=true")
             if resp.status_code != 200:
-                raise HTTPException(status_code=500, detail="Failed to fetch models from Prism")
+                raise HTTPException(status_code=500, detail="Failed to fetch models from lazy-agent-service")
             
             data = resp.json()
             models_map = data.get("textToText", {}).get("models", {})
@@ -973,22 +973,13 @@ async def send_message(req: MessageRequest):
                             f"deadline={budget.foreground_deadline_ms}ms")
                 return spawn_research_stream(research_intent, budget)
 
-        # use_lazy_agent defaults to TRUE (main.py MessageRequest), and the
-        # browser deliberately does not send it — so for every real turn this
-        # cascade RUNS and the local builders serve. The `_AGENT_RESEARCH_TYPES`
-        # deferral further down is inert unless a client sends
-        # use_lazy_agent=false. (An earlier comment here claimed the opposite —
-        # "prism mode is the default, this is skipped" — and was wrong for
-        # months; the default was flipped to True on 2026-08-16 because prism's
-        # local registry came up empty.) News never reaches this block: the
-        # pre-router above claims it first.
-        # Serves the shared-runtime path too (2026-10-02): the builders are
-        # deterministic local code (no LLM) emitting the same SSE contract, so
-        # a "note widget" ask costs 2s instead of a 15s agent loop. Gated on
-        # runtime readiness so a canonical deploy with a down runtime still
-        # falls through to prism/agent rather than rendering from a broken
-        # local executor.
-        if req.use_lazy_agent or is_shared_runtime_enabled():
+        # lazy-agent-service (:5591) is the only agent harness now — the local
+        # fast-path builders always run. The `_AGENT_RESEARCH_TYPES` deferral
+        # further down was a prism-mode path and is gone with it (2026-10-15).
+        # News never reaches this block: the pre-router above claims it first.
+        # The builders are deterministic local code (no LLM) emitting the same
+        # SSE contract, so a "note widget" ask costs 2s instead of a 15s agent
+        # loop.
 
             # 0. "THIS ONE SUCKS, FIND ANOTHER" — swap the current video and remember
             #    the dislike forever. Checked before every other video path so a
@@ -1219,7 +1210,7 @@ async def send_message(req: MessageRequest):
             #     A grid of reference-photo cards, each linking to its source, instead of
             #     a wall of links. Checked before the map/POI branch (a product ask names
             #     no place) and outside the is_data_ask gate.
-            if (req.use_lazy_agent and SHOP_ASK_RE.search(text_clean)
+            if (SHOP_ASK_RE.search(text_clean)
                     and not wants_removal and not is_video_ask and not is_list_ask):
                 # PRISM MODE skips this: a shopping ask is real RESEARCH, so it falls
                 # through to the prism agent (web_search + read_page harnesses → a
@@ -1382,7 +1373,7 @@ async def send_message(req: MessageRequest):
             #     modalities and fan them out as ONE atomic multi-widget commit.
             #     Falls through to the single-widget answer/router when planning
             #     yields <2 modalities (i.e. it's really a narrow ask).
-            if (req.use_lazy_agent and (COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
+            if ((COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
                     and not wants_removal and not is_video_ask):
                 plan = await build_composition_plan(req.message)
                 if len(plan) >= 2:
@@ -1394,7 +1385,7 @@ async def send_message(req: MessageRequest):
             #    Synthesised into a readable answer card (Markdown answer + demoted
             #    sources) instead of dumping the user into the ~30-60s agent loop
             #    that returns a wall of links.
-            if (req.use_lazy_agent and ANSWER_ASK_RE.search(text_clean)
+            if (ANSWER_ASK_RE.search(text_clean)
                     and not wants_removal and not is_video_ask
                     and not LIVE_LOOKUP_RE.search(text_clean)):
                 # PRISM MODE skips this too: a fact/how-to/definition ask is research —
@@ -1540,7 +1531,7 @@ async def send_message(req: MessageRequest):
             if router_plan and not router_plan.get("defer") and router_plan.get("widgets"):
                 widgets = router_plan["widgets"]
                 research = [w["type"] for w in widgets if w["type"] in _AGENT_RESEARCH_TYPES]
-                if req.use_lazy_agent or not research:
+                if True:  # research deferral was a prism-mode path; removed
                     router_status = "local"
                     logger.info(f"[ROUTER] tier2-local {[w['type'] for w in widgets]} "
                                 f"q={[w['query'][:40] for w in widgets]} "
@@ -1858,7 +1849,7 @@ async def send_message(req: MessageRequest):
         # The lazy-agent-service gateway runs the agentic loop and executes the
         # mcp__lazy-agent-service__* widget tools; plain Prism has no such
         # catalog registered, so LazyAgent is the default.
-        target_url = LAZY_AGENT_URL if req.use_lazy_agent else PRISM_URL
+        target_url = LAZY_AGENT_URL
 
         # Build /agent payload — NO tools array (the gateway uses its own catalog)
         # The browser ALWAYS sends `model`, which means everything below this
@@ -1995,14 +1986,12 @@ async def send_message(req: MessageRequest):
         # the run (AgenticToolResolver honours it) and SYSTEM_PROMPT carries
         # the routing rules. Re-add FORK_AGENT_ID once the harness persona
         # path is fixed (open item in lazy-agent-service docs).
-        if not req.use_lazy_agent:
-            payload["agent"] = PRISM_AGENT_ID
-
-        async def proxy_prism_sse():
+        async def proxy_agent_sse():
             """
-            Stream Prism's /agent SSE events to the frontend.
-            Prism handles the full agentic loop (tool calls, execution, re-prompting).
-            We just proxy events and extract render_component results for the canvas.
+            Stream the gateway's /agent SSE events to the frontend.
+            lazy-agent-service handles the full agentic loop (tool calls,
+            execution, re-prompting). We just proxy events and extract
+            render_component results for the canvas.
             """
             final_text = ""
             # Only a mirror of the last commit, for the DB write at the end of the
@@ -3493,7 +3482,7 @@ async def send_message(req: MessageRequest):
         # Overwritten (or cleared) by every tier-3 turn and TTL-bounded, so an
         # aborted stream can't leak a stale bias past 180s.
         _stash_turn_freshness(req.message)
-        response_stream = _run_turn(req.session_id, req.current_canvas or "", proxy_prism_sse, req.canvas_version)
+        response_stream = _run_turn(req.session_id, req.current_canvas or "", proxy_agent_sse, req.canvas_version)
         if is_shared_runtime_enabled():
             from app.services.runtime_chat_adapter import ensure_terminal_sse
             response_stream = ensure_terminal_sse(response_stream)
@@ -3513,7 +3502,7 @@ async def transcribe_audio(req: TranscribeRequest):
     Proxies base64 audio transcription to Prism service STT endpoint.
     """
     try:
-        url = f"{PRISM_URL}/audio-to-text"
+        url = f"{LAZY_AGENT_URL}/audio-to-text"
         payload = {
             "provider": "openai",
             "audio": req.audio,

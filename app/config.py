@@ -15,9 +15,9 @@ VLLM_ENDPOINTS = [
         f"{VLLM_URL},http://10.0.0.141:8000"
     ).split(",") if url.strip()
 ]
-PRISM_URL = os.getenv("PRISM_URL", "http://10.0.0.16:7777")
 # lazy-agent-service gateway (runs the agentic loop + widget tool execution).
-# Host port 5591 maps to the container's 7778.
+# Host port 5591 maps to the container's 7778. This is the ONLY agent harness
+# now — prism-service is retired for this app (2026-10-15).
 LAZY_AGENT_URL = os.getenv("LAZY_AGENT_URL", "http://10.0.0.16:5591")
 DATABASE_URL = os.getenv("DATABASE_URL", "data/notes.db")
 LAZY_AGENT_SERVICE_URL = os.getenv("LAZY_AGENT_SERVICE_URL", "http://10.0.0.16:5591")

@@ -2508,20 +2508,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     // guard in _run_turn; without it a fast sibling turn's
                     // widget gets silently wiped).
                     canvas_version: canvasVersion
-                    // use_lazy_agent is deliberately NOT sent — the SERVER decides.
-                    // (MessageRequest defaults it to TRUE: the local cascade and
-                    // builders run for every browser turn. An earlier version of
-                    // this comment said "False = PRISM MODE" — that was wrong.)
-                    //
-                    // It used to be pinned to `true` (the :5591 fork) because prism
-                    // dropped the mcp__lazy-agent-service__* widget tools ("not in
-                    // schema") and never rendered. That premise is dead:
-                    // lazy-agent-service is now a CONNECTED MCP server in prism, so
-                    // prism serves all html_notes_*/canvas_* tools and runs the real
-                    // research harnesses (verified live). Hardcoding it here silently
-                    // overrode the server default and forced every browser turn back
-                    // onto the local search-scrape builders — keep this un-sent so
-                    // there is ONE source of truth for the routing mode.
+                    // lazy-agent-service (:5591) is the ONLY agent harness since
+                    // 2026-10-15 — prism mode was removed server-side, so there
+                    // is no toggle to send and no mode decision left here.
                 })
             });
 

@@ -186,10 +186,9 @@ def test_new_subjects_are_not_followups(msg):
 
 # ── prism payload contract ───────────────────────────────────────────────────
 
-def test_prism_gets_a_persona_id():
-    """Without a persona the run is unscoped: prism hands the model ~79 tools
+def test_gateway_gets_a_persona_id():
+    """Without a persona the run is unscoped: the model gets ~79 tools
     (execute_python, ...) and it wanders off without mutating the canvas."""
-    assert m.PRISM_AGENT_ID, "prism persona id must be set"
     assert m.FORK_AGENT_ID, "fork persona id must be set"
 
 

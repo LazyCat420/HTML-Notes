@@ -576,7 +576,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, PRISM_URL, LAZY_AGENT_URL, VLLM_URL, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL
+from app.config import PORT, LAZY_AGENT_URL, VLLM_URL, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL
 import asyncio
 import contextvars
 import datetime
@@ -594,35 +594,12 @@ AGENT_PROJECT = os.getenv("AGENT_PROJECT", "html-notes-client")
 AGENT_USERNAME = os.getenv("AGENT_USERNAME", "admin")
 
 # Persona id per gateway. The :5591 fork ships HtmlNotesPersona as a built-in
-# ("HTML_NOTES"); canonical prism has no such built-in, so the equivalent is
-# registered there as a CUSTOM agent via POST /custom-agents — prism derives the
-# id from the name, hence CUSTOM_HTML_NOTES_CANVAS. Without a persona the run is
-# UNSCOPED: prism hands the model ~79 tools (execute_python, create_skill, ...)
-# and ~25k tokens of tool schemas, so it wanders off mid-turn — a follow-up was
-# observed calling execute_python + read_page for 219s and never touching the
-# canvas. The persona scopes the run to the widget tool set.
-PRISM_AGENT_ID = os.getenv("PRISM_AGENT_ID", "CUSTOM_HTML_NOTES_CANVAS")
-# The MCP server name lazy-agent-service registers itself under in Prism. The
-# tool prefix (mcp__lazy-agent-service__*) derives from it, so it is load-bearing
-# — see lazy-agent-service/src/services/PrismRegistrationService.ts.
-MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "lazy-agent-service")
+# ("HTML_NOTES"). Without a persona the run is UNSCOPED: the model gets ~79
+# tools (execute_python, create_skill, ...) and ~25k tokens of tool schemas, so
+# it wanders off mid-turn — a follow-up was observed calling execute_python +
+# read_page for 219s and never touching the canvas. The persona scopes the run
+# to the widget tool set.
 
-# Names that identify OUR MCP server in a gateway's registry, for health lookups
-# ONLY. The registration was renamed to `lazy-agent-service` (measured on prism
-# 2026-09-05: that row is connected with 91 tools, and no `lazy-agent-service` row
-# exists), so a lookup on the single name reported
-#     agent.ok=false "lazy-agent-service is not registered for this scope"
-# on a stack whose agent path demonstrably works — a health endpoint saying the
-# thing is broken while it serves tools is worse than no health endpoint.
-#
-# MCP_SERVER_NAME itself must NOT change: the tool-call prefix
-# `mcp__lazy-agent-service__*` derives from it and is baked into enabledTools
-# here, into the gateway's own catalog, and into personas across several repos.
-# This tuple is only for "is our server present in that registry".
-MCP_SERVER_NAMES = tuple(
-    n.strip() for n in os.getenv(
-        "MCP_SERVER_NAMES", f"{MCP_SERVER_NAME},lazy-agent-service").split(",")
-    if n.strip())
 FORK_AGENT_ID = os.getenv("FORK_AGENT_ID", "HTML_NOTES")
 import pathlib
 import time
@@ -1199,7 +1176,6 @@ async def _lifespan(_app: FastAPI):
                    "Runtime preflight: ready=%s profile=%s contract=%s error=%s",
                    readiness.is_ready, readiness.profile_id, readiness.contract_version, readiness.error)
     await _warn_if_research_is_down()
-    watchdog = asyncio.create_task(_mcp_watchdog())
     # Standing asks (watches) — the one thing that puts a widget on the canvas
     # without a message. Bounded builders only; see app/services/watches.py.
     watch_task = asyncio.create_task(_watch_scheduler())
@@ -1217,90 +1193,20 @@ app = FastAPI(
 )
 
 
-async def _try_reconnect_mcp() -> bool:
-    """Ask prism to dial our MCP server, returning True if it came up.
-
-    The outage behind the 2026-07-20 debug wave was exactly one un-dialled
-    connection: registration present, `enabled: true`, the :5591/mcp/sse endpoint
-    live and serving — prism had simply never connected, with `lastError: null`.
-    It was invisible for hours and fixed by a single POST. So do that POST
-    ourselves rather than waiting for someone to notice.
-
-    GOTCHA worth keeping: `GET /mcp-servers` is SCOPED BY HEADERS. Without
-    x-project/x-username it returns `[]` for ANY state, which reads as "nothing is
-    registered" and sends you looking in the wrong place entirely."""
-    headers = {"x-project": AGENT_PROJECT, "x-username": AGENT_USERNAME}
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            servers = (await client.get(f"{PRISM_URL}/mcp-servers",
-                                        headers=headers)).json()
-            servers = servers if isinstance(servers, list) else servers.get("servers", [])
-            mine = next((s for s in servers if s.get("name") in MCP_SERVER_NAMES), None)
-            if not mine:
-                logger.error(f"[MCP] {MCP_SERVER_NAME} is not registered for "
-                             f"{AGENT_PROJECT}/{AGENT_USERNAME} — cannot reconnect; "
-                             f"lazy-agent-service registers itself on ITS boot.")
-                return False
-            if mine.get("connected") and int(mine.get("toolCount") or 0) > 0:
-                return True
-            sid = mine.get("id") or mine.get("_id")
-            logger.warning(f"[MCP] {MCP_SERVER_NAME} registered but not connected "
-                           f"(toolCount={mine.get('toolCount')}) — asking prism to dial it")
-            await client.post(f"{PRISM_URL}/mcp-servers/{sid}/connect", headers=headers)
-            await asyncio.sleep(3)
-            servers = (await client.get(f"{PRISM_URL}/mcp-servers",
-                                        headers=headers)).json()
-            servers = servers if isinstance(servers, list) else servers.get("servers", [])
-            mine = next((s for s in servers if s.get("name") in MCP_SERVER_NAMES), None) or {}
-            tools = int(mine.get("toolCount") or 0)
-            if mine.get("connected") and tools > 0:
-                logger.info(f"[MCP] reconnected — {tools} tools")
-                return True
-            logger.error(f"[MCP] reconnect did not take (connected="
-                         f"{mine.get('connected')}, toolCount={tools})")
-            return False
-    except Exception as e:
-        logger.warning(f"[MCP] reconnect attempt failed: {e}")
-        return False
-
-
-async def _mcp_watchdog() -> None:
-    """Re-check the MCP link periodically and reconnect on a drop.
-
-    Never retries hot: one attempt per interval, and every attempt is logged so a
-    flapping link is visible rather than silently papered over."""
-    while True:
-        try:
-            await asyncio.sleep(_MCP_WATCHDOG_INTERVAL)
-            status = await _agent_dependency_status()
-            if not status.get("ok"):
-                logger.warning(f"[MCP] watchdog saw a degraded research path: "
-                               f"{status.get('error')}")
-                await _try_reconnect_mcp()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning(f"[MCP] watchdog iteration failed: {e}")
-
-
-_MCP_WATCHDOG_INTERVAL = int(os.getenv("MCP_WATCHDOG_SECONDS", "300"))
-
-
 async def _warn_if_research_is_down() -> None:
     """Shout at boot if tier-3 research can't work.
 
-    The MCP registration lives in another service and can silently go empty (a
-    prism restart drops it). Nothing noticed until a user asked a research
-    question minutes or days later and got a text-only answer — the failure was
-    indistinguishable from "the model chose not to make a widget". Check once at
-    boot so the container log names the problem the moment it exists.
+    lazy-agent-service hosts the MCP tool catalog and can silently go empty (a
+    gateway restart drops in-process state). Nothing noticed until a user asked
+    a research question minutes or days later and got a text-only answer — the
+    failure was indistinguishable from "the model chose not to make a widget".
+    Check once at boot so the container log names the problem the moment it
+    exists.
 
     Never raises: a boot check that can take the app down is worse than the bug
     it reports."""
     try:
         status = await _agent_dependency_status()
-        if not status.get("ok") and await _try_reconnect_mcp():
-            status = await _agent_dependency_status()
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"[BOOT] agent dependency check failed to run: {e}")
         return
@@ -1308,8 +1214,8 @@ async def _warn_if_research_is_down() -> None:
     # nobody asked for. Every real search records its outcome, and
     # /health/app reports the last one (`?fresh=1` probes on request).
     if status.get("ok"):
-        logger.info(f"[BOOT] research path OK — {status.get('tool_count')} MCP tools "
-                    f"via {status.get('prism')}; web search is checked by real searches only")
+        logger.info(f"[BOOT] research path OK via {status.get('gateway')}; "
+                    f"web search is checked by real searches only")
         return
     logger.error(
         "[BOOT] RESEARCH PATH DOWN: %s. Tier-2 asks (weather/stock/sports/map) "
@@ -1340,19 +1246,6 @@ class MessageRequest(BaseModel):
     # for tokyo" → "weather in tokyo"); the anaphora lane skips a request that
     # carries it, so a rewrite can never loop.
     rewritten_from: Optional[str] = None
-    # False (default) = PRISM MODE: the agent runs on prism-service (:7777) with the
-    # lazy-agent-service MCP research tools/harnesses, AND research/content asks
-    # (products, general answers, images) are routed to that agent instead of being
-    # short-circuited by local search-scrape builders. True = legacy: the :5591 fork
-    # gateway + local fast-path builders (faster, but no real research).
-    # Default flipped to the gateway (:5591) on 2026-08-16: prism mode is
-    # currently unusable for the full-agent path — prism's /config-local
-    # returns ZERO local providers, so model discovery falls into the
-    # VLLM_URL fallback and prism rejects the turn with 'Unknown provider
-    # "vllm-2"'. The gateway has all three vLLM instances registered and
-    # verified working end-to-end (open_app flow, 2026-08-16). Flip back
-    # only after prism's local instance registry is populated again.
-    use_lazy_agent: bool = True
 
 class CreateNoteRequest(BaseModel):
     title: str
@@ -3351,7 +3244,7 @@ ROUTER_WIDGETS = {
     "reminder":   ("reminder",  'a reminder / alarm at a time ("remind me in 20 minutes", "remind me at 3pm to call mom"). query = the whole request'),
 }
 
-# In PRISM MODE (use_lazy_agent=False), these router widget types are RESEARCH asks
+# These router widget types are RESEARCH asks
 # and get handed to the prism agent (which runs the lazy-agent-service MCP
 # web_search/read_page harnesses → a synthesised, sourced answer) instead of a local
 # search-scrape builder. Everything else (weather/stock/sports/map/traffic/music/
@@ -3576,96 +3469,27 @@ async def get_graph():
 
 
 
-async def _mcp_scopes_serving_us(client: httpx.AsyncClient) -> list:
-    """Scopes where lazy-agent-service IS connected, for diagnosing a mismatch.
-
-    Prism scopes /mcp-servers by the x-project/x-username headers, so there is
-    no "list every scope" call — we probe the scopes we know this ecosystem
-    registers under. Best-effort and purely diagnostic.
-    """
-    candidates = [(AGENT_PROJECT, "lazycat"), (AGENT_PROJECT, "admin"),
-                  ("coding", "admin"), ("vllm-trading-bot", "lazy-trader")]
-    found = []
-    for project, username in candidates:
-        if (project, username) == (AGENT_PROJECT, AGENT_USERNAME):
-            continue
-        try:
-            rows = (await client.get(
-                f"{PRISM_URL}/mcp-servers",
-                headers={"x-project": project, "x-username": username})).json()
-            rows = rows if isinstance(rows, list) else rows.get("servers", [])
-            if any(r.get("name") in MCP_SERVER_NAMES and r.get("connected")
-                   for r in rows):
-                found.append(f"{project}/{username}")
-        except Exception:
-            continue
-    return found
-
-
 async def _agent_dependency_status() -> dict:
     """Can a research ask actually work right now?
 
-    Every tier-3 ask runs on Prism against the CUSTOM_HTML_NOTES_CANVAS persona,
-    using tools served over MCP by lazy-agent-service. None of that lives in this
-    repo, and when it breaks this app keeps answering /health/app with "ok"
-    while every research ask dies on `Unknown tool error`. So check the thing
-    that actually has to be true:
-
-      1. Prism is reachable at all,
-      2. the lazy-agent-service MCP server is CONNECTED for our scope and serving
-         a non-zero tool count (a connected server with 0 tools is the shape a
-         half-dead SSE link takes),
-      3. our persona exists — without it the run is unscoped, which is not an
-         outage but is a large silent quality regression (~79 tools, the agent
-         wanders into execute_python).
+    Every tier-3 ask runs on lazy-agent-service (:5591), which hosts the
+    agentic loop AND the MCP tool catalog. None of that lives in this repo, and
+    when it breaks this app keeps answering /health/app with "ok" while every
+    research ask dies on `Unknown tool error`. So check the thing that actually
+    has to be true: the gateway is reachable and its config endpoint answers.
 
     Never raises: a health probe that throws is worse than one that reports.
     """
-    detail = {"prism": PRISM_URL, "project": AGENT_PROJECT,
-              "agent_id": PRISM_AGENT_ID}
-    headers = {"x-project": AGENT_PROJECT, "x-username": AGENT_USERNAME}
+    detail = {"gateway": LAZY_AGENT_URL}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            servers = (await client.get(f"{PRISM_URL}/mcp-servers",
-                                        headers=headers)).json()
-            servers = servers if isinstance(servers, list) else servers.get("servers", [])
-            mine = next((s for s in servers if s.get("name") in MCP_SERVER_NAMES), None)
-            if not mine:
-                # Not in OUR scope — but Prism serves MCP tools globally once a
-                # server is connected under any scope, so this is a registration
-                # mismatch rather than an outage, and research may well still
-                # work. Report it as degraded and name the scopes that do have
-                # it, because the alternative (calling it down) cries wolf while
-                # the real symptom is only that nothing shows under our project.
-                elsewhere = await _mcp_scopes_serving_us(client)
-                if elsewhere:
-                    return {**detail, "ok": True, "degraded": True,
-                            "error": f"none of {MCP_SERVER_NAMES} is registered for "
-                                     f"{AGENT_PROJECT}/{AGENT_USERNAME}; serving from "
-                                     f"{', '.join(elsewhere)} instead (tools resolve, "
-                                     f"but our own scope shows none)"}
+            resp = await client.get(f"{LAZY_AGENT_URL}/config")
+            if resp.status_code != 200:
                 return {**detail, "ok": False,
-                        "error": f"none of {MCP_SERVER_NAMES} is registered for this scope"}
-            tools = int(mine.get("toolCount") or 0)
-            detail |= {"mcp_connected": bool(mine.get("connected")), "tool_count": tools}
-            if not mine.get("connected") or tools <= 0:
-                return {**detail, "ok": False,
-                        "error": "MCP server registered but not serving tools"}
-
-            agents = (await client.get(f"{PRISM_URL}/custom-agents",
-                                       headers=headers)).json()
-            agents = agents if isinstance(agents, list) else agents.get("agents", [])
-            persona = next((a for a in agents
-                            if a.get("agentId") == PRISM_AGENT_ID), None)
-            detail["persona_tools"] = len(persona.get("availableTools") or []) if persona else 0
-            if not persona:
-                # Degraded, not down: research still runs, just unscoped.
-                return {**detail, "ok": True, "degraded": True,
-                        "error": f"persona {PRISM_AGENT_ID} is missing — runs will be unscoped"}
+                        "error": f"gateway /config returned HTTP {resp.status_code}"}
             return {**detail, "ok": True}
     except Exception as e:
-        return {**detail, "ok": False, "error": f"prism unreachable: {e}"}
-
+        return {**detail, "ok": False, "error": f"lazy-agent-service unreachable: {e}"}
 
 
 

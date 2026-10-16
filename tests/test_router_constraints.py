@@ -104,15 +104,13 @@ def test_composition_allowed_rule(text, allowed):
     assert m.composition_allowed(text) is allowed, text
 
 
-def test_use_lazy_agent_default_and_comments_agree():
-    """Two comments claimed prism mode (use_lazy_agent=False) was the default.
-    It has been True since 2026-08-16; the cascade runs for every browser turn."""
+def test_prism_mode_is_gone():
+    """Prism mode (use_lazy_agent=False) was removed 2026-10-15: the field, its
+    request flag and every guard on it must be gone from the turn path."""
     import pathlib
     from tests._sources import MESSAGE_SRC
-    assert m.MessageRequest.model_fields["use_lazy_agent"].default is True
-    assert "PRISM MODE (default)" not in MESSAGE_SRC
-    js = (pathlib.Path(__file__).resolve().parent.parent / "app" / "static" / "index.js").read_text()
-    assert "defaults it to False = PRISM MODE" not in js
+    assert "use_lazy_agent" not in m.MessageRequest.model_fields
+    assert "use_lazy_agent" not in MESSAGE_SRC
 
 
 # ─── wants_multiple: keep the agent loop open only for a real compound ask ──
