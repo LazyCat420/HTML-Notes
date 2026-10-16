@@ -10,3 +10,6 @@ logs/
 data/test_notes*.db
 scratch/
 .worktrees/
+__pycache__/
+bench/web/results/
+.checks/

@@ -1,0 +1,10 @@
+use_default_settings: true
+server:
+  secret_key: "bench-local-only-not-a-real-secret"
+  limiter: false
+  port: 8888
+  bind_address: "0.0.0.0"
+search:
+  formats:
+    - html
+    - json

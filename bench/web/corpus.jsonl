@@ -1,0 +1,30 @@
+{"query_id": "q01_evergreen_best_hiking_sandals", "query": "best hiking sandals 2026", "category": "evergreen", "must_cover": ["hiking", "sandals", "review"]}
+{"query_id": "q02_evergreen_python_asyncio", "query": "python asyncio tutorial", "category": "technical", "must_cover": ["python", "asyncio"]}
+{"query_id": "q03_tech_kubernetes_rollout", "query": "kubernetes rolling update strategy", "category": "technical", "must_cover": ["kubernetes", "rolling", "update"]}
+{"query_id": "q04_evergreen_croissant_recipe", "query": "classic croissant recipe laminated dough", "category": "evergreen", "must_cover": ["croissant", "recipe", "dough"]}
+{"query_id": "q05_tech_rust_vs_go", "query": "rust vs go performance comparison", "category": "technical", "must_cover": ["rust", "go", "performance"]}
+{"query_id": "q06_evergreen_photosynthesis", "query": "how does photosynthesis work", "category": "evergreen", "must_cover": ["photosynthesis", "chlorophyll"]}
+{"query_id": "q07_news_fed_rates", "query": "federal reserve interest rate decision", "category": "news_fresh", "must_cover": ["federal", "reserve", "rate"]}
+{"query_id": "q08_news_ai_industry", "query": "latest AI industry news", "category": "news_fresh", "must_cover": ["AI"]}
+{"query_id": "q09_news_markets", "query": "stock market today", "category": "news_fresh", "must_cover": ["stock", "market"]}
+{"query_id": "q10_news_world", "query": "top world news stories", "category": "news_fresh", "must_cover": ["news"]}
+{"query_id": "q11_evergreen_vitamin_d", "query": "vitamin d deficiency symptoms", "category": "evergreen", "must_cover": ["vitamin", "deficiency"]}
+{"query_id": "q12_tech_git_rebase", "query": "git rebase vs merge explained", "category": "technical", "must_cover": ["git", "rebase", "merge"]}
+{"query_id": "q13_evergreen_black_hole", "query": "what is a black hole event horizon", "category": "evergreen", "must_cover": ["black", "hole"]}
+{"query_id": "q14_longtail_vintage_synths", "query": "Yamaha CS-80 vintage synthesizer history", "category": "longtail", "must_cover": ["CS-80", "synthesizer"]}
+{"query_id": "q15_longtail_regional_dish", "query": "Cincinnati chili history origin", "category": "longtail", "must_cover": ["Cincinnati", "chili"]}
+{"query_id": "q16_adversarial_seo_comparison", "query": "best laptop 2026 affiliate review", "category": "adversarial", "must_cover": ["laptop", "review"], "notes": "SEO/listicle magnet; prefer genuine reviews"}
+{"query_id": "q17_adversarial_syndication", "query": "space telescope discovery announcement", "category": "adversarial", "must_cover": ["telescope"], "notes": "wire-copy duplication expected; measure dup_cluster_rate"}
+{"query_id": "q18_negative_unanswerable", "query": "current wait time at my local DMV office", "category": "negative", "must_cover": [], "notes": "no provider can answer; expect honest empty or generic"}
+{"query_id": "q19_negative_nonsense", "query": "purple elephant tax policy Antarctica", "category": "negative", "must_cover": [], "notes": "gibberish; SOFT_EMPTY is the correct outcome"}
+{"query_id": "q20_multi_part_trip", "query": "plan a 3-day Kyoto itinerary temples food", "category": "multipart", "must_cover": ["Kyoto", "temple"]}
+{"query_id": "q21_news_entity_nvidia", "query": "Nvidia earnings report", "category": "news_fresh", "must_cover": ["Nvidia", "earnings"]}
+{"query_id": "q22_evergreen_home_insulation", "query": "attic insulation R-value guide", "category": "evergreen", "must_cover": ["insulation", "R-value"]}
+{"query_id": "q23_tech_docker_networking", "query": "docker compose networking between containers", "category": "technical", "must_cover": ["docker", "networking"]}
+{"query_id": "q24_evergreen_language_spanish", "query": "Spanish subjunctive tense rules", "category": "evergreen", "must_cover": ["Spanish", "subjunctive"]}
+{"query_id": "q25_news_climate", "query": "climate policy update Europe", "category": "news_fresh", "must_cover": ["climate", "Europe"]}
+{"query_id": "q26_longtail_beekeeping", "query": "overwintering beehives cold climate", "category": "longtail", "must_cover": ["beehive", "winter"]}
+{"query_id": "q27_adversarial_paywall", "query": "wall street journal exclusive investigation", "category": "adversarial", "must_cover": ["investigation"], "notes": "paywalled primary reporting"}
+{"query_id": "q28_evergreen_first_aid", "query": "CPR steps current guidelines", "category": "evergreen", "must_cover": ["CPR", "guidelines"], "notes": "authority-sensitive: prefer Red Cross/AHA"}
+{"query_id": "q29_tech_regex_date", "query": "regex validate ISO 8601 date", "category": "technical", "must_cover": ["regex", "ISO"]}
+{"query_id": "q30_multi_part_renovation", "query": "cost to renovate bathroom budget breakdown", "category": "multipart", "must_cover": ["bathroom", "cost"]}
