@@ -243,7 +243,6 @@ async def test_startup_records_runtime_preflight(monkeypatch):
     check = AsyncMock(return_value=result)
     monkeypatch.setattr(config, "check_runtime_readiness", check)
     monkeypatch.setattr(main, "_warn_if_research_is_down", AsyncMock())
-    monkeypatch.setattr(main, "_mcp_watchdog", AsyncMock())
     monkeypatch.setattr(main, "_watch_scheduler", AsyncMock())
     application = FastAPI()
     async with main._lifespan(application):

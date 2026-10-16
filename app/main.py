@@ -1182,7 +1182,6 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        watchdog.cancel()
         watch_task.cancel()
 
 

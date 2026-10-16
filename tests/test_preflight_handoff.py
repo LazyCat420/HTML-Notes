@@ -173,12 +173,13 @@ def test_preflight_block_is_injected_before_the_followup_directive():
             < MAIN_SRC.index("THIS TURN IS A FOLLOW-UP"))
 
 
-def test_deferral_captures_the_plan_instead_of_only_logging_it():
-    idx = MAIN_SRC.index("tier3-agent: deferring research")
-    window = MAIN_SRC[idx - 900:idx + 300]
-    assert "router_specs = widgets" in window, (
-        "the whole plan must be carried, not just the research half — a "
-        "composite ('weather + answer') defers entirely")
+def test_no_research_deferral_remains():
+    """Prism-mode deferral (tier3-agent: deferring research) was removed with
+    prism mode on 2026-10-15 — the router's plan is now always executed locally
+    by the fast-path builders. The old pin asserted the deferral CARRIED the
+    whole plan; the contract now is that no deferral branch exists at all."""
+    assert "tier3-agent: deferring research" not in MAIN_SRC
+    assert "router_specs = widgets" not in MAIN_SRC
 
 
 # ── observability ────────────────────────────────────────────────────────────
