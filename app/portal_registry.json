@@ -6,7 +6,7 @@
       "name": "Trading Client",
       "icon": "📈",
       "icon_url": "icons/trading-client.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:3030",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:3030",
       "client": true,
       "pinned": true,
       "aliases": [
@@ -22,7 +22,7 @@
       "name": "Music Player",
       "icon": "🎵",
       "icon_url": "icons/music-player.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:8443",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8443",
       "client": true,
       "pinned": true,
       "aliases": [
@@ -37,7 +37,7 @@
       "name": "HTML Notes",
       "icon": "👁️",
       "icon_url": "icons/html-notes.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:8035",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8035",
       "client": true,
       "aliases": [
         "html notes",
@@ -50,7 +50,7 @@
       "name": "Brain Dead Bot",
       "icon": "🧠",
       "icon_url": "icons/braindeadbot-client.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:5174",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:5174",
       "client": true,
       "aliases": [
         "braindeadbot",
@@ -66,7 +66,7 @@
       "name": "Drift King",
       "icon": "🏎️",
       "icon_url": "icons/drift-king.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:5580",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:5580",
       "client": true,
       "pinned": true,
       "aliases": [
@@ -92,7 +92,7 @@
       "name": "YouTube Wallgarden",
       "icon": "📺",
       "icon_url": "icons/youtube-wallgarden.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:8007",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8007",
       "client": true,
       "aliases": [
         "wallgarden",
@@ -105,7 +105,7 @@
       "name": "Treesearch",
       "icon": "🌲",
       "icon_url": "icons/treesearch-client.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:8006",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8006",
       "client": true,
       "aliases": [
         "treesearch",
@@ -117,7 +117,7 @@
       "name": "Portal",
       "icon": "🧭",
       "icon_url": "icons/portal-client.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:4000",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:4000",
       "client": true,
       "aliases": [
         "portal",
@@ -130,7 +130,7 @@
       "name": "Prism",
       "icon": "🔷",
       "icon_url": "icons/prism-client.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:3333",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:3333",
       "client": true,
       "aliases": [
         "prism",
@@ -142,7 +142,7 @@
       "name": "Pinball Knight",
       "icon": "🛡️",
       "icon_url": "icons/pinball-knight.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:8789",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8789",
       "client": true,
       "aliases": [
         "pinball",
@@ -154,7 +154,7 @@
       "name": "Spark Console",
       "icon": "⚡",
       "icon_url": "icons/spark-console.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:8801",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8801",
       "client": true,
       "aliases": [
         "spark",
@@ -166,7 +166,7 @@
       "name": "Doc Client",
       "icon": "📄",
       "icon_url": "icons/doc-client.png",
-      "launch_url": "https://canbas.bat-cardassian.ts.net:8910",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8910",
       "client": true,
       "aliases": [
         "doc",
