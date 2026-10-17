@@ -6,10 +6,17 @@
       "name": "Trading Client",
       "icon": "📈",
       "icon_url": "icons/trading-client.png",
-      "launch_url": "http://10.0.0.16:3030",
+      "launch_url": "https://music.bat-cardassian.ts.net:3030",
       "client": true,
       "pinned": true,
-      "aliases": ["trading bot", "trading dashboard", "trading ui", "trade bot", "the trading app", "trading client"]
+      "aliases": [
+        "trading bot",
+        "trading dashboard",
+        "trading ui",
+        "trade bot",
+        "the trading app",
+        "trading client"
+      ]
     },
     "music-player": {
       "name": "Music Player",
@@ -18,32 +25,57 @@
       "launch_url": "https://music.bat-cardassian.ts.net:8443",
       "client": true,
       "pinned": true,
-      "aliases": ["music app", "music site", "music player app", "music library", "music player"]
+      "aliases": [
+        "music app",
+        "music site",
+        "music player app",
+        "music library",
+        "music player"
+      ]
     },
     "html-notes": {
       "name": "HTML Notes",
       "icon": "👁️",
       "icon_url": "icons/html-notes.png",
-      "launch_url": "http://10.0.0.16:8035",
+      "launch_url": "https://music.bat-cardassian.ts.net:8035",
       "client": true,
-      "aliases": ["html notes", "notes app", "canvas app", "html notes app"]
+      "aliases": [
+        "html notes",
+        "notes app",
+        "canvas app",
+        "html notes app"
+      ]
     },
     "braindeadbot-client": {
       "name": "Brain Dead Bot",
       "icon": "🧠",
       "icon_url": "icons/braindeadbot-client.png",
-      "launch_url": "http://10.0.0.16:5174",
+      "launch_url": "https://music.bat-cardassian.ts.net:5174",
       "client": true,
-      "aliases": ["braindeadbot", "braindead bot", "jungle room", "braindeadbot website", "the game site", "braindead bot client", "braindeadbot client"]
+      "aliases": [
+        "braindeadbot",
+        "braindead bot",
+        "jungle room",
+        "braindeadbot website",
+        "the game site",
+        "braindead bot client",
+        "braindeadbot client"
+      ]
     },
     "drift-king": {
       "name": "Drift King",
       "icon": "🏎️",
       "icon_url": "icons/drift-king.png",
-      "launch_url": "http://10.0.0.16:5580",
+      "launch_url": "https://music.bat-cardassian.ts.net:5580",
       "client": true,
       "pinned": true,
-      "aliases": ["drift king", "drift-king", "drift", "the drift game", "drift king game"]
+      "aliases": [
+        "drift king",
+        "drift-king",
+        "drift",
+        "the drift game",
+        "drift king game"
+      ]
     },
     "drift-king-service": {
       "name": "Drift King Server",
@@ -51,63 +83,96 @@
       "icon_url": "icons/drift-king.png",
       "launch_url": "http://10.0.0.16:5580",
       "client": false,
-      "aliases": ["drift king server", "drift king service"]
+      "aliases": [
+        "drift king server",
+        "drift king service"
+      ]
     },
     "youtube-wallgarden": {
       "name": "YouTube Wallgarden",
       "icon": "📺",
       "icon_url": "icons/youtube-wallgarden.png",
-      "launch_url": "http://10.0.0.16:8007",
+      "launch_url": "https://music.bat-cardassian.ts.net:8007",
       "client": true,
-      "aliases": ["wallgarden", "wall garden", "youtube wall", "youtube wallgarden"]
+      "aliases": [
+        "wallgarden",
+        "wall garden",
+        "youtube wall",
+        "youtube wallgarden"
+      ]
     },
     "treesearch-client": {
       "name": "Treesearch",
       "icon": "🌲",
       "icon_url": "icons/treesearch-client.png",
-      "launch_url": "http://10.0.0.16:8006",
+      "launch_url": "https://music.bat-cardassian.ts.net:8006",
       "client": true,
-      "aliases": ["treesearch", "tree search", "treesearch client"]
+      "aliases": [
+        "treesearch",
+        "tree search",
+        "treesearch client"
+      ]
     },
     "portal-client": {
       "name": "Portal",
       "icon": "🧭",
       "icon_url": "icons/portal-client.png",
-      "launch_url": "http://10.0.0.16:4000",
+      "launch_url": "https://music.bat-cardassian.ts.net:4000",
       "client": true,
-      "aliases": ["portal", "portal dashboard", "the portal", "portal client"]
+      "aliases": [
+        "portal",
+        "portal dashboard",
+        "the portal",
+        "portal client"
+      ]
     },
     "prism-client": {
       "name": "Prism",
       "icon": "🔷",
       "icon_url": "icons/prism-client.png",
-      "launch_url": "http://10.0.0.16:3333",
+      "launch_url": "https://music.bat-cardassian.ts.net:3333",
       "client": true,
-      "aliases": ["prism", "prism client", "prism dashboard"]
+      "aliases": [
+        "prism",
+        "prism client",
+        "prism dashboard"
+      ]
     },
     "pinball-knight": {
       "name": "Pinball Knight",
       "icon": "🛡️",
       "icon_url": "icons/pinball-knight.png",
-      "launch_url": "http://10.0.0.16:8789",
+      "launch_url": "https://music.bat-cardassian.ts.net:8789",
       "client": true,
-      "aliases": ["pinball", "pinball knight", "pinball knight game"]
+      "aliases": [
+        "pinball",
+        "pinball knight",
+        "pinball knight game"
+      ]
     },
     "spark-console": {
       "name": "Spark Console",
       "icon": "⚡",
       "icon_url": "icons/spark-console.png",
-      "launch_url": "http://10.0.0.16:8801",
+      "launch_url": "https://music.bat-cardassian.ts.net:8801",
       "client": true,
-      "aliases": ["spark", "spark console", "spark-console"]
+      "aliases": [
+        "spark",
+        "spark console",
+        "spark-console"
+      ]
     },
     "doc-client": {
       "name": "Doc Client",
       "icon": "📄",
       "icon_url": "icons/doc-client.png",
-      "launch_url": "http://10.0.0.16:8910",
+      "launch_url": "https://music.bat-cardassian.ts.net:8910",
       "client": true,
-      "aliases": ["doc", "doc client", "documentation"]
+      "aliases": [
+        "doc",
+        "doc client",
+        "documentation"
+      ]
     },
     "office-client": {
       "_why": "Access through trading-client directly; hidden from independent launcher / side panel per user instruction.",
