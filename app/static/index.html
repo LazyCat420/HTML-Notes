@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Canvas</title>
     <meta name="description" content="LLM-driven HTML canvas.">
-    <meta name="theme-color" content="#0b0b0f">
+    <meta name="theme-color" content="#6366f1">
     <link rel="stylesheet" href="index.css?v=3.4">
     <script src="lib/dompurify.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -32,6 +32,16 @@
             var t = localStorage.getItem("html_notes_theme");
             if (t && t !== "hud") document.documentElement.setAttribute("data-theme", t);
         } catch (e) {}
+    </script>
+    <meta name="theme-color" content="#6366f1">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+            });
+        }
     </script>
 </head>
 <body>
