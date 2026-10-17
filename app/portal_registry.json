@@ -154,7 +154,7 @@
       "name": "Spark Console",
       "icon": "⚡",
       "icon_url": "icons/spark-console.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8801",
+      "launch_url": "https://html-notes.bat-cardassian.ts.net:8810",
       "client": true,
       "aliases": [
         "spark",
