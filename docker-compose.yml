@@ -6,7 +6,7 @@ services:
     container_name: html-notes
     user: ""
     ports:
-      - "8035:8035"
+      - "10.0.0.16:8035:8035"
     environment:
       - PORT=8035
       - DATABASE_URL=/app/data/notes.db
