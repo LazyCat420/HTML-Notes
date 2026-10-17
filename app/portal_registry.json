@@ -15,7 +15,7 @@
       "name": "Music Player",
       "icon": "🎵",
       "icon_url": "icons/music-player.png",
-      "launch_url": "http://10.0.0.16:3232",
+      "launch_url": "https://music.bat-cardassian.ts.net:8443",
       "client": true,
       "pinned": true,
       "aliases": ["music app", "music site", "music player app", "music library", "music player"]
