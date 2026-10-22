@@ -58,3 +58,7 @@ the FastAPI 0.110 to 0.161 and Starlette 0.36 to 1.9 jump needed no code change.
 | Vulnerable Python pins (starlette, python-multipart, jinja2, pymongo) | old pins; starlette held back by `fastapi==0.110.0` | see `git log -- requirements.txt` |
 
 A NAS redeploy is needed for the new pins to reach the container.
+
+## Follow-up: .venv was tracked in git
+
+`.venv/` (2,931 files) had been committed since the initial commit despite the `.gitignore` entry, so any venv refresh showed up as ~650 modified files. It is now untracked with `git rm -r --cached .venv`; the files stay on disk and the Docker image is unaffected (it builds its own venv from `requirements.txt`).
