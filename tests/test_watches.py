@@ -277,4 +277,6 @@ def test_events_route_streams_pushed_lines():
         assert q.get_nowait().startswith('data: {"type": "notify"')
     finally:
         cm.unsubscribe_session_events(SESSION, q)
-    assert any(r.path == "/session/{session_id}/events" for r in app.routes)
+    # FastAPI >= 0.16x wraps include_router() routes in _IncludedRouter (no
+    # .path), so check the registered paths via the generated OpenAPI schema.
+    assert "/session/{session_id}/events" in app.openapi()["paths"]
