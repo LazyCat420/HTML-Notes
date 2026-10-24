@@ -1,0 +1,30 @@
+[
+  {
+    "part": "Start Here",
+    "blurb": "How the documentation is organised, what each area holds, and the rules that stop it becoming a pile."
+  },
+  {
+    "part": "Runtime and architecture",
+    "blurb": "How HTML-Notes talks to the shared lazy-agent-service runtime: boundaries, contracts, note ownership, migration."
+  },
+  {
+    "part": "Canvas and widgets",
+    "blurb": "The canvas, widget factory and widget packs, App Hub, control plane, and the widget-wave handoffs."
+  },
+  {
+    "part": "Routing and agent",
+    "blurb": "How a chat turn is routed (tier gates, classifiers, follow-up targeting) and the agent roadmap."
+  },
+  {
+    "part": "News and research",
+    "blurb": "The evidence-first news pipeline, web search, research reliability, and the audits that shaped them."
+  },
+  {
+    "part": "Music player",
+    "blurb": "The canvas mini player, its hand-off to music-player, ratings sync, and playback health."
+  },
+  {
+    "part": "Ops and quality",
+    "blurb": "Test-suite health, dependency refreshes, deploy notes."
+  }
+]

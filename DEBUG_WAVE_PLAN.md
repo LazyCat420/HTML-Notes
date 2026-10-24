@@ -1,3 +1,10 @@
+---
+part: Routing and agent
+status: shipped
+type: record
+updated: 2026-07-19
+---
+
 # Debug wave — audited plan and outcomes
 
 The original plan proposed 18 tests across 5 bugs. Auditing each hypothesis

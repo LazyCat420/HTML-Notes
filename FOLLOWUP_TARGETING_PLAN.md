@@ -1,3 +1,10 @@
+---
+part: Routing and agent
+status: reference
+type: plan
+updated: 2026-07-19
+---
+
 # Follow-up → widget targeting: fix plan
 
 **Problem.** A follow-up question fails to edit the widget it came from. It either

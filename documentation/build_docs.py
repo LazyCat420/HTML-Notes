@@ -655,6 +655,8 @@ FRONT_KEYS = {
     "review-by",
     "owner",
     "supersedes",
+    # spec | decision | plan | record (see chapters/00-reading-guide.md)
+    "type",
     # A ruling nothing cites is normally a defect — dead, or mis-slugged —
     # and the citation gate says so. `standalone: true` is the deliberate
     # exception for one that documents a decision no single line of code can

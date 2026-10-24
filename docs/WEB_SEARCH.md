@@ -1,3 +1,10 @@
+---
+part: News and research
+status: shipped
+type: spec
+updated: 2026-10-06
+---
+
 # Web search in html-notes
 
 **Date:** 2026-10-06

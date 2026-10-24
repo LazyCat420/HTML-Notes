@@ -1,3 +1,10 @@
+---
+part: Runtime and architecture
+status: reference
+type: spec
+updated: 2026-10-15
+---
+
 # Contract Ownership & Source of Truth Specification
 
 **Version**: 1.2.0  

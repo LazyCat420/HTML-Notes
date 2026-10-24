@@ -1,8 +1,9 @@
 ---
-part: Runtime
+part: Ops and quality
 status: shipped
 updated: 2026-10-22
 review-by: 2026-11-22
+type: record
 ---
 
 # Dependency security refresh (Python pins)

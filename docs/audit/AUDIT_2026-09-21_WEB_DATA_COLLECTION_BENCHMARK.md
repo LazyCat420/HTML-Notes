@@ -1,8 +1,15 @@
+---
+part: News and research
+status: reference
+type: plan
+updated: 2026-10-08
+---
+
 # AUDIT 2026-09-21 — Web Data Collection & Summarization (with Eval Benchmark Plan)
 
 **Mode**: Audit (read-only). No code, config, DB, or deploy changes were made.
 **Scope**: `html-notes` retrieval → acquisition → summarization pipeline, plus existing bench infrastructure.
-**Method**: Three parallel read-only audits (search paths; extraction/summarization; bench inventory) + direct reading of `ARCHITECTURE.md` (v2.1.0, 2026-09-19) and `RESEARCH_RELIABILITY_PLAN.md`.
+**Method**: Three parallel read-only audits (search paths; extraction/summarization; bench inventory) + direct reading of `docs/architecture/ARCHITECTURE.md` (v2.1.0, 2026-09-19) and `docs/news-research/RESEARCH_RELIABILITY_PLAN.md`.
 
 ---
 
@@ -30,7 +37,7 @@ Outage vs zero-results: `web_search_ex` (search.py:129-157) returns `all_engines
 
 | # | Finding | Class | Evidence |
 |---|---|---|---|
-| F1 | **No independent web-search provider.** `web_search` has exactly two engines, both DDG (ddg-lite direct, ddg-collector via scraper). RESEARCH_RELIABILITY_PLAN P0 (Brave, key in vault, verified working 2026-09) is **still unimplemented**. Single-geo correlated failure remains the top availability risk. | CONFIRMED | search.py:53-58; RESEARCH_RELIABILITY_PLAN.md:26-49 |
+| F1 | **No independent web-search provider.** `web_search` has exactly two engines, both DDG (ddg-lite direct, ddg-collector via scraper). RESEARCH_RELIABILITY_PLAN P0 (Brave, key in vault, verified working 2026-09) is **still unimplemented**. Single-geo correlated failure remains the top availability risk. | CONFIRMED | search.py:53-58; docs/news-research/RESEARCH_RELIABILITY_PLAN.md:26-49 |
 | F2 | **Soft failures masquerade as zero results.** An engine returning `[]` on a soft failure (scraper `/collect` 200-empty, shared news_search non-200 → `[]`) counts as "backend alive" → classified "no results", no outage signal. Only raised exceptions count. | CONFIRMED | search.py:139-157 |
 | F3 | **Health check issues live searches.** `/health/app` runs a real `web_search_ex('test')`; docker-compose hits it every 30s ⇒ ~2,880 live searches/day against the keyless DDG endpoints — its own comments flag rate-limit risk. | CONFIRMED | routes/health.py:25-49; docker-compose.yml |
 | F4 | **Undated news items bypass recency entirely.** `published_at=None` items skip the stale check (`if cand.published_at:`); only RFC-2822/ISO parsed; no relative-date ("2 hours ago") or body-date extraction. Rendered card never shows article dates. | CONFIRMED | news_pipeline.py:169-188, 472-476, 789 |
@@ -38,9 +45,9 @@ Outage vs zero-results: `web_search_ex` (search.py:129-157) returns `all_engines
 | F6 | **Verification can be snippet-only.** Verify scrape timeout is 6s vs read_web_page's 25s; slow pages fail verify and fall through to "tier-1 primary outlet pass with snippet", which still earns a Verified badge. | CONFIRMED | news_pipeline.py:505, 516-557, 588-597, 789 |
 | F7 | **Extraction is head-only.** `read_web_page` truncates at 6,000 chars, no chunking; no publish-date/author extraction from body. | CONFIRMED | search.py:599-627 |
 | F8 | **Existing bench is YouTube-only, not web-pipeline.** `bench/` = video-selection bake-off (LLM-in-loop A/B/C, LLM judge, 20 queries) with solid method (blind judge, token/latency accounting); `bench/news/` = 6 news-relevance strategies, 29 queries, blind set-level judge with calibration controls — but **no retrieval-layer (Recall@K/nDCG) eval, no acquisition-success eval, no answer-quality eval with citations, no outage simulation, no provider latency profiles**. `bench/README.md` says 15 queries vs 20 actual (stale doc). | CONFIRMED | bench/run_bench.py, bench/news/*, AUDIT_2026-09-05 |
-| F9 | Recorded prior result: news relevance ceiling was **upstream provider quality** (A 2.67 / B 4.00 / C 4.80) — benchmarking the ranking layer alone cannot fix provider-level problems. | CONFIRMED | AUDIT_2026-09-05_RELEVANCE_AND_LATENCY.md:171-182,246 |
+| F9 | Recorded prior result: news relevance ceiling was **upstream provider quality** (A 2.67 / B 4.00 / C 4.80) — benchmarking the ranking layer alone cannot fix provider-level problems. | CONFIRMED | docs/news-research/AUDIT_2026-09-05_RELEVANCE_AND_LATENCY.md:171-182,246 |
 | F10 | Budget ceilings live in three uncoordinated layers (profile `max_tool_calls=15`, research `budget.py` max_llm_calls=2, fast-path news builders bounded only by gather timeouts). A benchmark must record which layer served a run. | CONFIRMED | profile:86-90; budget.py:11-135; config_builders.py:1354-1380 |
-| F11 | Historical 10-18 retry loop: root cause fixed in code (outage is_error + no-retry-advice + caps), but **no regression test replays the DDG-total-outage scenario end-to-end against the live model** — regression set exists only as prose. | CONFIRMED fix / UNVERIFIED regression | internal.py:371-375; RESEARCH_RELIABILITY_PLAN.md:33 |
+| F11 | Historical 10-18 retry loop: root cause fixed in code (outage is_error + no-retry-advice + caps), but **no regression test replays the DDG-total-outage scenario end-to-end against the live model** — regression set exists only as prose. | CONFIRMED fix / UNVERIFIED regression | internal.py:371-375; docs/news-research/RESEARCH_RELIABILITY_PLAN.md:33 |
 
 ## 3. What the benchmark must add (gap-closure plan)
 
