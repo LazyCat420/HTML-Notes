@@ -1,12 +1,16 @@
 ---
 part: Music player
 status: shipped
-updated: 2026-10-11
-review-by: 2026-10-25
+updated: 2026-10-26
 type: record
 ---
 
 # Music Swap, Song Thumbs, Live News Networks and News Summaries
+
+> **Docs audit 2026-10-26: still shipped.** The five html-notes commits cited below
+> (`f0bc09f`, `4a69f7c`, `5013a4d`, `83e923c`, `c8db79e`) are ancestors of
+> `origin/main`, and none of the 47 commits since 2026-10-11 reverts them. `66fab33`
+> is a lazy-agent-service commit, also on its main. `review-by` removed.
 
 **2026-10-11. Tested with nemotron35, the weakest model in rotation, on the
 idea that guardrails that hold for it also hold for GLM.**
