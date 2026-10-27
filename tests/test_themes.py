@@ -158,3 +158,33 @@ def test_system_prompt_teaches_the_settings_route():
     src = pathlib.Path(ROOT / "app/routes/message.py").read_text()
     assert "widget_type='settings'" in src
     assert "closest palette" in src.lower() or "CLOSEST palette" in src
+
+
+def test_bottom_left_settings_button_and_drawer_wired():
+    """Bottom-left settings button in #app-rail, custom colors,
+    and icon style controls are wired into the client."""
+    js = (ROOT / "app/static/index.js").read_text()
+    assert "data-rail-settings" in js
+    assert "window.HN.applyCustomColors" in js
+    assert "window.HN.setIconStyle" in js
+
+
+def test_settings_widget_includes_custom_colors_and_icon_styles():
+    """Settings widget renders custom color pickers and icon style selector."""
+    cfg = {
+        "themes": [{"name": t["name"], "label": t["label"], "swatch": t["swatch"]}
+                   for t in m.THEME_CATALOG],
+        "active": "hud",
+    }
+    html = generate_widget_html("settings", "settings-panel", cfg)
+    assert "setCustomAccent(" in html
+    assert "setIconStyle(" in html
+
+
+def test_app_rail_uses_theme_variables():
+    """The left app rail and settings popover use --hud-panel / --hud-line so
+    light and colored themes recolor them."""
+    css = (ROOT / "app/static/hud-theme.css").read_text()
+    assert ".app-rail" in css
+    assert "var(--hud-panel)" in css
+

@@ -969,6 +969,35 @@ def render_settings(widget_id: str, config: dict) -> str:
                     </template>
                 </div>
             </div>
+            <!-- Custom Theme Colors -->
+            <div class="flex flex-col gap-2 border-t border-white/10 pt-3">
+                <div class="text-[0.62rem] uppercase tracking-wider text-slate-500">Custom Colors</div>
+                <div class="flex items-center justify-between gap-2">
+                    <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                        <input type="color" :value="customAccent || '#55d6ff'" @input="setCustomAccent($event.target.value)"
+                               class="w-7 h-6 rounded border border-white/20 bg-transparent cursor-pointer" />
+                        <span>Accent</span>
+                    </label>
+                    <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                        <input type="color" :value="customBg || '#050a12'" @input="setCustomBg($event.target.value)"
+                               class="w-7 h-6 rounded border border-white/20 bg-transparent cursor-pointer" />
+                        <span>Surface</span>
+                    </label>
+                    <button @click="resetCustomColors()" class="px-2.5 py-1 rounded-lg text-xs border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 transition-colors">Reset</button>
+                </div>
+            </div>
+            <!-- App Icon Style -->
+            <div class="flex flex-col gap-2 border-t border-white/10 pt-3">
+                <div class="text-[0.62rem] uppercase tracking-wider text-slate-500">App Icon Style</div>
+                <div class="grid grid-cols-3 gap-1.5">
+                    <button @click="setIconStyle('vector')" class="px-2 py-1 rounded-lg text-xs border transition-colors"
+                            :class="iconStyle === 'vector' ? 'border-white/40 bg-white/10 text-white' : 'border-white/10 text-slate-400 hover:bg-white/5'">Vector</button>
+                    <button @click="setIconStyle('hud')" class="px-2 py-1 rounded-lg text-xs border transition-colors"
+                            :class="iconStyle === 'hud' ? 'border-white/40 bg-white/10 text-white' : 'border-white/10 text-slate-400 hover:bg-white/5'">HUD Glow</button>
+                    <button @click="setIconStyle('mono')" class="px-2 py-1 rounded-lg text-xs border transition-colors"
+                            :class="iconStyle === 'mono' ? 'border-white/40 bg-white/10 text-white' : 'border-white/10 text-slate-400 hover:bg-white/5'">Monogram</button>
+                </div>
+            </div>
             <!-- Preferences -->
             <div class="flex flex-col gap-2 border-t border-white/10 pt-3">
                 <div class="flex items-center justify-between">
@@ -2635,10 +2664,10 @@ def render_app_grid(widget_id: str, config: dict) -> str:
                            class="flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/5 hover:bg-white/10 ring-1 ring-white/10 hover:ring-purple-400/40 transition-all no-underline hover:!no-underline"
                            :title="app.description || app.name">
                             <span class="relative text-2xl leading-none w-8 h-8 flex items-center justify-center">
-                                <template x-if="app.icon_url">
-                                    <img :src="app.icon_url" :alt="app.name" class="w-8 h-8 rounded-lg object-cover ring-1 ring-white/10" />
+                                <template x-if="(app.icon_svg || app.icon_url) && iconStyle !== 'mono'">
+                                    <img :src="app.icon_svg || app.icon_url" :alt="app.name" class="w-8 h-8 rounded-lg object-cover ring-1 ring-white/10" />
                                 </template>
-                                <template x-if="!app.icon_url">
+                                <template x-if="!(app.icon_svg || app.icon_url) || iconStyle === 'mono'">
                                     <span x-text="app.icon"></span>
                                 </template>
                                 <span class="absolute -bottom-0.5 -right-1.5 w-2 h-2 rounded-full ring-2 ring-slate-900 z-10"

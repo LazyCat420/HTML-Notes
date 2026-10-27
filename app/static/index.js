@@ -420,8 +420,119 @@ document.addEventListener("DOMContentLoaded", () => {
     // the live ones). An inline script in <head> applies the saved theme before
     // first paint to avoid a flash; this re-applies it to also sync the charts.
     const THEME_KEY = "html_notes_theme";
+    const CUSTOM_COLORS_KEY = "html_notes_custom_colors";
+    const ICON_STYLE_KEY = "html_notes_icon_style";
     window.HN = window.HN || {};
     window.__hnCharts = window.__hnCharts || new Set();
+
+    window.HN.THEMES = [
+        { name: "hud", label: "HUD Cyan", swatch: ["#050a12", "#0a1626", "#55d6ff"] },
+        { name: "midnight", label: "Midnight", swatch: ["#070b16", "#141a2e", "#818cf8"] },
+        { name: "forest", label: "Forest", swatch: ["#06120c", "#0e2218", "#4ade80"] },
+        { name: "ember", label: "Ember", swatch: ["#130b06", "#281a10", "#fb923c"] },
+        { name: "grape", label: "Grape", swatch: ["#0f0616", "#221230", "#e879f9"] },
+        { name: "crimson", label: "Crimson", swatch: ["#140609", "#2a0e14", "#fb7185"] },
+        { name: "solar", label: "Solar", swatch: ["#121005", "#26210c", "#facc15"] },
+        { name: "mono", label: "Slate", swatch: ["#0e1116", "#1e242c", "#94a3b8"] },
+        { name: "pastel", label: "Pastel", swatch: ["#eef0f9", "#fbfaff", "#a78bfa"] },
+        { name: "egg", label: "Eggshell", swatch: ["#f1e8d5", "#fbf6ec", "#b5701f"] },
+    ];
+
+    const _HEX_RE = /^#[0-9a-fA-F]{6}$/;
+    function _hexToRgbTriple(hex) {
+        if (!_HEX_RE.test(String(hex || ""))) return null;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `${r}, ${g}, ${b}`;
+    }
+
+    const _CUSTOM_CSS_VARS = [
+        "--hud-accent-rgb", "--hud-line-rgb", "--hud-cyan", "--hud-bright",
+        "--hud-title", "--hud-readout", "--hud-bg", "--hud-bg-top",
+        "--hud-bg-deep", "--hud-panel", "--hud-panel-2", "--hud-panel-solid"
+    ];
+
+    window.HN.getCustomColors = function () {
+        try {
+            const raw = localStorage.getItem(CUSTOM_COLORS_KEY);
+            const parsed = raw ? JSON.parse(raw) : {};
+            return {
+                accent: _HEX_RE.test(String(parsed.accent || "")) ? parsed.accent : "",
+                bg: _HEX_RE.test(String(parsed.bg || "")) ? parsed.bg : "",
+            };
+        } catch (e) {
+            return { accent: "", bg: "" };
+        }
+    };
+
+    window.HN.resetCustomColors = function (emit = true) {
+        const st = document.documentElement.style;
+        for (const v of _CUSTOM_CSS_VARS) st.removeProperty(v);
+        try { localStorage.removeItem(CUSTOM_COLORS_KEY); } catch (e) {}
+        if (emit) {
+            window.HN._syncCharts();
+            window.dispatchEvent(new CustomEvent("hn:theme", {
+                detail: { name: window.HN.currentTheme(), custom: { accent: "", bg: "" } }
+            }));
+        }
+    };
+
+    window.HN.applyCustomColors = function (opts = {}) {
+        const cur = window.HN.getCustomColors();
+        const next = {
+            accent: opts.accent !== undefined ? (_HEX_RE.test(String(opts.accent)) ? opts.accent : "") : cur.accent,
+            bg: opts.bg !== undefined ? (_HEX_RE.test(String(opts.bg)) ? opts.bg : "") : cur.bg,
+        };
+        const st = document.documentElement.style;
+        if (next.accent) {
+            const rgb = _hexToRgbTriple(next.accent);
+            if (rgb) {
+                st.setProperty("--hud-accent-rgb", rgb);
+                st.setProperty("--hud-line-rgb", rgb);
+                st.setProperty("--hud-cyan", next.accent);
+                st.setProperty("--hud-bright", next.accent);
+                st.setProperty("--hud-title", next.accent);
+                st.setProperty("--hud-readout", next.accent);
+            }
+        }
+        if (next.bg) {
+            const bgRgb = _hexToRgbTriple(next.bg);
+            if (bgRgb) {
+                st.setProperty("--hud-bg", next.bg);
+                st.setProperty("--hud-bg-top", next.bg);
+                st.setProperty("--hud-bg-deep", next.bg);
+                st.setProperty("--hud-panel", `rgba(${bgRgb}, 0.78)`);
+                st.setProperty("--hud-panel-2", `rgba(${bgRgb}, 0.68)`);
+                st.setProperty("--hud-panel-solid", next.bg);
+            }
+        }
+        try {
+            if (next.accent || next.bg) localStorage.setItem(CUSTOM_COLORS_KEY, JSON.stringify(next));
+            else localStorage.removeItem(CUSTOM_COLORS_KEY);
+        } catch (e) {}
+        window.HN._syncCharts();
+        window.dispatchEvent(new CustomEvent("hn:theme", {
+            detail: { name: window.HN.currentTheme(), custom: next }
+        }));
+    };
+
+    window.HN.getIconStyle = function () {
+        try {
+            const s = localStorage.getItem(ICON_STYLE_KEY);
+            return (s === "hud" || s === "mono" || s === "vector") ? s : "vector";
+        } catch (e) {
+            return "vector";
+        }
+    };
+
+    window.HN.setIconStyle = function (style) {
+        const valid = (style === "hud" || style === "mono" || style === "vector") ? style : "vector";
+        try { localStorage.setItem(ICON_STYLE_KEY, valid); } catch (e) {}
+        const rail = document.getElementById("app-rail");
+        if (rail) rail.classList.toggle("icon-style-hud", valid === "hud");
+        window.dispatchEvent(new CustomEvent("hn:iconstyle", { detail: { style: valid } }));
+    };
 
     window.HN.chartColors = function () {
         const cs = getComputedStyle(document.documentElement);
@@ -450,29 +561,37 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         } catch (e) { /* a chart with an unusual options shape just keeps its baked colors */ }
     };
-    window.HN.currentTheme = function () {
-        return document.documentElement.getAttribute("data-theme") || "hud";
-    };
-    window.HN.applyTheme = function (name) {
-        const root = document.documentElement;
-        if (!name || name === "hud") root.removeAttribute("data-theme");
-        else root.setAttribute("data-theme", name);
-        try { localStorage.setItem(THEME_KEY, name || "hud"); } catch (e) {}
+    window.HN._syncCharts = function () {
         if (window.Chart) {
             const c = window.HN.chartColors();
             Chart.defaults.color = c.ink;
             Chart.defaults.borderColor = c.grid;
         }
-        // Recolor + redraw every live chart; drop any that were destroyed.
         window.__hnCharts.forEach(ch => {
             try { window.HN.themeChart(ch); ch.update("none"); }
             catch (e) { window.__hnCharts.delete(ch); }
         });
+    };
+    window.HN.currentTheme = function () {
+        return document.documentElement.getAttribute("data-theme") || "hud";
+    };
+    window.HN.applyTheme = function (name, keepCustom = false) {
+        const root = document.documentElement;
+        if (!keepCustom) window.HN.resetCustomColors(false);
+        if (!name || name === "hud") root.removeAttribute("data-theme");
+        else root.setAttribute("data-theme", name);
+        try { localStorage.setItem(THEME_KEY, name || "hud"); } catch (e) {}
+        window.HN._syncCharts();
         // Interactive widgets (stock card) listen to redraw their own canvas.
         window.dispatchEvent(new CustomEvent("hn:theme", { detail: { name: name || "hud" } }));
     };
-    // Sync Chart.defaults + charts to the theme the head script already applied.
-    window.HN.applyTheme(localStorage.getItem(THEME_KEY) || "hud");
+    // Sync Chart.defaults + charts to the theme the head script already applied,
+    // and restore any saved custom colors on top.
+    window.HN.applyTheme(localStorage.getItem(THEME_KEY) || "hud", true);
+    const _savedCustom = window.HN.getCustomColors();
+    if (_savedCustom.accent || _savedCustom.bg) {
+        window.HN.applyCustomColors(_savedCustom);
+    }
 
     window.WidgetResizer.observe(document.getElementById("live-canvas"));
 
@@ -584,25 +703,296 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
 
-        function render() {
-            rail.classList.toggle("expanded", open);
-            const rows = apps.map((a) => {
-                const iconHtml = a.icon_url
-                    ? `<span class="rail-icon rail-icon-img"><img class="rail-img" src="${escAttr(a.icon_url)}" alt="${escAttr(a.name)}" /><span class="rail-dot" style="background:${dotColor(a.status)}"></span></span>`
-                    : `<span class="rail-icon rail-mono" style="background:hsla(${hue(a.id)},52%,40%,0.92)">${escAttr(a._mono)}<span class="rail-dot" style="background:${dotColor(a.status)}"></span></span>`;
-                return `
-                <a class="rail-item" href="${escAttr(a.launch_url)}" target="_blank"
-                   rel="noopener" title="${escAttr(a.name)} — ${escAttr(a.status || "unknown")}">
-                    ${iconHtml}
-                    <span class="rail-name">${escAttr(a.name)}</span>
-                </a>`;
+        function _makeGearSvg() {
+            const ns = "http://www.w3.org/2000/svg";
+            const svg = document.createElementNS(ns, "svg");
+            svg.setAttribute("viewBox", "0 0 24 24");
+            svg.setAttribute("fill", "none");
+            svg.setAttribute("stroke", "currentColor");
+            svg.setAttribute("stroke-width", "1.9");
+            svg.setAttribute("stroke-linecap", "round");
+            svg.setAttribute("stroke-linejoin", "round");
+            const circle = document.createElementNS(ns, "circle");
+            circle.setAttribute("cx", "12");
+            circle.setAttribute("cy", "12");
+            circle.setAttribute("r", "3.2");
+            const path = document.createElementNS(ns, "path");
+            path.setAttribute("d", "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z");
+            svg.appendChild(circle);
+            svg.appendChild(path);
+            return svg;
+        }
+
+        let settingsOpen = false;
+        const drawer = document.createElement("div");
+        drawer.id = "rail-settings-drawer";
+        drawer.className = "rail-settings-drawer";
+        drawer.setAttribute("role", "dialog");
+        drawer.setAttribute("aria-label", "Canvas Settings");
+        document.body.appendChild(drawer);
+
+        function renderSettingsDrawer() {
+            drawer.classList.toggle("open", settingsOpen);
+            if (!settingsOpen) return;
+
+            const activeTheme = window.HN.currentTheme();
+            const customColors = window.HN.getCustomColors();
+            const iconStyle = window.HN.getIconStyle();
+            const isMuted = !!(window.HN.isMuted && window.HN.isMuted());
+
+            const hdr = document.createElement("div");
+            hdr.className = "rs-header";
+            const title = document.createElement("span");
+            title.className = "rs-title";
+            title.textContent = "Settings";
+            const closeBtn = document.createElement("button");
+            closeBtn.type = "button";
+            closeBtn.className = "rs-close";
+            closeBtn.title = "Close Settings";
+            closeBtn.textContent = "✕";
+            closeBtn.addEventListener("click", () => {
+                settingsOpen = false;
+                renderSettingsDrawer();
+                render();
             });
-            rail.innerHTML = `
-                <button class="rail-toggle" data-rail-toggle
-                        title="${open ? "Collapse" : "Your apps"}">
-                    <span class="rail-chevron">⟩</span><span class="rail-name">Your apps</span>
-                </button>
-                <nav class="rail-list">${rows.join("")}</nav>`;
+            hdr.appendChild(title);
+            hdr.appendChild(closeBtn);
+
+            // 1. Theme Palettes
+            const themeSec = document.createElement("div");
+            const themeLbl = document.createElement("div");
+            themeLbl.className = "rs-section-label";
+            themeLbl.textContent = "Theme Palette";
+            const themeGrid = document.createElement("div");
+            themeGrid.className = "rs-theme-grid";
+            for (const t of (window.HN.THEMES || [])) {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "rs-theme-btn" + (t.name === activeTheme && !customColors.accent && !customColors.bg ? " active" : "");
+                btn.setAttribute("data-theme-pick", t.name);
+                const sw = document.createElement("span");
+                sw.className = "rs-swatch";
+                for (const col of (t.swatch || [])) {
+                    const seg = document.createElement("span");
+                    seg.style.background = col;
+                    sw.appendChild(seg);
+                }
+                const lbl = document.createElement("span");
+                lbl.textContent = t.label;
+                lbl.style.overflow = "hidden";
+                lbl.style.textOverflow = "ellipsis";
+                lbl.style.whiteSpace = "nowrap";
+                btn.appendChild(sw);
+                btn.appendChild(lbl);
+                btn.addEventListener("click", () => {
+                    window.HN.applyTheme(t.name);
+                    renderSettingsDrawer();
+                });
+                themeGrid.appendChild(btn);
+            }
+            themeSec.appendChild(themeLbl);
+            themeSec.appendChild(themeGrid);
+
+            // 2. Custom Theme Colors (Accent & Background)
+            const colorSec = document.createElement("div");
+            const colorLbl = document.createElement("div");
+            colorLbl.className = "rs-section-label";
+            colorLbl.textContent = "Custom Colors";
+            const colorRow = document.createElement("div");
+            colorRow.className = "rs-row";
+
+            const accWrap = document.createElement("label");
+            accWrap.className = "rs-color-row";
+            const accInput = document.createElement("input");
+            accInput.type = "color";
+            accInput.value = customColors.accent || "#55d6ff";
+            accInput.title = "Custom Accent Color";
+            accInput.addEventListener("input", (ev) => {
+                window.HN.applyCustomColors({ accent: ev.target.value });
+            });
+            const accText = document.createElement("span");
+            accText.textContent = "Accent";
+            accWrap.appendChild(accInput);
+            accWrap.appendChild(accText);
+
+            const bgWrap = document.createElement("label");
+            bgWrap.className = "rs-color-row";
+            const bgInput = document.createElement("input");
+            bgInput.type = "color";
+            bgInput.value = customColors.bg || "#050a12";
+            bgInput.title = "Custom Background Color";
+            bgInput.addEventListener("input", (ev) => {
+                window.HN.applyCustomColors({ bg: ev.target.value });
+            });
+            const bgText = document.createElement("span");
+            bgText.textContent = "Surface";
+            bgWrap.appendChild(bgInput);
+            bgWrap.appendChild(bgText);
+
+            const resetColorBtn = document.createElement("button");
+            resetColorBtn.type = "button";
+            resetColorBtn.className = "rs-pill-btn";
+            resetColorBtn.textContent = "Reset";
+            resetColorBtn.addEventListener("click", () => {
+                window.HN.resetCustomColors();
+                renderSettingsDrawer();
+            });
+
+            colorRow.appendChild(accWrap);
+            colorRow.appendChild(bgWrap);
+            colorRow.appendChild(resetColorBtn);
+            colorSec.appendChild(colorLbl);
+            colorSec.appendChild(colorRow);
+
+            // 3. App Icon Style
+            const iconSec = document.createElement("div");
+            const iconLbl = document.createElement("div");
+            iconLbl.className = "rs-section-label";
+            iconLbl.textContent = "App Icon Style";
+            const iconGroup = document.createElement("div");
+            iconGroup.className = "rs-seg-group";
+            for (const opt of [
+                { id: "vector", label: "Vector" },
+                { id: "hud", label: "HUD Glow" },
+                { id: "mono", label: "Monogram" },
+            ]) {
+                const b = document.createElement("button");
+                b.type = "button";
+                b.className = "rs-pill-btn" + (iconStyle === opt.id ? " active" : "");
+                b.textContent = opt.label;
+                b.addEventListener("click", () => {
+                    window.HN.setIconStyle(opt.id);
+                    renderSettingsDrawer();
+                    render();
+                });
+                iconGroup.appendChild(b);
+            }
+            iconSec.appendChild(iconLbl);
+            iconSec.appendChild(iconGroup);
+
+            // 4. Preferences (Voice & Layout)
+            const prefSec = document.createElement("div");
+            const prefLbl = document.createElement("div");
+            prefLbl.className = "rs-section-label";
+            prefLbl.textContent = "Preferences";
+            const voiceRow = document.createElement("div");
+            voiceRow.className = "rs-row";
+            const voiceTxt = document.createElement("span");
+            voiceTxt.textContent = "Voice replies";
+            const voiceBtn = document.createElement("button");
+            voiceBtn.type = "button";
+            voiceBtn.className = "rs-pill-btn" + (!isMuted ? " active" : "");
+            voiceBtn.textContent = isMuted ? "Muted" : "On";
+            voiceBtn.addEventListener("click", () => {
+                if (window.HN.setMuted) window.HN.setMuted(!isMuted);
+                renderSettingsDrawer();
+            });
+            voiceRow.appendChild(voiceTxt);
+            voiceRow.appendChild(voiceBtn);
+
+            const layoutRow = document.createElement("div");
+            layoutRow.className = "rs-row";
+            layoutRow.style.marginTop = "6px";
+            const layoutTxt = document.createElement("span");
+            layoutTxt.className = "rs-sub";
+            layoutTxt.textContent = "Canvas widget layout";
+            const resetLayoutBtn = document.createElement("button");
+            resetLayoutBtn.type = "button";
+            resetLayoutBtn.className = "rs-pill-btn";
+            resetLayoutBtn.textContent = "Reset Layout";
+            resetLayoutBtn.addEventListener("click", () => {
+                try {
+                    localStorage.removeItem("widget_sizes");
+                    localStorage.removeItem("widget_order");
+                } catch (e) {}
+                location.reload();
+            });
+            layoutRow.appendChild(layoutTxt);
+            layoutRow.appendChild(resetLayoutBtn);
+
+            prefSec.appendChild(prefLbl);
+            prefSec.appendChild(voiceRow);
+            prefSec.appendChild(layoutRow);
+
+            drawer.replaceChildren(hdr, themeSec, colorSec, iconSec, prefSec);
+        }
+
+        function render() {
+            const iconStyle = window.HN.getIconStyle();
+            rail.classList.toggle("expanded", open);
+            rail.classList.toggle("icon-style-hud", iconStyle === "hud");
+            document.body.classList.toggle("rail-expanded", open);
+
+            const toggleBtn = document.createElement("button");
+            toggleBtn.className = "rail-toggle";
+            toggleBtn.setAttribute("data-rail-toggle", "");
+            toggleBtn.title = open ? "Collapse" : "Your apps";
+            const chev = document.createElement("span");
+            chev.className = "rail-chevron";
+            chev.textContent = "⟩";
+            const toggleName = document.createElement("span");
+            toggleName.className = "rail-name";
+            toggleName.textContent = "Your apps";
+            toggleBtn.appendChild(chev);
+            toggleBtn.appendChild(toggleName);
+
+            const nav = document.createElement("nav");
+            nav.className = "rail-list";
+            for (const a of apps) {
+                const link = document.createElement("a");
+                link.className = "rail-item";
+                link.href = String(a.launch_url || "#");
+                link.target = "_blank";
+                link.rel = "noopener";
+                link.title = `${a.name} — ${a.status || "unknown"}`;
+
+                const iconSrc = (iconStyle !== "mono") ? (a.icon_svg || a.icon_url) : "";
+                const iconSpan = document.createElement("span");
+                if (iconSrc) {
+                    iconSpan.className = "rail-icon rail-icon-img";
+                    const img = document.createElement("img");
+                    img.className = "rail-img";
+                    img.src = iconSrc;
+                    img.alt = String(a.name || "");
+                    iconSpan.appendChild(img);
+                } else {
+                    iconSpan.className = "rail-icon rail-mono";
+                    iconSpan.style.background = `hsla(${hue(a.id)},52%,40%,0.92)`;
+                    iconSpan.textContent = String(a._mono || "?");
+                }
+                const dot = document.createElement("span");
+                dot.className = "rail-dot";
+                dot.style.background = dotColor(a.status);
+                iconSpan.appendChild(dot);
+
+                const nameSpan = document.createElement("span");
+                nameSpan.className = "rail-name";
+                nameSpan.textContent = String(a.name || "");
+
+                link.appendChild(iconSpan);
+                link.appendChild(nameSpan);
+                nav.appendChild(link);
+            }
+
+            // Bottom-left Settings Footer
+            const footer = document.createElement("div");
+            footer.className = "rail-footer";
+            const settingsBtn = document.createElement("button");
+            settingsBtn.type = "button";
+            settingsBtn.className = "rail-settings-btn" + (settingsOpen ? " active" : "");
+            settingsBtn.setAttribute("data-rail-settings", "");
+            settingsBtn.title = "Settings — Theme Colors & Icon Style";
+            const gearWrap = document.createElement("span");
+            gearWrap.className = "rail-settings-icon";
+            gearWrap.appendChild(_makeGearSvg());
+            const settingsLabel = document.createElement("span");
+            settingsLabel.className = "rail-name";
+            settingsLabel.textContent = "Settings";
+            settingsBtn.appendChild(gearWrap);
+            settingsBtn.appendChild(settingsLabel);
+            footer.appendChild(settingsBtn);
+
+            rail.replaceChildren(toggleBtn, nav, footer);
         }
 
         async function refresh() {
@@ -623,11 +1013,29 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         rail.addEventListener("click", (e) => {
+            if (e.target.closest("[data-rail-settings]")) {
+                e.stopPropagation();
+                settingsOpen = !settingsOpen;
+                renderSettingsDrawer();
+                render();
+                return;
+            }
             if (!e.target.closest("[data-rail-toggle]")) return;
             open = !open;
             try { localStorage.setItem(KEY, open ? "1" : "0"); } catch (err) {}
             render();
         });
+
+        document.addEventListener("click", (e) => {
+            if (!settingsOpen) return;
+            if (drawer.contains(e.target) || rail.contains(e.target)) return;
+            settingsOpen = false;
+            renderSettingsDrawer();
+            render();
+        });
+
+        window.addEventListener("hn:iconstyle", () => render());
+        window.addEventListener("hn:theme", () => { if (settingsOpen) renderSettingsDrawer(); });
 
         render();
         refresh();

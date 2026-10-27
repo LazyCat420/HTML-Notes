@@ -920,9 +920,12 @@ document.addEventListener('alpine:init', () => {
     // this up; all controls act on the live page through window.HN, so a click
     // here changes the theme/mute for real, no round-trip.
     Alpine.data('settingsWidget', (cfg = {}) => ({
-        themes: (cfg && cfg.themes) || [],
+        themes: (cfg && cfg.themes && cfg.themes.length) ? cfg.themes : ((window.HN && window.HN.THEMES) || []),
         active: (cfg && cfg.active) || 'hud',
         muted: false,
+        customAccent: '',
+        customBg: '',
+        iconStyle: 'vector',
 
         init() {
             // The agent asked for a specific theme this turn → apply it now.
@@ -932,23 +935,66 @@ document.addEventListener('alpine:init', () => {
             } else if (window.HN && window.HN.currentTheme) {
                 this.active = window.HN.currentTheme();
             }
+            if (window.HN && window.HN.getCustomColors) {
+                const c = window.HN.getCustomColors();
+                this.customAccent = c.accent || '';
+                this.customBg = c.bg || '';
+            }
+            if (window.HN && window.HN.getIconStyle) {
+                this.iconStyle = window.HN.getIconStyle();
+            }
             this.muted = !!(window.HN && window.HN.isMuted && window.HN.isMuted());
             // Keep the toggle honest if mute changes from the command bar.
             this._onMute = (e) => { this.muted = !!(e.detail && e.detail.muted); };
             window.addEventListener('hn:mute', this._onMute);
             // Reflect a theme change made elsewhere (another settings panel).
-            this._onTheme = (e) => { this.active = (e.detail && e.detail.name) || this.active; };
+            this._onTheme = (e) => {
+                this.active = (e.detail && e.detail.name) || this.active;
+                if (window.HN && window.HN.getCustomColors) {
+                    const c = window.HN.getCustomColors();
+                    this.customAccent = c.accent || '';
+                    this.customBg = c.bg || '';
+                }
+            };
             window.addEventListener('hn:theme', this._onTheme);
+            this._onIconStyle = (e) => {
+                this.iconStyle = (e.detail && e.detail.style) || this.iconStyle;
+            };
+            window.addEventListener('hn:iconstyle', this._onIconStyle);
         },
 
         destroy() {
             if (this._onMute) window.removeEventListener('hn:mute', this._onMute);
             if (this._onTheme) window.removeEventListener('hn:theme', this._onTheme);
+            if (this._onIconStyle) window.removeEventListener('hn:iconstyle', this._onIconStyle);
         },
 
         setTheme(name) {
             if (window.HN && window.HN.applyTheme) window.HN.applyTheme(name);
             this.active = name;
+            this.customAccent = '';
+            this.customBg = '';
+        },
+
+        setCustomAccent(hex) {
+            this.customAccent = hex;
+            if (window.HN && window.HN.applyCustomColors) window.HN.applyCustomColors({ accent: hex });
+        },
+
+        setCustomBg(hex) {
+            this.customBg = hex;
+            if (window.HN && window.HN.applyCustomColors) window.HN.applyCustomColors({ bg: hex });
+        },
+
+        resetCustomColors() {
+            this.customAccent = '';
+            this.customBg = '';
+            if (window.HN && window.HN.resetCustomColors) window.HN.resetCustomColors();
+        },
+
+        setIconStyle(style) {
+            this.iconStyle = style;
+            if (window.HN && window.HN.setIconStyle) window.HN.setIconStyle(style);
         },
 
         toggleMute() {
@@ -2308,14 +2354,21 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('appGridWidget', (initial) => ({
         apps: (initial && initial.apps) || [],
         stale: Boolean(initial && initial.stale),
+        iconStyle: (window.HN && window.HN.getIconStyle) ? window.HN.getIconStyle() : 'vector',
         _timer: null,
+        _onIconStyle: null,
 
         init() {
             this._timer = setInterval(() => this.refresh(), 45000);
+            this._onIconStyle = (e) => {
+                this.iconStyle = (e.detail && e.detail.style) || this.iconStyle;
+            };
+            window.addEventListener('hn:iconstyle', this._onIconStyle);
         },
 
         destroy() {
             if (this._timer) { clearInterval(this._timer); this._timer = null; }
+            if (this._onIconStyle) window.removeEventListener('hn:iconstyle', this._onIconStyle);
         },
 
         visibleApps() {

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg-prism-client" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0c0b20"/>
+      <stop offset="100%" stop-color="#19163d"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="url(#bg-prism-client)"/>
+
+  <line x1="9" y1="35" x2="23" y2="30" stroke="#e0e7ff" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="39" y1="26" x2="54" y2="19" stroke="#67e8f9" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="41" y1="31" x2="55" y2="31" stroke="#818cf8" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="43" y1="36" x2="54" y2="42" stroke="#f0abfc" stroke-width="2.2" stroke-linecap="round"/>
+  <polygon points="32,13 15,47 49,47" fill="#252159" stroke="#67e8f9" stroke-width="2.5" stroke-linejoin="round"/>
+</svg>

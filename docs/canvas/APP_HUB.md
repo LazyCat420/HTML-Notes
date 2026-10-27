@@ -2,7 +2,7 @@
 part: Canvas and widgets
 status: shipped
 type: spec
-updated: 2026-08-26
+updated: 2026-10-27
 ---
 
 # App Hub — portal-service-driven launcher (2026-08-16)
@@ -301,3 +301,31 @@ nothing, and the rail listed all 32 apps including backends.
 Curation contract additions: `short` (1-3 chars, rail monogram) and
 `client` (bool, force on/off the rail) ride the same registry-file/DB
 overlay path as icon/name/aliases.
+
+### Rail v3 & Bottom-Left Settings Drawer (2026-10-27)
+
+- **Pure LAN `http://10.0.0.16:<port>` launch URLs (Tailscale removed):**
+  All 12 curated client apps in `app/portal_registry.json` now launch directly
+  against `http://10.0.0.16:<port>` (`music-player` at `:3232`, `spark-console`
+  at `:8801`, `trading-client` at `:3030`, `html-notes` at `:8035`,
+  `braindeadbot-client` at `:5174`, `drift-king` at `:5580`,
+  `youtube-wallgarden` at `:8007`, `treesearch-client` at `:8006`,
+  `portal-client` at `:4000`, `prism-client` at `:3333`, `pinball-knight` at
+  `:8789`, `doc-client` at `:8910`). All `.ts.net` Tailscale references were
+  removed.
+- **Clean Vector App Icons (`app/static/icons/*.svg` + compact `*.png`):**
+  Replaced the 100 KB+ AI-generated raster icons with crisp full-bleed 64x64
+  vector SVGs (`icon_svg`) and 4x-supersampled compact PNGs (<10 KB each), plus
+  a live **App Icon Style** selector (`Vector`, `HUD Glow`, `Monogram`).
+- **Bottom-Left Settings Button & Drawer (`#rail-settings-drawer`):**
+  Added a persistent `.rail-footer` at the bottom of `#app-rail` (bottom-left of
+  the screen) with `[data-rail-settings]` opening a floating theme-bound
+  settings popover (`#rail-settings-drawer`). Supports 10 built-in palettes
+  (`hud`, `midnight`, `forest`, `ember`, `grape`, `crimson`, `solar`, `mono`,
+  `pastel`, `egg`), live Custom Accent & Surface color pickers
+  (`window.HN.applyCustomColors`), App Icon Style switching, Voice Replies mute
+  toggle, and Widget Layout reset.
+- **Theme-bound `.app-rail`:** `.app-rail` and `#rail-settings-drawer` now bind
+  to `var(--hud-panel)`, `var(--hud-line)`, and `var(--hud-ink)` in
+  `app/static/hud-theme.css`, resolving the earlier unverified light-theme
+  appearance gap.

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg-treesearch-client" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#061710"/>
+      <stop offset="100%" stop-color="#0d2b1f"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="url(#bg-treesearch-client)"/>
+
+  <line x1="32" y1="15" x2="19" y2="32" stroke="#4ade80" stroke-width="2.4"/>
+  <line x1="32" y1="15" x2="45" y2="32" stroke="#4ade80" stroke-width="2.4"/>
+  <line x1="19" y1="32" x2="13" y2="47" stroke="#22c55e" stroke-width="2.2"/>
+  <line x1="19" y1="32" x2="25" y2="47" stroke="#22c55e" stroke-width="2.2"/>
+  <line x1="45" y1="32" x2="39" y2="47" stroke="#22c55e" stroke-width="2.2"/>
+  <line x1="45" y1="32" x2="51" y2="47" stroke="#22c55e" stroke-width="2.2"/>
+  <circle cx="32" cy="15" r="5.2" fill="#bbf7d0"/>
+  <circle cx="19" cy="32" r="4.4" fill="#4ade80"/>
+  <circle cx="45" cy="32" r="4.4" fill="#4ade80"/>
+  <circle cx="13" cy="47" r="3.4" fill="#22c55e"/>
+  <circle cx="25" cy="47" r="3.4" fill="#22c55e"/>
+  <circle cx="39" cy="47" r="3.4" fill="#22c55e"/>
+  <circle cx="51" cy="47" r="3.4" fill="#22c55e"/>
+</svg>

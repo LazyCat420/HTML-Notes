@@ -1,12 +1,13 @@
 {
-  "_readme": "Curation defaults for the App Hub. Keyed by the portal-service registry id (stable forever — never a container id). Per-app keys: icon (emoji), icon_url (PNG/WebP), name, launch_url, client, pinned, hidden, description, aliases. Runtime hide/pin toggles live in the DB overlay (agent_memory widget_state 'portal:overrides') and take precedence over this file; overlay aliases are UNIONED with these. Apps listed here with no portal match become synthetic launch targets (status 'unknown'). To make a NEW service appear everywhere, add it to vault-service/projects.json — not here.",
+  "_readme": "Curation defaults for the App Hub. Keyed by the portal-service registry id (stable forever — never a container id). Per-app keys: icon (emoji), icon_url (PNG/WebP), icon_svg (SVG), name, launch_url (LAN 10.0.0.16 address), client, pinned, hidden, description, aliases. Runtime hide/pin toggles live in the DB overlay (agent_memory widget_state 'portal:overrides') and take precedence over this file; overlay aliases are UNIONED with these. Apps listed here with no portal match become synthetic launch targets (status 'unknown'). To make a NEW service appear everywhere, add it to vault-service/projects.json — not here.",
   "_aliases_readme": "aliases = extra names YOU say for an app ('open the trading bot'). They are matched EXACTLY (normalized: case/spaces/dashes ignored), so they beat widget spawning — keep them app-specific. Do NOT add a bare widget word like 'music', 'notes' or 'map': that would steal 'play music'-style asks from their widgets. A '-service' backend is never opened by a vague ask; say its full name ('open trading service') to reach it.",
   "apps": {
     "trading-client": {
       "name": "Trading Client",
       "icon": "📈",
       "icon_url": "icons/trading-client.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:3030",
+      "icon_svg": "icons/trading-client.svg",
+      "launch_url": "http://10.0.0.16:3030",
       "client": true,
       "pinned": true,
       "aliases": [
@@ -22,7 +23,8 @@
       "name": "Music Player",
       "icon": "🎵",
       "icon_url": "icons/music-player.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8443",
+      "icon_svg": "icons/music-player.svg",
+      "launch_url": "http://10.0.0.16:3232",
       "client": true,
       "pinned": true,
       "aliases": [
@@ -37,7 +39,8 @@
       "name": "HTML Notes",
       "icon": "👁️",
       "icon_url": "icons/html-notes.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8035",
+      "icon_svg": "icons/html-notes.svg",
+      "launch_url": "http://10.0.0.16:8035",
       "client": true,
       "aliases": [
         "html notes",
@@ -50,7 +53,8 @@
       "name": "Brain Dead Bot",
       "icon": "🧠",
       "icon_url": "icons/braindeadbot-client.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:5174",
+      "icon_svg": "icons/braindeadbot-client.svg",
+      "launch_url": "http://10.0.0.16:5174",
       "client": true,
       "aliases": [
         "braindeadbot",
@@ -66,7 +70,8 @@
       "name": "Drift King",
       "icon": "🏎️",
       "icon_url": "icons/drift-king.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:5580",
+      "icon_svg": "icons/drift-king.svg",
+      "launch_url": "http://10.0.0.16:5580",
       "client": true,
       "pinned": true,
       "aliases": [
@@ -81,6 +86,7 @@
       "name": "Drift King Server",
       "icon": "🏎️",
       "icon_url": "icons/drift-king.png",
+      "icon_svg": "icons/drift-king.svg",
       "launch_url": "http://10.0.0.16:5580",
       "client": false,
       "aliases": [
@@ -92,7 +98,8 @@
       "name": "YouTube Wallgarden",
       "icon": "📺",
       "icon_url": "icons/youtube-wallgarden.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8007",
+      "icon_svg": "icons/youtube-wallgarden.svg",
+      "launch_url": "http://10.0.0.16:8007",
       "client": true,
       "aliases": [
         "wallgarden",
@@ -105,7 +112,8 @@
       "name": "Treesearch",
       "icon": "🌲",
       "icon_url": "icons/treesearch-client.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8006",
+      "icon_svg": "icons/treesearch-client.svg",
+      "launch_url": "http://10.0.0.16:8006",
       "client": true,
       "aliases": [
         "treesearch",
@@ -117,7 +125,8 @@
       "name": "Portal",
       "icon": "🧭",
       "icon_url": "icons/portal-client.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:4000",
+      "icon_svg": "icons/portal-client.svg",
+      "launch_url": "http://10.0.0.16:4000",
       "client": true,
       "aliases": [
         "portal",
@@ -130,7 +139,8 @@
       "name": "Prism",
       "icon": "🔷",
       "icon_url": "icons/prism-client.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:3333",
+      "icon_svg": "icons/prism-client.svg",
+      "launch_url": "http://10.0.0.16:3333",
       "client": true,
       "aliases": [
         "prism",
@@ -142,7 +152,8 @@
       "name": "Pinball Knight",
       "icon": "🛡️",
       "icon_url": "icons/pinball-knight.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8789",
+      "icon_svg": "icons/pinball-knight.svg",
+      "launch_url": "http://10.0.0.16:8789",
       "client": true,
       "aliases": [
         "pinball",
@@ -154,7 +165,8 @@
       "name": "Spark Console",
       "icon": "⚡",
       "icon_url": "icons/spark-console.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8810",
+      "icon_svg": "icons/spark-console.svg",
+      "launch_url": "http://10.0.0.16:8801",
       "client": true,
       "aliases": [
         "spark",
@@ -166,7 +178,8 @@
       "name": "Doc Client",
       "icon": "📄",
       "icon_url": "icons/doc-client.png",
-      "launch_url": "https://html-notes.bat-cardassian.ts.net:8910",
+      "icon_svg": "icons/doc-client.svg",
+      "launch_url": "http://10.0.0.16:8910",
       "client": true,
       "aliases": [
         "doc",

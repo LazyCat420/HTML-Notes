@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg-braindeadbot-client" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0c170a"/>
+      <stop offset="100%" stop-color="#162b12"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="url(#bg-braindeadbot-client)"/>
+
+  <line x1="32" y1="9" x2="32" y2="16" stroke="#d9f99d" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="32" cy="8.5" r="2.8" fill="#d9f99d"/>
+  <rect x="13" y="16" width="38" height="30" rx="8" fill="#1e3a18" stroke="#a3e635" stroke-width="2.4"/>
+  <rect x="19.5" y="24" width="8.5" height="6.5" rx="2.2" fill="#d9f99d"/>
+  <rect x="36" y="24" width="8.5" height="6.5" rx="2.2" fill="#d9f99d"/>
+  <line x1="23" y1="37.5" x2="41" y2="37.5" stroke="#a3e635" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

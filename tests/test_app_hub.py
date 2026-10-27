@@ -701,13 +701,75 @@ def test_resolve_portal_app_spark_console_and_prism():
 
 
 def test_icons_static_mount():
-    """Verify /icons/ route serves static icon PNGs correctly."""
+    """Verify /icons/ route serves static icon PNGs and SVGs correctly."""
     from starlette.testclient import TestClient
     client = TestClient(m.app)
     resp = client.get("/icons/spark-console.png")
     assert resp.status_code == 200
     assert resp.headers["content-type"] in ("image/png", "application/octet-stream")
     assert len(resp.content) > 0
+    svg_resp = client.get("/icons/spark-console.svg")
+    assert svg_resp.status_code == 200
+    assert "<svg" in svg_resp.text
+
+
+@pytest.mark.asyncio
+async def test_all_curated_apps_use_lan_10_0_0_16_without_tailscale(monkeypatch):
+    """All curated NAS apps in portal_registry.json and get_portal_apps() launch
+    via http://10.0.0.16:<port> and contain zero Tailscale (.ts.net) URLs."""
+    async def fake_portal_raw():
+        return None
+    async def fake_docker():
+        return []
+    async def fake_probe(app_id, url):
+        return False
+
+    monkeypatch.setattr(portal, "_fetch_portal_raw", fake_portal_raw)
+    monkeypatch.setattr(portal, "_fetch_docker_containers_raw", fake_docker)
+    monkeypatch.setattr(portal, "_probe_serves_html", fake_probe)
+    monkeypatch.setattr(portal, "_load_portal_overrides", lambda: {})
+
+    data = await portal.get_portal_apps()
+    by_id = {a["id"]: a for a in data["apps"]}
+
+    expected_lan = {
+        "trading-client": "http://10.0.0.16:3030",
+        "music-player": "http://10.0.0.16:3232",
+        "html-notes": "http://10.0.0.16:8035",
+        "braindeadbot-client": "http://10.0.0.16:5174",
+        "drift-king": "http://10.0.0.16:5580",
+        "youtube-wallgarden": "http://10.0.0.16:8007",
+        "treesearch-client": "http://10.0.0.16:8006",
+        "portal-client": "http://10.0.0.16:4000",
+        "prism-client": "http://10.0.0.16:3333",
+        "pinball-knight": "http://10.0.0.16:8789",
+        "spark-console": "http://10.0.0.16:8801",
+        "doc-client": "http://10.0.0.16:8910",
+    }
+    for app_id, url in expected_lan.items():
+        assert by_id[app_id]["launch_url"] == url
+        assert ".ts.net" not in by_id[app_id]["launch_url"]
+        assert "tailscale" not in str(by_id[app_id]).lower()
+
+
+def test_vector_svg_and_clean_png_icons_exist():
+    """All 12 curated app icons have clean SVG vectors and compact raster PNGs (not 100KB+ AI slop)."""
+    import pathlib
+    icons_dir = pathlib.Path(__file__).resolve().parent.parent / "app/static/icons"
+    expected_icons = [
+        "trading-client", "music-player", "html-notes", "braindeadbot-client",
+        "drift-king", "youtube-wallgarden", "treesearch-client", "portal-client",
+        "prism-client", "spark-console", "pinball-knight", "doc-client"
+    ]
+    for name in expected_icons:
+        svg_path = icons_dir / f"{name}.svg"
+        png_path = icons_dir / f"{name}.png"
+        assert svg_path.exists(), f"Missing vector icon {svg_path}"
+        svg_text = svg_path.read_text(encoding="utf-8")
+        assert "<svg" in svg_text and "viewBox" in svg_text
+        assert png_path.exists(), f"Missing PNG icon {png_path}"
+        assert png_path.stat().st_size < 40_000, f"{name}.png is still oversized AI raster ({png_path.stat().st_size} bytes)"
+
 
 
 

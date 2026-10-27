@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg-pinball-knight" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a1220"/>
+      <stop offset="100%" stop-color="#152542"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="url(#bg-pinball-knight)"/>
+
+  <path d="M15 13 H49 V31 C49 42.5 32 51 32 51 C32 51 15 42.5 15 31 Z" fill="#1d355e" stroke="#60a5fa" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M22 24 H42 M32 24 V42" stroke="#fde047" stroke-width="3.4" stroke-linecap="round"/>
+  <circle cx="32" cy="17.5" r="2.4" fill="#bae6fd"/>
+</svg>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg-spark-console" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#181105"/>
+      <stop offset="100%" stop-color="#2c1f09"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="url(#bg-spark-console)"/>
+
+  <polygon points="35,10 17,34 30,34 26,54 47,28 34,28" fill="#fef08a" stroke="#f59e0b" stroke-width="1.8" stroke-linejoin="round"/>
+</svg>

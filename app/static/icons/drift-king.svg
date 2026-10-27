@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg-drift-king" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a090d"/>
+      <stop offset="100%" stop-color="#2e1018"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="url(#bg-drift-king)"/>
+
+  <path d="M13 45 A 21 21 0 1 1 51 45" fill="none" stroke="#881337" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M32 13 A 21 21 0 0 1 51 45" fill="none" stroke="#fb923c" stroke-width="4.5" stroke-linecap="round"/>
+  <line x1="32" y1="36" x2="45" y2="21" stroke="#fef08a" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="36" r="4.5" fill="#f43f5e" stroke="#fef08a" stroke-width="2"/>
+  <line x1="21" y1="49" x2="43" y2="49" stroke="#fb923c" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

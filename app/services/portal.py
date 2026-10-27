@@ -32,6 +32,7 @@ _PORTAL_TIMEOUT = 8.0
 _portal_cache: Dict[str, Any] = {"at": 0.0, "raw": None, "stale": False}
 _PORTAL_OVERRIDES_KEY = "portal:overrides"
 
+
 # projectType → default emoji, mirroring portal-client's projectType→icon map
 # (constants.ts) in spirit; portal's API carries no icon field at all.
 _PORTAL_TYPE_ICONS = {
@@ -137,9 +138,10 @@ def _normalize_portal_service(svc: dict) -> dict:
 
 def _apply_curation(app: dict, entry: dict) -> None:
     """One registry-file/overlay entry onto a PortalApp, in place."""
-    for key in ("icon", "icon_url", "name", "launch_url", "description", "short"):
+    for key in ("icon", "icon_url", "icon_svg", "name", "launch_url", "description", "short"):
         if entry.get(key):
             app[key] = entry[key]
+
     # Explicit client-frontend override — checked with `in` because False is
     # a meaningful value (force an HTML-serving backend off the rail).
     if isinstance(entry.get("client"), bool):
@@ -393,6 +395,7 @@ async def get_portal_apps(include_hidden: bool = False) -> dict:
     return {"apps": result,
             "stale": bool(_portal_cache["stale"]) or raw is None,
             "count": len(result)}
+
 
 
 async def build_apps_prompt_block(limit: int = 25) -> str:

@@ -2587,7 +2587,7 @@ img.crt-reveal {
     flex-direction: column;
     padding: 10px 6px;
     gap: 6px;
-    background: rgba(6, 14, 24, 0.62);
+    background: var(--hud-panel, rgba(6, 14, 24, 0.62));
     backdrop-filter: blur(14px);
     border-right: 1px solid rgba(var(--hud-line-rgb, 120, 210, 255), 0.14);
     transition: width .16s ease;

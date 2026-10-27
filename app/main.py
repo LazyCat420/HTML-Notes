@@ -154,6 +154,12 @@ THEME_CATALOG = [
     {"name": "grape", "label": "Grape", "swatch": ["#0f0616", "#221230", "#e879f9"],
      "dark": True, "keywords": ["grape", "purple", "magenta", "synthwave", "vaporwave",
                                  "violet", "neon", "plum", "berry", "retro", "pink"]},
+    {"name": "crimson", "label": "Crimson", "swatch": ["#140609", "#2a0e14", "#fb7185"],
+     "dark": True, "keywords": ["crimson", "red", "ruby", "scarlet", "rose", "cherry",
+                                 "blood", "coral"]},
+    {"name": "solar", "label": "Solar", "swatch": ["#121005", "#26210c", "#facc15"],
+     "dark": True, "keywords": ["solar", "gold", "golden", "yellow", "sun", "honey",
+                                 "citrine", "brass"]},
     {"name": "mono", "label": "Slate", "swatch": ["#0e1116", "#1e242c", "#94a3b8"],
      "dark": True, "keywords": ["mono", "monochrome", "slate", "gray", "grey",
                                  "minimal", "neutral", "steel", "clean", "muted"]},
@@ -1796,7 +1802,7 @@ THEME_INTENT_RE = re.compile(
     r'|\b(open|show|change|edit)\b[^.]*\bsettings\b'
     r'|\b(make|set|change|switch|turn)\b[^.]{0,30}\b('
     r'dark|light|forest|pastel|egg|eggshell|cream|midnight|ember|sunset|'
-    r'grape|purple|synthwave|mono|monochrome|slate|green|orange)\b'
+    r'grape|purple|synthwave|crimson|red|solar|gold|yellow|mono|monochrome|slate|green|orange)\b'
     r'|^\s*settings\s*$', re.I)
 # A question/how-to/recipe that wants a SYNTHESISED answer (summary + sources),
 # not a widget noun and not a data feed. Routed to build_answer_config so the

@@ -562,6 +562,32 @@ body::after {
     --hud-scan-opacity: 0.18;
 }
 
+/* CRIMSON — ruby-rose telemetry on deep wine-black. */
+:root[data-theme="crimson"] {
+    --hud-bg-top: #1f090e; --hud-bg: #140609; --hud-bg-deep: #0b0305;
+    --hud-panel: rgba(42, 14, 20, 0.64); --hud-panel-2: rgba(30, 10, 15, 0.58);
+    --hud-panel-solid: #1f0a0e;
+    --hud-accent-rgb: 251, 113, 133; --hud-line-rgb: 244, 114, 140;
+    --hud-cyan: #fb7185; --hud-accent-mid: #e11d48; --hud-accent-lo: #4c0519;
+    --hud-ink: #fce7eb; --hud-ink-dim: #d49ba7;
+    --hud-title: #fecdd3; --hud-bright: #fda4af; --hud-readout: #ffe4e6; --hud-ice: #fff1f2;
+    --hud-key-ink: #1f070c;
+    --hud-scan-opacity: 0.16;
+}
+
+/* SOLAR — warm gold-citrine readout on obsidian bronze. */
+:root[data-theme="solar"] {
+    --hud-bg-top: #1b1707; --hud-bg: #121005; --hud-bg-deep: #090802;
+    --hud-panel: rgba(38, 33, 12, 0.64); --hud-panel-2: rgba(26, 22, 8, 0.58);
+    --hud-panel-solid: #1b1708;
+    --hud-accent-rgb: 250, 204, 21; --hud-line-rgb: 234, 190, 50;
+    --hud-cyan: #facc15; --hud-accent-mid: #eab308; --hud-accent-lo: #422006;
+    --hud-ink: #fef9c3; --hud-ink-dim: #cabf82;
+    --hud-title: #fef08a; --hud-bright: #fde047; --hud-readout: #fef9c3; --hud-ice: #fefce8;
+    --hud-key-ink: #1c1805;
+    --hud-scan-opacity: 0.14;
+}
+
 /* MONO — neutral slate: minimal, near-monochrome, faint steel accent. */
 :root[data-theme="mono"] {
     --hud-bg-top: #14171c; --hud-bg: #0e1116; --hud-bg-deep: #070a0e;
@@ -639,3 +665,228 @@ body::after {
 /* Tailwind white/light backgrounds baked into widgets (e.g. an image card's
    white matte) read fine, but a pure black/dark chip on a light panel needs
    its light text kept — leave bg-* alone; only text is flipped above. */
+
+/* ─── App Rail & Bottom-Left Settings Drawer Theme Binding ──────────────── */
+.app-rail {
+    background: var(--hud-panel);
+    border-right: 1px solid var(--hud-line);
+    color: var(--hud-ink);
+}
+.app-rail .rail-dot {
+    border-color: var(--hud-panel-solid, #071222);
+}
+.app-rail.icon-style-hud .rail-img {
+    filter: drop-shadow(0 0 5px rgba(var(--hud-accent-rgb), 0.45));
+    border-color: rgba(var(--hud-accent-rgb), 0.55);
+}
+.app-rail .rail-footer {
+    margin-top: auto;
+    padding-top: 6px;
+    border-top: 1px solid var(--hud-line-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.app-rail .rail-settings-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 6px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--hud-ink);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.app-rail .rail-settings-btn:hover,
+.app-rail .rail-settings-btn.active {
+    background: rgba(var(--hud-accent-rgb), 0.14);
+    border-color: rgba(var(--hud-accent-rgb), 0.38);
+    color: var(--hud-bright);
+}
+.app-rail .rail-settings-icon {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: rgba(var(--hud-accent-rgb), 0.10);
+    border: 1px solid rgba(var(--hud-accent-rgb), 0.28);
+    color: var(--hud-cyan);
+    transition: transform 0.22s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.app-rail .rail-settings-btn:hover .rail-settings-icon,
+.app-rail .rail-settings-btn.active .rail-settings-icon {
+    border-color: rgba(var(--hud-accent-rgb), 0.72);
+    box-shadow: 0 0 10px rgba(var(--hud-accent-rgb), 0.32);
+    transform: rotate(30deg);
+}
+.app-rail .rail-settings-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Floating Settings Popover anchored at Bottom-Left next to #app-rail */
+.rail-settings-drawer {
+    position: fixed;
+    left: 60px;
+    bottom: 12px;
+    width: 320px;
+    max-height: calc(100vh - 28px);
+    overflow-y: auto;
+    z-index: 80;
+    background: var(--hud-panel);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid var(--hud-line-strong);
+    border-radius: 16px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 0 22px rgba(var(--hud-accent-rgb), 0.14);
+    padding: 14px;
+    color: var(--hud-ink);
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+    transition: left 0.16s ease;
+}
+.rail-settings-drawer.open {
+    display: flex;
+}
+body.rail-expanded .rail-settings-drawer {
+    left: 228px;
+}
+.rail-settings-drawer .rs-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--hud-line-soft);
+}
+.rail-settings-drawer .rs-title {
+    font-family: var(--hud-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--hud-title);
+    font-weight: 600;
+}
+.rail-settings-drawer .rs-close {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--hud-ink-dim);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+}
+.rail-settings-drawer .rs-close:hover {
+    color: var(--hud-bright);
+    border-color: var(--hud-line);
+    background: rgba(var(--hud-accent-rgb), 0.1);
+}
+.rail-settings-drawer .rs-section-label {
+    font-family: var(--hud-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--hud-ink-dim);
+    margin-bottom: 6px;
+}
+.rail-settings-drawer .rs-theme-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+.rail-settings-drawer .rs-theme-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 8px;
+    border-radius: 9px;
+    border: 1px solid var(--hud-line-soft);
+    background: var(--hud-panel-2);
+    color: var(--hud-ink);
+    cursor: pointer;
+    font-size: 11.5px;
+    text-align: left;
+    min-width: 0;
+    transition: border-color 0.14s ease, background 0.14s ease;
+}
+.rail-settings-drawer .rs-theme-btn:hover {
+    border-color: var(--hud-line-strong);
+}
+.rail-settings-drawer .rs-theme-btn.active {
+    border-color: var(--hud-cyan);
+    background: rgba(var(--hud-accent-rgb), 0.16);
+    box-shadow: 0 0 10px rgba(var(--hud-accent-rgb), 0.18);
+}
+.rail-settings-drawer .rs-swatch {
+    display: flex;
+    width: 30px;
+    height: 18px;
+    border-radius: 4px;
+    overflow: hidden;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.rail-settings-drawer .rs-swatch > span {
+    flex: 1;
+    height: 100%;
+}
+.rail-settings-drawer .rs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+}
+.rail-settings-drawer .rs-color-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.rail-settings-drawer input[type="color"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 32px;
+    height: 26px;
+    border: 1px solid var(--hud-line);
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+    padding: 1px;
+}
+.rail-settings-drawer .rs-pill-btn {
+    padding: 4px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--hud-line);
+    background: var(--hud-panel-2);
+    color: var(--hud-ink);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.14s ease;
+}
+.rail-settings-drawer .rs-pill-btn.active,
+.rail-settings-drawer .rs-pill-btn:hover {
+    border-color: var(--hud-cyan);
+    background: rgba(var(--hud-accent-rgb), 0.18);
+    color: var(--hud-bright);
+}
+.rail-settings-drawer .rs-seg-group {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+}
+.rail-settings-drawer .rs-sub {
+    font-size: 10.5px;
+    color: var(--hud-ink-dim);
+}
