@@ -329,3 +329,9 @@ overlay path as icon/name/aliases.
   to `var(--hud-panel)`, `var(--hud-line)`, and `var(--hud-ink)` in
   `app/static/hud-theme.css`, resolving the earlier unverified light-theme
   appearance gap.
+- **Old App Retirement (Drift King, Pinball Knight, Treesearch):**
+  Retired `drift-king`, `drift-king-service`, `pinball-knight`, and
+  `treesearch-client` from the active App Hub grid and App Rail launcher via
+  `hide_patterns: ["drift-king*", "pinball-knight*", "treesearch*"]` and
+  `hidden: true, client: false` entries in `portal_registry.json`. Active
+  launcher narrowed to the 9 core client apps.

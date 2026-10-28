@@ -67,32 +67,14 @@
       ]
     },
     "drift-king": {
-      "name": "Drift King",
-      "icon": "🏎️",
-      "icon_url": "icons/drift-king.png",
-      "icon_svg": "icons/drift-king.svg",
-      "launch_url": "http://10.0.0.16:5580",
-      "client": true,
-      "pinned": true,
-      "aliases": [
-        "drift king",
-        "drift-king",
-        "drift",
-        "the drift game",
-        "drift king game"
-      ]
+      "_why": "Retired from active launcher per user instruction.",
+      "hidden": true,
+      "client": false
     },
     "drift-king-service": {
-      "name": "Drift King Server",
-      "icon": "🏎️",
-      "icon_url": "icons/drift-king.png",
-      "icon_svg": "icons/drift-king.svg",
-      "launch_url": "http://10.0.0.16:5580",
-      "client": false,
-      "aliases": [
-        "drift king server",
-        "drift king service"
-      ]
+      "_why": "Retired from active launcher per user instruction.",
+      "hidden": true,
+      "client": false
     },
     "youtube-wallgarden": {
       "name": "YouTube Wallgarden",
@@ -109,17 +91,9 @@
       ]
     },
     "treesearch-client": {
-      "name": "Treesearch",
-      "icon": "🌲",
-      "icon_url": "icons/treesearch-client.png",
-      "icon_svg": "icons/treesearch-client.svg",
-      "launch_url": "http://10.0.0.16:8006",
-      "client": true,
-      "aliases": [
-        "treesearch",
-        "tree search",
-        "treesearch client"
-      ]
+      "_why": "Retired from active launcher per user instruction.",
+      "hidden": true,
+      "client": false
     },
     "portal-client": {
       "name": "Portal",
@@ -149,17 +123,9 @@
       ]
     },
     "pinball-knight": {
-      "name": "Pinball Knight",
-      "icon": "🛡️",
-      "icon_url": "icons/pinball-knight.png",
-      "icon_svg": "icons/pinball-knight.svg",
-      "launch_url": "http://10.0.0.16:8789",
-      "client": true,
-      "aliases": [
-        "pinball",
-        "pinball knight",
-        "pinball knight game"
-      ]
+      "_why": "Retired from active launcher per user instruction.",
+      "hidden": true,
+      "client": false
     },
     "spark-console": {
       "name": "Spark Console",
@@ -199,6 +165,10 @@
   },
   "defaults": {
     "include_infrastructure": false,
-    "hide_patterns": []
+    "hide_patterns": [
+      "drift-king*",
+      "pinball-knight*",
+      "treesearch*"
+    ]
   }
 }
