@@ -1026,9 +1026,12 @@ document.addEventListener("DOMContentLoaded", () => {
             render();
         });
 
+        drawer.addEventListener("click", (e) => e.stopPropagation());
+
         document.addEventListener("click", (e) => {
             if (!settingsOpen) return;
-            if (drawer.contains(e.target) || rail.contains(e.target)) return;
+            const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+            if (path.includes(drawer) || path.includes(rail) || drawer.contains(e.target) || rail.contains(e.target)) return;
             settingsOpen = false;
             renderSettingsDrawer();
             render();
