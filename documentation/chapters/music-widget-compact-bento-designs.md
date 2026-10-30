@@ -341,6 +341,74 @@ Cost: the full stack is 2.75 MB because of three 1 024 × 512 PNGs. At 512 × 25
 it drops to roughly 700 KB — the difference between a demo and something a
 widget can load.
 
+### A2c · v2 — the screen reads and the wood has relief
+
+![v2 at widget size, 2×](artifacts/music-widget-designs/18-walkman-v2-card.png)
+
+![v2 close up, 2×](artifacts/music-widget-designs/19-walkman-v2-hero.png)
+
+![full stack vs v2, same camera and lighting](artifacts/music-widget-designs/20-walkman-v1-vs-v2.png)
+
+Two complaints drove v2: the LCD border only appeared if contrast was cranked,
+and the wood read as a flat texture. Diffuse light is the wrong lever for the
+first — it lifts the wood mid-tones and the LCD background by the same amount,
+so it adds no *local* contrast, and the exposure compensation needed to see the
+border is exactly what washed out the picture. v2 fixes both with geometry and
+material, not light.
+
+**The border is now built, not lit.**
+
+| Layer | Size | Why |
+|---|---|---|
+| Frame | 3 mm dark metal (base 0.30 / metal 1 / rough 0.12), four mitred bars sitting entirely *outside* the glass | a metal edge catches the rim strips and reads at any exposure; because it starts at the glass edge the canvas overlay is never covered |
+| Spill ring | 2 mm emissive amber, mitred flush outside the frame | reads as backlight escaping the panel; emission colour is `(1.0, 0.12, 0.01)` because ACES desaturates anything less saturated into cream |
+| Glass | unchanged coated cover glass, coat 1.0 / rough 0.02 | keeps the room reflection |
+
+Both rings are separate meshes (`FRAME_T/B/L/R`, `HALO_T/B/L/R`) so the 5 mm
+border is real geometry with real depth, not a CSS outline. Corner bars are cut
+to meet exactly, so there are no bracket ends.
+
+**The LCD is bigger and brighter.**
+
+- The canvas backing went from 176 × 44 to 200 × 50, and glyphs are drawn at
+  **2× scale** (12 px cell, 14 px cap) instead of 1 px.
+- Ink moved from `rgb(255,195,94)` to `rgb(255,210,118)` with a 3 px shadow-blur
+  glow; a faint amber backlight wash sits behind the text so the panel reads as
+  lit rather than as a black rectangle.
+- The hotspot keeps a fixed CSS size in model-viewer, so the overlay is now
+  scaled from the projected key spacing (the keys are exactly 0.216 m apart):
+  `pxPerM = keySpanPx / 0.216`, then `width = 0.200 × pxPerM`. At the 300 px
+  card that is 159 px wide; at the 620 px close-up it grows with the model
+  instead of staying 176 px and drifting off the glass.
+
+**Wood got pores and a veneer split.** The albedo now carries a high-frequency
+pore layer along the grain (±0.052), and the two halves of the panel are tinted
+apart by 6% like a book-matched veneer. The normal map is derived at strength
+3.1, roughness spans 0.18–0.62 (pores rough, figure glossy), and the clearcoat
+is 0.45 / 0.04.
+
+**The studio HDR gained two grazing rims** at ±72° azimuth, 104° elevation,
+intensity 5.0 and 3.5. They are deliberately steep and low: they put a specular
+line on the bezel, frame and key edges without lifting the wood.
+
+Measured on 1 236 × 620 captures (2× DPR, same camera, same exposure):
+
+| Metric | Value |
+|---|---|
+| Asset | `player-body-v2.glb`, 2.95 MB, 5 560 tris, 9 materials, 3 packed PNGs |
+| Pixels changed vs full stack | 37 365 of 766 320 (4.9%), max Δ225 |
+| Changed bbox | x 155–1 083, y 79–529 (the whole device, not one region) |
+| Border contrast at the card | frame band mean 233 / 209 / 147 next to wood at 70 / 61 / 38 |
+| LCD amber pixels | 1 258 in the 200 × 50 backing, all inside the glass rect |
+| Variants board | 9 viewers, all loaded |
+
+Cost: still three 1 024 × 512 PNGs. Dropping them to 512 × 256 brings v2 to
+roughly 800 KB — the version that should actually ship into the widget.
+
+Live: **http://localhost:8910/static/walkman-3d.html** (the player),
+**http://localhost:8910/static/walkman-3d-variants.html** (eight variants plus
+v2 in the grid and as the hero).
+
 ### A3 · Pixel forest — 150px, the device grown into a tree
 
 ![The player inside a pixel forest](artifacts/music-widget-designs/13-pixel-forest.png)
@@ -391,6 +459,7 @@ music rather than only displaying it.
 | Walkman 3D | 300px | 150px | −34px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber + chrome |
 | Pixel Forest | 300px | 150px | −34px | Inset overlay (3 rows) | none | 1 pixel line | forest green / black |
 | Walkman 3D full stack | 300px | 150px | −34px | Inset overlay (3 rows) | spool glyph | 1 LCD line | walnut + chrome + studio HDR |
+| Walkman 3D **v2** | 300px | 150px | −34px | Inset overlay (3 rows) | spool glyph | 1 LCD line, 2× glyphs | walnut + dark-metal frame + amber spill |
 | Clear Neon | 300px | 100px | −84px | Inset overlay (3 rows) | 2 spools | 1 LCD line | cyan / magenta |
 | PS2 Pixel | 300px | 100px | −84px | Inset overlay (3 rows) | none | 1 pixel line | dither blue |
 | Buick ’93 | 300px | 118px | −70px | Inset overlay (3 rows) | none | 1 VFD line | wood / VFD green |
@@ -467,9 +536,10 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 4. **Shell** — the retro set needs the music widget to opt out of the
    `!important` frame rules; confirm that is acceptable.
 5. **3D player** — worth one WebGL context per widget, or keep the 3D only in
-   the demo and ship the flat card? And if it ships, which realism level: the
-   281 KB baseline, bevels (+42 KB), or the full stack (2.75 MB, or ~700 KB with
-   the maps cut to 512 × 256)?
+   the demo and ship the flat card? If it ships, ship **v2**: it is the only
+   variant where the LCD border is visible at 300 px without cranking contrast.
+   The question left is file size — 2.95 MB as built, or ~800 KB with the three
+   maps cut to 512 × 256 and the normal map dropped.
 6. **Pixel forest** — ship as the "music-reactive" skin (needs an audio
    analyser, not the synthesised beat), or keep it as a demo? It costs the same
    as A2 but only reads as trippy when it actually follows the track.
