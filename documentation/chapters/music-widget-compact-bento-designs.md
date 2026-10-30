@@ -283,6 +283,64 @@ woodgrain, or dither, they need the **shell opt-out** (open question 4):
 `index.css` forces `background-image` and `border-radius` on
 `.widget-container` with `!important`, which would flatten these textures.
 
+### A2b · Realism variants — six separate demos to pick from
+
+![Seven variants side by side](artifacts/music-widget-designs/16-walkman-variants-board.png)
+
+![The full stack at 2×](artifacts/music-widget-designs/17-walkman-fullstack.png)
+
+The wood-panel player looked good but flat: the chrome mirrored model-viewer's
+neutral grey studio, and the wood had colour but no relief. Six changes were
+built separately so each can be judged on its own.
+
+| Variant | What changes | Asset |
+|---|---|---|
+| 1 · Current | today's page, neutral studio environment | 281 KB, 2 216 tris |
+| 2 · + Studio HDR | a generated studio environment: warm key softbox left, cool fill right, strip light behind, dark floor | same mesh |
+| 3 · + Bevels | 4-segment bevels at 1.5× radius on every edge, clamped to 45% of the thinnest dimension | 323 KB, 4 312 tris |
+| 4 · + Wood relief | 1 024 × 512 albedo, normal and roughness derived from the grain height, clearcoat lacquer (weight 0.35, roughness 0.05) | 2.7 MB, 3 textures |
+| 5 · + Glass screen | coated cover glass: coat 1.0, coat roughness 0.02, IOR 1.52, roughness 0.03 | 281 KB |
+| 6 · + AO | 16-ray ambient occlusion baked into `COLOR_0` on 24 primitives, 12 mm radius | 300 KB |
+| 7 · All of it | bevels + relief + glass + AO on the studio HDR | 2.75 MB, 4 312 tris |
+
+- Source: `apps/doc-client/tools/walkman_keys/build_body.py` now takes flags
+  after `--`: `bevel`, `wood`, `glass`, `ao`, `full`.
+  `tools/walkman_keys/make_env.py` generates the studio environment as a
+  512 × 256 Radiance RGBE file (`static/models/studio.hdr`, 512 KB, peak 16,
+  mean 0.343).
+- Live: **http://localhost:8910/static/walkman-3d-variants.html** — every card
+  after the first shares the studio HDR, so the differences are the asset, not
+  the lighting. The toolbar swaps environment, tone mapping (ACES / AgX /
+  neutral), exposure, shadow, and a 0.30 m close-up.
+
+Why each one matters, in order of payoff:
+
+1. **Environment.** Chrome is a mirror; it can only look as good as what it
+   reflects. A neutral grey studio gives grey metal. The generated HDR puts a
+   warm softbox on one side and a cool one on the other, so the bezel and key
+   sides carry distinct bright and dark bands.
+2. **Bevels.** Real objects have no 90° corners. A 0.5–0.8 mm bevel catches a
+   thin highlight on every edge, which is what the eye reads as "manufactured"
+   rather than "CG box". 2 216 → 4 312 triangles.
+3. **Wood relief.** Colour alone reads as paint. The normal map is derived from
+   the same grain height as the albedo, the roughness map makes pores rougher
+   and figure glossier, and a thin clearcoat adds the lacquer sheen.
+4. **Glass.** The screen should reflect the room. A coated cover glass gives a
+   soft highlight that slides across it as you orbit.
+5. **AO.** Baked occlusion darkens the key wells and the screen recess, so the
+   device sits on its own geometry instead of floating.
+6. **Tone mapping.** ACES with tuned exposure keeps the highlights from
+   clipping; AgX is available if a softer roll-off is wanted.
+
+Measured on 692 × 346 captures (2× DPR), each variant differs from the plain
+HDR render in its own region: bevels 10 773 px (max Δ158) across every edge,
+wood 12 487 px (Δ72) on the panel, glass 6 689 px (Δ58) inside the screen box,
+AO 2 091 px (Δ76) around the recesses, full stack 20 444 px (Δ161).
+
+Cost: the full stack is 2.75 MB because of three 1 024 × 512 PNGs. At 512 × 256
+it drops to roughly 700 KB — the difference between a demo and something a
+widget can load.
+
 ### A3 · Pixel forest — 150px, the device grown into a tree
 
 ![The player inside a pixel forest](artifacts/music-widget-designs/13-pixel-forest.png)
@@ -332,6 +390,7 @@ music rather than only displaying it.
 | Walkman | 300px | 100px | −84px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber |
 | Walkman 3D | 300px | 150px | −34px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber + chrome |
 | Pixel Forest | 300px | 150px | −34px | Inset overlay (3 rows) | none | 1 pixel line | forest green / black |
+| Walkman 3D full stack | 300px | 150px | −34px | Inset overlay (3 rows) | spool glyph | 1 LCD line | walnut + chrome + studio HDR |
 | Clear Neon | 300px | 100px | −84px | Inset overlay (3 rows) | 2 spools | 1 LCD line | cyan / magenta |
 | PS2 Pixel | 300px | 100px | −84px | Inset overlay (3 rows) | none | 1 pixel line | dither blue |
 | Buick ’93 | 300px | 118px | −70px | Inset overlay (3 rows) | none | 1 VFD line | wood / VFD green |
@@ -407,8 +466,10 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 3. **Queue** — inset overlay (all half-width designs), or a portal panel?
 4. **Shell** — the retro set needs the music widget to opt out of the
    `!important` frame rules; confirm that is acceptable.
-5. **3D player** — worth one WebGL context and a 275 KB request per widget, or
-   keep the 3D only in the demo and ship the flat card?
+5. **3D player** — worth one WebGL context per widget, or keep the 3D only in
+   the demo and ship the flat card? And if it ships, which realism level: the
+   281 KB baseline, bevels (+42 KB), or the full stack (2.75 MB, or ~700 KB with
+   the maps cut to 512 × 256)?
 6. **Pixel forest** — ship as the "music-reactive" skin (needs an audio
    analyser, not the synthesised beat), or keep it as a demo? It costs the same
    as A2 but only reads as trippy when it actually follows the track.
