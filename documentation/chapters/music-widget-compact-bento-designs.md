@@ -13,8 +13,8 @@ type: plan
 prints the same artist **three times** for an ordinary artist ask, and the card
 is pinned to a fixed 184px that doubles to 384px when the queue opens. This
 chapter records the redundancy, the compaction rules, five full-width visual
-directions, and a four-layout **half-width retro set (300px)** built after the
-cassette direction was picked.
+directions, a four-layout **half-width retro set (300px)**, and a Walkman whose
+key row is a real Blender-built glTF asset.
 
 The live, interactive mockups (playing / long title / queue open / narrow
 300px, all clickable) are at
@@ -243,6 +243,35 @@ engraved labels.
 - Rocker keys labelled SEEK − / SEEK +, engraved 7px mono.
 - Woodgrain is a 19px repeating gradient — no image, no fetch.
 
+### A2 · Walkman with real 3D keys — 112px
+
+![Walkman with Blender-built 3D keys](artifacts/music-widget-designs/11-walkman-3d.png)
+
+![The key bar close up](artifacts/music-widget-designs/12-walkman-3d-detail.png)
+
+The same 300px card, but the key row is a real glTF asset instead of CSS
+rectangles: five keys with polished tops (roughness 0.09, metallic 1.0), satin
+sides (0.34), beveled edges, engraved dark icons, a chrome strip on the front
+edge, and a 2.8 mm travel animation per key.
+
+- Source: `apps/doc-client/tools/walkman_keys/build_keys.py`, built headlessly
+  (`blender --background --python … -- static/models/walkman-keys.glb`).
+- Asset: `apps/doc-client/static/models/walkman-keys.glb`, 55 KB, 1 268
+  triangles, 5 materials, 5 clips (`press_prev`, `press_play`, `press_stop`,
+  `press_next`, `press_queue`), 0.42 s each.
+- Renderer: `<model-viewer>` with `environment-image="neutral"`, 20° FOV,
+  camera at 0.18 m; the bar is 276 × 52 px inside the card.
+- Interaction: each key is a transparent hotspot over the 3D geometry; a click
+  plays that key's clip, fires the action, and synthesises a mechanical click
+  with WebAudio. Space / ← / → / Q map to the same keys.
+- Fallback: if the GLB fails to load, the card switches to the 2D keys.
+- Live: **http://localhost:8910/static/walkman-3d.html**
+
+Why 3D and not an image: the chrome reflects a live environment, so it reads
+correctly at any size and under parallax orbit, and the keys can physically
+travel. Cost: one extra 55 KB request and a WebGL context per widget, which is
+the main reason to keep it to the one card that benefits.
+
 All four keep the queue as an inset overlay (three rows fit) and the times
 inside the readout. Because they replace the card surface with metal, plastic,
 woodgrain, or dither, they need the **shell opt-out** (open question 4):
@@ -260,6 +289,7 @@ woodgrain, or dither, they need the **shell opt-out** (open question 4):
 | Cassette Deck | 620px | 128px | −56px | Inset LCD overlay | 40px reel | 1 LCD line | olive / amber |
 | Swiss Editorial | 620px | 96px | −88px | Inset overlay (3 rows) | none | kicker + title | ink / vermillion |
 | Walkman | 300px | 100px | −84px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber |
+| Walkman 3D | 300px | 112px | −72px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber + chrome |
 | Clear Neon | 300px | 100px | −84px | Inset overlay (3 rows) | 2 spools | 1 LCD line | cyan / magenta |
 | PS2 Pixel | 300px | 100px | −84px | Inset overlay (3 rows) | none | 1 pixel line | dither blue |
 | Buick ’93 | 300px | 118px | −70px | Inset overlay (3 rows) | none | 1 VFD line | wood / VFD green |
@@ -309,6 +339,9 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 - The PS2 cell bar and the neon LED meter track progress (8 of 16 cells and 6 of
   12 segments lit at ~50%); the Buick needle transform matches −90° + 1.8° per
   percent.
+- The 3D key bar loads from one GLB: 1 268 triangles, 5 materials, 5 press
+  clips at 0.42 s each, 2.8 mm travel; a press changes 644 rendered pixels and
+  returns to the rest pose; hotspots sit 45 px apart over the five keys.
 - Each screenshot contains its design's accent colour, and every pair differs
   (mean RGB delta 39.6–88.0), so the layouts are genuinely different pixels,
   not recolours of one.
@@ -324,3 +357,5 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 3. **Queue** — inset overlay (all half-width designs), or a portal panel?
 4. **Shell** — the retro set needs the music widget to opt out of the
    `!important` frame rules; confirm that is acceptable.
+5. **3D keys** — worth one WebGL context and a 55 KB request per widget, or
+   keep the 3D only in the demo and ship the CSS keys?
