@@ -12,8 +12,9 @@ type: plan
 `app/widgets/factory.py`, with a hand-maintained twin in `app/static/index.js`)
 prints the same artist **three times** for an ordinary artist ask, and the card
 is pinned to a fixed 184px that doubles to 384px when the queue opens. This
-chapter records the redundancy, the compaction rules, and five visual
-directions for a bento-style replacement.
+chapter records the redundancy, the compaction rules, five full-width visual
+directions, and a four-layout **half-width retro set (300px)** built after the
+cassette direction was picked.
 
 The live, interactive mockups (playing / long title / queue open / narrow
 300px, all clickable) are at
@@ -184,25 +185,100 @@ The rail opens its queue **outside** the card; the other four cover the card
 from inside. Either way the card height is unchanged, which is the point: no
 `h-[384px]` binding and no masonry re-span.
 
+## Half-width retro set (300px)
+
+You liked the cassette and wanted half the width with no dead space. These four
+are **one grid column wide (300px)**, with 3–6px paddings and no empty rows:
+every pixel is a datum, a control, or a texture. Same identity rule — artist
+once, title once, times inside the readout.
+
+### A · Walkman — 100px
+
+![Walkman](artifacts/music-widget-designs/07-walkman.png)
+
+The cassette rebuilt as an 1980s personal stereo: brushed aluminium shell, two
+spools, one amber LCD line, black plastic keys. Two rows only — 58px shell and
+26px keys, 4px apart.
+
+- Amber LCD holds the identity line and the counter in the same window.
+- Right spool is the progress ring; spools turn only while playing.
+- Brushed metal is a repeating gradient — no image, no fetch.
+- At 300px the LCD fits ~34 characters before it marquees.
+
+### B · Clear Neon Cassette — 100px
+
+![Clear Neon Cassette](artifacts/music-widget-designs/08-clear-neon.png)
+
+The 90s clear-shell cassette: see-through body, tape spools on both sides, a LED
+meter instead of a bar, neon-cyan type with a magenta artist.
+
+- Both spools are rings: left shows remaining tape, right shows played.
+- LED meter replaces the 1px bar: 12 segments, the last four turn magenta.
+- Neon keys are 24px outlined squares — lighter than the walkman's plastic keys.
+- Glow is CSS shadow, so nothing blurs the text.
+
+### C · PS2 Pixel Shader — 100px
+
+![PS2 Pixel Shader](artifacts/music-widget-designs/09-ps2-pixel.png)
+
+A PlayStation 2 boot-screen readout: 2px stepped borders, a scanline overlay,
+dither-blue surfaces, uppercase mono type with red/blue fringing, and a progress
+bar made of discrete cells rather than a smooth fill.
+
+- Cell bar: 16 cells, filled ones cyan, the leading edge violet.
+- Chromatic fringe on the title only (1px red/blue shadow).
+- Scanlines are a 1px repeating overlay above content, under controls.
+- Times sit at both ends of the control row, 8px pixel mono.
+
+### D · Buick LeSabre ’93 Cluster — 118px
+
+![Buick LeSabre 1993 cluster](artifacts/music-widget-designs/10-buick-93.png)
+
+A 1993 GM instrument cluster: woodgrain strip, green vacuum-fluorescent readout,
+a needle sweeping an arc gauge as the progress, and chunky rocker keys with
+engraved labels.
+
+- VFD line holds artist + title in green, with the digital clock at the right.
+- Needle gauge is the progress: −90° at 0%, +90° at 100%, 28px needle, red glow.
+- Rocker keys labelled SEEK − / SEEK +, engraved 7px mono.
+- Woodgrain is a 19px repeating gradient — no image, no fetch.
+
+All four keep the queue as an inset overlay (three rows fit) and the times
+inside the readout. Because they replace the card surface with metal, plastic,
+woodgrain, or dither, they need the **shell opt-out** (open question 4):
+`index.css` forces `background-image` and `border-radius` on
+`.widget-container` with `!important`, which would flatten these textures.
+
 ## Side by side
 
-| Layout | Height | vs 184px | Queue | Art | Identity | Palette |
-|---|---|---|---|---|---|---|
-| Current | 184px | — | Grows to 384px, re-flows masonry | 40px gradient tile | 2 lines + chip (artist 3×) | purple / fuchsia |
-| Bento Rail | 72px | −112px (61%) | Portal panel below card | 48px tile | 1 line | HUD cyan |
-| Bento 2×2 | 168px | −16px | Inset overlay (5 rows) | 132px tile | up to 2 lines | violet glass |
-| Vinyl Dial | 120px | −64px | Inset overlay (3 rows) | 92px disc | eyebrow + title | warm brass |
-| Cassette Deck | 128px | −56px | Inset LCD overlay | 40px reel | 1 LCD line | olive / amber |
-| Swiss Editorial | 96px | −88px | Inset overlay (3 rows) | none | kicker + title | ink / vermillion |
+| Layout | Width | Height | vs 184px | Queue | Art | Identity | Palette |
+|---|---|---|---|---|---|---|---|
+| Current | 620px | 184px | — | Grows to 384px, re-flows masonry | 40px gradient tile | 2 lines + chip (artist 3×) | purple / fuchsia |
+| Bento Rail | 620px | 72px | −112px (61%) | Portal panel below card | 48px tile | 1 line | HUD cyan |
+| Bento 2×2 | 620px | 168px | −16px | Inset overlay (5 rows) | 132px tile | up to 2 lines | violet glass |
+| Vinyl Dial | 620px | 120px | −64px | Inset overlay (3 rows) | 92px disc | eyebrow + title | warm brass |
+| Cassette Deck | 620px | 128px | −56px | Inset LCD overlay | 40px reel | 1 LCD line | olive / amber |
+| Swiss Editorial | 620px | 96px | −88px | Inset overlay (3 rows) | none | kicker + title | ink / vermillion |
+| Walkman | 300px | 100px | −84px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber |
+| Clear Neon | 300px | 100px | −84px | Inset overlay (3 rows) | 2 spools | 1 LCD line | cyan / magenta |
+| PS2 Pixel | 300px | 100px | −84px | Inset overlay (3 rows) | none | 1 pixel line | dither blue |
+| Buick ’93 | 300px | 118px | −70px | Inset overlay (3 rows) | none | 1 VFD line | wood / VFD green |
+
+The half-width set is the answer to the gap problem: at 300px each card holds
+two rows (readout + keys) with 3–6px padding, so nothing is padding for its own
+sake. The full-width set still exists for anyone who wants art on the canvas.
 
 ## Recommendation
 
-**Bento Rail** as the default: it is the only option that beats the current card
-by more than half, it keeps every control, and its queue costs zero layout
-shift. **Bento 2×2** is the alternative if the art should stay prominent.
-Vinyl and Cassette are the expressive picks if the canvas should have more
-personality than a status bar; Swiss is the pick if the canvas should read as a
-document.
+**Cassette, at half width.** Of the four half-width variants, **Walkman** is the
+safest: it keeps the cassette read, has the most legible amber LCD, uses two
+rows and no art fetch, and its keys are the largest targets at 300px. **Clear
+Neon** is the pick if the canvas wants colour; **PS2 Pixel** if it wants the
+retro-game signal look; **Buick ’93** if it wants period-car character at the
+cost of 18px and a woodgrain palette.
+
+Bento Rail remains the option if a full-width, art-less status bar is wanted;
+Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 
 ## What would change in code
 
@@ -216,26 +292,35 @@ document.
   rules, plus container-query collapses.
 - `widgets.js` → `asTrack`: keep `id` so the thumbnail URL can be derived;
   optionally add `thumb` to the track shape.
+- For the retro set: a music-specific shell opt-out, because
+  `.widget-container` carries `background-image` and `border-radius` with
+  `!important` and would overwrite the metal, plastic, woodgrain, and dither
+  surfaces.
 
 ## Verification of the mockups
 
-- Rendered heights in Chromium: 184 / 72 / 168 / 120 / 128 / 96px; content
+- Rendered heights in Chromium: 184 / 72 / 168 / 120 / 128 / 96px for the
+  full-width set, and 100 / 100 / 100 / 118px for the half-width set; content
   `scrollHeight` never exceeds the declared height at 620px or at 300px.
-- No element escapes its card at 620px or 300px (geometry check over every
+- No element escapes its card at either width (geometry check over every
   descendant), and the grid tiles do not overlap.
-- Queue rows visible: rail 4 (portal), grid 5, vinyl 3, tape 4, swiss 3.
-- Each screenshot contains its design's accent colour, and every pair of
-  screenshots differs (mean RGB delta 39.6–88.0), so the five are genuinely
-  different pixels, not recolours of one layout.
-- Long-title state: each layout clips or marquees within its own box; the
+- Queue rows visible: rail 4 (portal), grid 5, vinyl 3, tape 4, swiss 3;
+  walkman / neon / ps2 3 each, buick 3.
+- The PS2 cell bar and the neon LED meter track progress (8 of 16 cells and 6 of
+  12 segments lit at ~50%); the Buick needle transform matches −90° + 1.8° per
+  percent.
+- Each screenshot contains its design's accent colour, and every pair differs
+  (mean RGB delta 39.6–88.0), so the layouts are genuinely different pixels,
+  not recolours of one.
+- Long-title state: each layout clips or marquees within its own box (track
+  widths 370–445px inside a 300px card, page scroll width unchanged); the
   baseline replica demonstrates the raw-title overflow it has today.
 
 ## Open questions
 
-1. **Mood** — quiet HUD status bar (rail), expressive hi-fi (vinyl / cassette),
-   or print editorial (Swiss)?
-2. **Art** — real YouTube thumbnail, or keep a gradient glyph and skip the
-   fetch?
-3. **Queue** — floating portal panel, or inset overlay?
-4. **Shell** — stay inside the forced glass frame, or let the music widget opt
-   out of the `!important` frame rules for its own shell?
+1. **Which half-width skin** — Walkman, Clear Neon, PS2 Pixel, or Buick ’93?
+2. **Art** — real YouTube thumbnail, or keep a glyph and skip the fetch? The
+   half-width set currently fetches nothing.
+3. **Queue** — inset overlay (all half-width designs), or a portal panel?
+4. **Shell** — the retro set needs the music widget to opt out of the
+   `!important` frame rules; confirm that is acceptable.
