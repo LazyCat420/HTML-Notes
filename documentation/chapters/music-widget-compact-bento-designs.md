@@ -255,7 +255,7 @@ keys that face the viewer, and an embossed WALKMAN wordmark.
 
 - Source: `apps/doc-client/tools/walkman_keys/build_body.py`, built headlessly
   (`blender --background --python … -- static/models/player-body.glb`).
-- Asset: `static/models/player-body.glb`, 281 KB, 2 216 triangles, 7 materials,
+- Asset: `static/models/player-body.glb`, 275 KB, 2 216 triangles, 7 materials,
   one 512 × 256 walnut grain texture packed into the file.
 - Wood: generated grain (warped rings + streaks) written as a real PNG and
   packed — procedural Blender nodes do not survive glTF export.
@@ -283,6 +283,42 @@ woodgrain, or dither, they need the **shell opt-out** (open question 4):
 `index.css` forces `background-image` and `border-radius` on
 `.widget-container` with `!important`, which would flatten these textures.
 
+### A3 · Pixel forest — 150px, the device grown into a tree
+
+![The player inside a pixel forest](artifacts/music-widget-designs/13-pixel-forest.png)
+
+![Clicking a rune lights it](artifacts/music-widget-designs/14-pixel-forest-glow.png)
+
+![The same scene at 2×](artifacts/music-widget-designs/15-pixel-forest-wide.png)
+
+The same 300 × 150 device, but the Blender scene grows a tree around it and the
+whole frame is pushed through a pixel filter.
+
+- Source: `apps/doc-client/tools/walkman_keys/build_forest.py` → 
+  `static/models/forest.glb` — 240 KB, 3 484 triangles, 6 materials, no textures.
+- Scene: a mossy stone slab (the player), a five-key row with **glowing runes**
+  carved into the front face, a trunk that splits into curling branches, and
+  scattered icosphere leaves. The tree sways with the beat and the branches
+  wrap the device rather than sitting behind it.
+- Pixel filter: rendered at half resolution (150 × 75 backing for the 300 px
+  card, 310 × 155 for the 620 px view) and upsampled with
+  `image-rendering: pixelated`. The shader converts every pixel to luminance,
+  quantises it to a six-step green ramp with a 4 × 4 Bayer matrix, then pushes
+  green and blue per band on a slow sine — the palette breathes, the geometry
+  does not.
+- Interaction: the five keys are DOM buttons projected onto the 3D keys every
+  frame, so they track the sway. Pressing one fires the key's rune to full
+  emission (rest 0.10 → 1.7), holds the sway while it is lit so the glow is
+  legible, and shows a green halo ring around the button.
+- Screen: the same DOM pixel canvas, anchored to a projected screen rectangle,
+  drawn with the 5 × 7 bitmap font — artist and title on one line, 43-cell
+  progress bar, `SIDE A 1987` strip.
+- Live: **http://localhost:8910/static/pixel-forest.html**
+
+Cost: one 240 KB GLB and one WebGL context, the same budget as A2. This one is
+the "trippy" end of the set — it is the only direction that changes with the
+music rather than only displaying it.
+
 ## Side by side
 
 | Layout | Width | Height | vs 184px | Queue | Art | Identity | Palette |
@@ -295,6 +331,7 @@ woodgrain, or dither, they need the **shell opt-out** (open question 4):
 | Swiss Editorial | 620px | 96px | −88px | Inset overlay (3 rows) | none | kicker + title | ink / vermillion |
 | Walkman | 300px | 100px | −84px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber |
 | Walkman 3D | 300px | 150px | −34px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber + chrome |
+| Pixel Forest | 300px | 150px | −34px | Inset overlay (3 rows) | none | 1 pixel line | forest green / black |
 | Clear Neon | 300px | 100px | −84px | Inset overlay (3 rows) | 2 spools | 1 LCD line | cyan / magenta |
 | PS2 Pixel | 300px | 100px | −84px | Inset overlay (3 rows) | none | 1 pixel line | dither blue |
 | Buick ’93 | 300px | 118px | −70px | Inset overlay (3 rows) | none | 1 VFD line | wood / VFD green |
@@ -349,6 +386,12 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
   recessed 0.2–0.9 mm inside the face; the screen canvas lands inside the
   hotspot box with 1 027 amber pixels; a key click lights 2 475 warm pixels in
   a halo around that key only.
+- The pixel forest renders: 4 258 of 11 250 backing pixels lit, 32–37% of the
+  card green-dominant with no cyan cast after the palette was rebalanced; the
+  five runes sit on the key row and a press moves 44 pixels by up to 135 green
+  levels inside that row (measured on a frozen frame, so the delta is the glow
+  and not the sway).
+- The sway holds while a key is lit, so the glow is not smeared by motion.
 - Each screenshot contains its design's accent colour, and every pair differs
   (mean RGB delta 39.6–88.0), so the layouts are genuinely different pixels,
   not recolours of one.
@@ -364,5 +407,8 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 3. **Queue** — inset overlay (all half-width designs), or a portal panel?
 4. **Shell** — the retro set needs the music widget to opt out of the
    `!important` frame rules; confirm that is acceptable.
-5. **3D player** — worth one WebGL context and a 281 KB request per widget, or
+5. **3D player** — worth one WebGL context and a 275 KB request per widget, or
    keep the 3D only in the demo and ship the flat card?
+6. **Pixel forest** — ship as the "music-reactive" skin (needs an audio
+   analyser, not the synthesised beat), or keep it as a demo? It costs the same
+   as A2 but only reads as trippy when it actually follows the track.
