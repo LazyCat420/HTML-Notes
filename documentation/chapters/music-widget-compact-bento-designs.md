@@ -243,34 +243,39 @@ engraved labels.
 - Rocker keys labelled SEEK − / SEEK +, engraved 7px mono.
 - Woodgrain is a 19px repeating gradient — no image, no fetch.
 
-### A2 · Walkman with real 3D keys — 112px
+### A2 · Whole player in Blender — 150px
 
-![Walkman with Blender-built 3D keys](artifacts/music-widget-designs/11-walkman-3d.png)
+![The whole player as a 3D mesh](artifacts/music-widget-designs/11-walkman-3d.png)
 
-![The key bar close up](artifacts/music-widget-designs/12-walkman-3d-detail.png)
+![Close up: wood, chrome, engraved keys](artifacts/music-widget-designs/12-walkman-3d-detail.png)
 
-The same 300px card, but the key row is a real glTF asset instead of CSS
-rectangles: five keys with polished tops (roughness 0.09, metallic 1.0), satin
-sides (0.34), beveled edges, engraved dark icons, a chrome strip on the front
-edge, and a 2.8 mm travel animation per key.
+The card is now one glTF mesh instead of styled DOM: a 300 × 150 device with a
+walnut front panel, a chrome bezel frame, a recessed screen module, five silver
+keys that face the viewer, and an embossed WALKMAN wordmark.
 
-- Source: `apps/doc-client/tools/walkman_keys/build_keys.py`, built headlessly
-  (`blender --background --python … -- static/models/walkman-keys.glb`).
-- Asset: `apps/doc-client/static/models/walkman-keys.glb`, 55 KB, 1 268
-  triangles, 5 materials, 5 clips (`press_prev`, `press_play`, `press_stop`,
-  `press_next`, `press_queue`), 0.42 s each.
-- Renderer: `<model-viewer>` with `environment-image="neutral"`, 20° FOV,
-  camera at 0.18 m; the bar is 276 × 52 px inside the card.
-- Interaction: each key is a transparent hotspot over the 3D geometry; a click
-  plays that key's clip, fires the action, and synthesises a mechanical click
-  with WebAudio. Space / ← / → / Q map to the same keys.
-- Fallback: if the GLB fails to load, the card switches to the 2D keys.
+- Source: `apps/doc-client/tools/walkman_keys/build_body.py`, built headlessly
+  (`blender --background --python … -- static/models/player-body.glb`).
+- Asset: `static/models/player-body.glb`, 281 KB, 2 216 triangles, 7 materials,
+  one 512 × 256 walnut grain texture packed into the file.
+- Wood: generated grain (warped rings + streaks) written as a real PNG and
+  packed — procedural Blender nodes do not survive glTF export.
+- Keys: polished front faces (roughness 0.09) against satin sides (0.34), with
+  the icons cut in as **real grooves** (boolean, 0.9 mm deep) and filled with a
+  dark inlay recessed 0.2 mm, so the indent reads as a shadow line rather than a
+  painted glyph.
+- Screen: the glass is 3D; the text is a DOM canvas anchored to the screen
+  centre by a hotspot, drawn from a 5 × 7 bitmap font at 1 px and drawn only in
+  two colours — amber on near-black, 43-cell progress bar, live time, PLAY/PAUSE.
+- Feedback: clicking a key lights an amber glow around and under it for 0.7 s
+  (CSS halo + inset bottom glow on the hotspot), plus a synthesised click. No
+  key travel animation.
+- Fallback: if the GLB fails to load the card keeps the pixel screen on its own.
 - Live: **http://localhost:8910/static/walkman-3d.html**
 
-Why 3D and not an image: the chrome reflects a live environment, so it reads
-correctly at any size and under parallax orbit, and the keys can physically
-travel. Cost: one extra 55 KB request and a WebGL context per widget, which is
-the main reason to keep it to the one card that benefits.
+Why a mesh and not CSS: the chrome reflects a live environment, the wood grain
+is a real texture, the keys are actual solids with real grooves, and the whole
+device holds up at 2× in the close-up. Cost: one 281 KB request and a WebGL
+context per widget — the reason to keep it to the one card that benefits.
 
 All four keep the queue as an inset overlay (three rows fit) and the times
 inside the readout. Because they replace the card surface with metal, plastic,
@@ -289,7 +294,7 @@ woodgrain, or dither, they need the **shell opt-out** (open question 4):
 | Cassette Deck | 620px | 128px | −56px | Inset LCD overlay | 40px reel | 1 LCD line | olive / amber |
 | Swiss Editorial | 620px | 96px | −88px | Inset overlay (3 rows) | none | kicker + title | ink / vermillion |
 | Walkman | 300px | 100px | −84px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber |
-| Walkman 3D | 300px | 112px | −72px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber + chrome |
+| Walkman 3D | 300px | 150px | −34px | Inset overlay (3 rows) | spool glyph | 1 LCD line | aluminium / amber + chrome |
 | Clear Neon | 300px | 100px | −84px | Inset overlay (3 rows) | 2 spools | 1 LCD line | cyan / magenta |
 | PS2 Pixel | 300px | 100px | −84px | Inset overlay (3 rows) | none | 1 pixel line | dither blue |
 | Buick ’93 | 300px | 118px | −70px | Inset overlay (3 rows) | none | 1 VFD line | wood / VFD green |
@@ -339,9 +344,11 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 - The PS2 cell bar and the neon LED meter track progress (8 of 16 cells and 6 of
   12 segments lit at ~50%); the Buick needle transform matches −90° + 1.8° per
   percent.
-- The 3D key bar loads from one GLB: 1 268 triangles, 5 materials, 5 press
-  clips at 0.42 s each, 2.8 mm travel; a press changes 644 rendered pixels and
-  returns to the rest pose; hotspots sit 45 px apart over the five keys.
+- The 3D player loads from one GLB: 2 216 triangles, 7 materials, wood texture
+  packed (mean RGB 64/34/16), icons centred on every key (x −0.108…0.108) and
+  recessed 0.2–0.9 mm inside the face; the screen canvas lands inside the
+  hotspot box with 1 027 amber pixels; a key click lights 2 475 warm pixels in
+  a halo around that key only.
 - Each screenshot contains its design's accent colour, and every pair differs
   (mean RGB delta 39.6–88.0), so the layouts are genuinely different pixels,
   not recolours of one.
@@ -357,5 +364,5 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
 3. **Queue** — inset overlay (all half-width designs), or a portal panel?
 4. **Shell** — the retro set needs the music widget to opt out of the
    `!important` frame rules; confirm that is acceptable.
-5. **3D keys** — worth one WebGL context and a 55 KB request per widget, or
-   keep the 3D only in the demo and ship the CSS keys?
+5. **3D player** — worth one WebGL context and a 281 KB request per widget, or
+   keep the 3D only in the demo and ship the flat card?
