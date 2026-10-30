@@ -405,7 +405,45 @@ Measured on 1 236 × 620 captures (2× DPR, same camera, same exposure):
 Cost: still three 1 024 × 512 PNGs. Dropping them to 512 × 256 brings v2 to
 roughly 800 KB — the version that should actually ship into the widget.
 
-Live: **http://localhost:8910/static/walkman-3d.html** (the player),
+![The embeddable card at 300 × 150](artifacts/music-widget-designs/22-walkman-embed-300.png)
+
+![Same page at 620 × 340](artifacts/music-widget-designs/23-walkman-embed-620.png)
+
+**It is already embeddable.** `static/walkman-player.html` is the v2 card on its
+own: it fills whatever container it is given (aspect 2:1, minimum 150px tall),
+draws the LCD overlay scaled from the projected key spacing, and exposes both a
+JS API and a `postMessage` channel, so the canvas can drive it without touching
+the widget code yet.
+
+```html
+<iframe src="http://localhost:8910/static/walkman-player.html?title=Buckethead%20%E2%80%94%20Soothsayer&duration=242&position=12"
+        style="width:300px;height:150px;border:0;border-radius:16px"
+        sandbox="allow-scripts" loading="lazy"></iframe>
+```
+
+```js
+// from the canvas, once the iframe is loaded
+frame.contentWindow.postMessage({ type: 'walkman', setTrack: {
+  title: 'Aphex Twin — Xtal', duration: 293, position: 42, playing: true,
+  queue: [{ title: 'Cola', artist: 'Autechre' }] } }, '*');
+
+// the card posts back on every key press
+addEventListener('message', e => {
+  if (e.data?.type === 'walkman') console.log(e.data.action, e.data.state);
+});
+```
+
+Keys map to `prev · play · stop · next · queue`; the screen click opens the
+queue overlay; `window.walkmanPlayer.state` is readable and `press(i)` is
+callable. Query params: `title`, `duration`, `position`, `paused=1`, `queue=1`.
+
+One server change was needed: a sandboxed iframe has an opaque origin, so the
+hub now sends `Access-Control-Allow-Origin: *` on every response
+(`doc-client/app/main.py`, `_allow_embed` middleware) — otherwise the GLB fetch
+is blocked and the card renders empty.
+
+Live: **http://localhost:8910/static/walkman-player.html** (the embeddable card),
+**http://localhost:8910/static/walkman-3d.html** (the player),
 **http://localhost:8910/static/walkman-3d-variants.html** (eight variants plus
 v2 in the grid and as the hero).
 
