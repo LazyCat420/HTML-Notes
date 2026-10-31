@@ -477,6 +477,35 @@ playing and clears on pause or stop, `stop` clears everything, `prev`/`next`
 stay selected as the last-used control, `queue` is lit while the queue is open.
 `aria-pressed` mirrors the state.
 
+**The light is under the key — in depth, not below it on screen.** Two earlier
+attempts read "under the button" as a place on the panel and painted a pool of
+light *below* the key row, then, when that was cut off, as a band starting at
+the key's bottom edge. Both are wrong: they put light *beside* the key. What an
+analogue device does is light the key **from behind**, so the key body blocks
+the light and you only see it where the key does not cover it — a halo hugging
+the key's silhouette on all four sides, with the key face itself still dark.
+
+That is exactly what `box-shadow` does: it paints outside the border box and
+never under the element's own area. So each key now has two zero-size anchor
+hotspots on its front-face corners in 3D (`x ∓ 0.024`, `y ± h/2`, `z 0.021`,
+play `0.023`); model-viewer projects them, which gives the key's **projected**
+rectangle at any orbit or zoom — the rectangle the extruded key actually
+occupies, not the flat CSS hotspot box. A `.lamp` div is laid on that rectangle
+and lit with `box-shadow: 0 0 0 1px … , 0 0 7px 2px … , 0 0 20px 7px …`: a 1 px
+seam line at full amber, then two falloffs onto the wood. The key face is
+inside the box, so it is never painted; the light only shows around it.
+
+Measured on the 300 px card: inside the lamp rectangle **4 of 3 168 px** change
+(antialiasing at the very edge, max Δ27) while all four sides change along
+their full width — top 1 380/1 380, bottom 1 380/1 380, left 840/840,
+right 840/840, max Δ≈225. The demo page reproduces it: 4 px inside,
+1 380/1 380 top and bottom, 750/750 left and right.
+
+**Selection.** A key stays lit until another is pressed: `play` is lit while
+playing and clears on pause or stop, `stop` clears everything, `prev`/`next`
+stay selected as the last-used control, `queue` is lit while the queue is open.
+`aria-pressed` mirrors the state.
+
 **The light sits under the key, not on it.** An analogue membrane key is lit
 from behind: the light pools on the panel below the key and escapes at the
 seam. Sizing the glow from the button's own box cannot do that, because the
@@ -519,10 +548,9 @@ Measured:
 | Glyphs touching the glass border | 0 columns, 0 rows of border ink |
 | LCD opacity | `1` (was `0.25`) |
 | Camera after an 80 px drag | theta 0, phi 1.5708, radius 0.55 — unchanged |
-| Glow anchor vs drawn key bottom | 373.3 vs 372.8–373.0 px (half a pixel) |
-| Glow above the anchor (key face and panel) | **0** changed pixels, row by row |
-| Glow below the anchor | 4 557 px changed, max Δ238, red-minus-blue 0 → 64 |
-| Demo page, same check | anchor 248.6, first changed row 248, nothing above |
+| Light inside the key rectangle (the key face) | 4 of 3 168 px, max Δ27 — edge antialiasing only |
+| Light on the key's four edges | top 1 380/1 380, bottom 1 380/1 380, left 840/840, right 840/840, max Δ≈225 |
+| Demo page, same check | 4 px inside, 1 380/1 380 top and bottom, 750/750 left and right |
 | Sandboxed iframe | renders, 2 997 amber px, LCD at full brightness |
 | Asset | `player-body-v2-lite.glb` — same geometry and materials at 0.224 m glass, maps at 512 × 256, **892 KB** (was 2.95 MB) |
 
