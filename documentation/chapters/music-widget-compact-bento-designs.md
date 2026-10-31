@@ -479,12 +479,25 @@ stay selected as the last-used control, `queue` is lit while the queue is open.
 
 **The light sits under the key, not on it.** An analogue membrane key is lit
 from behind: the light pools on the panel below the key and escapes at the
-seam. So the glow is a 22 px band anchored at `top: 100%` of the button, a
-radial that starts at full amber `rgba(255,214,132,1)` on the key's bottom edge
-and fades out 80% of the way down, blurred 6 px and then **clipped** with
-`clip-path: inset(0 0 -16px 0)` so no blur can bleed upward onto the key face.
-It fades in over 280 ms; nothing pulses. Measured: 0 changed pixels on the key
-face, above it, or on either side — all of the light is below.
+seam. The glow is a band anchored at `top: 100%` of the button, a radial that
+starts at full amber `rgba(255,214,132,1)` on the key's bottom edge and fades
+out 80% of the way down, blurred and then **clipped** with
+`clip-path: inset(0 0 -120% 0)` so no blur can bleed upward onto the key face.
+It fades in over 280 ms; nothing pulses.
+
+The band has to start exactly at the key's bottom edge, so the hotspot is no
+longer a fixed 30 × 16 CSS box: model-viewer keeps hotspot CSS sizes fixed
+while the 3D key grows with the model, which at a large window left the light
+starting *inside* the key face. `syncScreen()` now sizes each hotspot from the
+projected scale — the keys are 0.048 × 0.026 m (play 0.030 tall) — and passes
+the height to the glow as `--key-h`, so the band, its blur and its inset all
+scale with the device. At the 300 px card that is 38 × 21 px per key, exactly
+the drawn key.
+
+Measured at 300 × 150: 76 of 3 648 px changed on the key face (max Δ37, and
+red-minus-blue unchanged at 12 → 13 — that is the seam, not light on the
+face), 0 above, and 6 511 of 7 072 px changed under it (max Δ138,
+red-minus-blue 0 → 34).
 
 ![The card at 300 × 150, play lit from under the key](artifacts/music-widget-designs/24-walkman-player-300.png)
 
@@ -503,13 +516,22 @@ Measured:
 | Glyphs touching the glass border | 0 columns, 0 rows of border ink |
 | LCD opacity | `1` (was `0.25`) |
 | Camera after an 80 px drag | theta 0, phi 1.5708, radius 0.55 — unchanged |
-| Glow after 2 s | 4 179 of 5 280 px changed in the band under the key, max Δ116, red-minus-blue 8 → 41, 1 959 px brighter |
-| Glow on the key face / above / beside | 0 changed pixels in all three regions |
+| Glow after 2 s | 6 511 of 7 072 px changed in the band under the key, max Δ138, red-minus-blue 0 → 34 |
+| Glow on the key face | 76 px of 3 648 (the antialiased seam), red-minus-blue 12 → 13 |
+| Glow above the key | 0 changed pixels |
 | Sandboxed iframe | renders, 2 997 amber px, LCD at full brightness |
-| Asset | `player-body-v2.glb` rebuilt at 0.224 m glass, 2.95 MB, same node names |
+| Asset | `player-body-v2-lite.glb` — same geometry and materials at 0.224 m glass, maps at 512 × 256, **892 KB** (was 2.95 MB) |
 
-The same layout and glow code now runs in `walkman-3d.html`, so the demo page
-and the embeddable card cannot drift apart.
+The same layout, hotspot sizing and glow code runs in `walkman-3d.html`, so the
+demo page and the embeddable card cannot drift apart.
+
+**Opening the card directly shows it at widget size.** `walkman-player.html`
+fills its container when embedded, but when it is the top-level page it adds
+`html.standalone` and pins the card to **300 × 150** in the middle of the
+window, with a caption saying so. Before that, opening it in a full window blew
+the device up to 1280 × 640 — every pixel re-rendered at 4× the size, which is
+where the lag came from, and the fixed-size hotspots no longer lined up with
+the giant keys.
 
 ### A3 · Pixel forest — 150px, the device grown into a tree
 
