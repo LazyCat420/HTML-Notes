@@ -2259,6 +2259,10 @@ document.addEventListener("DOMContentLoaded", () => {
         // double-height card. Strip both; the binding re-applies the right one.
         temp.querySelectorAll('[x-data*="musicPlayerWidget"]').forEach(el => {
             el.classList.remove('h-[280px]', 'h-[420px]');
+            // The card's height is now an Alpine :style binding; strip the
+            // resolved value so a save while the drawer is open does not bake
+            // the tall card into the canvas.
+            el.style.removeProperty('height');
         });
 
         // crt-on/crt-off are transient power-on/off animation classes. If a
@@ -3565,140 +3569,43 @@ document.addEventListener("DOMContentLoaded", () => {
                     newWidget.className = widget.className.replace(/\bh-\[\d+px\]\b/g, '').replace(/\s+/g, ' ').trim();
                     if (!newWidget.className.includes('music-widget-root')) newWidget.className += ' music-widget-root';
                     newWidget.className = newWidget.className.replace(/\blg:col-span-3\b/g, '').replace(/\s+/g, ' ').trim();
-                    newWidget.setAttribute(':class', "showQueue ? 'h-[384px]' : 'h-[184px]'");
+                    newWidget.setAttribute(':style', "'height: ' + (walkmanOpen ? 432 : 284) + 'px'");
                     // kind unknown for a rehydrated node — '' means genre-first
                     // with artist failover. base omitted → hostname:8002 default.
                     newWidget.setAttribute('x-data', `musicPlayerWidget({ genre: ${JSON.stringify(genre)}, kind: "", autoplay: true })`);
                     newWidget.innerHTML = `
-                        <!-- Background Blur/Glow effect -->
-                        <div class="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none" style="background-image: url('https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=600&auto=format&fit=crop')"></div>
-                        <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/40 to-transparent pointer-events-none"></div>
-                        
-                        <!-- Top Bar: Genre / Close -->
-                        <div class="relative z-10 flex justify-between items-start">
-                            <div class="bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm">
+                        <!-- Top bar: only the controls the 3D deck has no key for -->
+                        <div class="relative z-10 flex items-center justify-between gap-1 shrink-0">
+                            <div class="bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm min-w-0">
                                 <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
-                                <span class="text-xs font-semibold tracking-wider text-purple-200 uppercase" x-text="genreFilter || 'Radio'"></span>
+                                <span class="text-[10px] font-semibold tracking-wider text-purple-200 uppercase truncate" x-text="genreFilter || 'Radio'"></span>
                             </div>
-                            <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-1 backdrop-blur-sm transition-all shadow-sm z-20">
-                                <span class="material-symbols-outlined text-[1rem]">close</span>
-                            </button>
-                        </div>
-                        
-                        <!-- Track Info -->
-                        <div class="relative z-10 flex items-center gap-3 mt-1.5">
-                            <div class="w-10 h-10 shrink-0 rounded-xl bg-gradient-to-tr from-fuchsia-500 to-orange-500 shadow-lg flex items-center justify-center relative overflow-hidden ring-2 ring-white/10">
-                                <div class="absolute inset-0 bg-black/20 transition-opacity" :class="{'opacity-0': !isPlaying, 'animate-pulse': isPlaying}"></div>
-                                <span class="material-symbols-outlined text-lg text-white relative z-10">album</span>
-                            </div>
-                            <div class="min-w-0 max-w-[55%] flex flex-col justify-center" :class="currentTrack ? 'cursor-pointer group/open' : ''" @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here">
-                                <h4 class="music-title text-white font-bold leading-tight drop-shadow-md group-hover/open:underline decoration-purple-300/60 underline-offset-2" x-effect="if (currentTrack) { $nextTick(() => { const s = $el.querySelector('span'); titleOverflow = !!(s && s.scrollWidth > $el.clientWidth) }) }" :class="titleOverflow ? 'marquee' : ''"><span x-text="currentTrack ? currentTrack.title : 'Searching signals...'"></span></h4>
-                                <p class="music-artist text-purple-200 truncate mt-0.5 drop-shadow-sm font-medium" x-text="currentTrack ? currentTrack.artist : (streamStatus || 'Please wait')"></p>
-                            </div>
-                            <!-- Thumbs feedback: rates the SONG: music-player favorites and
-                                 the video on wallgarden in one click. syncThumbState re-runs on
-                                 every track change via x-effect. -->
-                            <div class="relative z-10 flex items-center gap-0.5 shrink-0" x-effect="syncThumbState(currentTrack)">
-                                <button @click="sendThumb('up')" title="Like this song" class="p-1 rounded-lg transition-colors" :class="thumbState === 'up' ? 'text-emerald-400 bg-white/10' : 'text-white/40 hover:text-white'">
-                                    <span class="material-symbols-outlined text-base">thumb_up</span>
+                            <div class="flex items-center gap-0.5 shrink-0" x-effect="syncThumbState(currentTrack)">
+                                <button @click="sendThumb('up')" title="Like this song" class="p-0.5 rounded-lg transition-colors" :class="thumbState === 'up' ? 'text-emerald-400 bg-white/10' : 'text-white/40 hover:text-white'">
+                                    <span class="material-symbols-outlined text-[1rem]">thumb_up</span>
                                 </button>
-                                <button @click="sendThumb('down')" title="Dislike this song" class="p-1 rounded-lg transition-colors" :class="thumbState === 'down' ? 'text-red-400 bg-white/10' : 'text-white/40 hover:text-white'">
-                                    <span class="material-symbols-outlined text-base">thumb_down</span>
+                                <button @click="sendThumb('down')" title="Dislike this song" class="p-0.5 rounded-lg transition-colors" :class="thumbState === 'down' ? 'text-red-400 bg-white/10' : 'text-white/40 hover:text-white'">
+                                    <span class="material-symbols-outlined text-[1rem]">thumb_down</span>
                                 </button>
-                                <span x-show="thumbStatus" x-text="thumbStatus" class="text-[10px] text-purple-300/80 whitespace-nowrap max-w-[80px] truncate" style="display: none;"></span>
+                                <button @click="toggleWalkmanHistory()" title="Queue / history list in the drawer" class="p-0.5 rounded-lg transition-colors" :class="walkmanLibraryMode === 'history' ? 'text-purple-300 bg-white/10' : 'text-white/40 hover:text-white'">
+                                    <span class="material-symbols-outlined text-[1rem]">history</span>
+                                </button>
+                                <button @click="toggleMute()" title="Mute" class="p-0.5 rounded-lg text-white/40 hover:text-white transition-colors">
+                                    <span class="material-symbols-outlined text-[1rem]" x-text="isMuted ? 'volume_off' : 'volume_up'">volume_up</span>
+                                </button>
+                                <button @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here" class="p-0.5 rounded-lg text-white/40 hover:text-white transition-colors">
+                                    <span class="material-symbols-outlined text-[1rem]">open_in_new</span>
+                                </button>
+                                <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-0.5 backdrop-blur-sm transition-all shadow-sm z-20">
+                                    <span class="material-symbols-outlined text-[1rem]">close</span>
+                                </button>
                             </div>
                         </div>
 
-                        <!-- Queue / History Panel (toggled by the queue_music button below) -->
-                        <div x-show="showQueue" x-transition.opacity class="relative z-10 flex-grow min-h-0 overflow-y-auto rounded-xl bg-black/30 backdrop-blur-md border border-white/10 mt-1.5 flex flex-col" style="display: none;">
-                            <!-- Tabs: Queue vs History -->
-                            <div class="flex items-center border-b border-white/10 bg-black/20 text-xs px-2 py-1 gap-1 shrink-0">
-                                <button type="button" @click="activeTab = 'queue'" class="px-2.5 py-0.5 rounded-md font-medium transition-colors" :class="activeTab === 'queue' ? 'bg-purple-600/40 text-purple-200 border border-purple-400/30' : 'text-white/60 hover:text-white'">
-                                    Queue (<span x-text="queue.length"></span>)
-                                </button>
-                                <button type="button" @click="activeTab = 'history'; fetchHistory()" class="px-2.5 py-0.5 rounded-md font-medium transition-colors" :class="activeTab === 'history' ? 'bg-purple-600/40 text-purple-200 border border-purple-400/30' : 'text-white/60 hover:text-white'">
-                                    History
-                                </button>
-                            </div>
-
-                            <!-- Queue Tab Content -->
-                            <div x-show="activeTab === 'queue'" class="overflow-y-auto flex-grow divide-y divide-white/5">
-                                <template x-for="item in trackList" :key="item.t.id + '-' + item.i">
-                                    <div class="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer group/row transition-colors" :class="item.isCurrent ? 'bg-purple-500/20 text-purple-200 border-l-2 border-purple-400 pl-2' : 'hover:bg-white/5 text-white/90'" @click="playAt(item.i)">
-                                        <span class="material-symbols-outlined text-[0.9rem] text-purple-300 shrink-0" :class="isPlaying && item.isCurrent ? 'animate-pulse' : ''" x-text="item.isCurrent ? 'equalizer' : 'music_note'"></span>
-                                        <div class="min-w-0 flex-grow">
-                                            <div class="truncate" :class="item.isCurrent ? 'text-purple-200 font-semibold' : 'text-white/90'" x-text="item.t.title"></div>
-                                            <div class="truncate text-purple-300/70 text-[10px]" x-text="item.t.artist"></div>
-                                        </div>
-                                        <button x-show="!item.isCurrent" @click.stop="removeAt(item.i)" title="Remove from queue" class="opacity-0 group-hover/row:opacity-100 text-white/40 hover:text-red-400 transition-opacity shrink-0">
-                                            <span class="material-symbols-outlined text-[0.9rem]">close</span>
-                                        </button>
-                                    </div>
-                                </template>
-                                <div x-show="!trackList.length" class="px-3 py-2 text-xs text-white/40">Queue empty — more on the way…</div>
-                            </div>
-
-                            <!-- History Tab Content -->
-                            <div x-show="activeTab === 'history'" class="overflow-y-auto flex-grow divide-y divide-white/5" style="display: none;">
-                                <template x-for="h in recentHistory" :key="h.id || h.playedAt || Math.random()">
-                                    <div class="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:bg-white/5 text-white/90 group/row transition-colors" @click="playHistoryTrack(h)">
-                                        <span class="material-symbols-outlined text-[0.9rem] text-purple-300 shrink-0">history</span>
-                                        <div class="min-w-0 flex-grow">
-                                            <div class="truncate text-white/90 font-medium" x-text="h.title"></div>
-                                            <div class="truncate text-purple-300/70 text-[10px]" x-text="h.artist"></div>
-                                        </div>
-                                        <span class="material-symbols-outlined text-[0.9rem] text-white/40 group-hover/row:text-purple-300 shrink-0">play_arrow</span>
-                                    </div>
-                                </template>
-                                <div x-show="!recentHistory || !recentHistory.length" class="px-3 py-2 text-xs text-white/40">No listening history yet</div>
-                            </div>
-                        </div>
-
-                        <!-- Progress Bar & Controls: compact single rows (mirrors factory.py) -->
-                        <div class="relative z-10 w-full mt-0.5">
-                            <div class="w-full relative group/progress cursor-pointer py-0.5" @click="handleSeek($event)">
-                                <div class="h-1 w-full bg-white/10 rounded-full overflow-hidden backdrop-blur-sm shadow-inner relative">
-                                    <div class="h-full bg-gradient-to-r from-purple-400 to-fuchsia-400 rounded-full shadow-[0_0_10px_rgba(216,180,254,0.5)] transition-all duration-100" :style="'width: ' + progress + '%'"></div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="relative z-10 flex items-center gap-0.5 px-0.5 mt-0.5">
-                            <span class="text-[9px] text-purple-300 font-mono shrink-0" x-text="formatTime(currentTime)">0:00</span>
-                            <button @click="toggleShuffle()" class="transition-colors p-1 rounded-lg" :class="{'text-purple-300 font-bold bg-white/5': isShuffle, 'text-white/50 hover:text-white': !isShuffle}" title="Shuffle">
-                                <span class="material-symbols-outlined text-base">shuffle</span>
-                            </button>
-
-                            <!-- Volume Slider: collapsed to the mute icon; expands on hover -->
-                            <div class="flex items-center gap-1 group/volume">
-                                <button @click="toggleMute()" class="text-white/50 hover:text-white transition-colors p-1" title="Mute">
-                                    <span class="material-symbols-outlined text-base" x-text="isMuted ? 'volume_off' : (volume > 0.5 ? 'volume_up' : 'volume_down')">volume_up</span>
-                                </button>
-                                <input type="range" min="0" max="1" step="0.05" x-model="volume" @input="setVolume(volume)" class="w-0 group-hover/volume:w-14 h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-purple-400 transition-all duration-200">
-                            </div>
-
-                            <div class="flex items-center gap-1 mx-auto">
-                                <button @click="prevTrack()" class="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
-                                    <span class="material-symbols-outlined text-base">skip_previous</span>
-                                </button>
-
-                                <button @click="playPause()" class="w-8 h-8 rounded-2xl bg-purple-300 hover:bg-purple-200 text-slate-900 flex items-center justify-center shadow-lg transition-all active:scale-95" :disabled="!currentTrack">
-                                    <span class="material-symbols-outlined text-base" x-text="isPlaying ? 'pause' : 'play_arrow'" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
-                                </button>
-
-                                <button @click="nextTrack()" class="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center backdrop-blur-md transition-all active:scale-90 shadow-sm" :disabled="!currentTrack">
-                                    <span class="material-symbols-outlined text-base">skip_next</span>
-                                </button>
-                            </div>
-
-                            <button @click="toggleRepeat()" class="transition-colors p-1 rounded-lg" :class="{'text-purple-300 font-bold bg-white/5': isRepeat, 'text-white/50 hover:text-white': !isRepeat}" title="Repeat">
-                                <span class="material-symbols-outlined text-base">repeat</span>
-                            </button>
-
-                            <button @click="showQueue = !showQueue" class="transition-colors p-1 rounded-lg" :class="{'text-purple-300 font-bold bg-white/5': showQueue, 'text-white/50 hover:text-white': !showQueue}" title="Queue">
-                                <span class="material-symbols-outlined text-base">queue_music</span>
-                            </button>
-                            <span class="text-[9px] text-purple-300 font-mono shrink-0" x-text="formatTime(duration)">0:00</span>
+                        <!-- The walkman deck: 3D body, LCD, five keys and its library drawer.
+                             The drawer grows the iframe, which grows this card. -->
+                        <div class="relative z-10 flex-1 min-h-0 rounded-xl overflow-hidden bg-black/20">
+                            <iframe x-ref="walkman" :src="walkmanSrc" @load="onWalkmanLoad()" class="w-full h-full block border-0" title="Walkman music player" allow="autoplay"></iframe>
                         </div>
 
                         <div x-show="error" x-transition class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-md whitespace-nowrap shadow-lg z-20" x-text="error" style="display: none;"></div>

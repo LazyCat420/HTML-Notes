@@ -547,8 +547,13 @@ and clickable.
   split is 60 / 90, which keeps every key and the `×` on screen.
 - `window.walkmanPlayer` gained `setLibrary(list)`, `select(i)`,
   `openQueue()`, `closeQueue()` and `toggleShuffle()`; `postMessage` accepts
-  `{type:'walkman', setLibrary:[…]}` / `select` and emits
+  `{type:'walkman', setLibrary:[…]}`, `select`, `press`, `openQueue` and emits
   `{action:'toggle', queueOpen}` plus `select` / `shuffle`.
+- `?driven=1` hands the clock to the host: the card stops advancing
+  `position`, so it never ends a track on its own while an embedded player owns
+  the audio. `setTrack` only moves the light when `playing` actually changed,
+  so a host that re-pushes state four times a second cannot cancel a key's
+  flash.
 
 Verified in the browser: closed card 150 px, drawer 0 px, card top unchanged at
 275 px; opening gives card 297 px with the stage still 150 px and the drawer
@@ -632,6 +637,81 @@ whole frame is pushed through a pixel filter.
 Cost: one 240 KB GLB and one WebGL context, the same budget as A2. This one is
 the "trippy" end of the set — it is the only direction that changes with the
 music rather than only displaying it.
+
+## Wired into the canvas widget (2026-10-31)
+
+`render_mini_music_player` (`app/widgets/factory.py`) no longer draws its own
+bento shell. It **embeds the 3D walkman card** and keeps only the controls the
+deck has no key for: genre chip, thumbs, history, mute, open-in-player, close.
+
+![The canvas widget with the walkman card closed](artifacts/music-widget-designs/30-hn-widget-closed.png)
+
+![The same widget with the library drawer open under the keys](artifacts/music-widget-designs/31-hn-widget-drawer.png)
+
+**Why an iframe, not inline markup.** The card is one document with its own
+`model-viewer`, LCD canvas and projection code. Re-implementing it inside the
+Alpine template would create a second copy that drifts. The widget instead
+points an iframe at it and speaks a small protocol. `WALKMAN_CARD_URL` sets the
+URL; blank means the browser derives
+`<protocol>//<its own hostname>:8910/static/walkman-player.html` — doc-client
+serves the hub's static files on 8910, so the card is same-host and reachable
+from the LAN too.
+
+**The card is a view; the widget owns playback.** `?driven=1` stops the card's
+internal clock, so it never advances or ends a track on its own — the app's
+`<audio>` element is the only source of truth. `?paused=1` starts it dark until
+the first state arrives.
+
+Widget → card (`postMessage`, every 250 ms when anything changed):
+
+| message | meaning |
+|---|---|
+| `setTrack {title, duration, position, playing, shuffle}` | LCD text, time row, the light on `play` |
+| `setLibrary [{artist,title,duration}]` | what the drawer lists and searches |
+| `openQueue: true/false` | open or close the drawer from the top bar |
+
+Card → widget:
+
+| action | widget does |
+|---|---|
+| `prev` / `next` | `prevTrack()` / `nextTrack()` (shuffle-aware) |
+| `play` | `playPause()` |
+| `stop` | pause, seek 0, clear the light |
+| `select {index}` | `playAt(index)` — or `playHistoryTrack()` when the drawer lists history |
+| `shuffle` | `toggleShuffle()` (reorders the unplayed tail) |
+| `toggle {queueOpen}` | grows/shrinks the widget: **194 → 342 px** before the drawer, now **284 → 432 px** with the taller deck |
+| `ended` | `nextTrack({auto:true})` |
+
+**One identity on the LCD.** YouTube tracks carry the *channel* in `artist`
+("Music Video Vault", `morrisoncoursevids`, "… - Topic") and often repeat the
+artist inside the title, which is exactly the redundancy the first audit found.
+`cleanTrack()` strips `- Topic`, bracketed noise (`(Official Video)`, `[HD]`,
+`(Remastered 1959)`, `[Restored]`), drops the artist when it is a channel
+(handle-shaped, or ending in vault/topic/records/official/channel) and prints
+the artist only when the title does not already start with it. Measured on a
+live jazz mix: `morrisoncoursevids | Duke Ellington, "Take the A Train"` →
+`Duke Ellington, "Take the A Train"`; `Music Video Vault | Chet Baker - Time
+After Time [ Restored]` → `Chet Baker - Time After Time`; `Wayne Shorter |
+Footprints (Remastered)` → `Wayne Shorter — Footprints`.
+
+**History reuses the drawer.** The history button swaps the drawer's library to
+the recent-history list (`setLibrary` + `openQueue`) instead of building a
+second panel; a row click then calls `playHistoryTrack()`.
+
+**Sizes.** The widget is 632 px wide in a 3-column bento, so the card is 238 px
+tall (device ≈ 372 px wide) rather than the 150 px standalone size — at 150 the
+deck sat small in a wide frame. Closed: **284 px**; drawer open: **432 px**
+(238 px deck + 148 px drawer). The LCD hotspot scales with the deck: 280 CSS px
+wide, canvas 1 120 × 252 backing, ink bbox 10..1 109 — right margin 10 px, no
+clipping, no marquee.
+
+**Verified live** (app on 8035, real mouse through the iframe): queue key →
+drawer opens, widget 284 → 432, 100 rows; clicking row 3 plays that track
+(`currentIndex` 2) and the LCD switches to `Chet Baker - Time After Time`;
+`×` closes back to 284; `stop` pauses and clears the light; `play` resumes;
+`SHUF` flips the app's shuffle and reorders the queue; history shows 4 rows and
+selecting one plays it. Unit tests: `tests/test_widgets.py` asserts the iframe,
+`walkmanSrc`, `onWalkmanLoad` and `cardUrl` in the template — 71 passed.
 
 ## Side by side
 

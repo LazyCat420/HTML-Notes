@@ -281,18 +281,22 @@ def test_pipes_without_a_separator_are_not_a_table():
     assert "<table" not in html
 
 
-def test_music_player_carries_kind_base_and_queue_ui():
+def test_music_player_carries_kind_base_and_embeds_the_walkman_card():
     # The widget is a thin client over the music-player service: routing's
-    # genre/artist guess (kind) and the service base URL must reach the Alpine
-    # component, and the queue UI must be in the server template.
+    # genre/artist guess (kind), the service base URL and the 3D card's URL must
+    # reach the Alpine component. The body, LCD, keys and the queue drawer live
+    # in the embedded walkman card, so the template's job is the iframe + bridge.
     out = generate_widget_html(
         "mini_music_player", "w-music",
         {"genre": "jungle", "kind": "genre", "autoplay": True})
     assert "musicPlayerWidget({ genre: &quot;jungle&quot;, kind: &quot;genre&quot;," in out
     assert "base: &quot;http" in out, "service base URL must be baked in"
-    assert "queue_music" in out, "queue toggle button missing"
-    assert 'x-for="item in trackList"' in out, "queue panel rows missing"
-    assert "streamStatus" in out, "SSE progress line missing"
+    assert "cardUrl:" in out, "walkman card URL must be baked in"
+    assert 'x-ref="walkman"' in out, "the walkman card iframe is missing"
+    assert ':src="walkmanSrc"' in out, "the iframe must be driven by walkmanSrc"
+    assert '@load="onWalkmanLoad()"' in out, "the iframe must hand its state over on load"
+    assert "walkmanOpen ? " in out, "the card must grow when the drawer opens"
+    assert 'x-show="error"' in out, "error toast missing"
     assert "{{" not in out, "unsubstituted f-string braces leaked into HTML"
 
 

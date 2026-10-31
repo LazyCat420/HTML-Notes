@@ -1081,6 +1081,25 @@ document.addEventListener('alpine:init', () => {
         // It keeps playing until THIS widget's first track is audible, so a
         // new music ask changes the song instead of cutting to silence.
         carry: null,
+        // The 3D walkman card (doc-client/static/walkman-player.html) embedded
+        // in an iframe. It owns the body, LCD, keys and the library drawer;
+        // this component owns the audio and drives the card over postMessage.
+        walkmanBase: cfg.cardUrl || '',
+        walkmanOpen: false,          // drawer open → the card grows
+        walkmanReady: false,
+        walkmanTimer: null,
+        walkmanLast: '',
+        walkmanLibLast: '',
+        walkmanLibraryMode: 'queue', // 'queue' | 'history' — what the drawer lists
+        walkmanListener: null,
+
+        get walkmanSrc() {
+            const base = this.walkmanBase
+                || `${location.protocol}//${location.hostname}:8910/static/walkman-player.html`;
+            // driven=1: the host owns the clock, so the card never advances or
+            // ends a track on its own. paused=1: no light until the host says.
+            return `${base}${base.includes('?') ? '&' : '?'}driven=1&paused=1`;
+        },
 
         get currentTrack() {
             if (this.currentIndex >= 0 && this.currentIndex < this.queue.length) {
@@ -1152,6 +1171,12 @@ document.addEventListener('alpine:init', () => {
                 this.notePlaybackStarted();
                 this.recordPlayHistory(this.currentTrack);
             });
+
+            // The card is a separate document: listen for its key presses and
+            // re-push state on a short timer (currentTime moves every frame).
+            this.walkmanListener = (e) => this.onWalkmanMessage(e);
+            window.addEventListener('message', this.walkmanListener);
+            this.walkmanTimer = setInterval(() => this.pushWalkmanState(), 250);
 
             const term = this.genreFilter || 'lo-fi';
             // Routing tags "X music" phrasing kind=genre and named acts
@@ -1942,6 +1967,140 @@ document.addEventListener('alpine:init', () => {
             this.isRepeat = !this.isRepeat;
         },
 
+        // ---- walkman card bridge ----
+        // Widget → card: setTrack (title/duration/position/playing/shuffle),
+        // setLibrary (what the drawer lists) and openQueue.
+        // Card → widget: action = prev | play | stop | next | select | shuffle
+        // | toggle | ended.
+        onWalkmanLoad() {
+            this.walkmanReady = true;
+            this.pushWalkmanLibrary(true);
+            this.pushWalkmanState(true);
+        },
+
+        walkmanPost(msg) {
+            const f = this.$refs.walkman;
+            if (!f || !f.contentWindow) return;
+            try { f.contentWindow.postMessage({ type: 'walkman', ...msg }, '*'); } catch (e) {}
+        },
+
+        walkmanLibrary() {
+            const src = this.walkmanLibraryMode === 'history' ? (this.recentHistory || []) : (this.queue || []);
+            return src.map(t => {
+                const c = this.cleanTrack(t);
+                return { artist: c.artist, title: c.title, duration: Math.round(t.duration || 0) };
+            });
+        },
+
+        pushWalkmanLibrary(force = false) {
+            if (!this.walkmanReady) return;
+            const lib = this.walkmanLibrary();
+            const sig = this.walkmanLibraryMode + '|' + lib.map(t => `${t.artist}:${t.title}`).join('|');
+            if (!force && sig === this.walkmanLibLast) return;
+            this.walkmanLibLast = sig;
+            this.walkmanPost({ setLibrary: lib });
+        },
+
+        // One identity on the LCD: a track is printed once. YouTube tracks
+        // carry the CHANNEL in `artist` ("Music Video Vault",
+        // "morrisoncoursevids") and often the artist already inside the title,
+        // so a plain `${artist} — ${title}` reads twice or shows a channel.
+        // YouTube tracks carry the CHANNEL in `artist` ("Music Video Vault",
+        // "morrisoncoursevids", "… - Topic") and often the artist inside the
+        // title already. Split the real artist from the channel once, here.
+        cleanTrack(track) {
+            const rawArtist = String(track.artist || '').replace(/\s*-\s*Topic$/i, '').trim();
+            const title = String(track.title || '')
+                .replace(/\s*[\(\[][^\)\]]*(official|lyric|audio|video|hd|4k|remaster|restored|version|single)[^\)\]]*[\)\]]/gi, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const channelish = !rawArtist
+                || /^[a-z0-9_.\-]+$/.test(rawArtist)        // handle: morrisoncoursevids
+                || /vault|topic|records|official|channel$/i.test(rawArtist);
+            return { artist: channelish ? '' : rawArtist, title };
+        },
+
+        lcdLabel(track) {
+            if (!track) return 'Searching signals…';
+            const { artist, title } = this.cleanTrack(track);
+            if (!title) return artist || 'Searching signals…';
+            if (!artist) return title;
+            const first = artist.split(/\s+/)[0].toLowerCase();
+            if (first.length > 2 && title.toLowerCase().includes(first)) return title;
+            return `${artist} — ${title}`;
+        },
+
+        pushWalkmanState(force = false) {
+            if (!this.walkmanReady) return;
+            this.pushWalkmanLibrary(force);
+            const t = this.currentTrack;
+            const title = this.lcdLabel(t);
+            const sig = [
+                title, Math.round(this.duration || 0), Math.round(this.currentTime || 0),
+                this.isPlaying ? 1 : 0, this.isShuffle ? 1 : 0,
+            ].join('|');
+            if (!force && sig === this.walkmanLast) return;
+            this.walkmanLast = sig;
+            this.walkmanPost({ setTrack: {
+                title,
+                artist: t ? (t.artist || '') : '',
+                duration: Math.round(this.duration || 0),
+                position: Math.round(this.currentTime || 0),
+                playing: !!this.isPlaying,
+                shuffle: !!this.isShuffle,
+            } });
+        },
+
+        onWalkmanMessage(e) {
+            const d = e.data;
+            if (!d || d.type !== 'walkman') return;
+            const f = this.$refs.walkman;
+            if (f && f.contentWindow && e.source && e.source !== f.contentWindow) return;
+            switch (d.action) {
+                case 'prev': this.prevTrack(); break;
+                case 'play': this.playPause(); break;
+                case 'stop': this.stopPlayback(); break;
+                case 'next': this.nextTrack(); break;
+                case 'shuffle': this.toggleShuffle(); break;
+                case 'select': this.walkmanSelect(d.index); break;
+                case 'toggle': this.walkmanOpen = !!d.queueOpen; break;
+                case 'ended': this.nextTrack({ auto: true }); break;
+                default: return;
+            }
+            this.pushWalkmanState(true);
+        },
+
+        stopPlayback() {
+            this.cancelHandoff();
+            if (this.audio) {
+                try { this.audio.pause(); } catch (e) {}
+                this.audio.currentTime = 0;
+            }
+            this.currentTime = 0;
+            this.isPlaying = false;
+            this.pushWalkmanState(true);
+        },
+
+        walkmanSelect(i) {
+            if (i == null || i < 0) return;
+            if (this.walkmanLibraryMode === 'history') {
+                this.playHistoryTrack((this.recentHistory || [])[i]);
+            } else {
+                this.playAt(i);
+            }
+            this.pushWalkmanState(true);
+        },
+
+        // The drawer lists the queue by default; this swaps it to the recent
+        // history (same drawer, same search) and opens it.
+        async toggleWalkmanHistory() {
+            this.walkmanLibraryMode = this.walkmanLibraryMode === 'history' ? 'queue' : 'history';
+            if (this.walkmanLibraryMode === 'history') await this.fetchHistory();
+            this.pushWalkmanLibrary(true);
+            this.walkmanOpen = true;
+            this.walkmanPost({ openQueue: true });
+        },
+
         formatTime(sec) {
             if (!sec || isNaN(sec)) return '0:00';
             const m = Math.floor(sec / 60);
@@ -1956,6 +2115,11 @@ document.addEventListener('alpine:init', () => {
             // and re-running the discovery pipeline against the rate limit.
             this.closeStream();
             this.cancelHandoff();
+            if (this.walkmanListener) {
+                window.removeEventListener('message', this.walkmanListener);
+                this.walkmanListener = null;
+            }
+            if (this.walkmanTimer) { clearInterval(this.walkmanTimer); this.walkmanTimer = null; }
             // A swap (a new music ask) must not cut to silence while the new
             // mix is still being discovered — that can take 5-20 s. Park what
             // is audible for the replacement to adopt; it stops once the new

@@ -42,6 +42,10 @@ MUSIC_PLAYER_URL = os.getenv("MUSIC_PLAYER_URL", "http://10.0.0.16:8002")
 # it. Pinned to the port for the same reason the App Hub pins it: the registry
 # domain music.braindeadbot.com has no DNS record.
 MUSIC_PLAYER_WEB_URL = os.getenv("MUSIC_PLAYER_WEB_URL", "http://10.0.0.16:3232")
+# The 3D walkman card (doc-client/static/walkman-player.html) the mini player
+# embeds. Blank means the browser derives it from its own hostname on the hub's
+# port (8910), which is where doc-client serves its static files.
+WALKMAN_CARD_URL = os.getenv("WALKMAN_CARD_URL", "").strip()
 # scraper-service backs web_search/read_page. The tools-api search tools
 # (search_web/search_news/read_web_page) are registered in the gateway catalog
 # with a null endpoint and its python bridge has no interpreter in the image,
