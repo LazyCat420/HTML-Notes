@@ -1,7 +1,7 @@
 ---
 part: Music player
 status: in-progress
-updated: 2026-10-29
+updated: 2026-10-30
 review-by: 2026-11-28
 type: plan
 ---
@@ -370,16 +370,16 @@ to meet exactly, so there are no bracket ends.
 
 **The LCD is bigger and brighter.**
 
-- The canvas backing went from 176 × 44 to 200 × 50, and glyphs are drawn at
-  **2× scale** (12 px cell, 14 px cap) instead of 1 px.
+- The glass went from 0.200 m to **0.224 m** wide (+12%); bezel, frame, spill
+  ring and canvas all derive from that constant, so the border grew with it.
+  33 mm of wood remains on each side and the keys are unaffected.
 - Ink moved from `rgb(255,195,94)` to `rgb(255,210,118)` with a 3 px shadow-blur
   glow; a faint amber backlight wash sits behind the text so the panel reads as
   lit rather than as a black rectangle.
-- The hotspot keeps a fixed CSS size in model-viewer, so the overlay is now
-  scaled from the projected key spacing (the keys are exactly 0.216 m apart):
-  `pxPerM = keySpanPx / 0.216`, then `width = 0.200 × pxPerM`. At the 300 px
-  card that is 159 px wide; at the 620 px close-up it grows with the model
-  instead of staying 176 px and drifting off the glass.
+- The hotspot keeps a fixed CSS size in model-viewer, so the overlay is scaled
+  from the projected key spacing (the keys are exactly 0.216 m apart):
+  `pxPerM = keySpanPx / 0.216`, then `width = 0.224 × pxPerM`. At the 300 px
+  card that is 178 px wide; at the 620 px close-up it grows with the model.
 
 **Wood got pores and a veneer split.** The albedo now carries a high-frequency
 pore layer along the grain (±0.052), and the two halves of the panel are tinted
@@ -446,6 +446,70 @@ Live: **http://localhost:8910/static/walkman-player.html** (the embeddable card)
 **http://localhost:8910/static/walkman-3d.html** (the player),
 **http://localhost:8910/static/walkman-3d-variants.html** (eight variants plus
 v2 in the grid and as the hero).
+
+**v2.1 — the LCD fits, stays still, and the light stays on.** Three things the
+first v2 still got wrong, and what fixed each.
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Title clipped at both ends | the marquee never stopped: a 23-character title is 262 px at 2× scale against a 196 px canvas, so it scrolled for ever | the LCD is now laid out to fit, not to scroll |
+| Picture "shifting" on every click | not the model — the camera never moved (theta/phi/radius unchanged after real 80 px drags); it was the marquee advancing, plus one extra `drawScreen()` per click | single static draw path, plus `disable-rotate` on the card |
+| Button light "brief" or invisible | `.hs-key` computed `position: static`, so the absolutely-positioned pseudo-element anchored to a distant ancestor and painted *behind* the WebGL canvas — measured 0 changed pixels at 0 / 300 / 1200 ms. `lit` was also stripped after 700 ms | `position: relative` + a blurred light that stays while `.on` is set |
+| Light sat *on* the key face | a radial centred on the key box paints over the 3D key, which reads as a glowing sticker, not as backlight | the light is now clipped to below the key's bottom edge |
+| LCD looks washed out | model-viewer fades hotspots to `opacity: .25` unless `--min-hotspot-opacity` is set; `.hs-screen` never set it | `--min-hotspot-opacity: 1` — ink renders at full 255 / 210 / 118 instead of a 25% ghost |
+
+**Layout.** The backing is **4× the projected CSS size** (712 × 160 at the
+300 px card, 1 472 × 328 at 620), so the canvas is supersampled and never
+resampled from a fixed bitmap. The glyph scale is adaptive:
+
+```
+s = clamp(floor((W - 20) / (6 × longestString)), 2, 8)   // also ≤ floor(H / 29)
+rows: 7s title · 2s · 7s time/state · 2s · 3s bar · 1s · 7s strip = 29s
+```
+
+At the 300 px card that is **s = 5**, a 8.75 CSS px cap — about 20% smaller than
+the old 11 px, and the whole title fits with 5 px to spare. At 620 it is
+**s = 8** (14 px cap) and the text fills 85% of the glass. Ellipsis only appears
+past roughly 58 characters; nothing scrolls.
+
+**Selection.** A key stays lit until another is pressed: `play` is lit while
+playing and clears on pause or stop, `stop` clears everything, `prev`/`next`
+stay selected as the last-used control, `queue` is lit while the queue is open.
+`aria-pressed` mirrors the state.
+
+**The light sits under the key, not on it.** An analogue membrane key is lit
+from behind: the light pools on the panel below the key and escapes at the
+seam. So the glow is a 22 px band anchored at `top: 100%` of the button, a
+radial that starts at full amber `rgba(255,214,132,1)` on the key's bottom edge
+and fades out 80% of the way down, blurred 6 px and then **clipped** with
+`clip-path: inset(0 0 -16px 0)` so no blur can bleed upward onto the key face.
+It fades in over 280 ms; nothing pulses. Measured: 0 changed pixels on the key
+face, above it, or on either side — all of the light is below.
+
+![The card at 300 × 150, play lit from under the key](artifacts/music-widget-designs/24-walkman-player-300.png)
+
+![The same card at 620 × 340](artifacts/music-widget-designs/25-walkman-player-620.png)
+
+![Key row: nothing lit, then play lit from underneath two seconds later](artifacts/music-widget-designs/26-walkman-player-glow.png)
+
+![Still working inside a sandboxed cross-origin iframe](artifacts/music-widget-designs/27-walkman-player-sandbox.png)
+
+Measured:
+
+| Check | Result |
+|---|---|
+| Title ink bbox, 300 px card | x 10–694 of 712 backing px — 5 px margin right, 2.5 CSS px |
+| Same bbox over 60 frames | one distinct value; identical after 5 clicks |
+| Glyphs touching the glass border | 0 columns, 0 rows of border ink |
+| LCD opacity | `1` (was `0.25`) |
+| Camera after an 80 px drag | theta 0, phi 1.5708, radius 0.55 — unchanged |
+| Glow after 2 s | 4 179 of 5 280 px changed in the band under the key, max Δ116, red-minus-blue 8 → 41, 1 959 px brighter |
+| Glow on the key face / above / beside | 0 changed pixels in all three regions |
+| Sandboxed iframe | renders, 2 997 amber px, LCD at full brightness |
+| Asset | `player-body-v2.glb` rebuilt at 0.224 m glass, 2.95 MB, same node names |
+
+The same layout and glow code now runs in `walkman-3d.html`, so the demo page
+and the embeddable card cannot drift apart.
 
 ### A3 · Pixel forest — 150px, the device grown into a tree
 
