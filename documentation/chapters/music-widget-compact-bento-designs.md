@@ -479,25 +479,28 @@ stay selected as the last-used control, `queue` is lit while the queue is open.
 
 **The light sits under the key, not on it.** An analogue membrane key is lit
 from behind: the light pools on the panel below the key and escapes at the
-seam. The glow is a band anchored at `top: 100%` of the button, a radial that
-starts at full amber `rgba(255,214,132,1)` on the key's bottom edge and fades
-out 80% of the way down, blurred and then **clipped** with
-`clip-path: inset(0 0 -120% 0)` so no blur can bleed upward onto the key face.
-It fades in over 280 ms; nothing pulses.
+seam. Sizing the glow from the button's own box cannot do that, because the
+button box is a flat CSS rectangle while the key is an extruded mesh 9–11 mm
+toward the camera. Perspective makes the drawn key project **larger** than its
+footprint, so the box's bottom edge sits 2–4 px *above* the drawn key's bottom
+edge — and any glow anchored there paints over the key face. That is exactly
+what the first two attempts did.
 
-The band has to start exactly at the key's bottom edge, so the hotspot is no
-longer a fixed 30 × 16 CSS box: model-viewer keeps hotspot CSS sizes fixed
-while the 3D key grows with the model, which at a large window left the light
-starting *inside* the key face. `syncScreen()` now sizes each hotspot from the
-projected scale — the keys are 0.048 × 0.026 m (play 0.030 tall) — and passes
-the height to the glow as `--key-h`, so the band, its blur and its inset all
-scale with the device. At the 300 px card that is 38 × 21 px per key, exactly
-the drawn key.
+The fix is to stop guessing and let model-viewer do the projection. Each key
+now has a second, zero-size hotspot placed on the key's **bottom front edge in
+3D** (`y −0.062`, `z 0.021`; play `−0.064 / 0.023`), so its screen position *is*
+the drawn key's bottom edge at any orbit or zoom. The lamp is an `<i>` inside
+that hotspot: a radial that starts at full amber `rgba(255,214,132,1)` and fades
+out 80% of the way down, blurred by 0.28 × the key height, inside
+`overflow: hidden` — so the blur is cut exactly at the seam and cannot reach the
+key face. It fades in over 280 ms; nothing pulses.
 
-Measured at 300 × 150: 76 of 3 648 px changed on the key face (max Δ37, and
-red-minus-blue unchanged at 12 → 13 — that is the seam, not light on the
-face), 0 above, and 6 511 of 7 072 px changed under it (max Δ138,
-red-minus-blue 0 → 34).
+Measured on 900 × 600 captures (2× DPR): the anchor lands at y 373.3 and the
+drawn key's bottom edge at 372.8–373.0 — within half a pixel. Row by row, the
+glow starts at the anchor row and **every row above it is unchanged** (0
+changed pixels across the key face and the panel above it), with 4 557 px
+changed below it (max Δ238, red-minus-blue 0 → 64). The same check on the demo
+page: anchor 248.6, first changed row 248, nothing above.
 
 ![The card at 300 × 150, play lit from under the key](artifacts/music-widget-designs/24-walkman-player-300.png)
 
@@ -516,9 +519,10 @@ Measured:
 | Glyphs touching the glass border | 0 columns, 0 rows of border ink |
 | LCD opacity | `1` (was `0.25`) |
 | Camera after an 80 px drag | theta 0, phi 1.5708, radius 0.55 — unchanged |
-| Glow after 2 s | 6 511 of 7 072 px changed in the band under the key, max Δ138, red-minus-blue 0 → 34 |
-| Glow on the key face | 76 px of 3 648 (the antialiased seam), red-minus-blue 12 → 13 |
-| Glow above the key | 0 changed pixels |
+| Glow anchor vs drawn key bottom | 373.3 vs 372.8–373.0 px (half a pixel) |
+| Glow above the anchor (key face and panel) | **0** changed pixels, row by row |
+| Glow below the anchor | 4 557 px changed, max Δ238, red-minus-blue 0 → 64 |
+| Demo page, same check | anchor 248.6, first changed row 248, nothing above |
 | Sandboxed iframe | renders, 2 997 amber px, LCD at full brightness |
 | Asset | `player-body-v2-lite.glb` — same geometry and materials at 0.224 m glass, maps at 512 × 256, **892 KB** (was 2.95 MB) |
 
