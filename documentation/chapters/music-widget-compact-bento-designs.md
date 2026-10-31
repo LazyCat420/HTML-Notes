@@ -1,7 +1,7 @@
 ---
 part: Music player
 status: in-progress
-updated: 2026-10-30
+updated: 2026-10-31
 review-by: 2026-11-28
 type: plan
 ---
@@ -472,10 +472,13 @@ the old 11 px, and the whole title fits with 5 px to spare. At 620 it is
 **s = 8** (14 px cap) and the text fills 85% of the glass. Ellipsis only appears
 past roughly 58 characters; nothing scrolls.
 
-**Selection.** A key stays lit until another is pressed: `play` is lit while
-playing and clears on pause or stop, `stop` clears everything, `prev`/`next`
-stay selected as the last-used control, `queue` is lit while the queue is open.
-`aria-pressed` mirrors the state.
+**Selection.** Only `play` holds a steady light: it stays lit for as long as
+the track is playing and clears on pause or stop. Every other key —
+`prev`, `stop`, `next`, `queue` — **flashes**: it lights on press, holds for
+900 ms, then fades out over 300 ms. When a flash ends the steady state comes
+back, so skipping tracks lights `next` for a moment and then returns the light
+to `play`, because the deck is still running. `aria-pressed` mirrors whichever
+key currently carries the light.
 
 **The light is under the key — in depth, not below it on screen.** Two earlier
 attempts read "under the button" as a place on the panel and painted a pool of
@@ -491,45 +494,56 @@ hotspots on its front-face corners in 3D (`x ∓ 0.024`, `y ± h/2`, `z 0.021`,
 play `0.023`); model-viewer projects them, which gives the key's **projected**
 rectangle at any orbit or zoom — the rectangle the extruded key actually
 occupies, not the flat CSS hotspot box. A `.lamp` div is laid on that rectangle
-and lit with `box-shadow: 0 0 0 1px … , 0 0 7px 2px … , 0 0 20px 7px …`: a 1 px
-seam line at full amber, then two falloffs onto the wood. The key face is
-inside the box, so it is never painted; the light only shows around it.
+and lit with `box-shadow: 0 0 0 1px rgba(255,214,136,.5) ,
+0 0 7px 1px rgba(255,176,62,.3) , 0 0 17px 4px rgba(255,146,36,.13)`: a 1 px
+seam line, then two falloffs onto the wood. The key face is inside the box, so
+it is never painted; the light only shows around it. The intensities were
+lowered from the first version (`.9 / .62 / .30` at 7 px and 20 px spread) —
+the old halo read as a glowing sticker; the softer one reads as light escaping
+a seam.
 
-Measured on the 300 px card: inside the lamp rectangle **4 of 3 168 px** change
-(antialiasing at the very edge, max Δ27) while all four sides change along
-their full width — top 1 380/1 380, bottom 1 380/1 380, left 840/840,
-right 840/840, max Δ≈225. The demo page reproduces it: 4 px inside,
-1 380/1 380 top and bottom, 750/750 left and right.
+Measured on a 300 × 150 card at 2× DPR, same LCD frame, lamp toggled in the
+DOM so nothing else changes: the **interior of the key face is 0 changed px,
+max Δ 0**; the only pixels that change inside the lamp's bounding rectangle are
+the four rounded-corner triangles (83 px), which are outside the rounded
+border box and therefore legitimately painted by `box-shadow`. The halo covers
+1 773 px of the band above the key, 1 793 below, 730 left and 718 right, with a
+peak Δ of 341 at the seam and a mean of 19–25 per band — roughly a third dimmer
+than the first version, which peaked near Δ 520.
 
-**Selection.** A key stays lit until another is pressed: `play` is lit while
-playing and clears on pause or stop, `stop` clears everything, `prev`/`next`
-stay selected as the last-used control, `queue` is lit while the queue is open.
-`aria-pressed` mirrors the state.
+### The queue key opens a library you can pick from
 
-**The light sits under the key, not on it.** An analogue membrane key is lit
-from behind: the light pools on the panel below the key and escapes at the
-seam. Sizing the glow from the button's own box cannot do that, because the
-button box is a flat CSS rectangle while the key is an extruded mesh 9–11 mm
-toward the camera. Perspective makes the drawn key project **larger** than its
-footprint, so the box's bottom edge sits 2–4 px *above* the drawn key's bottom
-edge — and any glow anchored there paints over the key face. That is exactly
-what the first two attempts did.
+The queue used to be a read-only "Up next" list. Pressing the queue key now
+opens a **library panel**: a search field, a shuffle toggle, and every track as
+a clickable row.
 
-The fix is to stop guessing and let model-viewer do the projection. Each key
-now has a second, zero-size hotspot placed on the key's **bottom front edge in
-3D** (`y −0.062`, `z 0.021`; play `−0.064 / 0.023`), so its screen position *is*
-the drawn key's bottom edge at any orbit or zoom. The lamp is an `<i>` inside
-that hotspot: a radial that starts at full amber `rgba(255,214,132,1)` and fades
-out 80% of the way down, blurred by 0.28 × the key height, inside
-`overflow: hidden` — so the blur is cut exactly at the seam and cannot reach the
-key face. It fades in over 280 ms; nothing pulses.
+![The library panel open: search filtered to Buckethead, shuffle on, Colma selected](artifacts/music-widget-designs/28-walkman-player-library.png)
 
-Measured on 900 × 600 captures (2× DPR): the anchor lands at y 373.3 and the
-drawn key's bottom edge at 372.8–373.0 — within half a pixel. Row by row, the
-glow starts at the anchor row and **every row above it is unchanged** (0
-changed pixels across the key face and the panel above it), with 4 557 px
-changed below it (max Δ238, red-minus-blue 0 → 64). The same check on the demo
-page: anchor 248.6, first changed row 248, nothing above.
+![The same card with the panel closed, play lit](artifacts/music-widget-designs/29-walkman-player-play-lit.png)
+
+- **Search** filters by artist *or* title as you type (`input` event, no
+  debounce needed at this list size). `Enter` plays the first match, `Esc`
+  blurs the field, `/` opens the panel and focuses it.
+- **Shuffle** (`SHUF`) toggles `state.shuffle`; it tints amber while on. With
+  shuffle on, `next` picks a random other track instead of the following one.
+- **Rows** show the index (or `>` for the playing track), the title and the
+  artist. Clicking a row loads that track: title and duration come from the
+  library entry, position resets to 0, playback starts, and the `play` key
+  takes the steady light. The row tints amber and the panel stays open so you
+  can pick again.
+- The panel is anchored right at 74% of the card (240 × 138 px inside a
+  300 × 150 card) with the list scrolling; the device stays visible on the
+  left. It never changes the card's height.
+- `window.walkmanPlayer` gained `setLibrary(list)`, `select(i)` and
+  `toggleShuffle()`; `postMessage` accepts `{type:'walkman', setLibrary:[…]}`
+  and `{type:'walkman', select:i}`, and emits `{action:'select'|'shuffle'}`
+  back to the host.
+
+Verified in the browser at the widget size: stop → flash then all dark;
+play → still lit after 4 s; next → lit at 0 and 400 ms, back to `play` at
+1 600 ms; panel opens at 240 × 138 with 8 rows; search `aphex` → 1 row,
+`Boards` → 1 row, `zzz` → the empty state; clicking the `burial` row loads
+"Burial — Archangel" at position 0 with `play` lit; `SHUF` toggles on.
 
 ![The card at 300 × 150, play lit from under the key](artifacts/music-widget-designs/24-walkman-player-300.png)
 
@@ -555,7 +569,12 @@ Measured:
 | Asset | `player-body-v2-lite.glb` — same geometry and materials at 0.224 m glass, maps at 512 × 256, **892 KB** (was 2.95 MB) |
 
 The same layout, hotspot sizing and glow code runs in `walkman-3d.html`, so the
-demo page and the embeddable card cannot drift apart.
+demo page and the embeddable card cannot drift apart. The flash rule is shared
+too: on the demo page `play` holds its light, and `prev`/`stop`/`next`/`queue`
+light for 900 ms and hand the light back to `play` while it is playing (verified:
+next lit at 0 ms, back to play at 1 400 ms; stop lit at 0 ms, all dark at
+1 400 ms). The demo page has no queue panel, so search and shuffle live in the
+card only.
 
 **Opening the card directly shows it at widget size.** `walkman-player.html`
 fills its container when embedded, but when it is the top-level page it adds
