@@ -1334,7 +1334,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                 <button @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 text-white/50 hover:text-white transition-colors">
                     <span class="material-symbols-outlined text-[1rem]">open_in_new</span>
                 </button>
-                <button title="Close Widget" class="close-widget-btn p-1 rounded-full bg-black/45 hover:bg-red-500/70 backdrop-blur-md border border-white/10 text-white/60 hover:text-white transition-all z-20">
+                <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn p-1 rounded-full bg-black/45 hover:bg-red-500/70 backdrop-blur-md border border-white/10 text-white/60 hover:text-white transition-all z-20">
                     <span class="material-symbols-outlined text-[1rem]">close</span>
                 </button>
             </div>
