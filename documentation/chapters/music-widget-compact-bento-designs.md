@@ -644,9 +644,9 @@ music rather than only displaying it.
 bento shell. It **embeds the 3D walkman card** and keeps only the controls the
 deck has no key for: genre chip, thumbs, history, mute, open-in-player, close.
 
-![The canvas widget with the walkman card closed](artifacts/music-widget-designs/30-hn-widget-closed.png)
+![The floating deck in the canvas, chips above, no frame](artifacts/music-widget-designs/32-hn-widget-boxless.png)
 
-![The same widget with the library drawer open under the keys](artifacts/music-widget-designs/31-hn-widget-drawer.png)
+![The same widget with the library drawer open under the keys](artifacts/music-widget-designs/33-hn-widget-drawer.png)
 
 **Why an iframe, not inline markup.** The card is one document with its own
 `model-viewer`, LCD canvas and projection code. Re-implementing it inside the
@@ -702,12 +702,74 @@ Footprints (Remastered)` → `Wayne Shorter — Footprints`.
 the recent-history list (`setLibrary` + `openQueue`) instead of building a
 second panel; a row click then calls `playHistoryTrack()`.
 
-**Sizes.** The widget is 632 px wide in a 3-column bento, so the card is 238 px
-tall (device ≈ 372 px wide) rather than the 150 px standalone size — at 150 the
-deck sat small in a wide frame. Closed: **284 px**; drawer open: **432 px**
-(238 px deck + 148 px drawer). The LCD hotspot scales with the deck: 280 CSS px
-wide, canvas 1 120 × 252 backing, ink bbox 10..1 109 — right margin 10 px, no
-clipping, no marquee.
+**Sizes.** The widget is 632 px wide in a 3-column bento, so the deck gets a
+246 px-tall stage (device ≈ 384 px wide) rather than the 150 px standalone size —
+at 150 the deck sat small in a wide frame. Closed: **284 px** (30 px chip row +
+246 px deck); drawer open: **432 px** (+148 px drawer). The LCD hotspot scales
+with the deck, and its backing is 4× its projected CSS size, so the ink stays
+inside the glass at every size.
+
+### The deck floats: no frame, and the frame's controls move onto the player
+
+The widget used to sit inside the canvas's holographic glass frame — a fill, a
+1 px border, a 14 px radius, a drop shadow, a backdrop blur and a luminous top
+hairline, all `!important` in `index.css`. Around a 3D object that reads as a
+box drawn around a device that already has its own body.
+
+The frame is gone. `.widget-container.music-widget-root` opts out of every one
+of those properties with `!important` of its own (plus `::after { content: none }`
+for the hairline and `overflow: visible` so the deck's light is never clipped),
+and the card itself became transparent — `#card` lost its radial-gradient fill,
+its 16 px radius and its shadow, so the model-viewer canvas sits straight on the
+canvas behind it.
+
+**Everything the frame carried still exists on the player.** Nothing was
+dropped when the box went away; each control became its own floating chip:
+
+| was in the frame | now |
+|---|---|
+| genre / routing pill | same pill, dark chip on the canvas |
+| thumbs up / down | round chip each, emerald / red when set |
+| history | round chip, purple when the drawer lists history |
+| mute | round chip, icon swaps `volume_up` ↔ `volume_off` |
+| open in Music Player | round chip |
+| close | round chip, red on hover, `WidgetManager.dismiss()` |
+| corner resize grip | the same `WidgetResizer` handle, restyled as an amber L bracket on the deck |
+
+**Resize is the canvas's resize.** The widget no longer has a frame to drag, so
+the grip is the existing `.widget-resize-handle` that `WidgetResizer.decorate()`
+appends to every widget. It writes `{cols, height}` to `widget_sizes` in
+localStorage exactly as before; the widget reads that size back as
+`walkmanBaseH` and renders `walkmanHeight = walkmanBaseH + (drawer ? 148 : 0)`,
+so the drawer rides on top of whatever size the grip chose instead of fighting
+it. A `window resize` listener adopts the stored size after every drag. Measured:
+drag 284 → 344 px, `widget_sizes.wtest1 = {cols: 2, height: 344}`, `walkmanBaseH`
+344; opening the drawer then gives 492 and closing returns to 344.
+
+### The LCD scrambles into the next title
+
+Changing track does not swap text. `drawScreen()` keeps `lastLabel`; when the
+label differs it starts a 620 ms dissolve from the old title to the new one, and
+because the card already redraws every frame, the effect needs no extra timer.
+Each 5×7 glyph cell decides per pixel, from a hash of (glyph, row, column,
+frame): hold the old pixel, flip to the new one, or sparkle a random glyph pixel
+while the cell is mid-transition. Progress is staggered left to right, so the
+head of the line settles while the tail is still churning.
+
+![Mid-dissolve: the head of the line has resolved, the tail is still scrambling](artifacts/music-widget-designs/34-hn-widget-scramble.png)
+
+Measured on the embedded widget with a real click on `next`: the title changed
+once, the canvas signature ramped through frames that matched **neither** the
+old nor the new title (band-sum distance 13 893 → 8 311 vs the old frame, never
+equal to the final), and settled 620–670 ms later — after which the signature
+was bit-identical frame to frame.
+
+**One owner of the queue.** A driven card must not guess the next track: it used
+to commit its own `library[i]` title, then the host corrected it 80 ms later,
+which printed a stale title for a frame and restarted the scramble. In
+`driven=1` the card now only lights `play`, emits `select`, and lets the host
+push the authoritative track; `prev`/`next` likewise defer to the host's
+`prevTrack()`/`nextTrack()` instead of stepping its own stale copy.
 
 **Verified live** (app on 8035, real mouse through the iframe): queue key →
 drawer opens, widget 284 → 432, 100 rows; clicking row 3 plays that track

@@ -1086,6 +1086,8 @@ document.addEventListener('alpine:init', () => {
         // this component owns the audio and drives the card over postMessage.
         walkmanBase: cfg.cardUrl || '',
         walkmanOpen: false,          // drawer open → the card grows
+        walkmanBaseH: 284,           // closed height; the corner grip overrides it
+        walkmanResizeListener: null,
         walkmanReady: false,
         walkmanTimer: null,
         walkmanLast: '',
@@ -1100,6 +1102,14 @@ document.addEventListener('alpine:init', () => {
             // driven=1: the host owns the clock, so the card never advances or
             // ends a track on its own. paused=1: no light until the host says.
             return `${base}${base.includes('?') ? '&' : '?'}driven=1&paused=1`;
+        },
+
+        // The widget has no frame to drag any more, so its size lives in the
+        // same place every other widget's does: WidgetResizer's corner grip,
+        // which stores {cols, height} in localStorage. The drawer adds its own
+        // 148 px on top of whatever size the grip chose.
+        get walkmanHeight() {
+            return this.walkmanBaseH + (this.walkmanOpen ? 148 : 0);
         },
 
         get currentTrack() {
@@ -1178,6 +1188,24 @@ document.addEventListener('alpine:init', () => {
             this.walkmanListener = (e) => this.onWalkmanMessage(e);
             window.addEventListener('message', this.walkmanListener);
             this.walkmanTimer = setInterval(() => this.pushWalkmanState(), 250);
+
+            // Adopt a size the corner grip already saved, then follow it: the
+            // resizer writes the inline height itself during the drag and fires
+            // a window `resize` when it lets go.
+            const adopt = () => {
+                const el = this.$el;
+                if (!el || !el.id || !window.WidgetResizer) return;
+                const size = window.WidgetResizer.getSizes()[el.id];
+                if (!size || !size.height) { this.walkmanBaseH = 284; return; }
+                // While the drawer is open the stored height already includes
+                // it, so subtract before storing it as the closed height.
+                this.walkmanBaseH = this.walkmanOpen
+                    ? Math.max(180, size.height - 148)
+                    : size.height;
+            };
+            this.walkmanResizeListener = adopt;
+            adopt();
+            window.addEventListener('resize', this.walkmanResizeListener);
 
             const term = this.genreFilter || 'lo-fi';
             // Routing tags "X music" phrasing kind=genre and named acts
@@ -2121,6 +2149,10 @@ document.addEventListener('alpine:init', () => {
                 this.walkmanListener = null;
             }
             if (this.walkmanTimer) { clearInterval(this.walkmanTimer); this.walkmanTimer = null; }
+            if (this.walkmanResizeListener) {
+                window.removeEventListener('resize', this.walkmanResizeListener);
+                this.walkmanResizeListener = null;
+            }
             // A swap (a new music ask) must not cut to silence while the new
             // mix is still being discovered — that can take 5-20 s. Park what
             // is audible for the replacement to adopt; it stops once the new

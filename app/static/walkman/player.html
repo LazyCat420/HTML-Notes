@@ -9,10 +9,10 @@
   :root{ color-scheme: dark; }
   html,body{margin:0; height:100%; background:transparent; overflow:hidden;
     font:13px/1.3 ui-sans-serif,system-ui,sans-serif; color:#e6ebf0}
+  /* No box around the device: it floats on whatever is behind the card. */
   #card{position:relative; display:flex; flex-direction:column;
     width:100%; height:100%; min-height:150px;
-    border-radius:16px; overflow:hidden; background:
-      radial-gradient(120% 90% at 50% 0%, #1a2126 0%, #0c1013 72%);}
+    border-radius:0; overflow:visible; background:transparent;}
   /* the device keeps the top; the library drawer slides in under the keys */
   #stage{position:relative; flex:1 1 auto; min-height:0}
   /* opened directly (not embedded): show the card at the size it will occupy
@@ -24,7 +24,7 @@
     padding:max(24px, calc(50vh - 75px)) 24px 24px;
     background:radial-gradient(90% 120% at 50% 0%, #141a1f 0%, #070a0c 70%)}
   html.standalone #card{width:300px; height:auto; min-height:0; margin:0 auto;
-    box-shadow:0 18px 40px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.05)}
+    box-shadow:none}
   html.standalone #stage{flex:0 0 150px; height:150px}
   html.standalone #queue.on{height:132px}
   html.standalone body::after{content:"walkman-player · 300 × 150 (the size it takes in the hub) + drawer";
@@ -238,6 +238,54 @@ function fitScale(W, H, strings){
   return Math.max(2, Math.min(8, byWidth, byHeight));
 }
 
+/* ---- title change: the LCD dissolves into the new title ----
+   A new song does not just swap text: every pixel of the old title has a
+   chance to hold, flicker, or flip to the new glyph, resolving left to right
+   in ~0.6 s. It is drawn from the same 5x7 bitmap as everything else, so it
+   reads as the screen scrambling, not as a CSS transition. */
+const SCRAMBLE_MS = 620;
+let scramble = null;   // { from, to, t0 }
+let lastLabel = null;
+
+function scrambleHash(i, r, c, frame){
+  let h = (i * 73856093) ^ (r * 19349663) ^ (c * 83492791) ^ (frame * 2654435761);
+  h = Math.imul(h ^ (h >>> 15), 2246822507);
+  h = Math.imul(h ^ (h >>> 13), 3266489909);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function drawScramble(ctx, from, to, x, y, color, s, p, frame){
+  const n = Math.max(from.length, to.length);
+  const a = glyphs(from.padEnd(n, ' '));
+  const b = glyphs(to.padEnd(n, ' '));
+  const pool = glyphs('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&*+');
+  ctx.fillStyle = color;
+  ctx.shadowColor = 'rgba(255,190,90,.55)';
+  ctx.shadowBlur = 3;
+  for (let i = 0; i < n; i++){
+    // left-to-right wave: the tail of the line is still churning when the
+    // head has already settled
+    const local = Math.min(1, Math.max(0, (p - (i / Math.max(1, n)) * 0.5) / 0.5));
+    const mid = 1 - Math.abs(2 * local - 1);        // 0 at ends, 1 in the middle
+    const rowsA = a[i].split('/'), rowsB = b[i].split('/');
+    const rowsN = pool[Math.floor(scrambleHash(i, 0, 0, frame) * pool.length)].split('/');
+    for (let r = 0; r < CH; r++){
+      for (let c = 0; c < 5; c++){
+        const h = scrambleHash(i, r, c, frame);
+        const onA = rowsA[r][c] === '1';
+        const onB = rowsB[r][c] === '1';
+        let lit;
+        if (h < local) lit = onB;                    // settled: new glyph
+        else if (h > 1 - local * 0.85) lit = onA;    // holding: old glyph
+        else lit = scrambleHash(i, r, c, frame + 7) < 0.30 * mid
+                   && rowsN[r][c] === '1';           // churn: random glyph
+        if (lit) ctx.fillRect(x + i * CW * s + c * s, y + r * s, s, s);
+      }
+    }
+  }
+  ctx.shadowBlur = 0;
+}
+
 function drawScreen(){
   const scr = $('scr');
   const W = scr.width, H = scr.height;
@@ -256,17 +304,33 @@ function drawScreen(){
   const st = state.playing ? 'PLAY' : 'PAUSE';
   let label = state.title.toUpperCase();
 
-  const s = fitScale(W, H, [label, time, st]);
+  // A different title starts the dissolve; the old one is kept so the pixels
+  // have something to scramble out of.
+  if (lastLabel !== null && label !== lastLabel) scramble = { from: lastLabel, to: label, t0: performance.now() };
+  lastLabel = label;
+
+  let p = 1;
+  if (scramble){
+    p = Math.min(1, (performance.now() - scramble.t0) / SCRAMBLE_MS);
+    if (p >= 1) scramble = null;
+  }
+
+  const s = fitScale(W, H, [label, time, st, scramble ? scramble.from : label]);
   if (textWidth(label, s) > W - 2 * MARGIN){
     // only reached for titles longer than ~58 characters: trim, never scroll
     const maxChars = Math.floor((W - 2 * MARGIN + s) / (CW * s));
     label = label.slice(0, Math.max(0, maxChars - 2)) + '..';
+    if (scramble) scramble.to = label;
   }
 
   const ink = `rgb(${INK})`;
   const top = Math.floor((H - 29 * s) / 2);
 
-  drawText(ctx, label, MARGIN, top, ink, s, true);
+  if (scramble){
+    drawScramble(ctx, scramble.from, scramble.to, MARGIN, top, ink, s, p, Math.floor(performance.now() / 55));
+  } else {
+    drawText(ctx, label, MARGIN, top, ink, s, true);
+  }
   drawText(ctx, time, MARGIN, top + 9 * s, ink, s, true);
   drawText(ctx, st, W - MARGIN - textWidth(st, s), top + 9 * s, ink, s, true);
 
@@ -396,13 +460,19 @@ function step(dir){
 function load(i){
   const t = state.library[i];
   if (!t) return;
-  state.title = `${t.artist} — ${t.title}`;
-  state.artist = t.artist;
-  state.duration = t.duration || state.duration;
-  state.position = 0;
   state.playing = true;
   lampOn(1, Infinity);
-  drawScreen();
+  if (!DRIVEN){
+    // Standalone: the card is the only owner of the queue, so it commits.
+    state.title = `${t.artist} — ${t.title}`;
+    state.artist = t.artist;
+    state.duration = t.duration || state.duration;
+    state.position = 0;
+    drawScreen();
+  }
+  // Driven: the host owns the queue and answers with the authoritative track.
+  // Committing our own guess first printed a stale title for one frame and
+  // then restarted the scramble when the host corrected it.
   if (queueOpen) renderQueue();
   emit({ action: 'select', index: i, state: { ...state } });
 }
@@ -425,10 +495,10 @@ function press(i){
     state.position = 0;
     lampOn(2, FLASH_MS);
   } else if (action === 'prev'){
-    step(-1);
+    if (!DRIVEN) step(-1);
     lampOn(0, FLASH_MS);
   } else if (action === 'next'){
-    step(1);
+    if (!DRIVEN) step(1);
     lampOn(3, FLASH_MS);
   }
   drawScreen();

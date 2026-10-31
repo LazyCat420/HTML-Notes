@@ -186,6 +186,41 @@ body::after {
     grid-column: 1 / -1;
 }
 
+/* ─── BOXLESS WIDGETS ───────────────────────────────────────────
+   A widget whose content is itself a self-contained object (the 3D walkman
+   deck) opts out of the holographic frame: no fill, no border, no radius, no
+   shadow, no hairline. The object floats on the canvas and carries its own
+   controls as small chips. Every property here needs !important to beat the
+   frame rule below, which is itself !important. */
+.widget-container.music-widget-root,
+.widget-container.music-widget-root:hover {
+    background: none !important;
+    background-image: none !important;
+    background-color: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    overflow: visible !important;
+}
+.widget-container.music-widget-root::after { content: none !important; }
+/* No frame means no frame to drag by: the grip sits on the floating player,
+   faintly visible so the size affordance is discoverable without hovering.
+   Amber and L-shaped so it reads as part of the deck, not as a stray stroke. */
+.widget-container.music-widget-root .widget-resize-handle {
+    right: 4px;
+    bottom: 4px;
+    width: 14px;
+    height: 14px;
+    background-image: none;
+    border-right: 2px solid rgba(255, 186, 92, .55);
+    border-bottom: 2px solid rgba(255, 186, 92, .55);
+    border-bottom-right-radius: 4px;
+    opacity: .55;
+}
+.widget-container.music-widget-root:hover .widget-resize-handle { opacity: 1; }
+
 /* ─── HOLOGRAPHIC WIDGET FRAMES ─────────────────────────────────
    Covers factory widgets (.widget-container), LLM-injected cards
    (.glass-card.canvas-widget) and the design-system .glass-card.

@@ -295,8 +295,25 @@ def test_music_player_carries_kind_base_and_embeds_the_walkman_card():
     assert 'x-ref="walkman"' in out, "the walkman card iframe is missing"
     assert ':src="walkmanSrc"' in out, "the iframe must be driven by walkmanSrc"
     assert '@load="onWalkmanLoad()"' in out, "the iframe must hand its state over on load"
-    assert "walkmanOpen ? " in out, "the card must grow when the drawer opens"
+    assert "walkmanHeight" in out, "the card must size from walkmanHeight"
     assert 'x-show="error"' in out, "error toast missing"
+    # The deck floats: no frame class on the ROOT (the chips legitimately carry
+    # their own border), no wrapper surface around the iframe. index.css opts
+    # .music-widget-root out of the glass frame.
+    import re
+    root = re.search(r'<div id="w-music"[^>]*class="([^"]*)"', out)
+    assert root, "root element missing"
+    root_cls = root.group(1)
+    assert "music-widget-root" in root_cls, "the boxless opt-out class is missing"
+    for frame_class in ("rounded-[2rem]", "bg-gradient-to-br", "shadow-2xl",
+                        "backdrop-blur-xl", "border", "overflow-hidden"):
+        assert frame_class not in root_cls.split(), f"root still carries the frame class {frame_class!r}"
+    assert 'class="relative z-10 flex-1 min-h-0"' in out, "the iframe must sit on the bare canvas"
+    # Every control the old frame carried still has to exist on the player.
+    for label in ('Like this song', 'Dislike this song', 'Queue / history list in the drawer',
+                  'Mute', 'Open in Music Player — keeps playing from here', 'Close Widget'):
+        assert f'title="{label}"' in out, f"control {label!r} lost with the frame"
+    assert "close-widget-btn" in out, "close must still be reachable"
     assert "{{" not in out, "unsubstituted f-string braces leaked into HTML"
 
 

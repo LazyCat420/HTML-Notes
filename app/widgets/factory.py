@@ -1308,38 +1308,42 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
               f'cardUrl: {json_escape(WALKMAN_CARD_URL)} }}')
 
     return f"""
-    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-gradient-to-br from-purple-950/70 via-indigo-950/60 to-slate-950/70 backdrop-blur-xl border border-white/10 text-white flex flex-col gap-1 p-1.5 group transition-all duration-300" :style="'height: ' + (walkmanOpen ? 432 : 284) + 'px'" x-data="musicPlayerWidget({cfg_js})">
-        <!-- Top bar: only the controls the 3D deck has no key for -->
-        <div class="relative z-10 flex items-center justify-between gap-1 shrink-0">
-            <div class="bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm min-w-0">
+    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative text-white flex flex-col gap-1 group" :style="'height: ' + walkmanHeight + 'px'" x-data="musicPlayerWidget({cfg_js})">
+        <!-- Floating control chips. There is no frame around the widget any more,
+             so each control carries its own small surface and the deck below
+             floats on the canvas. These are the things the 3D deck has no key
+             for: routing chip, thumbs, history, mute, open-in-player, close. -->
+        <div class="relative z-10 flex items-center justify-between gap-1 shrink-0 px-1">
+            <div class="bg-black/45 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm min-w-0">
                 <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
                 <span class="text-[10px] font-semibold tracking-wider text-purple-200 uppercase truncate" x-text="genreFilter || 'Radio'"></span>
             </div>
-            <div class="flex items-center gap-0.5 shrink-0" x-effect="syncThumbState(currentTrack)">
-                <button @click="sendThumb('up')" title="Like this song" class="p-0.5 rounded-lg transition-colors" :class="thumbState === 'up' ? 'text-emerald-400 bg-white/10' : 'text-white/40 hover:text-white'">
+            <div class="flex items-center gap-1 shrink-0" x-effect="syncThumbState(currentTrack)">
+                <button @click="sendThumb('up')" title="Like this song" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 transition-colors" :class="thumbState === 'up' ? 'text-emerald-400' : 'text-white/50 hover:text-white'">
                     <span class="material-symbols-outlined text-[1rem]">thumb_up</span>
                 </button>
-                <button @click="sendThumb('down')" title="Dislike this song" class="p-0.5 rounded-lg transition-colors" :class="thumbState === 'down' ? 'text-red-400 bg-white/10' : 'text-white/40 hover:text-white'">
+                <button @click="sendThumb('down')" title="Dislike this song" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 transition-colors" :class="thumbState === 'down' ? 'text-red-400' : 'text-white/50 hover:text-white'">
                     <span class="material-symbols-outlined text-[1rem]">thumb_down</span>
                 </button>
-                <button @click="toggleWalkmanHistory()" title="Queue / history list in the drawer" class="p-0.5 rounded-lg transition-colors" :class="walkmanLibraryMode === 'history' ? 'text-purple-300 bg-white/10' : 'text-white/40 hover:text-white'">
+                <button @click="toggleWalkmanHistory()" title="Queue / history list in the drawer" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 transition-colors" :class="walkmanLibraryMode === 'history' ? 'text-purple-300' : 'text-white/50 hover:text-white'">
                     <span class="material-symbols-outlined text-[1rem]">history</span>
                 </button>
-                <button @click="toggleMute()" title="Mute" class="p-0.5 rounded-lg text-white/40 hover:text-white transition-colors">
+                <button @click="toggleMute()" title="Mute" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 text-white/50 hover:text-white transition-colors">
                     <span class="material-symbols-outlined text-[1rem]" x-text="isMuted ? 'volume_off' : 'volume_up'">volume_up</span>
                 </button>
-                <button @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here" class="p-0.5 rounded-lg text-white/40 hover:text-white transition-colors">
+                <button @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 text-white/50 hover:text-white transition-colors">
                     <span class="material-symbols-outlined text-[1rem]">open_in_new</span>
                 </button>
-                <button title="Close Widget" class="close-widget-btn text-white/50 hover:text-white bg-black/20 hover:bg-black/40 rounded-full p-0.5 backdrop-blur-sm transition-all shadow-sm z-20">
+                <button title="Close Widget" class="close-widget-btn p-1 rounded-full bg-black/45 hover:bg-red-500/70 backdrop-blur-md border border-white/10 text-white/60 hover:text-white transition-all z-20">
                     <span class="material-symbols-outlined text-[1rem]">close</span>
                 </button>
             </div>
         </div>
 
         <!-- The walkman deck: 3D body, LCD, five keys and its library drawer.
+             No wrapper surface — the card is transparent, so the device floats.
              The drawer grows the iframe, which grows this card. -->
-        <div class="relative z-10 flex-1 min-h-0 rounded-xl overflow-hidden bg-black/20">
+        <div class="relative z-10 flex-1 min-h-0">
             <iframe x-ref="walkman" :src="walkmanSrc" @load="onWalkmanLoad()" class="w-full h-full block border-0" title="Walkman music player" allow="autoplay"></iframe>
         </div>
 
