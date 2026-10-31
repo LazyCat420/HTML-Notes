@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Walkman player — embeddable card</title>
+<script type="module" src="/static/walkman/model-viewer.min.js"></script>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{margin:0; height:100%; background:transparent; overflow:hidden;
+    font:13px/1.3 ui-sans-serif,system-ui,sans-serif; color:#e6ebf0}
+  #card{position:relative; display:flex; flex-direction:column;
+    width:100%; height:100%; min-height:150px;
+    border-radius:16px; overflow:hidden; background:
+      radial-gradient(120% 90% at 50% 0%, #1a2126 0%, #0c1013 72%);}
+  /* the device keeps the top; the library drawer slides in under the keys */
+  #stage{position:relative; flex:1 1 auto; min-height:0}
+  /* opened directly (not embedded): show the card at the size it will occupy
+     in the hub, 300 x 150, centred, instead of blowing it up to the viewport */
+  html.standalone, html.standalone body{height:auto; min-height:100%}
+  /* the 150 px card sits centred vertically; its top edge then stays put, so
+     opening the drawer grows the card downward instead of moving the device */
+  html.standalone body{display:block; overflow:auto;
+    padding:max(24px, calc(50vh - 75px)) 24px 24px;
+    background:radial-gradient(90% 120% at 50% 0%, #141a1f 0%, #070a0c 70%)}
+  html.standalone #card{width:300px; height:auto; min-height:0; margin:0 auto;
+    box-shadow:0 18px 40px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.05)}
+  html.standalone #stage{flex:0 0 150px; height:150px}
+  html.standalone #queue.on{height:132px}
+  html.standalone body::after{content:"walkman-player · 300 × 150 (the size it takes in the hub) + drawer";
+    position:fixed; bottom:12px; left:0; right:0; text-align:center;
+    font:11px/1 ui-monospace,monospace; letter-spacing:.06em; color:#5d6a74}
+  model-viewer{width:100%; height:100%; display:block; --poster-color:transparent;}
+  /* model-viewer fades hotspots to 25% by default — the LCD must stay fully lit */
+  .hs-screen{width:178px; height:40px; pointer-events:auto; cursor:pointer;
+    --min-hotspot-opacity:1;
+    border-radius:3px; overflow:hidden; background:#0a1009;
+    box-shadow:inset 0 0 8px rgba(255,179,71,.07)}
+  .hs-screen canvas{width:100%; height:100%; display:block}
+  /* hotspots are position:static by default, which parked the glow behind the
+     WebGL canvas — anchor it to the key and keep it lit while selected */
+  .hs-key{position:relative; width:38px; height:21px; border-radius:5px; cursor:pointer;
+    --min-hotspot-opacity:1; background:transparent; border:none; outline:none;
+    -webkit-tap-highlight-color:transparent; transition:box-shadow .28s ease}
+  /* The key is lit from underneath, so the light is only visible where the
+     key does not cover it: a halo that hugs the key's silhouette. Two 3D
+     anchor hotspots per key give its projected rect; the lamp sits on that
+     rect and paints with box-shadow, which is clipped to outside the border
+     box — so the key face is never lit, only the seam around it. */
+  .hs-anchor{position:absolute; width:0; height:0; pointer-events:none;
+    --min-hotspot-opacity:1}
+  .lamp{position:absolute; pointer-events:none; border-radius:4px; opacity:0;
+    transition:opacity .3s ease;
+    box-shadow:0 0 0 1px rgba(255,214,136,.5),
+               0 0 7px 1px rgba(255,176,62,.3),
+               0 0 17px 4px rgba(255,146,36,.13)}
+  .lamp.on{opacity:1}
+  /* the queue key pops a pickable library drawer down under the keys: search by
+     artist, shuffle, click a row to play it. It never covers the device. */
+  /* collapsed to zero height, then pops down under the keys */
+  #queue{flex:0 0 auto; display:flex; flex-direction:column; gap:6px;
+    height:0; padding:0 8px; overflow:hidden; opacity:0; pointer-events:none;
+    background:linear-gradient(180deg, rgba(12,16,19,.96), rgba(6,9,10,.99));
+    box-shadow:inset 0 1px 0 rgba(255,214,136,.10);
+    transition:height .24s ease, padding .24s ease, opacity .18s ease,
+               box-shadow .24s ease}
+  /* in a fixed-height embed the drawer gives way to the device rather than
+     pushing it out of the card */
+  #queue.on{height:min(132px, 50%); padding:7px 8px 8px; opacity:1; pointer-events:auto;
+    box-shadow:inset 0 1px 0 rgba(255,214,136,.10),
+               inset 0 2px 0 rgba(255,179,71,.20)}
+  #queue .bar{display:flex; gap:6px; align-items:center; flex:none}
+  #queue .close{flex:none; width:20px; height:20px; padding:0; line-height:1;
+    border-radius:6px; cursor:pointer; font:13px/1 ui-sans-serif,system-ui,sans-serif;
+    color:#8b96a0; background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.12)}
+  #queue .close:hover{color:#ffcf87; border-color:rgba(255,179,71,.5)}
+  #queue input{flex:1; min-width:0; padding:4px 6px; border-radius:6px; outline:none;
+    background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12);
+    color:#e6ebf0; font:11px ui-sans-serif,system-ui,sans-serif}
+  #queue input::placeholder{color:#6b7780}
+  #queue input:focus{border-color:rgba(255,179,71,.55); background:rgba(255,179,71,.06)}
+  #queue .shuf{flex:none; padding:4px 6px; border-radius:6px; cursor:pointer;
+    font:9px/1 ui-monospace,monospace; letter-spacing:.08em;
+    color:#9aa6b0; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12)}
+  #queue .shuf.on{color:#ffcf87; border-color:rgba(255,179,71,.6); background:rgba(255,179,71,.14)}
+  #qrows{flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain}
+  #qrows .row{display:flex; gap:8px; align-items:baseline; padding:3px 4px;
+    border-radius:5px; cursor:pointer; font-size:11px}
+  #qrows .row:hover{background:rgba(255,255,255,.07)}
+  #qrows .row.cur{background:rgba(255,179,71,.15); color:#ffd489}
+  #qrows .row i{font-style:normal; color:#ffb347; font-variant-numeric:tabular-nums; width:12px; flex:none}
+  #qrows .row b{font-weight:600; color:#dfe6ec; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  #qrows .row.cur b{color:#ffd489}
+  #qrows .row span{color:#8b96a0; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  #qrows .empty{color:#6b7780; font-size:11px; padding:6px 4px}
+</style>
+</head>
+<body>
+<div id="card">
+  <div id="stage">
+  <model-viewer id="mv" src="/static/walkman/models/player-body-v2-lite.glb"
+    camera-orbit="0deg 90deg 0.55m" min-camera-orbit="auto 78deg 0.2m" max-camera-orbit="auto 102deg 2m"
+    field-of-view="20deg" environment-image="/static/walkman/models/studio.hdr"
+    tone-mapping="aces" exposure="1" shadow-intensity="1" shadow-softness="1"
+    interaction-prompt="none" disable-tap disable-pan disable-rotate alt="3D cassette music player">
+    <div class="hs-screen" slot="hotspot-screen" data-position="0 0.033 0.0155">
+      <canvas id="scr" width="712" height="160"></canvas>
+    </div>
+    <div class="hs-anchor" slot="hotspot-a0t" data-position="-0.132 -0.036 0.021"></div>
+    <div class="hs-anchor" slot="hotspot-a0b" data-position="-0.084 -0.062 0.021"></div>
+    <div class="hs-anchor" slot="hotspot-a1t" data-position="-0.078 -0.034 0.023"></div>
+    <div class="hs-anchor" slot="hotspot-a1b" data-position="-0.03 -0.064 0.023"></div>
+    <div class="hs-anchor" slot="hotspot-a2t" data-position="-0.024 -0.036 0.021"></div>
+    <div class="hs-anchor" slot="hotspot-a2b" data-position="0.024 -0.062 0.021"></div>
+    <div class="hs-anchor" slot="hotspot-a3t" data-position="0.03 -0.036 0.021"></div>
+    <div class="hs-anchor" slot="hotspot-a3b" data-position="0.078 -0.062 0.021"></div>
+    <div class="hs-anchor" slot="hotspot-a4t" data-position="0.084 -0.036 0.021"></div>
+    <div class="hs-anchor" slot="hotspot-a4b" data-position="0.132 -0.062 0.021"></div>
+    <button class="hs-key" slot="hotspot-k0" data-position="-0.108 -0.049 0.021" aria-label="Previous"></button>
+    <button class="hs-key" slot="hotspot-k1" data-position="-0.054 -0.049 0.021" aria-label="Play"></button>
+    <button class="hs-key" slot="hotspot-k2" data-position="0 -0.049 0.023" aria-label="Stop"></button>
+    <button class="hs-key" slot="hotspot-k3" data-position="0.054 -0.049 0.021" aria-label="Next"></button>
+    <button class="hs-key" slot="hotspot-k4" data-position="0.108 -0.049 0.021" aria-label="Queue"></button>
+  </model-viewer>
+  <div class="lamp" data-k="0"></div>
+  <div class="lamp" data-k="1"></div>
+  <div class="lamp" data-k="2"></div>
+  <div class="lamp" data-k="3"></div>
+  <div class="lamp" data-k="4"></div>
+  </div><!-- /stage -->
+  <div id="queue">
+    <div class="bar">
+      <input id="qsearch" type="search" placeholder="Search artist…" aria-label="Search artists">
+      <button class="shuf" id="qshuffle" aria-pressed="false" title="Shuffle">SHUF</button>
+      <button class="close" id="qclose" aria-label="Close library" title="Close">×</button>
+    </div>
+    <div id="qrows"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const mv = $('mv');
+const CW = 6, CH = 7;
+const GLASS_W = 0.224, GLASS_H = 0.050, BACKING = 4;
+const MARGIN = 10;   // backing px of padding inside the glass
+const BG = [10, 16, 9], INK = [255, 210, 118];
+const FONT = {
+  A:'01110/10001/10001/11111/10001/10001/10001',
+  B:'11110/10001/10001/11110/10001/10001/11110',
+  C:'01110/10001/10000/10000/10000/10001/01110',
+  D:'11110/10001/10001/10001/10001/10001/11110',
+  E:'11111/10000/10000/11110/10000/10000/11111',
+  F:'11111/10000/10000/11110/10000/10000/10000',
+  G:'01110/10001/10000/10111/10001/10001/01111',
+  H:'10001/10001/10001/11111/10001/10001/10001',
+  I:'11111/00100/00100/00100/00100/00100/11111',
+  J:'00111/00010/00010/00010/00010/10010/01100',
+  K:'10001/10010/10100/11000/10100/10010/10001',
+  L:'10000/10000/10000/10000/10000/10000/11111',
+  M:'10001/11011/10101/10101/10001/10001/10001',
+  N:'10001/11001/10101/10011/10001/10001/10001',
+  O:'01110/10001/10001/10001/10001/10001/01110',
+  P:'11110/10001/10001/11110/10000/10000/10000',
+  Q:'01110/10001/10001/10001/10101/10010/01101',
+  R:'11110/10001/10001/11110/10100/10010/10001',
+  S:'01111/10000/10000/01110/00001/00001/11110',
+  T:'11111/00100/00100/00100/00100/00100/00100',
+  U:'10001/10001/10001/10001/10001/10001/01110',
+  V:'10001/10001/10001/10001/10001/01010/00100',
+  W:'10001/10001/10001/10101/10101/11011/10001',
+  X:'10001/10001/01010/00100/01010/10001/10001',
+  Y:'10001/10001/01010/00100/00100/00100/00100',
+  Z:'11111/00001/00010/00100/01000/10000/11111',
+  '0':'01110/10001/10011/10101/11001/10001/01110',
+  '1':'00100/01100/00100/00100/00100/00100/01110',
+  '2':'01110/10001/00001/00010/00100/01000/11111',
+  '3':'11111/00010/00100/00010/00001/10001/01110',
+  '4':'00010/00110/01010/10010/11111/00010/00010',
+  '5':'11111/10000/11110/00001/00001/10001/01110',
+  '6':'00110/01000/10000/11110/10001/10001/01110',
+  '7':'11111/00001/00010/00100/01000/01000/01000',
+  '8':'01110/10001/10001/01110/10001/10001/01110',
+  '9':'01110/10001/10001/01111/00001/00010/01100',
+  '-':'00000/00000/00000/11111/00000/00000/00000',
+  '.':'00000/00000/00000/00000/00000/00000/00100',
+  ':':'00000/00100/00100/00000/00100/00100/00000',
+  '/':'00001/00010/00010/00100/01000/01000/10000',
+  '|':'00100/00100/00100/00100/00100/00100/00100',
+  '*':'00000/00000/01110/01110/01110/00000/00000',
+  'o':'00000/01110/01010/01010/01110/00000/00000'
+};
+const DEFAULTS = {
+  title: 'Buckethead — Soothsayer',
+  artist: 'Buckethead',
+  duration: 242,
+  position: 0,
+  playing: true,
+  shuffle: false,
+  library: [
+    { artist: 'Buckethead', title: 'Soothsayer', duration: 242 },
+    { artist: 'Buckethead', title: 'Colma', duration: 181 },
+    { artist: 'Buckethead', title: 'Big Sur Moon', duration: 96 },
+    { artist: 'Buckethead', title: 'Electric Tears', duration: 301 },
+    { artist: 'Boards of Canada', title: 'Roygbiv', duration: 142 },
+    { artist: 'Aphex Twin', title: 'Xtal', duration: 293 },
+    { artist: 'Autechre', title: 'Amber', duration: 330 },
+    { artist: 'Burial', title: 'Archangel', duration: 238 }
+  ]
+};
+const DRIVEN = new URLSearchParams(location.search).get('driven') === '1';
+let state = { ...DEFAULTS };
+let last = performance.now(), queueOpen = false;
+
+function glyphs(str){
+  const out = [];
+  for (const ch of str) out.push(FONT[ch] || FONT[ch.toUpperCase()] || FONT['-']);
+  return out;
+}
+function textWidth(str, s = 1){ return str.length * CW * s - s; }
+function drawText(ctx, str, x, y, color, s = 1, glow = false){
+  ctx.fillStyle = color;
+  if (glow){ ctx.shadowColor = 'rgba(255,190,90,.55)'; ctx.shadowBlur = 3; }
+  const list = glyphs(str);
+  for (let i = 0; i < list.length; i++){
+    const rows = list[i].split('/');
+    for (let r = 0; r < CH; r++)
+      for (let c = 0; c < 5; c++)
+        if (rows[r][c] === '1') ctx.fillRect(x + i * CW * s + c * s, y + r * s, s, s);
+  }
+  ctx.shadowBlur = 0;
+}
+function fitScale(W, H, strings){
+  const n = Math.max(1, ...strings.map(t => t.length));
+  const byWidth = Math.floor((W - 2 * MARGIN) / (CW * n));
+  const byHeight = Math.floor(H / 29);
+  return Math.max(2, Math.min(8, byWidth, byHeight));
+}
+
+function drawScreen(){
+  const scr = $('scr');
+  const W = scr.width, H = scr.height;
+  if (!W || !H) return;
+  const ctx = scr.getContext('2d');
+  ctx.fillStyle = `rgb(${BG})`;
+  ctx.fillRect(0, 0, W, H);
+  const wash = ctx.createLinearGradient(0, 0, 0, H);
+  wash.addColorStop(0, 'rgba(255,190,90,.09)');
+  wash.addColorStop(1, 'rgba(255,190,90,.02)');
+  ctx.fillStyle = wash;
+  ctx.fillRect(0, 0, W, H);
+
+  const f = v => `${Math.floor(v / 60)}:${String(Math.floor(v % 60)).padStart(2, '0')}`;
+  const time = `${f(state.position)} / ${f(state.duration)}`;
+  const st = state.playing ? 'PLAY' : 'PAUSE';
+  let label = state.title.toUpperCase();
+
+  const s = fitScale(W, H, [label, time, st]);
+  if (textWidth(label, s) > W - 2 * MARGIN){
+    // only reached for titles longer than ~58 characters: trim, never scroll
+    const maxChars = Math.floor((W - 2 * MARGIN + s) / (CW * s));
+    label = label.slice(0, Math.max(0, maxChars - 2)) + '..';
+  }
+
+  const ink = `rgb(${INK})`;
+  const top = Math.floor((H - 29 * s) / 2);
+
+  drawText(ctx, label, MARGIN, top, ink, s, true);
+  drawText(ctx, time, MARGIN, top + 9 * s, ink, s, true);
+  drawText(ctx, st, W - MARGIN - textWidth(st, s), top + 9 * s, ink, s, true);
+
+  const cells = 43;
+  const pitch = Math.floor((W - 2 * MARGIN) / cells);
+  const cw = Math.max(1, pitch - Math.max(1, Math.round(pitch * 0.25)));
+  const filled = Math.round(Math.min(1, state.position / Math.max(1, state.duration)) * cells);
+  for (let i = 0; i < cells; i++){
+    ctx.fillStyle = i < filled ? ink : 'rgba(255,210,118,.20)';
+    ctx.fillRect(MARGIN + i * pitch, top + 18 * s, cw, 3 * s);
+  }
+  drawText(ctx, 'SIDE A', MARGIN, top + 22 * s, 'rgba(255,210,118,.85)', s);
+  drawText(ctx, state.playing ? '*' : 'o', W - MARGIN - textWidth('*', s), top + 22 * s, ink, s);
+}
+
+/* hotspots keep a fixed CSS size; the glass is 0.224 m of a 0.216 m key span,
+   so the overlay is sized from the projected keys and supersampled 4x */
+const KEY_SPAN = 0.216;
+function syncScreen(){
+  const el = document.querySelector('.hs-screen');
+  const scr = $('scr');
+  const ks = [...document.querySelectorAll('.hs-key')];
+  if (!el || !scr || ks.length < 2) return;
+  const cx = ks.map(k => { const r = k.getBoundingClientRect(); return r.left + r.width / 2; });
+  const span = Math.max(...cx) - Math.min(...cx);
+  if (span <= 0) return;
+  const pxPerM = span / KEY_SPAN;
+  // hotspots keep a fixed CSS size in model-viewer; size them to the real keys
+  // (0.048 x 0.026 m) so the under-light starts exactly at the key's bottom edge
+  ks.forEach((k, i) => {
+    const kh = Math.max(8, Math.round((i === 1 ? 0.030 : 0.026) * pxPerM));
+    const kw = Math.max(12, Math.round(0.048 * pxPerM));
+    if (k.style.width !== kw + 'px'){
+      k.style.width = kw + 'px';
+      k.style.height = kh + 'px';
+      k.style.setProperty('--key-h', kh + 'px');
+    }
+  });
+  const card = document.getElementById('stage').getBoundingClientRect();
+  const lamps = [...document.querySelectorAll('.lamp')];
+  lamps.forEach((lamp, i) => {
+    const a = document.querySelector(`[slot="hotspot-a${i}t"]`);
+    const b = document.querySelector(`[slot="hotspot-a${i}b"]`);
+    if (!a || !b) return;
+    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+    const l = Math.round(ra.left - card.left), t = Math.round(ra.top - card.top);
+    const w = Math.round(rb.left - ra.left), h = Math.round(rb.top - ra.top);
+    if (w <= 0 || h <= 0) return;
+    lamp.style.left = l + 'px';
+    lamp.style.top = t + 'px';
+    lamp.style.width = w + 'px';
+    lamp.style.height = h + 'px';
+    lamp.style.borderRadius = Math.max(2, Math.round(h * 0.18)) + 'px';
+  });
+  const w = Math.max(40, Math.round(GLASS_W * pxPerM));
+  const h = Math.max(20, Math.round(GLASS_H * pxPerM));
+  if (el.style.width !== w + 'px'){
+    el.style.width = w + 'px';
+    el.style.height = h + 'px';
+  }
+  const bw = w * BACKING, bh = h * BACKING;
+  if (scr.width !== bw || scr.height !== bh){
+    scr.width = bw;
+    scr.height = bh;
+    drawScreen();
+  }
+}
+mv.addEventListener('camera-change', syncScreen);
+mv.addEventListener('load', () => setTimeout(syncScreen, 60));
+addEventListener('resize', syncScreen);
+setTimeout(syncScreen, 400);
+
+/* ---- audio ---- */
+let ac = null;
+function click(soft){
+  ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+  if (ac.state === 'suspended') ac.resume();
+  const n = 0.03, buf = ac.createBuffer(1, Math.floor(ac.sampleRate * n), ac.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+  const src = ac.createBufferSource(); src.buffer = buf;
+  const bp = ac.createBiquadFilter(); bp.type = 'bandpass';
+  bp.frequency.value = soft ? 1200 : 1900; bp.Q.value = 1.3;
+  const g = ac.createGain(); g.gain.value = 0.18;
+  src.connect(bp).connect(g).connect(ac.destination);
+  src.start();
+}
+
+/* ---- controls ---- */
+const ACTIONS = ['prev', 'play', 'stop', 'next', 'queue'];
+const FLASH_MS = 900;      // every key except play lights for this long
+const lamps = () => [...document.querySelectorAll('.lamp')];
+const keys = () => [...document.querySelectorAll('.hs-key')];
+const pulseTimers = [0, 0, 0, 0, 0];
+function emit(msg){
+  try { parent.postMessage({ type: 'walkman', ...msg }, '*'); } catch (e) {}
+}
+
+/* i = -1 clears everything. ms = Infinity keeps the lamp on (play while
+   playing); a number flashes it, then restores the steady state. */
+function lampOn(i, ms = Infinity){
+  lamps().forEach((l, n) => l.classList.toggle('on', n === i));
+  keys().forEach((k, n) => k.setAttribute('aria-pressed', n === i ? 'true' : 'false'));
+  if (i >= 0) clearTimeout(pulseTimers[i]);
+  if (i >= 0 && ms !== Infinity){
+    pulseTimers[i] = setTimeout(() => {
+      lamps()[i].classList.remove('on');
+      keys()[i].setAttribute('aria-pressed', 'false');
+      if (state.playing) lampOn(1, Infinity);
+    }, ms);
+  }
+}
+
+function step(dir){
+  const lib = state.library;
+  if (!lib.length) return;
+  const cur = lib.findIndex(t => `${t.artist} — ${t.title}` === state.title);
+  let i;
+  if (state.shuffle){
+    i = Math.floor(Math.random() * lib.length);
+    if (lib.length > 1 && i === cur) i = (i + 1) % lib.length;
+  } else {
+    i = ((cur < 0 ? 0 : cur) + dir + lib.length) % lib.length;
+  }
+  load(i);
+}
+function load(i){
+  const t = state.library[i];
+  if (!t) return;
+  state.title = `${t.artist} — ${t.title}`;
+  state.artist = t.artist;
+  state.duration = t.duration || state.duration;
+  state.position = 0;
+  state.playing = true;
+  lampOn(1, Infinity);
+  drawScreen();
+  if (queueOpen) renderQueue();
+  emit({ action: 'select', index: i, state: { ...state } });
+}
+
+function press(i){
+  click(i !== 4);
+  const action = ACTIONS[i];
+  if (action === 'queue'){
+    toggleQueue();
+    lampOn(4, FLASH_MS);
+    drawScreen();
+    emit({ action, state: { ...state }, queueOpen });
+    return;
+  }
+  if (action === 'play'){
+    state.playing = !state.playing;
+    lampOn(1, state.playing ? Infinity : FLASH_MS);
+  } else if (action === 'stop'){
+    state.playing = false;
+    state.position = 0;
+    lampOn(2, FLASH_MS);
+  } else if (action === 'prev'){
+    step(-1);
+    lampOn(0, FLASH_MS);
+  } else if (action === 'next'){
+    step(1);
+    lampOn(3, FLASH_MS);
+  }
+  drawScreen();
+  emit({ action, state: { ...state } });
+}
+document.querySelectorAll('.hs-key').forEach((k, i) => {
+  k.addEventListener('click', e => { e.stopPropagation(); press(i); });
+});
+document.querySelector('.hs-screen').addEventListener('click', () => { press(4); });
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === ' '){ e.preventDefault(); press(1); }
+  else if (k === 'arrowleft') press(0);
+  else if (k === 'arrowright') press(3);
+  else if (k === 'q') press(4);
+  else if (k === '/'){ e.preventDefault(); openQueue(); $('qsearch').focus(); }
+  else if (k === 'escape' && queueOpen){ toggleQueue(false); lampOn(state.playing ? 1 : -1, Infinity); }
+});
+
+/* ---- library panel ---- */
+function esc(x){ return String(x).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function renderQueue(){
+  const q = ($('qsearch').value || '').trim().toLowerCase();
+  const hits = state.library
+    .map((t, i) => ({ t, i }))
+    .filter(({ t }) => !q || `${t.artist} ${t.title}`.toLowerCase().includes(q));
+  $('qrows').innerHTML = hits.length
+    ? hits.map(({ t, i }) => {
+        const cur = `${t.artist} — ${t.title}` === state.title;
+        return `<div class="row${cur ? ' cur' : ''}" data-i="${i}"><i>${cur ? '>' : i + 1}</i>`
+             + `<b>${esc(t.title)}</b><span>${esc(t.artist)}</span></div>`;
+      }).join('')
+    : '<div class="empty">No artist matches</div>';
+  $('qshuffle').classList.toggle('on', state.shuffle);
+  $('qshuffle').setAttribute('aria-pressed', String(state.shuffle));
+}
+function toggleQueue(open = !queueOpen){
+  queueOpen = open;
+  $('queue').classList.toggle('on', queueOpen);
+  if (queueOpen) renderQueue();
+  else if (document.activeElement === $('qsearch')) $('qsearch').blur();
+  // the stage changes height when the drawer opens: re-project the hotspots
+  requestAnimationFrame(syncScreen);
+  setTimeout(syncScreen, 120);
+  emit({ action: 'toggle', queueOpen });
+}
+function openQueue(){ if (!queueOpen) toggleQueue(); }
+
+$('qsearch').addEventListener('input', renderQueue);
+$('qclose').addEventListener('click', () => toggleQueue(false));
+$('qsearch').addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ toggleQueue(false); return; }
+  if (e.key !== 'Enter') return;
+  const first = $('qrows').querySelector('.row');
+  if (first) load(Number(first.dataset.i));
+});
+$('qrows').addEventListener('click', e => {
+  const row = e.target.closest('.row');
+  if (!row || row.dataset.i === undefined) return;
+  click(true);
+  load(Number(row.dataset.i));
+});
+$('qshuffle').addEventListener('click', () => {
+  state.shuffle = !state.shuffle;
+  renderQueue();
+  emit({ action: 'shuffle', state: { ...state } });
+});
+
+/* ---- public API ---- */
+window.walkmanPlayer = {
+  setTrack(t){
+    const wasPlaying = state.playing;
+    state = { ...state, ...t };
+    if (t.library) renderQueue();
+    // the host re-pushes every 250 ms; only move the light when play state
+    // actually changed, or a key's flash would be cancelled instantly
+    if (state.playing !== wasPlaying) lampOn(state.playing ? 1 : -1, Infinity);
+    drawScreen();
+    if (queueOpen) renderQueue();
+  },
+  setLibrary(lib){ state.library = lib; if (queueOpen) renderQueue(); },
+  select(i){ load(i); },
+  get state(){ return { ...state }; },
+  toggleQueue,
+  openQueue(){ toggleQueue(true); },
+  closeQueue(){ toggleQueue(false); },
+  toggleShuffle(){ state.shuffle = !state.shuffle; renderQueue(); return state.shuffle; },
+  press
+};
+addEventListener('message', e => {
+  const d = e.data;
+  if (!d || d.type !== 'walkman') return;
+  if (d.setTrack) window.walkmanPlayer.setTrack(d.setTrack);
+  if (d.setLibrary) window.walkmanPlayer.setLibrary(d.setLibrary);
+  if (d.select !== undefined) window.walkmanPlayer.select(d.select);
+  if (d.press !== undefined) press(d.press);
+  if (d.openQueue !== undefined) toggleQueue(!!d.openQueue);
+});
+
+/* ---- clock ---- */
+function tick(now){
+  const dt = (now - last) / 1000; last = now;
+  if (state.playing && !DRIVEN){
+    state.position += dt;
+    if (state.position >= state.duration){
+      state.position = state.duration;
+      state.playing = false;
+      lampOn(-1);
+      emit({ action: 'ended', state: { ...state } });
+    }
+  }
+  drawScreen();
+  syncScreen();
+  requestAnimationFrame(tick);
+}
+
+/* ---- boot ---- */
+if (window.self === window.top) document.documentElement.classList.add('standalone');
+const q = new URLSearchParams(location.search);
+if (q.get('title')) state.title = q.get('title');
+if (q.get('duration')) state.duration = Number(q.get('duration')) || state.duration;
+if (q.get('position')) state.position = Number(q.get('position')) || 0;
+if (q.get('paused') === '1') state.playing = false;
+if (q.get('playing') !== '0' && q.get('paused') !== '1') lampOn(1, Infinity);
+if (q.get('queue') === '1'){ toggleQueue(); lampOn(4, FLASH_MS); }
+drawScreen();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

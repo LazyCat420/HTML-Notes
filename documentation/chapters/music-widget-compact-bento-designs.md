@@ -651,11 +651,15 @@ deck has no key for: genre chip, thumbs, history, mute, open-in-player, close.
 **Why an iframe, not inline markup.** The card is one document with its own
 `model-viewer`, LCD canvas and projection code. Re-implementing it inside the
 Alpine template would create a second copy that drifts. The widget instead
-points an iframe at it and speaks a small protocol. `WALKMAN_CARD_URL` sets the
-URL; blank means the browser derives
-`<protocol>//<its own hostname>:8910/static/walkman-player.html` — doc-client
-serves the hub's static files on 8910, so the card is same-host and reachable
-from the LAN too.
+points an iframe at it and speaks a small protocol.
+
+**Same-origin on purpose.** The card is authored in doc-client but the
+html-notes container is deployed on a different host from the hub, so a URL
+derived from the browser's hostname pointed at the wrong box. The app therefore
+serves its own copy at `/static/walkman/player.html` (with `model-viewer.min.js`,
+`player-body-v2-lite.glb` and `studio.hdr` beside it, 2.4 MB), kept in sync by
+`scripts/sync-walkman-card.sh`, and `WALKMAN_CARD_URL` defaults to that path.
+One source of truth for the card's code, no cross-app URL and no CORS.
 
 **The card is a view; the widget owns playback.** `?driven=1` stops the card's
 internal clock, so it never advances or ends a track on its own — the app's

@@ -1094,8 +1094,9 @@ document.addEventListener('alpine:init', () => {
         walkmanListener: null,
 
         get walkmanSrc() {
-            const base = this.walkmanBase
-                || `${location.protocol}//${location.hostname}:8910/static/walkman-player.html`;
+            // Same-origin by default: this app serves its own copy of the card
+            // (app/static/walkman), synced from doc-client.
+            const base = this.walkmanBase || '/static/walkman/player.html';
             // driven=1: the host owns the clock, so the card never advances or
             // ends a track on its own. paused=1: no light until the host says.
             return `${base}${base.includes('?') ? '&' : '?'}driven=1&paused=1`;
