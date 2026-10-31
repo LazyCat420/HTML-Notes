@@ -511,39 +511,52 @@ border box and therefore legitimately painted by `box-shadow`. The halo covers
 peak Δ of 341 at the seam and a mean of 19–25 per band — roughly a third dimmer
 than the first version, which peaked near Δ 520.
 
-### The queue key opens a library you can pick from
+### The queue key pops a library drawer down under the keys
 
 The queue used to be a read-only "Up next" list. Pressing the queue key now
-opens a **library panel**: a search field, a shuffle toggle, and every track as
-a clickable row.
+opens a **collapsible drawer below the device**: search field, shuffle toggle,
+close button, and every track as a clickable row. It never covers the player —
+the card grows downward instead, so the 3D device and all five keys stay visible
+and clickable.
 
-![The library panel open: search filtered to Buckethead, shuffle on, Colma selected](artifacts/music-widget-designs/28-walkman-player-library.png)
+![The drawer open under the keys: search filtered to Buckethead, shuffle on, Colma selected](artifacts/music-widget-designs/28-walkman-player-library.png)
 
-![The same card with the panel closed, play lit](artifacts/music-widget-designs/29-walkman-player-play-lit.png)
+![The same card with the drawer closed, play lit](artifacts/music-widget-designs/29-walkman-player-play-lit.png)
 
-- **Search** filters by artist *or* title as you type (`input` event, no
-  debounce needed at this list size). `Enter` plays the first match, `Esc`
-  blurs the field, `/` opens the panel and focuses it.
-- **Shuffle** (`SHUF`) toggles `state.shuffle`; it tints amber while on. With
-  shuffle on, `next` picks a random other track instead of the following one.
+- **Layout.** `#card` is a flex column: `#stage` (the model-viewer plus the five
+  lamps) on top, `#queue` below. Closed, the drawer is `height:0` with
+  `pointer-events:none`, so the card is exactly **300 × 150**; opening animates
+  it to 132 px of content (148 px with padding) over 240 ms, and the card
+  becomes 297 px tall. In standalone the card's top edge is pinned at
+  `max(24px, 50vh - 75px)`, so the device does not move — the drawer grows
+  downward under the keys.
+- **Three ways out**, which is what the old overlay lacked: the queue key
+  toggles it (and is always visible now), the `×` button in the drawer bar
+  closes it, and `Esc` closes it anywhere.
+- **Search** filters by artist *or* title as you type. `Enter` plays the first
+  match, `Esc` closes, `/` opens the drawer and focuses the field.
+- **Shuffle** (`SHUF`) toggles `state.shuffle` and tints amber while on; with it
+  on, `next` picks a random other track.
 - **Rows** show the index (or `>` for the playing track), the title and the
-  artist. Clicking a row loads that track: title and duration come from the
-  library entry, position resets to 0, playback starts, and the `play` key
-  takes the steady light. The row tints amber and the panel stays open so you
-  can pick again.
-- The panel is anchored right at 74% of the card (240 × 138 px inside a
-  300 × 150 card) with the list scrolling; the device stays visible on the
-  left. It never changes the card's height.
-- `window.walkmanPlayer` gained `setLibrary(list)`, `select(i)` and
-  `toggleShuffle()`; `postMessage` accepts `{type:'walkman', setLibrary:[…]}`
-  and `{type:'walkman', select:i}`, and emits `{action:'select'|'shuffle'}`
-  back to the host.
+  artist. Clicking a row loads that track: title and duration from the library,
+  position 0, playback starts, and `play` takes the steady light. The row tints
+  amber and the drawer stays open so you can pick again.
+- **Embeds.** A fixed-height container cannot grow, so there the drawer takes at
+  most `min(132px, 50%)` of the card and the stage shrinks to make room. At
+  620 × 310 the stage keeps 163 px and the drawer gets 147 px; at 300 × 150 the
+  split is 60 / 90, which keeps every key and the `×` on screen.
+- `window.walkmanPlayer` gained `setLibrary(list)`, `select(i)`,
+  `openQueue()`, `closeQueue()` and `toggleShuffle()`; `postMessage` accepts
+  `{type:'walkman', setLibrary:[…]}` / `select` and emits
+  `{action:'toggle', queueOpen}` plus `select` / `shuffle`.
 
-Verified in the browser at the widget size: stop → flash then all dark;
-play → still lit after 4 s; next → lit at 0 and 400 ms, back to `play` at
-1 600 ms; panel opens at 240 × 138 with 8 rows; search `aphex` → 1 row,
-`Boards` → 1 row, `zzz` → the empty state; clicking the `burial` row loads
-"Burial — Archangel" at position 0 with `play` lit; `SHUF` toggles on.
+Verified in the browser: closed card 150 px, drawer 0 px, card top unchanged at
+275 px; opening gives card 297 px with the stage still 150 px and the drawer
+starting exactly at the stage's bottom edge (150 px) — the device is never
+overlapped; `×`, `Esc` and the queue key each close it and return the light to
+`play`. Search `aphex` → 1 row, `Boards` → 1 row, `zzz` → the empty state;
+clicking the `burial` row loads "Burial — Archangel" at position 0 with `play`
+lit. Real mouse clicks at widget size behave the same.
 
 ![The card at 300 × 150, play lit from under the key](artifacts/music-widget-designs/24-walkman-player-300.png)
 
