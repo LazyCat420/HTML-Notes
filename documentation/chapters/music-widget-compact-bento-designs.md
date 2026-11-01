@@ -641,12 +641,13 @@ music rather than only displaying it.
 ## Wired into the canvas widget (2026-10-31)
 
 `render_mini_music_player` (`app/widgets/factory.py`) no longer draws its own
-bento shell. It **embeds the 3D walkman card** and keeps only the controls the
-deck has no key for: genre chip, thumbs, history, mute, open-in-player, close.
+bento shell. It **embeds the 3D walkman card**, and since 2026-10-31 the card
+carries every control itself — the template is the iframe and its error toast,
+nothing else.
 
-![The floating deck in the canvas, chips above, no frame](artifacts/music-widget-designs/32-hn-widget-boxless.png)
+![The widget is the device: boxless, six engraved keys under the LCD](artifacts/music-widget-designs/32-hn-widget-boxless.png)
 
-![The same widget with the library drawer open under the keys](artifacts/music-widget-designs/33-hn-widget-drawer.png)
+![The library drawer under the keys](artifacts/music-widget-designs/33-hn-widget-drawer.png)
 
 **Why an iframe, not inline markup.** The card is one document with its own
 `model-viewer`, LCD canvas and projection code. Re-implementing it inside the
@@ -657,7 +658,7 @@ points an iframe at it and speaks a small protocol.
 html-notes container is deployed on a different host from the hub, so a URL
 derived from the browser's hostname pointed at the wrong box. The app therefore
 serves its own copy at `/static/walkman/player.html` (with `model-viewer.min.js`,
-`player-body-v2-lite.glb` and `studio.hdr` beside it, 2.4 MB), kept in sync by
+`player-body-v3-lite.glb` and `studio.hdr` beside it, 1.5 MB), kept in sync by
 `scripts/sync-walkman-card.sh`, and `WALKMAN_CARD_URL` defaults to that path.
 One source of truth for the card's code, no cross-app URL and no CORS.
 
@@ -723,18 +724,49 @@ and the card itself became transparent — `#card` lost its radial-gradient fill
 its 16 px radius and its shadow, so the model-viewer canvas sits straight on the
 canvas behind it.
 
-**Everything the frame carried still exists on the player.** Nothing was
-dropped when the box went away; each control became its own floating chip:
+**The controls are on the device, not around it.** Floating chips above the
+deck were the first version of this — but a row of buttons over a 3D object is
+still a bar, and a bar is still a box. So the six controls became real keys:
+Blender cut them into the front panel, engraved, in the free band between the
+LCD and the transport row.
 
-| was in the frame | now |
-|---|---|
-| genre / routing pill | same pill, dark chip on the canvas |
-| thumbs up / down | round chip each, emerald / red when set |
-| history | round chip, purple when the drawer lists history |
-| mute | round chip, icon swaps `volume_up` ↔ `volume_off` |
-| open in Music Player | round chip |
-| close | round chip, red on hover, `WidgetManager.dismiss()` |
-| corner resize grip | the same `WidgetResizer` handle, restyled as an amber L bracket on the deck |
+| control | on the deck | emits |
+|---|---|---|
+| like / dislike | key 1 / key 2, thumb silhouette mirrored vertically | `thumb_up` / `thumb_down` |
+| history | key 3, clock dial with hands | `history` |
+| mute | key 4, speaker cone plus a cross | `mute` |
+| open in Music Player | key 5, box with an escaping arrow | `open` |
+| close widget | key 6, X | `close` → `WidgetManager.dismiss()` |
+| corner resize grip | the same `WidgetResizer` handle, an amber L bracket on the deck | — |
+
+![The six secondary keys, 4× — like, dislike, history, mute, open, close](artifacts/music-widget-designs/35-hn-aux-keys.png)
+
+Geometry: `AUX_W = 0.026`, `AUX_H = 0.016`, `AUX_GAP = 0.005` at `z = −0.0215`
+between the LCD's lower edge (`z = 0.008`) and the transport keys' top
+(`z = −0.036`); icons are `1.6×` the transport-icon space, so each glyph fills
+its 26 × 16 mm cap. The booleans are exact (`ICON_CUT = 0.0009`) with a dark
+inlay, so the icons are grooves, not raised bumps. `player-body-v3.glb` is
+3,032,196 B / 7,608 tris; the `lite` build is 975,232 B.
+
+Each key has its own hotspot (`hotspot-x0 … x5`) sized from the projected cap
+(`0.026 × 0.016` m → 39 × 24 px at the 284 px deck) and its own `.lamp`, so the
+amber rim-halo lights the panel around the key that was pressed. Only `play`
+holds its light; an aux key flashes for 450 ms. `thumb` and `mute` are *state*,
+not flashes: the lamp stays on while the track is liked/disliked and while the
+app is muted, and the card's `setTrack` re-syncs both when the host pushes a new
+track. Verified with real mouse clicks through the iframe:
+
+| click | widget state | lamps on |
+|---|---|---|
+| like | `thumbState: 'up'` | 1 (play), 5 |
+| dislike | `thumbState: 'down'` | 1, 6 |
+| mute | `isMuted: true` | 1, 6, 8 |
+| history | drawer opens in `history` mode, 284 → 432 | 1, 6, 8 |
+| close | widget removed, id recorded in `dismissed_widgets` | — |
+
+The widget is now **only the iframe**: `buttons: 0`, `close-widget-btn: 0`,
+`h: 284`. `renderDynamicComponents()` skips its automatic close-button pass for
+`.music-widget-root`, so a rendered widget cannot grow a chip back.
 
 **Resize is the canvas's resize.** The widget no longer has a frame to drag, so
 the grip is the existing `.widget-resize-handle` that `WidgetResizer.decorate()`
@@ -777,7 +809,9 @@ drawer opens, widget 284 → 432, 100 rows; clicking row 3 plays that track
 `×` closes back to 284; `stop` pauses and clears the light; `play` resumes;
 `SHUF` flips the app's shuffle and reorders the queue; history shows 4 rows and
 selecting one plays it. Unit tests: `tests/test_widgets.py` asserts the iframe,
-`walkmanSrc`, `onWalkmanLoad` and `cardUrl` in the template — 71 passed.
+`walkmanSrc`, `onWalkmanLoad`, `cardUrl` and `walkmanHeight` in the template, and
+now that **no `<button>`, no `close-widget-btn` and no thumb markup** come with
+it — 71 passed.
 
 ## Side by side
 

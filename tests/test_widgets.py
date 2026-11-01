@@ -309,11 +309,11 @@ def test_music_player_carries_kind_base_and_embeds_the_walkman_card():
                         "backdrop-blur-xl", "border", "overflow-hidden"):
         assert frame_class not in root_cls.split(), f"root still carries the frame class {frame_class!r}"
     assert 'class="relative z-10 flex-1 min-h-0"' in out, "the iframe must sit on the bare canvas"
-    # Every control the old frame carried still has to exist on the player.
-    for label in ('Like this song', 'Dislike this song', 'Queue / history list in the drawer',
-                  'Mute', 'Open in Music Player — keeps playing from here', 'Close Widget'):
-        assert f'title="{label}"' in out, f"control {label!r} lost with the frame"
-    assert "close-widget-btn" in out, "close must still be reachable"
+    # Every control moved onto the 3D deck: the widget itself is only the
+    # iframe (plus its error toast), so no chip row, no close button.
+    assert "<button" not in out, "a floating control chip reappeared above the deck"
+    assert "close-widget-btn" not in out, "the deck's close key owns dismissal"
+    assert "thumb_up" not in out, "thumbs belong to the deck's secondary keys"
     assert "{{" not in out, "unsubstituted f-string braces leaked into HTML"
 
 

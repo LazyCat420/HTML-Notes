@@ -49,6 +49,12 @@
      box — so the key face is never lit, only the seam around it. */
   .hs-anchor{position:absolute; width:0; height:0; pointer-events:none;
     --min-hotspot-opacity:1}
+  /* Secondary keys: the frame's controls are now part of the deck, so they are
+     smaller and less proud than the transport row. Sized from the projected
+     scale like the transport keys, so they land exactly on the caps. */
+  .hs-aux{position:relative; width:30px; height:19px; border-radius:4px; cursor:pointer;
+    --min-hotspot-opacity:1; background:transparent; border:none; outline:none;
+    -webkit-tap-highlight-color:transparent; transition:box-shadow .28s ease}
   .lamp{position:absolute; pointer-events:none; border-radius:4px; opacity:0;
     transition:opacity .3s ease;
     box-shadow:0 0 0 1px rgba(255,214,136,.5),
@@ -99,7 +105,7 @@
 <body>
 <div id="card">
   <div id="stage">
-  <model-viewer id="mv" src="/static/walkman/models/player-body-v2-lite.glb"
+  <model-viewer id="mv" src="/static/walkman/models/player-body-v3-lite.glb"
     camera-orbit="0deg 90deg 0.55m" min-camera-orbit="auto 78deg 0.2m" max-camera-orbit="auto 102deg 2m"
     field-of-view="20deg" environment-image="/static/walkman/models/studio.hdr"
     tone-mapping="aces" exposure="1" shadow-intensity="1" shadow-softness="1"
@@ -122,12 +128,24 @@
     <button class="hs-key" slot="hotspot-k2" data-position="0 -0.049 0.023" aria-label="Stop"></button>
     <button class="hs-key" slot="hotspot-k3" data-position="0.054 -0.049 0.021" aria-label="Next"></button>
     <button class="hs-key" slot="hotspot-k4" data-position="0.108 -0.049 0.021" aria-label="Queue"></button>
+    <button class="hs-aux" slot="hotspot-x0" data-position="-0.0775 -0.0215 0.0185" aria-label="Like this song"></button>
+    <button class="hs-aux" slot="hotspot-x1" data-position="-0.0465 -0.0215 0.0185" aria-label="Dislike this song"></button>
+    <button class="hs-aux" slot="hotspot-x2" data-position="-0.0155 -0.0215 0.0185" aria-label="History"></button>
+    <button class="hs-aux" slot="hotspot-x3" data-position="0.0155 -0.0215 0.0185" aria-label="Mute"></button>
+    <button class="hs-aux" slot="hotspot-x4" data-position="0.0465 -0.0215 0.0185" aria-label="Open in Music Player"></button>
+    <button class="hs-aux" slot="hotspot-x5" data-position="0.0775 -0.0215 0.0185" aria-label="Close widget"></button>
   </model-viewer>
   <div class="lamp" data-k="0"></div>
   <div class="lamp" data-k="1"></div>
   <div class="lamp" data-k="2"></div>
   <div class="lamp" data-k="3"></div>
   <div class="lamp" data-k="4"></div>
+  <div class="lamp" data-k="5"></div>
+  <div class="lamp" data-k="6"></div>
+  <div class="lamp" data-k="7"></div>
+  <div class="lamp" data-k="8"></div>
+  <div class="lamp" data-k="9"></div>
+  <div class="lamp" data-k="10"></div>
   </div><!-- /stage -->
   <div id="queue">
     <div class="bar">
@@ -198,6 +216,8 @@ const DEFAULTS = {
   position: 0,
   playing: true,
   shuffle: false,
+  thumb: null,      // 'up' | 'down' | null — steady light on the matching aux key
+  muted: false,
   library: [
     { artist: 'Buckethead', title: 'Soothsayer', duration: 242 },
     { artist: 'Buckethead', title: 'Colma', duration: 181 },
@@ -369,15 +389,34 @@ function syncScreen(){
       k.style.setProperty('--key-h', kh + 'px');
     }
   });
+  // the secondary caps are 0.026 x 0.016 m; keep their hotspots on them
+  document.querySelectorAll('.hs-aux').forEach(a => {
+    const aw = Math.max(16, Math.round(0.026 * pxPerM));
+    const ah = Math.max(11, Math.round(0.016 * pxPerM));
+    if (a.style.width !== aw + 'px'){
+      a.style.width = aw + 'px';
+      a.style.height = ah + 'px';
+    }
+  });
   const card = document.getElementById('stage').getBoundingClientRect();
   const lamps = [...document.querySelectorAll('.lamp')];
   lamps.forEach((lamp, i) => {
-    const a = document.querySelector(`[slot="hotspot-a${i}t"]`);
-    const b = document.querySelector(`[slot="hotspot-a${i}b"]`);
-    if (!a || !b) return;
-    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-    const l = Math.round(ra.left - card.left), t = Math.round(ra.top - card.top);
-    const w = Math.round(rb.left - ra.left), h = Math.round(rb.top - ra.top);
+    let l, t, w, h;
+    if (i < 5){
+      const a = document.querySelector(`[slot="hotspot-a${i}t"]`);
+      const b = document.querySelector(`[slot="hotspot-a${i}b"]`);
+      if (!a || !b) return;
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      l = Math.round(ra.left - card.left); t = Math.round(ra.top - card.top);
+      w = Math.round(rb.left - ra.left); h = Math.round(rb.top - ra.top);
+    } else {
+      // one hotspot per secondary key already covers its cap exactly
+      const x = document.querySelector(`[slot="hotspot-x${i - 5}"]`);
+      if (!x) return;
+      const r = x.getBoundingClientRect();
+      l = Math.round(r.left - card.left); t = Math.round(r.top - card.top);
+      w = Math.round(r.width); h = Math.round(r.height);
+    }
     if (w <= 0 || h <= 0) return;
     lamp.style.left = l + 'px';
     lamp.style.top = t + 'px';
@@ -432,7 +471,8 @@ function emit(msg){
 /* i = -1 clears everything. ms = Infinity keeps the lamp on (play while
    playing); a number flashes it, then restores the steady state. */
 function lampOn(i, ms = Infinity){
-  lamps().forEach((l, n) => l.classList.toggle('on', n === i));
+  // transport only: the secondary keys carry their own steady lights
+  lamps().forEach((l, n) => { if (n < 5) l.classList.toggle('on', n === i); });
   keys().forEach((k, n) => k.setAttribute('aria-pressed', n === i ? 'true' : 'false'));
   if (i >= 0) clearTimeout(pulseTimers[i]);
   if (i >= 0 && ms !== Infinity){
@@ -442,6 +482,43 @@ function lampOn(i, ms = Infinity){
       if (state.playing) lampOn(1, Infinity);
     }, ms);
   }
+}
+
+/* ---- secondary keys: the six controls that used to be chips above the deck ---- */
+const AUX_ACTIONS = ['thumb_up', 'thumb_down', 'history', 'mute', 'open', 'close'];
+const auxTimers = [0, 0, 0, 0, 0, 0];
+const auxKeys = () => [...document.querySelectorAll('.hs-aux')];
+
+function auxOn(i, on){
+  const l = lamps()[5 + i];
+  if (l) l.classList.toggle('on', on);
+  const k = auxKeys()[i];
+  if (k) k.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+/* Steady lights: a liked track keeps the thumb key lit, mute keeps its key lit.
+   The momentary keys (history, open, close) only flash. */
+function syncAux(){
+  auxOn(0, state.thumb === 'up');
+  auxOn(1, state.thumb === 'down');
+  auxOn(2, false);
+  auxOn(3, !!state.muted);
+  auxOn(4, false);
+  auxOn(5, false);
+}
+function flashAux(i, ms = 450){
+  auxOn(i, true);
+  clearTimeout(auxTimers[i]);
+  auxTimers[i] = setTimeout(syncAux, ms);
+}
+
+function pressAux(i){
+  click(true);
+  const a = AUX_ACTIONS[i];
+  flashAux(i);
+  if (a === 'thumb_up') state.thumb = state.thumb === 'up' ? null : 'up';
+  else if (a === 'thumb_down') state.thumb = state.thumb === 'down' ? null : 'down';
+  else if (a === 'mute') state.muted = !state.muted;
+  emit({ action: a, state: { ...state } });
 }
 
 function step(dir){
@@ -508,6 +585,9 @@ document.querySelectorAll('.hs-key').forEach((k, i) => {
   k.addEventListener('click', e => { e.stopPropagation(); press(i); });
 });
 document.querySelector('.hs-screen').addEventListener('click', () => { press(4); });
+document.querySelectorAll('.hs-aux').forEach((k, i) => {
+  k.addEventListener('click', e => { e.stopPropagation(); pressAux(i); });
+});
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   const k = e.key.toLowerCase();
@@ -572,7 +652,9 @@ $('qshuffle').addEventListener('click', () => {
 window.walkmanPlayer = {
   setTrack(t){
     const wasPlaying = state.playing;
+    const thumbBefore = state.thumb, mutedBefore = state.muted;
     state = { ...state, ...t };
+    if (state.thumb !== thumbBefore || state.muted !== mutedBefore) syncAux();
     if (t.library) renderQueue();
     // the host re-pushes every 250 ms; only move the light when play state
     // actually changed, or a key's flash would be cancelled instantly
@@ -625,6 +707,7 @@ if (q.get('position')) state.position = Number(q.get('position')) || 0;
 if (q.get('paused') === '1') state.playing = false;
 if (q.get('playing') !== '0' && q.get('paused') !== '1') lampOn(1, Infinity);
 if (q.get('queue') === '1'){ toggleQueue(); lampOn(4, FLASH_MS); }
+syncAux();
 drawScreen();
 requestAnimationFrame(tick);
 </script>

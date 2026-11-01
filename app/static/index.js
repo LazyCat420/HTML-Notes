@@ -3574,37 +3574,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     // with artist failover. base omitted → hostname:8002 default.
                     newWidget.setAttribute('x-data', `musicPlayerWidget({ genre: ${JSON.stringify(genre)}, kind: "", autoplay: true })`);
                     newWidget.innerHTML = `
-                        <!-- Floating control chips; no frame around the widget. -->
-                        <div class="relative z-10 flex items-center justify-between gap-1 shrink-0 px-1">
-                            <div class="bg-black/45 backdrop-blur-md px-2 py-0.5 rounded-full border border-white/10 flex items-center gap-1.5 shadow-sm min-w-0">
-                                <span class="material-symbols-outlined text-[1rem] text-purple-300">graphic_eq</span>
-                                <span class="text-[10px] font-semibold tracking-wider text-purple-200 uppercase truncate" x-text="genreFilter || 'Radio'"></span>
-                            </div>
-                            <div class="flex items-center gap-1 shrink-0" x-effect="syncThumbState(currentTrack)">
-                                <button @click="sendThumb('up')" title="Like this song" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 transition-colors" :class="thumbState === 'up' ? 'text-emerald-400' : 'text-white/50 hover:text-white'">
-                                    <span class="material-symbols-outlined text-[1rem]">thumb_up</span>
-                                </button>
-                                <button @click="sendThumb('down')" title="Dislike this song" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 transition-colors" :class="thumbState === 'down' ? 'text-red-400' : 'text-white/50 hover:text-white'">
-                                    <span class="material-symbols-outlined text-[1rem]">thumb_down</span>
-                                </button>
-                                <button @click="toggleWalkmanHistory()" title="Queue / history list in the drawer" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 transition-colors" :class="walkmanLibraryMode === 'history' ? 'text-purple-300' : 'text-white/50 hover:text-white'">
-                                    <span class="material-symbols-outlined text-[1rem]">history</span>
-                                </button>
-                                <button @click="toggleMute()" title="Mute" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 text-white/50 hover:text-white transition-colors">
-                                    <span class="material-symbols-outlined text-[1rem]" x-text="isMuted ? 'volume_off' : 'volume_up'">volume_up</span>
-                                </button>
-                                <button @click="openInFullPlayer()" title="Open in Music Player — keeps playing from here" class="p-1 rounded-full bg-black/45 hover:bg-black/65 backdrop-blur-md border border-white/10 text-white/50 hover:text-white transition-colors">
-                                    <span class="material-symbols-outlined text-[1rem]">open_in_new</span>
-                                </button>
-                                <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn p-1 rounded-full bg-black/45 hover:bg-red-500/70 backdrop-blur-md border border-white/10 text-white/60 hover:text-white transition-all z-20">
-                                    <span class="material-symbols-outlined text-[1rem]">close</span>
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- The walkman deck: 3D body, LCD, five keys and its library drawer.
-                             No wrapper surface — the card is transparent, so the device floats.
-                             The drawer grows the iframe, which grows this card. -->
+                        <!-- Every control lives on the 3D deck: no chips, no frame. -->
                         <div class="relative z-10 flex-1 min-h-0">
                             <iframe x-ref="walkman" :src="walkmanSrc" @load="onWalkmanLoad()" class="w-full h-full block border-0" title="Walkman music player" allow="autoplay"></iframe>
                         </div>
@@ -3746,9 +3716,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             }
             
-            // 3. Ensure close button exists and attach vanilla fallback click listener
+            // 3. Ensure close button exists and attach vanilla fallback click listener.
+            // The music player carries its own close key on the 3D deck, and it
+            // must stay boxless: never bolt a floating × onto it.
+            const boxless = widget.classList.contains('music-widget-root');
             let closeBtn = widget.querySelector('.close-widget-btn') || widget.querySelector('button[title="Close Widget"]');
-            if (!closeBtn) {
+            if (!closeBtn && !boxless) {
                 widget.classList.add('group');
                 
                 closeBtn = document.createElement('button');

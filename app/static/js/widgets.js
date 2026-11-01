@@ -2067,6 +2067,7 @@ document.addEventListener('alpine:init', () => {
             const sig = [
                 title, Math.round(this.duration || 0), Math.round(this.currentTime || 0),
                 this.isPlaying ? 1 : 0, this.isShuffle ? 1 : 0,
+                this.thumbState || '', this.isMuted ? 1 : 0,
             ].join('|');
             if (!force && sig === this.walkmanLast) return;
             this.walkmanLast = sig;
@@ -2077,6 +2078,9 @@ document.addEventListener('alpine:init', () => {
                 position: Math.round(this.currentTime || 0),
                 playing: !!this.isPlaying,
                 shuffle: !!this.isShuffle,
+                // steady lights on the deck's secondary keys
+                thumb: this.thumbState || null,
+                muted: !!this.isMuted,
             } });
         },
 
@@ -2094,6 +2098,13 @@ document.addEventListener('alpine:init', () => {
                 case 'select': this.walkmanSelect(d.index); break;
                 case 'toggle': this.walkmanOpen = !!d.queueOpen; break;
                 case 'ended': this.nextTrack({ auto: true }); break;
+                // the six secondary keys on the deck: the frame's controls
+                case 'thumb_up': this.sendThumb('up'); break;
+                case 'thumb_down': this.sendThumb('down'); break;
+                case 'history': this.toggleWalkmanHistory(); break;
+                case 'mute': this.toggleMute(); break;
+                case 'open': this.openInFullPlayer(); break;
+                case 'close': window.WidgetManager.dismiss(this.$el); break;
                 default: return;
             }
             this.pushWalkmanState(true);
