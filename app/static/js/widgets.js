@@ -1088,6 +1088,7 @@ document.addEventListener('alpine:init', () => {
         walkmanOpen: false,          // drawer open → the card grows
         walkmanBaseH: 284,           // closed height; the corner grip overrides it
         walkmanResizeListener: null,
+        walkmanFitObserver: null,    // keeps the card at the device's own 2:1 aspect
         walkmanReady: false,
         walkmanTimer: null,
         walkmanLast: '',
@@ -1192,20 +1193,32 @@ document.addEventListener('alpine:init', () => {
             // Adopt a size the corner grip already saved, then follow it: the
             // resizer writes the inline height itself during the drag and fires
             // a window `resize` when it lets go.
+            // The card draws the walkman edge to edge, so the widget's frame IS
+            // the device's silver bezel: with no size of its own the height is
+            // the width over 2 (the model is 0.300 x 0.150 m). A size the corner
+            // grip saved still wins — the user chose it.
             const adopt = () => {
                 const el = this.$el;
-                if (!el || !el.id || !window.WidgetResizer) return;
-                const size = window.WidgetResizer.getSizes()[el.id];
-                if (!size || !size.height) { this.walkmanBaseH = 284; return; }
-                // While the drawer is open the stored height already includes
-                // it, so subtract before storing it as the closed height.
-                this.walkmanBaseH = this.walkmanOpen
-                    ? Math.max(180, size.height - 148)
-                    : size.height;
+                if (!el || !el.id) return;
+                const size = window.WidgetResizer ? window.WidgetResizer.getSizes()[el.id] : null;
+                if (size && size.height) {
+                    // While the drawer is open the stored height already includes
+                    // it, so subtract before storing it as the closed height.
+                    this.walkmanBaseH = this.walkmanOpen
+                        ? Math.max(180, size.height - 148)
+                        : size.height;
+                    return;
+                }
+                const w = el.getBoundingClientRect().width;
+                if (w > 40) this.walkmanBaseH = Math.max(120, Math.round(w / 2));
             };
             this.walkmanResizeListener = adopt;
             adopt();
             window.addEventListener('resize', this.walkmanResizeListener);
+            if (window.ResizeObserver) {
+                this.walkmanFitObserver = new ResizeObserver(adopt);
+                this.walkmanFitObserver.observe(this.$el);
+            }
 
             const term = this.genreFilter || 'lo-fi';
             // Routing tags "X music" phrasing kind=genre and named acts
@@ -2160,6 +2173,7 @@ document.addEventListener('alpine:init', () => {
                 this.walkmanListener = null;
             }
             if (this.walkmanTimer) { clearInterval(this.walkmanTimer); this.walkmanTimer = null; }
+            if (this.walkmanFitObserver) { this.walkmanFitObserver.disconnect(); this.walkmanFitObserver = null; }
             if (this.walkmanResizeListener) {
                 window.removeEventListener('resize', this.walkmanResizeListener);
                 this.walkmanResizeListener = null;

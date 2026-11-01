@@ -6,7 +6,15 @@
 <title>Walkman player — embeddable card</title>
 <script type="module" src="/static/walkman/model-viewer.min.js"></script>
 <style>
-  :root{ color-scheme: dark; }
+  /* Dark form controls only when the card is opened on its own. In an iframe
+     the root must stay light-scheme: Chrome paints the document's base
+     background (#121212 under color-scheme:dark) behind transparent content,
+     which showed up as an opaque box around the device in the widget. */
+  html.standalone{ color-scheme: dark; }
+  #queue ::-webkit-scrollbar{width:8px}
+  #queue ::-webkit-scrollbar-track{background:rgba(255,255,255,.04); border-radius:4px}
+  #queue ::-webkit-scrollbar-thumb{background:rgba(255,179,71,.35); border-radius:4px}
+  #queue ::-webkit-scrollbar-thumb:hover{background:rgba(255,179,71,.55)}
   html,body{margin:0; height:100%; background:transparent; overflow:hidden;
     font:13px/1.3 ui-sans-serif,system-ui,sans-serif; color:#e6ebf0}
   /* No box around the device: it floats on whatever is behind the card. */
@@ -106,7 +114,7 @@
 <div id="card">
   <div id="stage">
   <model-viewer id="mv" src="/static/walkman/models/player-body-v3-lite.glb"
-    camera-orbit="0deg 90deg 0.55m" min-camera-orbit="auto 78deg 0.2m" max-camera-orbit="auto 102deg 2m"
+    camera-orbit="0deg 90deg 0.4275m" min-camera-orbit="auto 78deg 0.2m" max-camera-orbit="auto 102deg 2m"
     field-of-view="20deg" environment-image="/static/walkman/models/studio.hdr"
     tone-mapping="aces" exposure="1" shadow-intensity="1" shadow-softness="1"
     interaction-prompt="none" disable-tap disable-pan disable-rotate alt="3D cassette music player">

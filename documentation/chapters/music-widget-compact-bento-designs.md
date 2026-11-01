@@ -724,7 +724,7 @@ and the card itself became transparent — `#card` lost its radial-gradient fill
 its 16 px radius and its shadow, so the model-viewer canvas sits straight on the
 canvas behind it.
 
-**One box survived, and it was the iframe.** `index.css` styles every
+**The first box was the iframe.** `index.css` styles every
 `.widget-container iframe` as an inset panel — `background: #02060c`,
 `border: 1px solid rgba(127, 212, 255, .25)`, `border-radius: 4px` and a
 `0 0 18px rgba(79, 195, 247, .18)` glow ("Iframes sit inside a glowing frame").
@@ -732,9 +732,33 @@ That opaque rectangle was what the user saw around the player, no matter how
 transparent the widget and the card were. The same-origin card paints its own
 device, so the iframe must be a window, not a panel: `.widget-container.music-widget-root
 iframe` now sets `background/border/border-radius/box-shadow` to
-`transparent/0/0/none !important`. Measured after the fix: widget and iframe both
-`rgba(0,0,0,0)` fill, `0px` border, `none` shadow, and no bright row or column
-spans the widget's edges in the screenshot.
+`transparent/0/0/none !important`. Measured after that fix: widget and iframe
+both `rgba(0,0,0,0)` fill, `0px` border, `none` shadow.
+
+**A second box survived, and it was Chrome.** With widget, iframe and card all
+computing `rgba(0,0,0,0)`, a screenshot of the widget still came back an opaque
+`rgb(18,18,18)` rectangle with the canvas colour around it — and it stayed grey
+even when the page behind it was painted magenta, so it was painted *inside* the
+iframe. The model-viewer canvas read `alpha 0` at its corners, so the paint was
+not the 3D view. The cause was the card's `:root { color-scheme: dark }`: Chrome
+paints the document's **base background** — `#121212` for a dark color scheme —
+behind content whose root background is transparent, and an iframe composites
+that base. The card's transparent root therefore became a grey panel. Setting
+`color-scheme: normal` inside the iframe replaced the rectangle with the canvas
+gradient immediately. The fix scopes the dark scheme to the card's standalone
+mode (`html.standalone`) and styles the drawer's scrollbar explicitly so it stays
+dark in both modes.
+
+**The bezel is the widget's edge.** With the box gone the deck still floated
+inside the widget with margins, because the widget was 716 × 284 (aspect 2.52)
+while the model is 0.300 × 0.150 m (2.0). Two changes put the device's own silver
+bezel on the widget's boundary: the closed height is now the width over two
+(`walkmanBaseH` comes from a `ResizeObserver` on the widget root, so 716 → 358,
+and a size the user drags with the corner grip still wins), and the card's camera
+sits at 0.4275 m instead of 0.55 m, so the 20° field of view spans exactly
+0.150 m — the device fills 99.5% of the frame. Measured at 716 × 358: 308
+background pixels (0.08%, the shell's rounded corners and antialiasing), and
+every mid-edge pixel is metal, not canvas.
 
 **The controls are on the device, not around it.** Floating chips above the
 deck were the first version of this — but a row of buttons over a 3D object is
@@ -758,38 +782,49 @@ one row of 128 mm centred above play/stop, between the LCD's lower edge
 (`z = 0.008`) and the transport keys' top (`z = −0.036`). That is **half the
 area** of the first 26 × 16 mm caps (416 → 198 mm²) and 37% of a transport key's
 width, so they read as secondary keys instead of a second transport row.
-Measured in the widget: aux hotspot 27 × 17 px against a transport key's
-72 × 39 px.
+Measured in the widget: aux hotspot 44 × 27 px against a transport key's
+118 × 64 px.
 
-The thumbs are hands, not blocks: `thumb_shapes()` cuts a silhouette whose thumb
-stands above the fist, with an L-shaped notch between thumb and index finger, two
-scallops for the folded knuckles and a cuff bar under the wrist separated by a
-bright gap — every feature is a step in the outline, because at 20 px an interior
-line disappears while an outline survives. `thumb_down` is the same hand mirrored
-in y, with the point order reversed so the winding stays outward. The booleans
-are exact (`ICON_CUT = 0.0009`) with a dark inlay, so the icons are grooves, not
-raised bumps. `player-body-v3.glb` is 3,041,436 B / 7,708 tris; the `lite` build
-is 984,468 B.
+The thumbs are the real icon, not a hand-built silhouette. Two attempts at
+drawing a hand in the boolean cutter produced shapes that read as "random
+shapes" at 27 px, so the groove is now the Font Awesome Free 6.5.2 `thumbs-up`
+solid path (CC BY 4.0), flattened to two polygons — the hand and the cuff bar —
+and placed in icon space (metres, y up, centred, 0.0105 × 0.0092 m). The SVG
+path mixes absolute and relative `M/L/H/V/C/Z` commands, so a small flattener
+walks it with ten samples per cubic and emits the vertices as literals in
+`build_body.py`; winding is normalised counter-clockwise. `thumb_down` is the
+same polygon set mirrored in y with the point order reversed, so the winding
+stays outward. The booleans are exact (`ICON_CUT = 0.0009`) with a dark inlay,
+so the icons are grooves, not raised bumps. `player-body-v3.glb` is 3,106,456 B
+/ 9 materials / 6 `AUX_*` nodes; the `lite` build is 1,049,488 B.
+
+Verified from the render, not by eye: the groove mask (`luminance < 20`) of the
+like key shows the thumb standing above the fist with the cuff bar on the left,
+the dislike key shows the same mask flipped vertically (thumb below the fist,
+cuff still left), and both are centred in their caps to within 2 px. At the
+358 px deck the icon is 26 × 22 CSS px inside a 44 × 27 px key.
 
 Each key has its own hotspot (`hotspot-x0 … x5`) sized from the projected cap
-(`0.018 × 0.011` m → 27 × 17 px at the 284 px deck) and its own `.lamp`, so the
-amber rim-halo lights the panel around the key that was pressed. Only `play`
-holds its light; an aux key flashes for 450 ms. `thumb` and `mute` are *state*,
-not flashes: the lamp stays on while the track is liked/disliked and while the
-app is muted, and the card's `setTrack` re-syncs both when the host pushes a new
-track. Verified with real mouse clicks through the iframe:
+(`0.018 × 0.011` m → 44 × 27 px at the 358 px deck, against a transport key's
+118 × 64 px — 37% × 42%, half the area) and its own `.lamp`, so the amber
+rim-halo lights the panel around the key that was pressed. Only `play` holds its
+light; an aux key flashes for 450 ms. `thumb` and `mute` are *state*, not
+flashes: the lamp stays on while the track is liked/disliked and while the app is
+muted, and the card's `setTrack` re-syncs both when the host pushes a new track.
+Verified with real mouse clicks through the iframe at 716 × 358:
 
-| click | widget state | lamps on |
+| click | widget state | height |
 |---|---|---|
-| like | `thumbState: 'up'` | 1 (play), 5 |
-| dislike | `thumbState: 'down'` | 1, 6 |
-| mute | `isMuted: true` | 1, 6, 8 |
-| history | drawer opens in `history` mode, 284 → 432 | 1, 6, 8 |
+| like | `thumbState: 'up'` | 358 |
+| dislike | `thumbState: 'down'` | 358 |
+| mute | `isMuted: true`, second click `false` | 358 |
+| history | drawer opens in `history` mode | 506 |
 | close | widget removed, id recorded in `dismissed_widgets` | — |
 
 The widget is now **only the iframe**: `buttons: 0`, `close-widget-btn: 0`,
-`h: 284`. `renderDynamicComponents()` skips its automatic close-button pass for
-`.music-widget-root`, so a rendered widget cannot grow a chip back.
+`h: 358` at the 716 px `col-span-2` width. `renderDynamicComponents()` skips its
+automatic close-button pass for `.music-widget-root`, so a rendered widget cannot
+grow a chip back.
 
 **Resize is the canvas's resize.** The widget no longer has a frame to drag, so
 the grip is the existing `.widget-resize-handle` that `WidgetResizer.decorate()`
@@ -797,9 +832,12 @@ appends to every widget. It writes `{cols, height}` to `widget_sizes` in
 localStorage exactly as before; the widget reads that size back as
 `walkmanBaseH` and renders `walkmanHeight = walkmanBaseH + (drawer ? 148 : 0)`,
 so the drawer rides on top of whatever size the grip chose instead of fighting
-it. A `window resize` listener adopts the stored size after every drag. Measured:
-drag 284 → 344 px, `widget_sizes.wtest1 = {cols: 2, height: 344}`, `walkmanBaseH`
-344; opening the drawer then gives 492 and closing returns to 344.
+it. A `window resize` listener and a `ResizeObserver` on the root adopt the
+stored size after every drag, and fall back to `width / 2` when the user has
+never dragged — which is what keeps the bezel on the widget's edge. Measured:
+drag to 344 px stores `widget_sizes.wtest1 = {cols: 2, height: 344}`,
+`walkmanBaseH` 344; opening the drawer then gives 492 and closing returns to
+344. Undragged at `col-span-2` the height is 358 and the drawer gives 506.
 
 ### The LCD scrambles into the next title
 
@@ -827,9 +865,9 @@ push the authoritative track; `prev`/`next` likewise defer to the host's
 `prevTrack()`/`nextTrack()` instead of stepping its own stale copy.
 
 **Verified live** (app on 8035, real mouse through the iframe): queue key →
-drawer opens, widget 284 → 432, 100 rows; clicking row 3 plays that track
+drawer opens, widget 358 → 506, 100 rows; clicking row 3 plays that track
 (`currentIndex` 2) and the LCD switches to `Chet Baker - Time After Time`;
-`×` closes back to 284; `stop` pauses and clears the light; `play` resumes;
+`×` closes back to 358; `stop` pauses and clears the light; `play` resumes;
 `SHUF` flips the app's shuffle and reorders the queue; history shows 4 rows and
 selecting one plays it. Unit tests: `tests/test_widgets.py` asserts the iframe,
 `walkmanSrc`, `onWalkmanLoad`, `cardUrl` and `walkmanHeight` in the template, and
