@@ -724,6 +724,18 @@ and the card itself became transparent — `#card` lost its radial-gradient fill
 its 16 px radius and its shadow, so the model-viewer canvas sits straight on the
 canvas behind it.
 
+**One box survived, and it was the iframe.** `index.css` styles every
+`.widget-container iframe` as an inset panel — `background: #02060c`,
+`border: 1px solid rgba(127, 212, 255, .25)`, `border-radius: 4px` and a
+`0 0 18px rgba(79, 195, 247, .18)` glow ("Iframes sit inside a glowing frame").
+That opaque rectangle was what the user saw around the player, no matter how
+transparent the widget and the card were. The same-origin card paints its own
+device, so the iframe must be a window, not a panel: `.widget-container.music-widget-root
+iframe` now sets `background/border/border-radius/box-shadow` to
+`transparent/0/0/none !important`. Measured after the fix: widget and iframe both
+`rgba(0,0,0,0)` fill, `0px` border, `none` shadow, and no bright row or column
+spans the widget's edges in the screenshot.
+
 **The controls are on the device, not around it.** Floating chips above the
 deck were the first version of this — but a row of buttons over a 3D object is
 still a bar, and a bar is still a box. So the six controls became real keys:
@@ -739,17 +751,28 @@ LCD and the transport row.
 | close widget | key 6, X | `close` → `WidgetManager.dismiss()` |
 | corner resize grip | the same `WidgetResizer` handle, an amber L bracket on the deck | — |
 
-![The six secondary keys, 4× — like, dislike, history, mute, open, close](artifacts/music-widget-designs/35-hn-aux-keys.png)
+![The six secondary keys — like, dislike, history, mute, open, close](artifacts/music-widget-designs/35-hn-aux-keys.png)
 
-Geometry: `AUX_W = 0.026`, `AUX_H = 0.016`, `AUX_GAP = 0.005` at `z = −0.0215`
-between the LCD's lower edge (`z = 0.008`) and the transport keys' top
-(`z = −0.036`); icons are `1.6×` the transport-icon space, so each glyph fills
-its 26 × 16 mm cap. The booleans are exact (`ICON_CUT = 0.0009`) with a dark
-inlay, so the icons are grooves, not raised bumps. `player-body-v3.glb` is
-3,032,196 B / 7,608 tris; the `lite` build is 975,232 B.
+Geometry: `AUX_W = 0.018`, `AUX_H = 0.011`, `AUX_GAP = 0.004` at `z = −0.014`,
+one row of 128 mm centred above play/stop, between the LCD's lower edge
+(`z = 0.008`) and the transport keys' top (`z = −0.036`). That is **half the
+area** of the first 26 × 16 mm caps (416 → 198 mm²) and 37% of a transport key's
+width, so they read as secondary keys instead of a second transport row.
+Measured in the widget: aux hotspot 27 × 17 px against a transport key's
+72 × 39 px.
+
+The thumbs are hands, not blocks: `thumb_shapes()` cuts a silhouette whose thumb
+stands above the fist, with an L-shaped notch between thumb and index finger, two
+scallops for the folded knuckles and a cuff bar under the wrist separated by a
+bright gap — every feature is a step in the outline, because at 20 px an interior
+line disappears while an outline survives. `thumb_down` is the same hand mirrored
+in y, with the point order reversed so the winding stays outward. The booleans
+are exact (`ICON_CUT = 0.0009`) with a dark inlay, so the icons are grooves, not
+raised bumps. `player-body-v3.glb` is 3,041,436 B / 7,708 tris; the `lite` build
+is 984,468 B.
 
 Each key has its own hotspot (`hotspot-x0 … x5`) sized from the projected cap
-(`0.026 × 0.016` m → 39 × 24 px at the 284 px deck) and its own `.lamp`, so the
+(`0.018 × 0.011` m → 27 × 17 px at the 284 px deck) and its own `.lamp`, so the
 amber rim-halo lights the panel around the key that was pressed. Only `play`
 holds its light; an aux key flashes for 450 ms. `thumb` and `mute` are *state*,
 not flashes: the lamp stays on while the track is liked/disliked and while the

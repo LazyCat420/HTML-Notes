@@ -52,7 +52,7 @@
   /* Secondary keys: the frame's controls are now part of the deck, so they are
      smaller and less proud than the transport row. Sized from the projected
      scale like the transport keys, so they land exactly on the caps. */
-  .hs-aux{position:relative; width:30px; height:19px; border-radius:4px; cursor:pointer;
+  .hs-aux{position:relative; width:32px; height:20px; border-radius:4px; cursor:pointer;
     --min-hotspot-opacity:1; background:transparent; border:none; outline:none;
     -webkit-tap-highlight-color:transparent; transition:box-shadow .28s ease}
   .lamp{position:absolute; pointer-events:none; border-radius:4px; opacity:0;
@@ -128,12 +128,12 @@
     <button class="hs-key" slot="hotspot-k2" data-position="0 -0.049 0.023" aria-label="Stop"></button>
     <button class="hs-key" slot="hotspot-k3" data-position="0.054 -0.049 0.021" aria-label="Next"></button>
     <button class="hs-key" slot="hotspot-k4" data-position="0.108 -0.049 0.021" aria-label="Queue"></button>
-    <button class="hs-aux" slot="hotspot-x0" data-position="-0.0775 -0.0215 0.0185" aria-label="Like this song"></button>
-    <button class="hs-aux" slot="hotspot-x1" data-position="-0.0465 -0.0215 0.0185" aria-label="Dislike this song"></button>
-    <button class="hs-aux" slot="hotspot-x2" data-position="-0.0155 -0.0215 0.0185" aria-label="History"></button>
-    <button class="hs-aux" slot="hotspot-x3" data-position="0.0155 -0.0215 0.0185" aria-label="Mute"></button>
-    <button class="hs-aux" slot="hotspot-x4" data-position="0.0465 -0.0215 0.0185" aria-label="Open in Music Player"></button>
-    <button class="hs-aux" slot="hotspot-x5" data-position="0.0775 -0.0215 0.0185" aria-label="Close widget"></button>
+    <button class="hs-aux" slot="hotspot-x0" data-position="-0.05500 -0.014 0.0185" aria-label="Like this song"></button>
+    <button class="hs-aux" slot="hotspot-x1" data-position="-0.03300 -0.014 0.0185" aria-label="Dislike this song"></button>
+    <button class="hs-aux" slot="hotspot-x2" data-position="-0.01100 -0.014 0.0185" aria-label="History"></button>
+    <button class="hs-aux" slot="hotspot-x3" data-position="0.01100 -0.014 0.0185" aria-label="Mute"></button>
+    <button class="hs-aux" slot="hotspot-x4" data-position="0.03300 -0.014 0.0185" aria-label="Open in Music Player"></button>
+    <button class="hs-aux" slot="hotspot-x5" data-position="0.05500 -0.014 0.0185" aria-label="Close widget"></button>
   </model-viewer>
   <div class="lamp" data-k="0"></div>
   <div class="lamp" data-k="1"></div>
@@ -389,10 +389,10 @@ function syncScreen(){
       k.style.setProperty('--key-h', kh + 'px');
     }
   });
-  // the secondary caps are 0.026 x 0.016 m; keep their hotspots on them
+  // the secondary caps are 0.018 x 0.011 m; keep their hotspots on them
   document.querySelectorAll('.hs-aux').forEach(a => {
-    const aw = Math.max(16, Math.round(0.026 * pxPerM));
-    const ah = Math.max(11, Math.round(0.016 * pxPerM));
+    const aw = Math.max(14, Math.round(0.018 * pxPerM));
+    const ah = Math.max(11, Math.round(0.011 * pxPerM));
     if (a.style.width !== aw + 'px'){
       a.style.width = aw + 'px';
       a.style.height = ah + 'px';

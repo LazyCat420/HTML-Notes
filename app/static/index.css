@@ -205,6 +205,16 @@ body::after {
     overflow: visible !important;
 }
 .widget-container.music-widget-root::after { content: none !important; }
+/* The frame's iframe chrome ("Iframes sit inside a glowing frame", below) would
+   draw an opaque #02060c rectangle with a cyan border and glow around the deck —
+   the box the user sees. The card is same-origin and paints its own device, so
+   the iframe must be a window, not a panel. */
+.widget-container.music-widget-root iframe {
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
 /* No frame means no frame to drag by: the grip sits on the floating player,
    faintly visible so the size affordance is discoverable without hovering.
    Amber and L-shaped so it reads as part of the deck, not as a stray stroke. */
