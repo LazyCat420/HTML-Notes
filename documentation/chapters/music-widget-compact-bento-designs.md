@@ -1,9 +1,8 @@
 ---
 part: Music player
-status: in-progress
-updated: 2026-10-31
-review-by: 2026-11-28
-type: plan
+status: shipped
+updated: 2026-11-03
+type: record
 ---
 
 # Music widget: compact bento layouts
@@ -956,19 +955,14 @@ Bento 2×2 stays the art-forward pick. Vinyl and Swiss are still on the table.
   widths 370–445px inside a 300px card, page scroll width unchanged); the
   baseline replica demonstrates the raw-title overflow it has today.
 
-## Open questions
+## 2026-11-03 Shipped Update: 3D Silver Volume Fader, Uniform Compact Keys & Expanded LCD
 
-1. **Which half-width skin** — Walkman, Clear Neon, PS2 Pixel, or Buick ’93?
-2. **Art** — real YouTube thumbnail, or keep a glyph and skip the fetch? The
-   half-width set currently fetches nothing.
-3. **Queue** — inset overlay (all half-width designs), or a portal panel?
-4. **Shell** — the retro set needs the music widget to opt out of the
-   `!important` frame rules; confirm that is acceptable.
-5. **3D player** — worth one WebGL context per widget, or keep the 3D only in
-   the demo and ship the flat card? If it ships, ship **v2**: it is the only
-   variant where the LCD border is visible at 300 px without cranking contrast.
-   The question left is file size — 2.95 MB as built, or ~800 KB with the three
-   maps cut to 512 × 256 and the normal map dropped.
-6. **Pixel forest** — ship as the "music-reactive" skin (needs an audio
-   analyser, not the synthesised beat), or keep it as a demo? It costs the same
-   as A2 but only reads as trippy when it actually follows the track.
+- **3D Silver Volume Fader (`app/static/walkman/models/player-body-v3-lite.glb`, `app/static/walkman/player.html`, `app/static/js/widgets.js`):**
+  - Added a Technics SL-1200 inspired recessed brushed-silver volume fader (`VOL_BEZEL`, `VOL_PLATE`, `VOL_SLOT`, `VOL_SCALE` with 11 graduation ticks and square index markers) and a sculpted 3D silver fader cap (`VOL_KNOB`) on the right half of the utility row (`x ∈ [0.038, 0.114] m`).
+  - `player.html` translates `VOL_KNOB.position.x` in real time inside `model-viewer`'s Three.js scene graph on pointer drag, click, wheel scroll (`±5%`), keyboard (`ArrowLeft`/`ArrowRight`), and host `setTrack` updates.
+  - `musicPlayerWidget` in `app/static/js/widgets.js` handles `action: 'volume'`, updates `this.audio.volume` (and any inherited `carry.audio.volume`), persists `hn_music_volume` and `hn_music_muted` in `localStorage`, and syncs `volume` back to the Walkman card in `pushWalkmanState()`.
+- **Uniform Compact Transport Buttons & +24% Taller LCD Window:**
+  - Reduced the 5 bottom transport buttons (`KEY_prev`, `KEY_play`, `KEY_stop`, `KEY_next`, `KEY_queue`) from `0.026 / 0.030 m` height down to a uniform `0.019 m` height (`27–37%` smaller vertically) at `Y = -0.0535 m` inside a recessed `TRANSPORT_WELL`.
+  - Expanded the LCD window (`SCREEN_GLASS`) from `0.224 × 0.050 m` to `0.232 × 0.062 m` (`+24%` taller) at `Y = +0.0275 m`, added `' '` and `'%'` glyphs to the 5×7 dot-matrix font, and displayed `VOL XX%` / `MUTE` on the bottom-right of the LCD.
+- **Recessed Secondary Utility Keys & Repaired Engravings:**
+  - Placed the 6 secondary buttons (`thumb_up`, `thumb_down`, `history`, `open`, `close`, `mute`) inside `AUX_WELL` with `mute` directly beside the `0%` end of the volume fader, and repaired the boolean cutter geometry for `open`, `history`, `close`, and `mute`.

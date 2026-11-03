@@ -1138,9 +1138,25 @@ document.addEventListener('alpine:init', () => {
         async init() {
             console.log(`[MusicPlayer] Init. term="${this.genreFilter}" kind="${this.kind}" base=${this.base}`);
             this.seenIds = new Set();
+            try {
+                const savedVol = localStorage.getItem('hn_music_volume');
+                if (savedVol !== null) {
+                    const parsed = parseFloat(savedVol);
+                    if (isFinite(parsed) && parsed >= 0 && parsed <= 1) {
+                        this.volume = parsed;
+                        if (parsed > 0) this.prevVolume = parsed;
+                    }
+                }
+                if (localStorage.getItem('hn_music_muted') === '1') {
+                    this.isMuted = true;
+                }
+            } catch {}
             this.adoptCarry();
             this.audio = new Audio();
-            this.audio.volume = this.volume;
+            this.audio.volume = this.isMuted ? 0 : this.volume;
+            if (this.carry && this.carry.audio) {
+                this.carry.audio.volume = this.isMuted ? 0 : this.volume;
+            }
 
             // Audio Event Listeners. Each handler guards on this.audio:
             // destroy() nulls it, but events already queued on the old element
@@ -2004,25 +2020,44 @@ document.addEventListener('alpine:init', () => {
         },
 
         setVolume(vol) {
-            this.volume = parseFloat(vol);
-            this.isMuted = (this.volume === 0);
+            const parsed = parseFloat(vol);
+            const v = isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0;
+            this.volume = v;
+            this.isMuted = (v === 0);
+            if (v > 0) this.prevVolume = v;
+            const eff = this.isMuted ? 0 : this.volume;
             if (this.audio) {
-                this.audio.volume = this.isMuted ? 0 : this.volume;
+                this.audio.volume = eff;
             }
+            if (this.carry && this.carry.audio) {
+                this.carry.audio.volume = eff;
+            }
+            try {
+                localStorage.setItem('hn_music_volume', String(this.volume));
+                localStorage.setItem('hn_music_muted', this.isMuted ? '1' : '0');
+            } catch {}
         },
 
         toggleMute() {
             if (this.isMuted) {
                 this.isMuted = false;
-                this.volume = this.prevVolume || 1.0;
+                this.volume = (this.prevVolume && this.prevVolume > 0) ? this.prevVolume : 1.0;
             } else {
-                this.prevVolume = this.volume;
+                if (this.volume > 0) this.prevVolume = this.volume;
                 this.isMuted = true;
                 this.volume = 0;
             }
+            const eff = this.isMuted ? 0 : this.volume;
             if (this.audio) {
-                this.audio.volume = this.isMuted ? 0 : this.volume;
+                this.audio.volume = eff;
             }
+            if (this.carry && this.carry.audio) {
+                this.carry.audio.volume = eff;
+            }
+            try {
+                localStorage.setItem('hn_music_volume', String(this.isMuted ? (this.prevVolume || 1.0) : this.volume));
+                localStorage.setItem('hn_music_muted', this.isMuted ? '1' : '0');
+            } catch {}
         },
 
         toggleShuffle() {
@@ -2115,6 +2150,7 @@ document.addEventListener('alpine:init', () => {
                 title, Math.round(this.duration || 0), Math.round(this.currentTime || 0),
                 this.isPlaying ? 1 : 0, this.isShuffle ? 1 : 0,
                 this.thumbState || '', this.isMuted ? 1 : 0,
+                Math.round((this.volume ?? 1) * 100),
             ].join('|');
             if (!force && sig === this.walkmanLast) return;
             this.walkmanLast = sig;
@@ -2128,6 +2164,7 @@ document.addEventListener('alpine:init', () => {
                 // steady lights on the deck's secondary keys
                 thumb: this.thumbState || null,
                 muted: !!this.isMuted,
+                volume: this.isMuted ? (this.prevVolume || 0.78) : this.volume,
             } });
         },
 
@@ -2145,11 +2182,12 @@ document.addEventListener('alpine:init', () => {
                 case 'select': this.walkmanSelect(d.index); break;
                 case 'toggle': this.walkmanOpen = !!d.queueOpen; break;
                 case 'ended': this.nextTrack({ auto: true }); break;
-                // the six secondary keys on the deck: the frame's controls
+                // the six secondary keys on the deck + 3D silver volume fader
                 case 'thumb_up': this.sendThumb('up'); break;
                 case 'thumb_down': this.sendThumb('down'); break;
                 case 'history': this.toggleWalkmanHistory(); break;
                 case 'mute': this.toggleMute(); break;
+                case 'volume': this.setVolume(d.volume); break;
                 case 'open': this.openInFullPlayer(); break;
                 case 'close': window.WidgetManager.dismiss(this.$el); break;
                 default: return;

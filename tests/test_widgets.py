@@ -326,3 +326,117 @@ def test_music_player_kind_changes_the_signature():
     same_sig = _content_sig("mini_music_player", {"kind": "genre", "genre": "jungle", "autoplay": True})
     assert genre_sig != artist_sig
     assert genre_sig == same_sig
+
+
+def test_walkman_glb_and_player_html_have_silver_volume_fader_uniform_keys_and_taller_lcd():
+    import json
+    import re
+    import struct
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    glb_path = root / "app" / "static" / "walkman" / "models" / "player-body-v3-lite.glb"
+    player_html_path = root / "app" / "static" / "walkman" / "player.html"
+
+    raw = glb_path.read_bytes()
+    magic, _version, _length = struct.unpack_from("<4sII", raw, 0)
+    assert magic == b"glTF"
+    chunk_len, chunk_type = struct.unpack_from("<II", raw, 12)
+    assert chunk_type == 0x4E4F534A  # JSON
+    gltf = json.loads(raw[20 : 20 + chunk_len].decode("utf-8"))
+    node_names = {n.get("name") for n in gltf.get("nodes", [])}
+
+    for expected in (
+        "VOL_KNOB", "VOL_PLATE", "VOL_SCALE", "VOL_BEZEL", "VOL_SLOT",
+        "AUX_WELL", "TRANSPORT_WELL",
+        "KEY_prev", "KEY_play", "KEY_stop", "KEY_next", "KEY_queue",
+        "AUX_thumb_up", "AUX_thumb_down", "AUX_history", "AUX_open", "AUX_close", "AUX_mute",
+    ):
+        assert expected in node_names, f"missing 3D node {expected} in player-body-v3-lite.glb"
+
+    html = player_html_path.read_text(encoding="utf-8")
+    assert "GLASS_W = 0.232, GLASS_H = 0.062" in html, "LCD glass must use the expanded 0.232x0.062 m window"
+    assert "getObjectByName('VOL_KNOB')" in html, "player.html must drive the 3D VOL_KNOB mesh"
+    assert 'id="volTrack"' in html and 'slot="hotspot-v0"' in html and 'slot="hotspot-v1"' in html
+    assert "action: 'volume'" in html
+
+    # All 5 bottom transport keys must be uniform in height (0.019 m, 27-37% smaller than old 0.026/0.030 m)
+    assert "Math.round(0.019 * pxPerM)" in html
+    assert "0.030 : 0.026" not in html
+    key_positions = re.findall(r'slot="hotspot-k\d"\s+data-position="([^"]+)"', html)
+    assert len(key_positions) == 5
+    for pos in key_positions:
+        _x, y, z = pos.split()
+        assert y == "-0.0535" and z == "0.0205", f"non-uniform transport key position: {pos}"
+
+
+def test_music_player_widget_volume_slider_bridge_and_persistence():
+    import glob
+    import json
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    node = shutil.which("node") or next(iter(sorted(
+        glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")), reverse=True)), None)
+    assert node, "node is required"
+
+    script = """
+import { loadFactory, mount } from "./_music_widget_harness.mjs";
+const env = loadFactory();
+const w = await mount(env.factory, "jazz");
+const posted = [];
+const fakeContentWin = { postMessage(msg) { posted.push(msg); } };
+w.$refs = { walkman: { contentWindow: fakeContentWin } };
+w.onWalkmanLoad();
+
+// Simulate dragging the 3D silver volume fader to 35%
+w.onWalkmanMessage({ source: fakeContentWin, data: { type: "walkman", action: "volume", volume: 0.35 } });
+const afterSlider = {
+  volume: w.volume,
+  isMuted: w.isMuted,
+  audioVolume: w.audio.volume,
+  storedVol: env.store.get("hn_music_volume"),
+  storedMuted: env.store.get("hn_music_muted"),
+  lastPostedVol: posted.at(-1)?.setTrack?.volume,
+};
+
+// Simulate clicking the Mute key on the deck, then unmuting
+w.onWalkmanMessage({ source: fakeContentWin, data: { type: "walkman", action: "mute" } });
+const afterMute = { volume: w.volume, isMuted: w.isMuted, audioVolume: w.audio.volume };
+w.onWalkmanMessage({ source: fakeContentWin, data: { type: "walkman", action: "mute" } });
+const afterUnmute = { volume: w.volume, isMuted: w.isMuted, audioVolume: w.audio.volume };
+
+// Mount a second widget instance to verify localStorage persistence
+const w2 = await mount(env.factory, "jazz");
+const rehydrated = { volume: w2.volume, isMuted: w2.isMuted, audioVolume: w2.audio.volume };
+w.destroy();
+w2.destroy();
+
+console.log(JSON.stringify({ afterSlider, afterMute, afterUnmute, rehydrated }));
+"""
+    res = subprocess.run([node, "--input-type=module", "-e", script],
+                         cwd=str(here), capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout.strip().splitlines()[-1])
+
+    assert out["afterSlider"]["volume"] == pytest.approx(0.35)
+    assert out["afterSlider"]["isMuted"] is False
+    assert out["afterSlider"]["audioVolume"] == pytest.approx(0.35)
+    assert out["afterSlider"]["storedVol"] == "0.35"
+    assert out["afterSlider"]["storedMuted"] == "0"
+    assert out["afterSlider"]["lastPostedVol"] == pytest.approx(0.35)
+
+    assert out["afterMute"]["isMuted"] is True
+    assert out["afterMute"]["audioVolume"] == 0
+
+    assert out["afterUnmute"]["isMuted"] is False
+    assert out["afterUnmute"]["volume"] == pytest.approx(0.35)
+    assert out["afterUnmute"]["audioVolume"] == pytest.approx(0.35)
+
+    assert out["rehydrated"]["volume"] == pytest.approx(0.35)
+    assert out["rehydrated"]["isMuted"] is False
+    assert out["rehydrated"]["audioVolume"] == pytest.approx(0.35)
+

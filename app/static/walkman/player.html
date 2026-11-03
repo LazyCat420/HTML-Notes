@@ -40,14 +40,14 @@
     font:11px/1 ui-monospace,monospace; letter-spacing:.06em; color:#5d6a74}
   model-viewer{width:100%; height:100%; display:block; --poster-color:transparent;}
   /* model-viewer fades hotspots to 25% by default — the LCD must stay fully lit */
-  .hs-screen{width:178px; height:40px; pointer-events:auto; cursor:pointer;
+  .hs-screen{width:186px; height:50px; pointer-events:auto; cursor:pointer;
     --min-hotspot-opacity:1;
     border-radius:3px; overflow:hidden; background:#0a1009;
     box-shadow:inset 0 0 8px rgba(255,179,71,.07)}
   .hs-screen canvas{width:100%; height:100%; display:block}
   /* hotspots are position:static by default, which parked the glow behind the
      WebGL canvas — anchor it to the key and keep it lit while selected */
-  .hs-key{position:relative; width:38px; height:21px; border-radius:5px; cursor:pointer;
+  .hs-key{position:relative; width:38px; height:16px; border-radius:4px; cursor:pointer;
     --min-hotspot-opacity:1; background:transparent; border:none; outline:none;
     -webkit-tap-highlight-color:transparent; transition:box-shadow .28s ease}
   /* The key is lit from underneath, so the light is only visible where the
@@ -57,12 +57,15 @@
      box — so the key face is never lit, only the seam around it. */
   .hs-anchor{position:absolute; width:0; height:0; pointer-events:none;
     --min-hotspot-opacity:1}
-  /* Secondary keys: the frame's controls are now part of the deck, so they are
-     smaller and less proud than the transport row. Sized from the projected
-     scale like the transport keys, so they land exactly on the caps. */
+  /* Secondary keys: 6 recessed utility keys on the left of the utility row. */
   .hs-aux{position:relative; width:32px; height:20px; border-radius:4px; cursor:pointer;
     --min-hotspot-opacity:1; background:transparent; border:none; outline:none;
     -webkit-tap-highlight-color:transparent; transition:box-shadow .28s ease}
+  /* Interactive drag/click/wheel rail projected onto the 3D silver volume fader */
+  #volTrack{position:absolute; cursor:ew-resize; touch-action:none;
+    background:transparent; border:0; padding:0; outline:none; z-index:4;
+    border-radius:4px}
+  #volTrack:focus-visible{box-shadow:0 0 0 1px rgba(255,214,136,.65)}
   .lamp{position:absolute; pointer-events:none; border-radius:4px; opacity:0;
     transition:opacity .3s ease;
     box-shadow:0 0 0 1px rgba(255,214,136,.5),
@@ -118,31 +121,41 @@
     field-of-view="20deg" environment-image="/static/walkman/models/studio.hdr"
     tone-mapping="aces" exposure="1" shadow-intensity="1" shadow-softness="1"
     interaction-prompt="none" disable-tap disable-pan disable-rotate alt="3D cassette music player">
-    <div class="hs-screen" slot="hotspot-screen" data-position="0 0.033 0.0155">
-      <canvas id="scr" width="712" height="160"></canvas>
+    <div class="hs-screen" slot="hotspot-screen" data-position="0 0.0275 0.0155">
+      <canvas id="scr" width="740" height="198"></canvas>
     </div>
-    <div class="hs-anchor" slot="hotspot-a0t" data-position="-0.132 -0.036 0.021"></div>
-    <div class="hs-anchor" slot="hotspot-a0b" data-position="-0.084 -0.062 0.021"></div>
-    <div class="hs-anchor" slot="hotspot-a1t" data-position="-0.078 -0.034 0.023"></div>
-    <div class="hs-anchor" slot="hotspot-a1b" data-position="-0.03 -0.064 0.023"></div>
-    <div class="hs-anchor" slot="hotspot-a2t" data-position="-0.024 -0.036 0.021"></div>
-    <div class="hs-anchor" slot="hotspot-a2b" data-position="0.024 -0.062 0.021"></div>
-    <div class="hs-anchor" slot="hotspot-a3t" data-position="0.03 -0.036 0.021"></div>
-    <div class="hs-anchor" slot="hotspot-a3b" data-position="0.078 -0.062 0.021"></div>
-    <div class="hs-anchor" slot="hotspot-a4t" data-position="0.084 -0.036 0.021"></div>
-    <div class="hs-anchor" slot="hotspot-a4b" data-position="0.132 -0.062 0.021"></div>
-    <button class="hs-key" slot="hotspot-k0" data-position="-0.108 -0.049 0.021" aria-label="Previous"></button>
-    <button class="hs-key" slot="hotspot-k1" data-position="-0.054 -0.049 0.021" aria-label="Play"></button>
-    <button class="hs-key" slot="hotspot-k2" data-position="0 -0.049 0.023" aria-label="Stop"></button>
-    <button class="hs-key" slot="hotspot-k3" data-position="0.054 -0.049 0.021" aria-label="Next"></button>
-    <button class="hs-key" slot="hotspot-k4" data-position="0.108 -0.049 0.021" aria-label="Queue"></button>
-    <button class="hs-aux" slot="hotspot-x0" data-position="-0.05500 -0.014 0.0185" aria-label="Like this song"></button>
-    <button class="hs-aux" slot="hotspot-x1" data-position="-0.03300 -0.014 0.0185" aria-label="Dislike this song"></button>
-    <button class="hs-aux" slot="hotspot-x2" data-position="-0.01100 -0.014 0.0185" aria-label="History"></button>
-    <button class="hs-aux" slot="hotspot-x3" data-position="0.01100 -0.014 0.0185" aria-label="Mute"></button>
-    <button class="hs-aux" slot="hotspot-x4" data-position="0.03300 -0.014 0.0185" aria-label="Open in Music Player"></button>
-    <button class="hs-aux" slot="hotspot-x5" data-position="0.05500 -0.014 0.0185" aria-label="Close widget"></button>
+    <!-- 5 uniform compact transport key corner anchors (0.048 x 0.019 m at Y = -0.0535) -->
+    <div class="hs-anchor" slot="hotspot-a0t" data-position="-0.132 -0.044 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a0b" data-position="-0.084 -0.063 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a1t" data-position="-0.078 -0.044 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a1b" data-position="-0.030 -0.063 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a2t" data-position="-0.024 -0.044 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a2b" data-position="0.024 -0.063 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a3t" data-position="0.030 -0.044 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a3b" data-position="0.078 -0.063 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a4t" data-position="0.084 -0.044 0.0205"></div>
+    <div class="hs-anchor" slot="hotspot-a4b" data-position="0.132 -0.063 0.0205"></div>
+    <!-- 3D Volume Slider track anchors (0% left, 100% right, plate top/bottom) -->
+    <div class="hs-anchor" slot="hotspot-v0" data-position="0.038 -0.0302 0.019"></div>
+    <div class="hs-anchor" slot="hotspot-v1" data-position="0.114 -0.0302 0.019"></div>
+    <div class="hs-anchor" slot="hotspot-vt" data-position="0.076 -0.0212 0.015"></div>
+    <div class="hs-anchor" slot="hotspot-vb" data-position="0.076 -0.0358 0.015"></div>
+    <!-- 5 uniform compact transport keys -->
+    <button class="hs-key" slot="hotspot-k0" data-position="-0.108 -0.0535 0.0205" aria-label="Previous"></button>
+    <button class="hs-key" slot="hotspot-k1" data-position="-0.054 -0.0535 0.0205" aria-label="Play"></button>
+    <button class="hs-key" slot="hotspot-k2" data-position="0 -0.0535 0.0205" aria-label="Stop"></button>
+    <button class="hs-key" slot="hotspot-k3" data-position="0.054 -0.0535 0.0205" aria-label="Next"></button>
+    <button class="hs-key" slot="hotspot-k4" data-position="0.108 -0.0535 0.0205" aria-label="Queue"></button>
+    <!-- 6 recessed secondary utility keys: Like, Dislike, History, Open, Close, Mute -->
+    <button class="hs-aux" slot="hotspot-x0" data-position="-0.1215 -0.0285 0.0185" aria-label="Like this song" title="Like"></button>
+    <button class="hs-aux" slot="hotspot-x1" data-position="-0.0965 -0.0285 0.0185" aria-label="Dislike this song" title="Dislike"></button>
+    <button class="hs-aux" slot="hotspot-x2" data-position="-0.0715 -0.0285 0.0185" aria-label="History" title="History"></button>
+    <button class="hs-aux" slot="hotspot-x3" data-position="-0.0465 -0.0285 0.0185" aria-label="Open in Music Player" title="Open in Music Player"></button>
+    <button class="hs-aux" slot="hotspot-x4" data-position="-0.0215 -0.0285 0.0185" aria-label="Close widget" title="Close widget"></button>
+    <button class="hs-aux" slot="hotspot-x5" data-position="0.0035 -0.0285 0.0185" aria-label="Mute" title="Mute / Unmute"></button>
   </model-viewer>
+  <div id="volTrack" role="slider" tabindex="0" aria-label="Volume"
+       aria-valuemin="0" aria-valuemax="100" aria-valuenow="78" title="Drag or scroll to adjust volume"></div>
   <div class="lamp" data-k="0"></div>
   <div class="lamp" data-k="1"></div>
   <div class="lamp" data-k="2"></div>
@@ -154,6 +167,7 @@
   <div class="lamp" data-k="8"></div>
   <div class="lamp" data-k="9"></div>
   <div class="lamp" data-k="10"></div>
+  <div class="lamp" data-k="11"></div>
   </div><!-- /stage -->
   <div id="queue">
     <div class="bar">
@@ -169,10 +183,18 @@
 const $ = id => document.getElementById(id);
 const mv = $('mv');
 const CW = 6, CH = 7;
-const GLASS_W = 0.224, GLASS_H = 0.050, BACKING = 4;
+const GLASS_W = 0.232, GLASS_H = 0.062, BACKING = 4;
 const MARGIN = 10;   // backing px of padding inside the glass
 const BG = [10, 16, 9], INK = [255, 210, 118];
+
+// 3D Volume Fader track endpoints in glTF metres (matches build_body.py)
+const VOL_X0 = 0.038;
+const VOL_X1 = 0.114;
+const VOL_KNOB_W_M = 0.0148;
+const VOL_KNOB_H_M = 0.0092;
+
 const FONT = {
+  ' ':'00000/00000/00000/00000/00000/00000/00000',
   A:'01110/10001/10001/11111/10001/10001/10001',
   B:'11110/10001/10001/11110/10001/10001/11110',
   C:'01110/10001/10000/10000/10000/10001/01110',
@@ -209,7 +231,9 @@ const FONT = {
   '7':'11111/00001/00010/00100/01000/01000/01000',
   '8':'01110/10001/10001/01110/10001/10001/01110',
   '9':'01110/10001/10001/01111/00001/00010/01100',
+  '%':'11001/11010/00010/00100/01000/01011/10011',
   '-':'00000/00000/00000/11111/00000/00000/00000',
+  '—':'00000/00000/00000/11111/00000/00000/00000',
   '.':'00000/00000/00000/00000/00000/00000/00100',
   ':':'00000/00100/00100/00000/00100/00100/00000',
   '/':'00001/00010/00010/00100/01000/01000/10000',
@@ -226,6 +250,8 @@ const DEFAULTS = {
   shuffle: false,
   thumb: null,      // 'up' | 'down' | null — steady light on the matching aux key
   muted: false,
+  volume: 0.78,
+  prevVolume: 0.78,
   library: [
     { artist: 'Buckethead', title: 'Soothsayer', duration: 242 },
     { artist: 'Buckethead', title: 'Colma', duration: 181 },
@@ -262,15 +288,11 @@ function drawText(ctx, str, x, y, color, s = 1, glow = false){
 function fitScale(W, H, strings){
   const n = Math.max(1, ...strings.map(t => t.length));
   const byWidth = Math.floor((W - 2 * MARGIN) / (CW * n));
-  const byHeight = Math.floor(H / 29);
+  const byHeight = Math.floor((H - 2 * MARGIN) / 33);
   return Math.max(2, Math.min(8, byWidth, byHeight));
 }
 
-/* ---- title change: the LCD dissolves into the new title ----
-   A new song does not just swap text: every pixel of the old title has a
-   chance to hold, flicker, or flip to the new glyph, resolving left to right
-   in ~0.6 s. It is drawn from the same 5x7 bitmap as everything else, so it
-   reads as the screen scrambling, not as a CSS transition. */
+/* ---- title change: the LCD dissolves into the new title ---- */
 const SCRAMBLE_MS = 620;
 let scramble = null;   // { from, to, t0 }
 let lastLabel = null;
@@ -291,10 +313,8 @@ function drawScramble(ctx, from, to, x, y, color, s, p, frame){
   ctx.shadowColor = 'rgba(255,190,90,.55)';
   ctx.shadowBlur = 3;
   for (let i = 0; i < n; i++){
-    // left-to-right wave: the tail of the line is still churning when the
-    // head has already settled
     const local = Math.min(1, Math.max(0, (p - (i / Math.max(1, n)) * 0.5) / 0.5));
-    const mid = 1 - Math.abs(2 * local - 1);        // 0 at ends, 1 in the middle
+    const mid = 1 - Math.abs(2 * local - 1);
     const rowsA = a[i].split('/'), rowsB = b[i].split('/');
     const rowsN = pool[Math.floor(scrambleHash(i, 0, 0, frame) * pool.length)].split('/');
     for (let r = 0; r < CH; r++){
@@ -303,10 +323,10 @@ function drawScramble(ctx, from, to, x, y, color, s, p, frame){
         const onA = rowsA[r][c] === '1';
         const onB = rowsB[r][c] === '1';
         let lit;
-        if (h < local) lit = onB;                    // settled: new glyph
-        else if (h > 1 - local * 0.85) lit = onA;    // holding: old glyph
+        if (h < local) lit = onB;
+        else if (h > 1 - local * 0.85) lit = onA;
         else lit = scrambleHash(i, r, c, frame + 7) < 0.30 * mid
-                   && rowsN[r][c] === '1';           // churn: random glyph
+                   && rowsN[r][c] === '1';
         if (lit) ctx.fillRect(x + i * CW * s + c * s, y + r * s, s, s);
       }
     }
@@ -329,11 +349,10 @@ function drawScreen(){
 
   const f = v => `${Math.floor(v / 60)}:${String(Math.floor(v % 60)).padStart(2, '0')}`;
   const time = `${f(state.position)} / ${f(state.duration)}`;
+  const effVol = state.muted ? 0 : Math.round((state.volume ?? 0.78) * 100);
   const st = state.playing ? 'PLAY' : 'PAUSE';
   let label = state.title.toUpperCase();
 
-  // A different title starts the dissolve; the old one is kept so the pixels
-  // have something to scramble out of.
   if (lastLabel !== null && label !== lastLabel) scramble = { from: lastLabel, to: label, t0: performance.now() };
   lastLabel = label;
 
@@ -345,22 +364,21 @@ function drawScreen(){
 
   const s = fitScale(W, H, [label, time, st, scramble ? scramble.from : label]);
   if (textWidth(label, s) > W - 2 * MARGIN){
-    // only reached for titles longer than ~58 characters: trim, never scroll
     const maxChars = Math.floor((W - 2 * MARGIN + s) / (CW * s));
     label = label.slice(0, Math.max(0, maxChars - 2)) + '..';
     if (scramble) scramble.to = label;
   }
 
   const ink = `rgb(${INK})`;
-  const top = Math.floor((H - 29 * s) / 2);
+  const top = Math.floor((H - 33 * s) / 2);
 
   if (scramble){
     drawScramble(ctx, scramble.from, scramble.to, MARGIN, top, ink, s, p, Math.floor(performance.now() / 55));
   } else {
     drawText(ctx, label, MARGIN, top, ink, s, true);
   }
-  drawText(ctx, time, MARGIN, top + 9 * s, ink, s, true);
-  drawText(ctx, st, W - MARGIN - textWidth(st, s), top + 9 * s, ink, s, true);
+  drawText(ctx, time, MARGIN, top + 10 * s, ink, s, true);
+  drawText(ctx, st, W - MARGIN - textWidth(st, s), top + 10 * s, ink, s, true);
 
   const cells = 43;
   const pitch = Math.floor((W - 2 * MARGIN) / cells);
@@ -368,13 +386,43 @@ function drawScreen(){
   const filled = Math.round(Math.min(1, state.position / Math.max(1, state.duration)) * cells);
   for (let i = 0; i < cells; i++){
     ctx.fillStyle = i < filled ? ink : 'rgba(255,210,118,.20)';
-    ctx.fillRect(MARGIN + i * pitch, top + 18 * s, cw, 3 * s);
+    ctx.fillRect(MARGIN + i * pitch, top + 20 * s, cw, 3 * s);
   }
-  drawText(ctx, 'SIDE A', MARGIN, top + 22 * s, 'rgba(255,210,118,.85)', s);
-  drawText(ctx, state.playing ? '*' : 'o', W - MARGIN - textWidth('*', s), top + 22 * s, ink, s);
+  const bottomRight = state.muted ? 'MUTE' : `VOL ${effVol}%`;
+  drawText(ctx, 'SIDE A', MARGIN, top + 26 * s, 'rgba(255,210,118,.85)', s);
+  drawText(ctx, bottomRight, W - MARGIN - textWidth(bottomRight, s), top + 26 * s, 'rgba(255,210,118,.85)', s);
 }
 
-/* hotspots keep a fixed CSS size; the glass is 0.224 m of a 0.216 m key span,
+/* ---- Move the real 3D VOL_KNOB mesh inside model-viewer's Three.js scene ---- */
+let cachedKnob = null, cachedScene = null;
+function getThreeKnob(){
+  if (cachedKnob && cachedScene) return { knob: cachedKnob, scene: cachedScene };
+  const syms = Object.getOwnPropertySymbols(mv);
+  const sceneSym = syms.find(s => s.description === 'scene');
+  if (!sceneSym || !mv[sceneSym]) return null;
+  const scene = mv[sceneSym];
+  const knob = scene.getObjectByName ? scene.getObjectByName('VOL_KNOB') : null;
+  if (!knob) return null;
+  cachedScene = scene;
+  cachedKnob = knob;
+  return { knob, scene };
+}
+
+function syncVolume3D(){
+  const eff = state.muted ? 0 : Math.max(0, Math.min(1, state.volume ?? 0.78));
+  const x3d = VOL_X0 + eff * (VOL_X1 - VOL_X0);
+  const found = getThreeKnob();
+  if (found){
+    found.knob.position.x = x3d;
+    if (found.knob.updateMatrix) found.knob.updateMatrix();
+    if (found.knob.updateMatrixWorld) found.knob.updateMatrixWorld(true);
+    if (found.scene.queueRender) found.scene.queueRender();
+  }
+  const vt = $('volTrack');
+  if (vt) vt.setAttribute('aria-valuenow', String(Math.round(eff * 100)));
+}
+
+/* hotspots keep a fixed CSS size; the glass is 0.232 x 0.062 m of a 0.216 m key span,
    so the overlay is sized from the projected keys and supersampled 4x */
 const KEY_SPAN = 0.216;
 function syncScreen(){
@@ -386,10 +434,9 @@ function syncScreen(){
   const span = Math.max(...cx) - Math.min(...cx);
   if (span <= 0) return;
   const pxPerM = span / KEY_SPAN;
-  // hotspots keep a fixed CSS size in model-viewer; size them to the real keys
-  // (0.048 x 0.026 m) so the under-light starts exactly at the key's bottom edge
-  ks.forEach((k, i) => {
-    const kh = Math.max(8, Math.round((i === 1 ? 0.030 : 0.026) * pxPerM));
+  // All 5 bottom transport keys are now uniform at 0.048 x 0.019 m
+  ks.forEach((k) => {
+    const kh = Math.max(8, Math.round(0.019 * pxPerM));
     const kw = Math.max(12, Math.round(0.048 * pxPerM));
     if (k.style.width !== kw + 'px'){
       k.style.width = kw + 'px';
@@ -397,10 +444,10 @@ function syncScreen(){
       k.style.setProperty('--key-h', kh + 'px');
     }
   });
-  // the secondary caps are 0.018 x 0.011 m; keep their hotspots on them
+  // Secondary utility caps are 0.021 x 0.0125 m
   document.querySelectorAll('.hs-aux').forEach(a => {
-    const aw = Math.max(14, Math.round(0.018 * pxPerM));
-    const ah = Math.max(11, Math.round(0.011 * pxPerM));
+    const aw = Math.max(14, Math.round(0.021 * pxPerM));
+    const ah = Math.max(11, Math.round(0.0125 * pxPerM));
     if (a.style.width !== aw + 'px'){
       a.style.width = aw + 'px';
       a.style.height = ah + 'px';
@@ -417,13 +464,25 @@ function syncScreen(){
       const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
       l = Math.round(ra.left - card.left); t = Math.round(ra.top - card.top);
       w = Math.round(rb.left - ra.left); h = Math.round(rb.top - ra.top);
-    } else {
-      // one hotspot per secondary key already covers its cap exactly
+    } else if (i < 11){
       const x = document.querySelector(`[slot="hotspot-x${i - 5}"]`);
       if (!x) return;
       const r = x.getBoundingClientRect();
       l = Math.round(r.left - card.left); t = Math.round(r.top - card.top);
       w = Math.round(r.width); h = Math.round(r.height);
+    } else {
+      // Lamp 11: under-knob halo for the 3D silver volume fader
+      const v0 = document.querySelector('[slot="hotspot-v0"]');
+      const v1 = document.querySelector('[slot="hotspot-v1"]');
+      if (!v0 || !v1) return;
+      const r0 = v0.getBoundingClientRect(), r1 = v1.getBoundingClientRect();
+      const eff = state.muted ? 0 : Math.max(0, Math.min(1, state.volume ?? 0.78));
+      const knobCx = r0.left + eff * (r1.left - r0.left);
+      const knobCy = r0.top + eff * (r1.top - r0.top);
+      w = Math.max(10, Math.round(VOL_KNOB_W_M * pxPerM));
+      h = Math.max(7, Math.round(VOL_KNOB_H_M * pxPerM));
+      l = Math.round(knobCx - card.left - w / 2);
+      t = Math.round(knobCy - card.top - h / 2);
     }
     if (w <= 0 || h <= 0) return;
     lamp.style.left = l + 'px';
@@ -432,6 +491,27 @@ function syncScreen(){
     lamp.style.height = h + 'px';
     lamp.style.borderRadius = Math.max(2, Math.round(h * 0.18)) + 'px';
   });
+
+  // Position the interactive volume drag rail over the projected 3D plate
+  const v0 = document.querySelector('[slot="hotspot-v0"]');
+  const v1 = document.querySelector('[slot="hotspot-v1"]');
+  const vt = document.querySelector('[slot="hotspot-vt"]');
+  const vb = document.querySelector('[slot="hotspot-vb"]');
+  const trackEl = $('volTrack');
+  if (v0 && v1 && vt && vb && trackEl){
+    const r0 = v0.getBoundingClientRect(), r1 = v1.getBoundingClientRect();
+    const rt = vt.getBoundingClientRect(), rb = vb.getBoundingClientRect();
+    const padX = Math.round(0.009 * pxPerM);
+    const left = Math.round(Math.min(r0.left, r1.left) - card.left - padX);
+    const right = Math.round(Math.max(r0.left, r1.left) - card.left + padX);
+    const top = Math.round(Math.min(rt.top, rb.top) - card.top - 2);
+    const bottom = Math.round(Math.max(rt.top, rb.top) - card.top + 2);
+    trackEl.style.left = left + 'px';
+    trackEl.style.top = top + 'px';
+    trackEl.style.width = Math.max(24, right - left) + 'px';
+    trackEl.style.height = Math.max(12, bottom - top) + 'px';
+  }
+
   const w = Math.max(40, Math.round(GLASS_W * pxPerM));
   const h = Math.max(20, Math.round(GLASS_H * pxPerM));
   if (el.style.width !== w + 'px'){
@@ -446,24 +526,30 @@ function syncScreen(){
   }
 }
 mv.addEventListener('camera-change', syncScreen);
-mv.addEventListener('load', () => setTimeout(syncScreen, 60));
+mv.addEventListener('load', () => {
+  cachedKnob = null; cachedScene = null;
+  syncVolume3D();
+  setTimeout(() => { syncVolume3D(); syncScreen(); }, 60);
+});
 addEventListener('resize', syncScreen);
 setTimeout(syncScreen, 400);
 
 /* ---- audio ---- */
 let ac = null;
 function click(soft){
-  ac = ac || new (window.AudioContext || window.webkitAudioContext)();
-  if (ac.state === 'suspended') ac.resume();
-  const n = 0.03, buf = ac.createBuffer(1, Math.floor(ac.sampleRate * n), ac.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
-  const src = ac.createBufferSource(); src.buffer = buf;
-  const bp = ac.createBiquadFilter(); bp.type = 'bandpass';
-  bp.frequency.value = soft ? 1200 : 1900; bp.Q.value = 1.3;
-  const g = ac.createGain(); g.gain.value = 0.18;
-  src.connect(bp).connect(g).connect(ac.destination);
-  src.start();
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') ac.resume();
+    const n = 0.03, buf = ac.createBuffer(1, Math.floor(ac.sampleRate * n), ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+    const src = ac.createBufferSource(); src.buffer = buf;
+    const bp = ac.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.value = soft ? 1200 : 1900; bp.Q.value = 1.3;
+    const g = ac.createGain(); g.gain.value = soft ? 0.12 : 0.18;
+    src.connect(bp).connect(g).connect(ac.destination);
+    src.start();
+  } catch (e) {}
 }
 
 /* ---- controls ---- */
@@ -472,14 +558,12 @@ const FLASH_MS = 900;      // every key except play lights for this long
 const lamps = () => [...document.querySelectorAll('.lamp')];
 const keys = () => [...document.querySelectorAll('.hs-key')];
 const pulseTimers = [0, 0, 0, 0, 0];
+let volLampTimer = 0;
 function emit(msg){
   try { parent.postMessage({ type: 'walkman', ...msg }, '*'); } catch (e) {}
 }
 
-/* i = -1 clears everything. ms = Infinity keeps the lamp on (play while
-   playing); a number flashes it, then restores the steady state. */
 function lampOn(i, ms = Infinity){
-  // transport only: the secondary keys carry their own steady lights
   lamps().forEach((l, n) => { if (n < 5) l.classList.toggle('on', n === i); });
   keys().forEach((k, n) => k.setAttribute('aria-pressed', n === i ? 'true' : 'false'));
   if (i >= 0) clearTimeout(pulseTimers[i]);
@@ -492,8 +576,8 @@ function lampOn(i, ms = Infinity){
   }
 }
 
-/* ---- secondary keys: the six controls that used to be chips above the deck ---- */
-const AUX_ACTIONS = ['thumb_up', 'thumb_down', 'history', 'mute', 'open', 'close'];
+/* ---- secondary keys: Like, Dislike, History, Open, Close, Mute ---- */
+const AUX_ACTIONS = ['thumb_up', 'thumb_down', 'history', 'open', 'close', 'mute'];
 const auxTimers = [0, 0, 0, 0, 0, 0];
 const auxKeys = () => [...document.querySelectorAll('.hs-aux')];
 
@@ -503,20 +587,50 @@ function auxOn(i, on){
   const k = auxKeys()[i];
   if (k) k.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
-/* Steady lights: a liked track keeps the thumb key lit, mute keeps its key lit.
-   The momentary keys (history, open, close) only flash. */
 function syncAux(){
   auxOn(0, state.thumb === 'up');
   auxOn(1, state.thumb === 'down');
   auxOn(2, false);
-  auxOn(3, !!state.muted);
+  auxOn(3, false);
   auxOn(4, false);
-  auxOn(5, false);
+  auxOn(5, !!state.muted || state.volume === 0);
 }
 function flashAux(i, ms = 450){
   auxOn(i, true);
   clearTimeout(auxTimers[i]);
   auxTimers[i] = setTimeout(syncAux, ms);
+}
+function flashVolLamp(ms = 650){
+  const l = lamps()[11];
+  if (!l) return;
+  l.classList.add('on');
+  clearTimeout(volLampTimer);
+  volLampTimer = setTimeout(() => l.classList.remove('on'), ms);
+}
+
+let lastDetent = Math.round((state.volume ?? 0.78) * 10);
+function setVolume(v, emitChange = true){
+  const clamped = Math.max(0, Math.min(1, Number(v) || 0));
+  state.volume = clamped;
+  if (clamped > 0){
+    state.prevVolume = clamped;
+    state.muted = false;
+  } else {
+    state.muted = true;
+  }
+  const det = Math.round(clamped * 10);
+  if (emitChange && det !== lastDetent){
+    lastDetent = det;
+    click(true);
+  }
+  syncAux();
+  syncVolume3D();
+  syncScreen();
+  drawScreen();
+  flashVolLamp();
+  if (emitChange){
+    emit({ action: 'volume', volume: state.volume, muted: state.muted, state: { ...state } });
+  }
 }
 
 function pressAux(i){
@@ -525,8 +639,21 @@ function pressAux(i){
   flashAux(i);
   if (a === 'thumb_up') state.thumb = state.thumb === 'up' ? null : 'up';
   else if (a === 'thumb_down') state.thumb = state.thumb === 'down' ? null : 'down';
-  else if (a === 'mute') state.muted = !state.muted;
-  emit({ action: a, state: { ...state } });
+  else if (a === 'mute'){
+    if (state.muted || state.volume === 0){
+      state.muted = false;
+      state.volume = state.prevVolume > 0 ? state.prevVolume : 0.78;
+    } else {
+      state.prevVolume = state.volume > 0 ? state.volume : 0.78;
+      state.muted = true;
+    }
+    syncAux();
+    syncVolume3D();
+    syncScreen();
+    drawScreen();
+    flashVolLamp();
+  }
+  emit({ action: a, volume: state.volume, muted: state.muted, state: { ...state } });
 }
 
 function step(dir){
@@ -548,16 +675,12 @@ function load(i){
   state.playing = true;
   lampOn(1, Infinity);
   if (!DRIVEN){
-    // Standalone: the card is the only owner of the queue, so it commits.
     state.title = `${t.artist} — ${t.title}`;
     state.artist = t.artist;
     state.duration = t.duration || state.duration;
     state.position = 0;
     drawScreen();
   }
-  // Driven: the host owns the queue and answers with the authoritative track.
-  // Committing our own guess first printed a stale title for one frame and
-  // then restarted the scramble when the host corrected it.
   if (queueOpen) renderQueue();
   emit({ action: 'select', index: i, state: { ...state } });
 }
@@ -596,13 +719,58 @@ document.querySelector('.hs-screen').addEventListener('click', () => { press(4);
 document.querySelectorAll('.hs-aux').forEach((k, i) => {
   k.addEventListener('click', e => { e.stopPropagation(); pressAux(i); });
 });
+
+/* ---- Volume Slider Drag / Click / Wheel / Keyboard ---- */
+const volTrack = $('volTrack');
+let draggingVol = false;
+function volFromClientX(clientX){
+  const v0 = document.querySelector('[slot="hotspot-v0"]');
+  const v1 = document.querySelector('[slot="hotspot-v1"]');
+  if (!v0 || !v1) return state.volume ?? 0.78;
+  const x0 = v0.getBoundingClientRect().left;
+  const x1 = v1.getBoundingClientRect().left;
+  if (Math.abs(x1 - x0) < 4) return state.volume ?? 0.78;
+  return Math.max(0, Math.min(1, (clientX - x0) / (x1 - x0)));
+}
+volTrack.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  e.stopPropagation();
+  draggingVol = true;
+  try { volTrack.setPointerCapture(e.pointerId); } catch (_) {}
+  setVolume(volFromClientX(e.clientX), true);
+});
+volTrack.addEventListener('pointermove', e => {
+  if (!draggingVol) return;
+  setVolume(volFromClientX(e.clientX), true);
+});
+volTrack.addEventListener('pointerup', e => {
+  if (!draggingVol) return;
+  draggingVol = false;
+  try { volTrack.releasePointerCapture(e.pointerId); } catch (_) {}
+});
+volTrack.addEventListener('wheel', e => {
+  e.preventDefault();
+  const delta = (e.deltaY < 0 || e.deltaX > 0) ? 0.05 : -0.05;
+  setVolume((state.muted ? 0 : (state.volume ?? 0.78)) + delta, true);
+}, { passive: false });
+volTrack.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    setVolume((state.muted ? 0 : (state.volume ?? 0.78)) + 0.05, true);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown'){
+    e.preventDefault();
+    setVolume((state.muted ? 0 : (state.volume ?? 0.78)) - 0.05, true);
+  }
+});
+
 addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'INPUT' || e.target === volTrack) return;
   const k = e.key.toLowerCase();
   if (k === ' '){ e.preventDefault(); press(1); }
   else if (k === 'arrowleft') press(0);
   else if (k === 'arrowright') press(3);
   else if (k === 'q') press(4);
+  else if (k === 'm') pressAux(5);
   else if (k === '/'){ e.preventDefault(); openQueue(); $('qsearch').focus(); }
   else if (k === 'escape' && queueOpen){ toggleQueue(false); lampOn(state.playing ? 1 : -1, Infinity); }
 });
@@ -629,7 +797,6 @@ function toggleQueue(open = !queueOpen){
   $('queue').classList.toggle('on', queueOpen);
   if (queueOpen) renderQueue();
   else if (document.activeElement === $('qsearch')) $('qsearch').blur();
-  // the stage changes height when the drawer opens: re-project the hotspots
   requestAnimationFrame(syncScreen);
   setTimeout(syncScreen, 120);
   emit({ action: 'toggle', queueOpen });
@@ -660,17 +827,21 @@ $('qshuffle').addEventListener('click', () => {
 window.walkmanPlayer = {
   setTrack(t){
     const wasPlaying = state.playing;
-    const thumbBefore = state.thumb, mutedBefore = state.muted;
+    const thumbBefore = state.thumb, mutedBefore = state.muted, volBefore = state.volume;
     state = { ...state, ...t };
-    if (state.thumb !== thumbBefore || state.muted !== mutedBefore) syncAux();
+    if (t.volume !== undefined && t.volume > 0) state.prevVolume = t.volume;
+    if (state.thumb !== thumbBefore || state.muted !== mutedBefore || state.volume !== volBefore){
+      syncAux();
+      syncVolume3D();
+      syncScreen();
+    }
     if (t.library) renderQueue();
-    // the host re-pushes every 250 ms; only move the light when play state
-    // actually changed, or a key's flash would be cancelled instantly
     if (state.playing !== wasPlaying) lampOn(state.playing ? 1 : -1, Infinity);
     drawScreen();
     if (queueOpen) renderQueue();
   },
   setLibrary(lib){ state.library = lib; if (queueOpen) renderQueue(); },
+  setVolume(v){ setVolume(v, false); },
   select(i){ load(i); },
   get state(){ return { ...state }; },
   toggleQueue,
@@ -684,6 +855,7 @@ addEventListener('message', e => {
   if (!d || d.type !== 'walkman') return;
   if (d.setTrack) window.walkmanPlayer.setTrack(d.setTrack);
   if (d.setLibrary) window.walkmanPlayer.setLibrary(d.setLibrary);
+  if (d.setVolume !== undefined) window.walkmanPlayer.setVolume(d.setVolume);
   if (d.select !== undefined) window.walkmanPlayer.select(d.select);
   if (d.press !== undefined) press(d.press);
   if (d.openQueue !== undefined) toggleQueue(!!d.openQueue);
@@ -712,10 +884,12 @@ const q = new URLSearchParams(location.search);
 if (q.get('title')) state.title = q.get('title');
 if (q.get('duration')) state.duration = Number(q.get('duration')) || state.duration;
 if (q.get('position')) state.position = Number(q.get('position')) || 0;
+if (q.get('volume')) state.volume = Math.max(0, Math.min(1, Number(q.get('volume'))));
 if (q.get('paused') === '1') state.playing = false;
 if (q.get('playing') !== '0' && q.get('paused') !== '1') lampOn(1, Infinity);
 if (q.get('queue') === '1'){ toggleQueue(); lampOn(4, FLASH_MS); }
 syncAux();
+syncVolume3D();
 drawScreen();
 requestAnimationFrame(tick);
 </script>
