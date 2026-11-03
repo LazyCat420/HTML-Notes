@@ -1696,36 +1696,70 @@ document.addEventListener('alpine:init', () => {
                 console.warn('[MusicPlayer] LocalStorage history error:', e);
             }
 
-            // Dispatch to backend music service
+            // Dispatch to backend music service. The body must match the
+            // service's PlayEvent model (music-player apps/api/app/routers/
+            // history.py): id, track_id, timestamp, duration, completion_rate,
+            // source, context are REQUIRED — the old {track_path, is_youtube,…}
+            // body 422'd on every track (2026-11-03). track_id uses the same
+            // "youtube://<id>" path the music-player web app records, so both
+            // clients' plays group into one history row per song.
             try {
                 fetch(`${this.base}/api/music/history`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        track_path: track.path || track.id,
-                        title: track.title || 'Unknown',
-                        artist: track.artist || 'Unknown',
-                        is_youtube: !!track.isYoutube,
-                        youtube_id: track.isYoutube ? track.id : null,
-                        duration: Math.round(this.duration || 0),
-                        source: 'html-notes'
-                    })
+                    body: JSON.stringify(this.buildPlayEvent(track))
                 }).catch(err => console.warn('[MusicPlayer] Failed to POST /api/music/history:', err));
             } catch {}
+        },
+
+        buildPlayEvent(track) {
+            // crypto.randomUUID exists only in secure contexts; the NAS serves
+            // plain http, so fall back to a time+random id.
+            const uid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : `hn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+            const trackId = track.isYoutube
+                ? `youtube://${track.id}`
+                : (track.path || track.id);
+            return {
+                id: uid,
+                track_id: trackId,
+                artist: track.artist || 'Unknown',
+                title: track.title || 'Unknown',
+                album: track.album || '',
+                timestamp: new Date().toISOString(),
+                duration: Math.round(this.duration || track.duration || 0),
+                // Logged at play start; the service's popularity queries only
+                // count completion_rate >= 0.5, so a start event never inflates them.
+                completion_rate: 0,
+                source: track.isYoutube ? 'youtube' : 'local',
+                context: 'html-notes'
+            };
+        },
+
+        // /api/music/history/recent returns a bare list of
+        // {track_id, artist, title, album, source, last_played}.
+        mapServerHistory(rows) {
+            const list = Array.isArray(rows) ? rows : (rows && Array.isArray(rows.history) ? rows.history : []);
+            return list.filter(h => h && h.track_id).map(h => {
+                const yt = String(h.track_id).startsWith('youtube://');
+                const id = yt ? String(h.track_id).slice('youtube://'.length) : h.track_id;
+                return {
+                    id,
+                    title: h.title,
+                    artist: h.artist,
+                    isYoutube: yt || h.source === 'youtube',
+                    path: h.track_id,
+                    playedAt: h.last_played
+                };
+            });
         },
 
         async fetchHistory() {
             try {
                 const res = await this.fetchJson(`${this.base}/api/music/history/recent?limit=20`, 8000);
-                if (res && Array.isArray(res.history) && res.history.length) {
-                    const serverTracks = res.history.map(h => ({
-                        id: h.youtube_id || h.track_path || h.id,
-                        title: h.title,
-                        artist: h.artist,
-                        isYoutube: h.is_youtube || !!h.youtube_id,
-                        path: h.track_path || h.id,
-                        playedAt: h.played_at
-                    }));
+                const serverTracks = this.mapServerHistory(res);
+                if (serverTracks.length) {
                     const existingIds = new Set(serverTracks.map(t => t.id));
                     const merged = [...serverTracks];
                     (this.recentHistory || []).forEach(localTrack => {

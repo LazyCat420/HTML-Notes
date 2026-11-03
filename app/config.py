@@ -20,6 +20,18 @@ VLLM_ENDPOINTS = [
 # now — prism-service is retired for this app (2026-10-15).
 LAZY_AGENT_URL = os.getenv("LAZY_AGENT_URL", "http://10.0.0.16:5591")
 DATABASE_URL = os.getenv("DATABASE_URL", "data/notes.db")
+# How long a music ask waits for the LLM router before the offline music
+# fallback plays (routes/message.py). Healthy routing measured 0.4-1.2s
+# (2026-10-08); on 2026-11-03 the shared local boxes gave p50 3.2s / p95 23s
+# and a 4s budget made 48 of 52 music asks wait the full 4s for nothing. The
+# fallback plays exactly what the old fast lane played (the widget tries genre
+# then artist either way), and since the router task keeps running a late answer
+# refines the player in place, so the budget only decides how long the FIRST
+# player waits: 1.5s = the plan's p95 target.
+MUSIC_ROUTER_BUDGET_S = float(os.getenv("MUSIC_ROUTER_BUDGET_S", "1.5"))
+# After the budget the fallback player is already up; a router answer that
+# lands within this many seconds rebuilds that player in place (refine).
+MUSIC_ROUTER_REFINE_S = float(os.getenv("MUSIC_ROUTER_REFINE_S", "25"))
 LAZY_AGENT_SERVICE_URL = os.getenv("LAZY_AGENT_SERVICE_URL", "http://10.0.0.16:5591")
 # Optional shared key for lazy-agent-service POST /execute/* (W3 of the harness
 # audit). Blank keeps today's keyless behaviour; when the server sets

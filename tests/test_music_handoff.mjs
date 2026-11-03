@@ -160,11 +160,11 @@ test("a track at 0:00 still hands over a position", () => {
 
 // ─── both twins, and the config that reaches them ──────────────────────────
 
-test("both template twins wire the click handler", () => {
-  for (const [name, src] of [["factory.py", factoryPy], ["index.js", indexJs]]) {
-    assert.match(src, /@click="openInFullPlayer\(\)"/,
-      `${name} must bind the handoff click`);
-  }
+test("the walkman card's open key reaches the handoff", () => {
+  // Since 038f8a6 the open button lives on the 3D deck (iframe) and arrives
+  // as a postMessage; the old @click="openInFullPlayer()" twins are gone.
+  assert.match(widgetsJs, /case 'open': this\.openInFullPlayer\(\); break;/,
+    "the card's open key must call openInFullPlayer");
 });
 
 test("the server hands the widget the music-player WEB url, not just the api", () => {

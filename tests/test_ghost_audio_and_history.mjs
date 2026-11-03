@@ -53,13 +53,11 @@ test("music player logs '🎵 Now Playing' and dispatches play event to /api/mus
   );
 });
 
-test("music player supports activeTab ('queue' | 'history') and renders history tab", () => {
+test("music player keeps activeTab ('queue' | 'history') state for the card", () => {
   assert.ok(
     widgetsJs.includes("activeTab"),
     "musicPlayerWidget must maintain activeTab state"
   );
-  assert.ok(
-    factoryPy.includes("activeTab") && factoryPy.includes("History"),
-    "factory.py template must render the History tab toggle"
-  );
+  // The History tab is drawn by the walkman card (iframe) since 038f8a6, not
+  // by factory.py, so only the component state is checked here.
 });

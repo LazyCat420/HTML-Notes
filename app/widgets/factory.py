@@ -1306,9 +1306,18 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
               f'autoplay: {autoplay}, base: {json_escape(MUSIC_PLAYER_URL)}, '
               f'webBase: {json_escape(MUSIC_PLAYER_WEB_URL)}, '
               f'cardUrl: {json_escape(WALKMAN_CARD_URL)} }}')
+    # data-hn-config: the same config as strict JSON. The client's self-heal
+    # reads THIS when it has to rebuild a node, instead of sniffing the DOM and
+    # falling back to a hardcoded genre (the 2026-11-03 "buckethead plays jazz"
+    # bug: the rebuild ran on every render and threw the real config away).
+    hn_config = json_escape({"genre": genre, "kind": kind,
+                             "autoplay": autoplay == "true",
+                             "base": MUSIC_PLAYER_URL,
+                             "webBase": MUSIC_PLAYER_WEB_URL,
+                             "cardUrl": WALKMAN_CARD_URL})
 
     return f"""
-    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative text-white flex flex-col" :style="'height: ' + walkmanHeight + 'px'" x-data="musicPlayerWidget({cfg_js})">
+    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative text-white flex flex-col" :style="'height: ' + walkmanHeight + 'px'" data-hn-config="{hn_config}" x-data="musicPlayerWidget({cfg_js})">
         <!-- Every control lives on the deck itself: the LCD, the five transport
              keys, and six secondary keys (thumbs, history, mute, open, close)
              engraved into the body. Nothing floats above it, so the widget is

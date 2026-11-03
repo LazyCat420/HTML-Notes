@@ -582,7 +582,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, LAZY_AGENT_URL, VLLM_URL, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL
+from app.config import PORT, LAZY_AGENT_URL, VLLM_URL, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL, MUSIC_ROUTER_BUDGET_S, MUSIC_ROUTER_REFINE_S
 import asyncio
 import contextvars
 import datetime
@@ -1343,6 +1343,54 @@ def extract_music_genre(query_text: str) -> str:
     "play reggae music" -> "reggae"; "open the music player" -> ""."""
     text = re.sub(r'[^\w\s]', '', (query_text or '').lower().strip())
     return " ".join(w for w in text.split() if w not in MUSIC_FILLER_WORDS)
+
+
+def _genre_key(s: str) -> str:
+    # "Lo-Fi", "lofi" and "lo fi" are one genre: compare letters/digits only.
+    return re.sub(r'[^a-z0-9&]', '', (s or '').lower())
+
+
+# MusicBrainz's genre list (CC0, `GET /ws/2/genre/all?fmt=txt`, fetched
+# 2026-11-03, 2,220 names). A FACT table, not a routing heuristic: it answers
+# "is this string a music genre?" for resolve_music_kind. Refresh by re-fetching
+# that URL into app/domain/musicbrainz_genres.txt.
+_MB_GENRES_PATH = pathlib.Path(__file__).resolve().parent / "domain" / "musicbrainz_genres.txt"
+try:
+    MUSICBRAINZ_GENRE_KEYS = frozenset(
+        _genre_key(line) for line in _MB_GENRES_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip())
+except OSError:  # never block startup on a data file
+    MUSICBRAINZ_GENRE_KEYS = frozenset()
+
+
+def music_query_grounded(query: str, message: str) -> bool:
+    """True when the router's music subject shares a word stem (first 4
+    letters, or a whole short word) with the user's message. A router query
+    with nothing in common with the ask is a hallucination, not a correction."""
+    def stems(s):
+        return {w[:4] for w in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(w) >= 2}
+    q, m = stems(query), stems(message)
+    return not q or bool(q & m)
+
+
+def resolve_music_kind(subject: str) -> str:
+    """"genre" when the music subject is exactly a MusicBrainz genre,
+    else "" (unknown: the widget tries genre then artist).
+
+    Used only when the router left modifiers.kind out; the router is told to
+    always set it. It never answers "artist": a name that is not a genre is
+    not thereby an artist ("hindu music"), and guessing artist would skip the
+    genre pipeline with no way back. extract_music_genre above is, since
+    2026-11-03, only the offline (router-down) and query-less fallback."""
+    words = re.sub(r'[^\w\s&-]', ' ', (subject or '').lower()).split()
+    if not words or not MUSICBRAINZ_GENRE_KEYS:
+        return ""
+    # Whole phrase only. A "last word is a genre" rule was tried and dropped:
+    # "instrumental" is a MusicBrainz genre, so "buckethead instrumental"
+    # became a genre ask again. Unlisted blends ("jungle house") stay "".
+    if _genre_key(" ".join(words)) in MUSICBRAINZ_GENRE_KEYS:
+        return "genre"
+    return ""
 
 # Media/data intent guards for the heuristic fast-path. When one of these
 # matches, the request goes to the agent instead of keyword-spawning a widget
@@ -3236,7 +3284,9 @@ ROUTER_WIDGETS = {
     "traffic":    ("traffic",   'live traffic or directions. query = the place, or "from A to B"'),
     "video":      ("video",     'something to WATCH. query = the subject ("cookie recipe")'),
     "image":      ("image",     'a PICTURE of something. query = the subject ("golden retriever puppy")'),
-    "music":      ("music",     'background music / radio. query = the genre OR artist/band name. Add modifiers {"kind": "genre"} for a style/mood ("jungle", "smooth jazz", "study") or {"kind": "artist"} for a named act ("Oasis", "the band Jungle"); omit kind if unsure'),
+    # No real names in these examples: measured 2026-11-03 the router copied
+    # an example name ("buckethead") into the query for "heavy metal music".
+    "music":      ("music",     'background music / radio / a music player. query = ONLY the act\'s name or the style, copied from the USER message — drop filler like "music", "instrumentals", "songs", "please" ("<name> instrumental music" -> "<name>"). modifiers.kind is REQUIRED: "artist" when the subject is a named musician / band / rapper / DJ, even when the ask adds "music" or a style word ("<name> music", "the band <name>"); "genre" when it is a style or mood ("<style> music", "smooth <style>", "<style> for studying"). A bare "play music" -> query "" and kind ""'),
     "answer":     ("answer",    'a fact / recipe / how-to / definition / comparison / explanation — INCLUDING any question that contains numbers or units but wants a JUDGEMENT ("how long to get a 145F chicken to 165", "is 10 more minutes enough", "what temp is safe"). query = the question'),
     "products":   ("products",  'shopping / product recommendations to BUY or compare ("good outdoor shoes", "best budget laptop", "gift for a hiker"). query = the product ask. Renders a grid of picture cards linking to sources'),
     "trip":       ("trip",      'plan a TRIP / vacation / multi-day itinerary to a place ("plan a trip to Japan", "3 days in Rome"). query = the destination + any duration. Renders an itinerary card + a map of the spots'),
@@ -3588,6 +3638,14 @@ def _asset_version() -> str:
         except OSError:
             pass
     return hashlib.sha1("|".join(stamps).encode()).hexdigest()[:10]
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    # Browsers request /favicon.ico regardless of <link rel=icon>; serve the
+    # app icon instead of a console 404 on every page load.
+    from fastapi.responses import FileResponse
+    return FileResponse("app/static/icons/icon-192.png", media_type="image/png")
 
 
 @app.get("/")

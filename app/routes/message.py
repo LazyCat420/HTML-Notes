@@ -122,7 +122,8 @@ async def send_message(req: MessageRequest):
 
         def spawn_widget_stream(widget_type: str, id_prefix: str, config: dict = None,
                                 config_builder=None, status: str = None,
-                                widget_id: str = None, debug_extra: dict = None):
+                                widget_id: str = None, debug_extra: dict = None,
+                                refine=None):
             """Heuristic fast-path: append a prebuilt widget to the CURRENT canvas
             and stream back the full canvas — same contract as the agent path, so
             existing widgets always survive.
@@ -131,6 +132,12 @@ async def send_message(req: MessageRequest):
             be written first (a grocery list's items). It runs inside the stream so
             the user sees a status line while it works, and it still skips the
             agentic loop entirely.
+
+            `refine` is an async callable run AFTER the widget is on screen; if it
+            returns a config, the same widget is rebuilt in place with it and a
+            second component frame goes out. The music lane uses it to show the
+            fallback player at once and then swap in the LLM router's reading of
+            the ask when the router answers late (see MUSIC_ROUTER_BUDGET_S).
             """
             async def stream():
                 message = status or f"heuristic-path: spawning {widget_type} widget..."
@@ -235,6 +242,43 @@ async def send_message(req: MessageRequest):
                                    f'\n\n')
                     except Exception as e:
                         logger.warning(f"[TTS] fast-path spoken summary failed: {e}")
+                    if refine is not None:
+                        try:
+                            refined = await refine()
+                        except Exception as e:
+                            logger.warning(f"[ROUTER] refine failed: {e}")
+                            refined = None
+                        if refined and refined != widget_config:
+                            refined_cfg = dict(refined)
+
+                            def _replace(soup):
+                                # Same media-seq guard as the first commit: a newer
+                                # ask that placed its own player wins.
+                                if _place_media_widget(soup, widget_type, resolved_id,
+                                                       refined_cfg, req_seq):
+                                    return
+                                existing = soup.find(id=resolved_id)
+                                if existing is not None:
+                                    node = BeautifulSoup(render_widget(
+                                        widget_type, resolved_id, refined_cfg), 'html.parser')
+                                    _stamp_media_seq(node, widget_type, req_seq)
+                                    existing.replace_with(node)
+
+                            event2 = await commit_canvas(req.session_id, _replace)
+                            if event2:
+                                remember_widget_recipe(req.session_id, resolved_id,
+                                                       widget_type, refined_cfg)
+                                remember_widget_subject(req.session_id, resolved_id,
+                                                        widget_type, refined_cfg)
+                                logger.info(f"[ROUTER] late answer refined {resolved_id}: "
+                                            f"{widget_config.get('genre')!r}/{widget_config.get('kind')!r}"
+                                            f" -> {refined_cfg.get('genre')!r}/{refined_cfg.get('kind')!r}")
+                                yield ('data: ' + json.dumps({
+                                    "type": "debug", "path": "router-refine",
+                                    "widget_id": resolved_id,
+                                    "config": {k: refined_cfg.get(k) for k in ("genre", "kind")},
+                                    "query": req.message}) + '\n\n')
+                                yield event2
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
@@ -533,6 +577,10 @@ async def send_message(req: MessageRequest):
                     # says "converter" without saying it was handed a cooking
                     # question. Emit what each spec was actually built from.
                     "queries": [s.get("query") for s in specs],
+                    # modifiers carry the router's understanding beyond the type
+                    # (music kind artist|genre, video live) — emitted so a
+                    # misunderstanding is visible in the console, not just a misroute.
+                    "modifiers": [s.get("modifiers") or {} for s in specs],
                     "targets": [s.get("target") for s in specs],
                     "reason": reason or "", "query": req.message}) + '\n\n')
                 label = (", ".join(s.get("type", "") for s in specs)
@@ -1285,6 +1333,10 @@ async def send_message(req: MessageRequest):
                     status=f"adding to “{ex_title}”...",
                     widget_id=ex_id)
 
+        # Set by the music lane below: a music-shaped ask goes to the router
+        # for understanding; this spec is only the router-down fallback.
+        music_fallback: Optional[dict] = None
+        music_router_task = None
         if not wants_removal and not is_video_ask and not is_data_ask:
             is_searching = bool(re.search(r'\b(search|find|look for)\b', text_clean))
             topic = extract_topic(req.message)
@@ -1308,14 +1360,16 @@ async def send_message(req: MessageRequest):
                 return spawn_widget_stream("clock", "clock",
                                            {"timezone": tz} if tz else {})
 
-            # 3. Music — asking for a music widget always means "start playing
-            # it", so autoplay unconditionally instead of requiring the word
-            # "play" in the request.
-            # "play smooth jazz" / "listen to some reggae" name NO medium word,
-            # yet are unambiguous music asks. Requiring \b(music|player|radio)\b
-            # routed them to the agent, which measured at 105s+ to first widget
-            # (2026-10-08 probe) and dies when the runtime hiccups. A play-verb
-            # plus a residual genre is deterministic enough to build directly.
+            # 3. Music — DETECTED here, UNDERSTOOD by the LLM router (2026-11-03).
+            # This lane used to build the widget itself with kind="genre"
+            # hardcoded, so every "<artist> music" ask ("buckethead instrumental
+            # music", "tupac music", "primus music" — 40+ of the owner's real
+            # asks) started a GENRE mix for the artist's name. Now a music-shaped
+            # ask only skips the list/notes/compose/answer lanes and goes to the
+            # router, which names the subject and sets kind=artist|genre. The
+            # spec below is the OFFLINE FALLBACK, used only when the router
+            # returns nothing (vLLM down/timeout) — with kind "" so the widget's
+            # genre→artist failover still applies, and no invented genre.
             has_custom_url = "http" in text_clean or "www" in text_clean
             genre_candidate = extract_music_genre(req.message)
             # Residuals that are real asks but NOT music — "play the news",
@@ -1332,19 +1386,17 @@ async def send_message(req: MessageRequest):
                     and (_medium_word
                          or (_play_verb and genre_candidate
                              and genre_candidate not in _NON_MUSIC_SUBJECTS))):
-                genre = genre_candidate or "lofi"
-                # "X music/radio" phrasing is genre-shaped ("jungle music"
-                # means the genre, not the band Jungle) — default the mix
-                # pipeline to genre. Named acts come through the LLM router,
-                # which can set kind=artist; a wrong guess here self-corrects
-                # via the widget's genre→artist failover.
-                return spawn_widget_stream("mini_music_player", "music",
-                                           {"genre": genre, "kind": "genre", "autoplay": True})
+                music_fallback = {"genre": genre_candidate or "",
+                                  # Fact check only (MusicBrainz genre list):
+                                  # "genre" for "jazz", "" (genre→artist
+                                  # failover) for anything else.
+                                  "kind": resolve_music_kind(genre_candidate or ""),
+                                  "autoplay": True}
 
             # 4. LISTS — checked BEFORE notes, so "notes for a grocery list" is a
             #    list, not a blank notepad. A list always gets real items written
             #    into it; an empty checklist is never what anyone asked for.
-            if LIST_INTENT_RE.search(text_clean) and not is_searching:
+            if LIST_INTENT_RE.search(text_clean) and not is_searching and not music_fallback:
                 return spawn_widget_stream(
                     "checklist", "checklist",
                     config_builder=lambda: build_list_config(req.message),
@@ -1353,7 +1405,7 @@ async def send_message(req: MessageRequest):
 
             # 5. NOTES — a bare "notes"/"notepad" means a blank surface to type on.
             #    "notes about X" means the note should already say something.
-            if NOTES_INTENT_RE.search(text_clean) and not is_searching:
+            if NOTES_INTENT_RE.search(text_clean) and not is_searching and not music_fallback:
                 if not topic:
                     return spawn_widget_stream("notes", "notes", {})
                 return spawn_widget_stream(
@@ -1378,7 +1430,7 @@ async def send_message(req: MessageRequest):
         #     Falls through to the single-widget answer/router when planning
         #     yields <2 modalities (i.e. it's really a narrow ask).
         if ((COMPOSE_ASK_RE.search(text_clean) or is_compound_ask)
-                and not wants_removal and not is_video_ask):
+                and not wants_removal and not is_video_ask and not music_fallback):
             plan = await build_composition_plan(req.message)
             if len(plan) >= 2:
                 logger.info(f"[COMPOSE] {len(plan)} modalities for {req.message[:60]!r}: "
@@ -1390,7 +1442,7 @@ async def send_message(req: MessageRequest):
         #    sources) instead of dumping the user into the ~30-60s agent loop
         #    that returns a wall of links.
         if (ANSWER_ASK_RE.search(text_clean)
-                and not wants_removal and not is_video_ask
+                and not wants_removal and not is_video_ask and not music_fallback
                 and not LIVE_LOOKUP_RE.search(text_clean)):
             # This lane ALWAYS builds: prism mode was removed 2026-10-15, so
             # nothing defers a fact/how-to/definition ask to the agent any
@@ -1516,7 +1568,7 @@ async def send_message(req: MessageRequest):
                             "message": _rewritten, "rewritten_from": req.message}))
 
         router_status = "skipped-removal"   # local | deferred | defer | none | build
-        is_build_ask = bool(BUILD_ASK_RE.search(text_clean))
+        is_build_ask = bool(BUILD_ASK_RE.search(text_clean)) and not music_fallback
         if is_build_ask and not wants_removal:
             # An imperative build goes straight to the agent (H8): the router's
             # reply verdict used to answer "build me a custom widget" with an
@@ -1524,8 +1576,49 @@ async def send_message(req: MessageRequest):
             router_status = "build"
             logger.info(f"[ROUTER] build ask — skipping the classifier: {req.message[:70]!r}")
         elif not wants_removal:
-            router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
+            if music_fallback:
+                # A music ask must not wait out two 20s vLLM timeouts. Measured
+                # 2026-11-03 11:33: both local boxes (Jetson nemotron35, Gold
+                # Spark DeepSeek) took 30s+ for a 20-token reply under other
+                # load, while healthy routing is 0.4-0.9s (2026-10-08). Past
+                # the budget the offline fallback plays instead.
+                # The task is NOT cancelled at the budget: the fallback player
+                # goes up at once and the late answer refines it in place
+                # (spawn_widget_stream refine=), up to MUSIC_ROUTER_REFINE_S.
+                music_router_task = asyncio.ensure_future(
+                    route_with_llm(req.message, turn_ctx["context_block"]))
+                done, _pending = await asyncio.wait({music_router_task},
+                                                    timeout=MUSIC_ROUTER_BUDGET_S)
+                if done:
+                    try:
+                        router_plan = music_router_task.result()
+                    except Exception as e:
+                        logger.warning(f"[ROUTER] music router failed: {e}")
+                        router_plan = None
+                else:
+                    logger.info(f"[ROUTER] music ask over the {MUSIC_ROUTER_BUDGET_S}s "
+                                f"router budget — fallback now, refine when it answers")
+                    router_plan = None
+            else:
+                router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
             router_checks = (router_plan or {}).get("checks") or {}
+            if music_fallback and router_plan and router_plan.get("reply"):
+                # A music-shaped ask is never small talk: measured 2026-11-03
+                # (scripts/routing_eval.py) the router answered "play music" and
+                # "music" with a chat reply and no player. Treat it as no plan.
+                logger.info("[ROUTER] reply to a music ask — using the music fallback")
+                router_plan = None
+            if (music_fallback and router_plan and router_plan.get("defer")
+                    and (not music_fallback.get("genre")
+                         or str((router_plan.get("checks") or {}).get("wants", "")).lower() == "listen")):
+                # The router's own pre-flight says the user wants to LISTEN, yet
+                # it deferred ("music", "add a music player and play jazz" went
+                # to a 5-7s agent turn in the same eval). Play instead; a defer
+                # with any other `wants` (a playlist research ask) still goes to
+                # the agent. A bare "music" (no subject at all) has nothing
+                # for an agent to research either.
+                logger.info("[ROUTER] deferred a listen ask — using the music fallback")
+                router_plan = None
             if router_plan and router_plan.get("reply"):
                 # The model decided nothing needs fetching or building. Answer
                 # in a bubble and stop — no widget, no agent.
@@ -1544,6 +1637,43 @@ async def send_message(req: MessageRequest):
                 router_status = "defer"
                 logger.info(f"[ROUTER] tier3-agent: classifier deferred "
                             f"({router_plan.get('reason','')})")
+            elif music_fallback:
+                # Router down/timed out on a music-shaped ask: play SOMETHING
+                # now rather than a 60s+ agent turn. kind "" lets the widget
+                # try genre then artist.
+                router_status = "music-fallback"
+                logger.info(f"[ROUTER] no plan — offline music fallback {music_fallback}")
+                _late = (music_router_task
+                         if music_router_task is not None and not music_router_task.done()
+                         else None)
+
+                async def _refine_music():
+                    # Wait for the router's late answer; turn its music spec
+                    # into a widget config through the same builder the router
+                    # path uses, so grounding and kind resolution still apply.
+                    if _late is None:
+                        return None
+                    try:
+                        plan = await asyncio.wait_for(_late, timeout=MUSIC_ROUTER_REFINE_S)
+                    except Exception:
+                        _late.cancel()
+                        return None
+                    spec = next((w for w in (plan or {}).get("widgets") or []
+                                 if w.get("type") == "music"), None)
+                    if not spec:
+                        return None
+                    built = await build_router_widget(spec, req.session_id, req.message)
+                    if not built or built[0] != "mini_music_player":
+                        return None
+                    cfg = built[2]
+                    if (cfg.get("genre"), cfg.get("kind")) == (
+                            music_fallback.get("genre"), music_fallback.get("kind")):
+                        return None
+                    return cfg
+
+                return spawn_widget_stream("mini_music_player", "music", music_fallback,
+                                           debug_extra={"fallback": "router-unavailable"},
+                                           refine=_refine_music if _late is not None else None)
             else:
                 router_status = "none"
                 logger.info("[ROUTER] tier3-agent: no plan (classifier returned nothing)")

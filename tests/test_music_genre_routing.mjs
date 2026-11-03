@@ -143,35 +143,26 @@ test("maybeRefill gating: threshold, in-flight, and 90s floor", () => {
 });
 
 // ── Routing passes `kind`; the widget and template carry it ─────────────────
-test("fast-path spawns music with kind=genre", () => {
-  const fastPath = mainPy.slice(mainPy.indexOf("(music|player|radio)"));
-  assert.match(fastPath.slice(0, 2600), /"kind": "genre"/,
-    '"X music" phrasing must default the genre pipeline');
-});
-
-test("LLM router catalog teaches kind and the builder sanitizes it", () => {
-  assert.match(mainPy, /"music":\s+\("music",\s+'[^']*kind[^']*'\)/,
-    "router catalog must describe the kind modifier");
+// 2026-11-03: the fast lane no longer builds music with a hardcoded
+// kind="genre" ("buckethead instrumental music" became a genre mix). It only
+// detects a music ask; the LLM router names the subject and the kind. The
+// behaviour is pinned by RUNNING the chain in
+// tests/test_music_routing_understanding.py, and the config/self-heal/iframe
+// parity by tests/test_music_config_and_history.py. The old grep tests here
+// (queue_music button, x-for queue panel, positional-detection string) pinned
+// the pre-walkman template that commit 038f8a6 removed, and stayed red on main.
+test("router catalog makes kind REQUIRED and the builder sanitizes it", () => {
+  assert.match(mainPy, /modifiers\.kind is REQUIRED/,
+    "router catalog must require the kind modifier");
   assert.match(mainPy, /mods\.get\("kind"\) if mods\.get\("kind"\) in \("genre", "artist"\) else ""/,
     "builder must sanitize kind to genre|artist|empty");
 });
 
-test("factory renders the object x-data with kind + base, and the queue UI", () => {
-  assert.match(factoryPy, /musicPlayerWidget\(\{cfg_js\}\)/, "object-form x-data");
-  assert.match(factoryPy, /kind: \{json_escape\(kind\)\}/, "kind flows into the widget");
-  assert.match(factoryPy, /base: \{json_escape\(MUSIC_PLAYER_URL\)\}/, "base comes from config");
-  assert.match(factoryPy, /queue_music/, "queue toggle button");
-  assert.match(factoryPy, /x-for="item in trackList"/, "queue panel rows");
-});
-
-test("self-heal template stays in sync (queue UI + object x-data)", () => {
-  assert.match(indexJs, /musicPlayerWidget\(\{ genre: \$\{JSON\.stringify\(genre\)\}/,
-    "healed nodes must use the object form");
-  assert.match(indexJs, /queue_music/, "healed template must include the queue button");
-  assert.match(indexJs, /x-for="item in trackList"/, "healed template must include the queue panel");
-  // Old positional nodes must be detected as stale and rebuilt.
-  assert.match(indexJs, /!widget\.getAttribute\('x-data'\)\.includes\('musicPlayerWidget\(\{'\)/,
-    "positional x-data must count as old-format");
+test("the music fast lane no longer hardcodes a kind or a default genre", () => {
+  const lane = mainPy.slice(mainPy.indexOf("3. Music"), mainPy.indexOf("4. LISTS"));
+  assert.ok(lane.length > 200, "could not slice the music lane");
+  assert.doesNotMatch(lane, /"kind": "genre"/, "no hardcoded genre kind");
+  assert.doesNotMatch(lane, /or "lofi"/, "no invented default genre");
 });
 
 // The component itself must still accept a legacy positional call — notes

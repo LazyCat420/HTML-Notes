@@ -2415,12 +2415,32 @@ async def build_router_widget(spec: dict, session_id: str, message: str,
             return None if not cfg else ("image", "image", cfg)
 
         if wtype == "music":
-            genre = extract_music_genre(query or message) or (query.strip() or "lofi")
+            # The router already named the subject (prompt: query = ONLY the
+            # act's name or the style). Re-deriving it from the raw message with
+            # the filler-word stripper is what turned "buckethead instrumental
+            # music" into the mix query "buckethead instrumental", and the old
+            # "lofi" default invented a genre for a bare "play music". Only a
+            # spec WITHOUT a query (follow-up refills, composition) falls back
+            # to the stripper; nothing left = "" = the service's default mix.
+            genre = (query or "").strip() or extract_music_genre(message)
+            # Grounding: the subject must come from what the user typed. The
+            # small router model once copied a prompt example ("buckethead")
+            # into the query for "heavy metal music" (2026-11-03). A query that
+            # shares no word stem with the message is discarded (typo fixes
+            # like "coletrain" -> "Coltrane" keep a shared word or stem).
+            if query and not music_query_grounded(query, message):
+                logger.info(f"[ROUTER] music query {query!r} not in {message[:60]!r} — "
+                            f"using the message's own subject")
+                genre = extract_music_genre(message)
+                mods = {}
             # kind steers the music-player service's pipeline choice: genre →
-            # LLM/MusicBrainz artist discovery, artist → direct search. The
-            # widget fails over genre→artist on a miss, so a wrong (or absent)
-            # guess self-corrects — sanitize rather than reject.
+            # LLM/MusicBrainz artist discovery, artist → direct search. When the
+            # router left it out, resolve_music_kind checks the subject against
+            # the MusicBrainz genre list (data, not a heuristic); still unknown
+            # = "" and the widget's genre→artist failover decides.
             kind = mods.get("kind") if mods.get("kind") in ("genre", "artist") else ""
+            if not kind and genre:
+                kind = resolve_music_kind(genre)
             return ("mini_music_player", "music",
                     {"genre": genre, "kind": kind, "autoplay": True})
 

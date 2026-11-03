@@ -7,6 +7,13 @@ from app.main import app
 
 client = TestClient(app)
 
+def test_favicon_is_served_not_404():
+    res = client.get("/favicon.ico")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "image/png"
+    assert res.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def test_health_endpoints():
     res = client.get("/health/app")
     assert res.status_code == 200

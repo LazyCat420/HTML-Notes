@@ -75,6 +75,50 @@ window.HN = (function () {
     };
 })();
 
+// ─── MUSIC SELF-HEAL HELPERS ──────────────────────────────────────
+// The server is the source of truth for a widget's config: it stamps
+// data-hn-config (strict JSON) next to x-data. The self-heal below used to
+// decide "broken" by sniffing for a play-button icon the walkman card no longer
+// has, so it rebuilt EVERY music widget with a hardcoded genre ('jazz') and
+// threw the real ask away (2026-11-03, "buckethead instrumentals" → jazz).
+// Rules now: rebuild only when the Alpine wiring is actually missing or in the
+// pre-options positional format, and never invent a genre.
+function musicWidgetNeedsRebuild(el) {
+    const xdata = (el && el.getAttribute && el.getAttribute('x-data')) || '';
+    if (!xdata.includes('musicPlayerWidget')) return true;
+    if (!xdata.includes('musicPlayerWidget({')) return true;       // positional = stale
+    if (!el.children || el.children.length === 0) return true;
+    return !el.querySelector('iframe');                             // walkman card gone
+}
+
+function recoverMusicWidgetConfig(el) {
+    const get = (a) => (el && el.getAttribute && el.getAttribute(a)) || '';
+    const raw = get('data-hn-config');
+    if (raw) {
+        try {
+            const cfg = JSON.parse(raw);
+            if (cfg && typeof cfg === 'object') return cfg;
+        } catch (e) { /* fall through to the x-data forms */ }
+    }
+    const xdata = get('x-data');
+    let m = xdata.match(/musicPlayerWidget\(\s*\{[^}]*?\bgenre\s*:\s*("(?:[^"\\]|\\.)*")/);
+    if (m) {
+        try {
+            const kind = xdata.match(/\bkind\s*:\s*("(?:[^"\\]|\\.)*")/);
+            return { genre: JSON.parse(m[1]), kind: kind ? JSON.parse(kind[1]) : '', autoplay: true };
+        } catch (e) { /* malformed literal */ }
+    }
+    m = xdata.match(/musicPlayerWidget\(\s*(['"])((?:(?!\1).)*)\1/);
+    if (m) return { genre: m[2], kind: '', autoplay: true };
+    // Pre-walkman markup kept the genre in a label span.
+    const span = el && el.querySelector ? el.querySelector('.text-purple-200') : null;
+    const label = span && span.textContent ? span.textContent.trim() : '';
+    if (label && label !== 'Radio') return { genre: label.toLowerCase(), kind: '', autoplay: true };
+    // Nothing recoverable: empty genre = the music service's own default mix.
+    return { genre: '', kind: '', autoplay: true };
+}
+// ─── END MUSIC SELF-HEAL HELPERS ──────────────────────────────────
+
 // ─── LEGO: WIDGET MANAGER ─────────────────────────────────────────
 function teardownWidget(el) {
     if (!el || !el.querySelectorAll) return;
@@ -3510,7 +3554,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
                     newWidget.className = widget.className;
-                    newWidget.setAttribute('x-data', "clockWidget('local')");
+                    // Keep the server's own clockWidget(tz, mode, duration) call
+                    // when it survived; 'local' only for a node that never had one.
+                    newWidget.setAttribute('x-data', hasXData ? widget.getAttribute('x-data') : "clockWidget('local')");
                     newWidget.innerHTML = `
                         <!-- Close Button -->
                         <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn absolute top-3 right-3 text-white/30 hover:text-white/80 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -3548,19 +3594,10 @@ document.addEventListener("DOMContentLoaded", () => {
             // template in app/widgets/factory.py (render_mini_music_player).
             // Structural changes there must be mirrored here.
             if ((id.includes('music') || id.includes('player')) && !id.includes('youtube') && !id.includes('video')) {
-                const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('musicPlayerWidget');
-                // Current format passes an options object: musicPlayerWidget({...}).
-                // Anything positional — musicPlayerWidget('jazz', ...) or ("jazz", ...)
-                // — is a stale node from before the queue/SSE rework: rebuild it.
-                const isOldFormat = hasXData && !widget.getAttribute('x-data').includes('musicPlayerWidget({');
-                const hasPlayButton = widget.querySelector('.material-symbols-outlined');
-
-                if (!hasXData || isOldFormat || !hasPlayButton || widget.children.length === 0) {
-                    let genre = 'jazz';
-                    const genreSpan = widget.querySelector('.text-purple-200');
-                    if (genreSpan && genreSpan.textContent && genreSpan.textContent.trim() !== 'Radio') {
-                        genre = genreSpan.textContent.trim().toLowerCase();
-                    }
+                // See MUSIC SELF-HEAL HELPERS: a healthy server-rendered node
+                // is left alone; a rebuild keeps the server's config.
+                if (musicWidgetNeedsRebuild(widget)) {
+                    const cfg = recoverMusicWidgetConfig(widget);
 
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
@@ -3570,9 +3607,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     if (!newWidget.className.includes('music-widget-root')) newWidget.className += ' music-widget-root';
                     newWidget.className = newWidget.className.replace(/\blg:col-span-3\b/g, '').replace(/\s+/g, ' ').trim();
                     newWidget.setAttribute(':style', "'height: ' + walkmanHeight + 'px'");
-                    // kind unknown for a rehydrated node — '' means genre-first
-                    // with artist failover. base omitted → hostname:8002 default.
-                    newWidget.setAttribute('x-data', `musicPlayerWidget({ genre: ${JSON.stringify(genre)}, kind: "", autoplay: true })`);
+                    // The recovered config is strict JSON, which is also a valid
+                    // JS object literal for the Alpine factory.
+                    newWidget.setAttribute('data-hn-config', JSON.stringify(cfg));
+                    newWidget.setAttribute('x-data', `musicPlayerWidget(${JSON.stringify(cfg)})`);
                     newWidget.innerHTML = `
                         <!-- Every control lives on the 3D deck: no chips, no frame. -->
                         <div class="relative z-10 flex-1 min-h-0">

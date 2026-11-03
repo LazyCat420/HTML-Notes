@@ -41,10 +41,19 @@ export function loadFactory() {
   const fakeWindow = {
     location: { hostname: "nas", href: "http://nas/" },
     open() { return null; },
+    // The component listens for hn:mute / hn:theme on window since the
+    // walkman card landed; without these every mount() threw.
+    addEventListener() {},
+    removeEventListener() {},
   };
   const env = {
     document: fakeDocument, Alpine: fakeAlpine, window: fakeWindow,
     Audio: FakeAudio, EventSource: FakeEventSource,
+    // init() starts the 250 ms walkman state push (setInterval). Tests never
+    // destroy() the widget, so an un-unref'd interval kept node alive forever
+    // once mount() stopped throwing. unref: the timer still fires, it just no
+    // longer pins the process.
+    setInterval: (fn, ms, ...args) => { const t = setInterval(fn, ms, ...args); t.unref?.(); return t; },
     localStorage: { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) },
     fetch: async (url, opts = {}) => {
       fetchCalls.push({ url, method: opts.method || "GET", body: opts.body ? JSON.parse(opts.body) : null });
