@@ -1,0 +1,5 @@
+/* Input for the Tailwind build (tailwind.config.js). Same three layers the
+   cdn.tailwindcss.com script injected, including Preflight. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

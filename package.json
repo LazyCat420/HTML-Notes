@@ -4,8 +4,12 @@
   "description": "Local-first AI knowledge journal with constrained HTML rendering",
   "main": "app/main.py",
   "scripts": {
-    "dev": ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8035 --reload",
-    "start": ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8035",
-    "deploy": "./deploy.sh"
+    "dev": "npm run build:css && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8035 --reload",
+    "start": "npm run build:css && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8035",
+    "deploy": "./deploy.sh",
+    "build:css": "tailwindcss -c tailwind.config.js -i tailwind.input.css -o app/static/tailwind.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
   }
 }

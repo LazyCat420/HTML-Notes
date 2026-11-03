@@ -16,7 +16,7 @@ updated: 2026-11-03
 | 3 | `POST :8002/api/music/history` → 422 on every track | `widgets.js` sent `{track_path, is_youtube, youtube_id, …}`; music-player's `PlayEvent` requires `id, track_id, timestamp, duration, completion_rate, source, context` | fixed |
 | 4 | server play history never showed in the widget | `fetchHistory()` read `res.history`; `/history/recent` returns a bare list | fixed |
 | 5 | `favicon.ico` 404 | no route | fixed |
-| 6 | Tailwind CDN warning | `index.html` loads `cdn.tailwindcss.com` | open: moving to a Tailwind build is a separate change; the warning is harmless |
+| 6 | Tailwind CDN warning | `index.html` loaded `cdn.tailwindcss.com` | fixed 2026-11-03: compiled at build time, see [tailwind-build-time](tailwind-build-time.md) |
 | 7 | Router answers slowly when the shared local boxes are busy | Jetson `nemotron35` and Gold Spark DeepSeek also serve other agents; measured 30 s for a 20-token reply at 11:33, 0.46 s at 11:37 | handled by the music budget + refine below; the box load itself is outside this repo |
 
 ## How a music ask is handled now

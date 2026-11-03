@@ -12,8 +12,10 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Cytoscape: renders the wallet/holder-network graph (language-graph blocks). -->
     <script src="lib/cytoscape.min.js"></script>
-    <!-- Tailwind CSS and Alpine.js for agentic UI generation -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Alpine.js for agentic UI generation. Tailwind no longer runs here: its
+         utilities are compiled at build time into tailwind.css, linked LAST in
+         <head> below (where the old cdn.tailwindcss.com script injected its
+         <style>, measured 2026-11-03), so the cascade is unchanged. -->
     <script defer src="js/widgets.js?v=1.7"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -43,6 +45,9 @@
             });
         }
     </script>
+    <!-- Compiled Tailwind utilities (tailwind.config.js). Must stay the last
+         stylesheet: the runtime CDN appended its <style> after hud-theme.css. -->
+    <link rel="stylesheet" href="tailwind.css?v=1">
 </head>
 <body>
     <!-- App rail: collapsible launcher of the user's own apps (the same

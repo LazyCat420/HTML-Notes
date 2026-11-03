@@ -1,3 +1,15 @@
+# Tailwind stage: compile the utility classes the templates use into one static
+# stylesheet. Tailwind used to run in the browser (cdn.tailwindcss.com); now it
+# only exists here, at build time. tailwind.config.js scans app/ and adds the
+# classes saved canvases still use (tailwind.safelist.json).
+FROM node:26-slim AS css
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY tailwind.config.js tailwind.input.css tailwind.safelist.json ./
+COPY app/ ./app/
+RUN npm run build:css
+
 FROM python:3.11-slim AS deps
 
 RUN python -m venv /opt/venv
@@ -26,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl openssl &&
 
 # Copy app code
 COPY app/ ./app/
+COPY --from=css /build/app/static/tailwind.css ./app/static/tailwind.css
 
 RUN chown -R appusr:appgrp /app
 

@@ -13,3 +13,8 @@ scratch/
 __pycache__/
 bench/web/results/
 .checks/
+
+# Tailwind: CLI lives in node_modules (dev only); the compiled stylesheet is
+# built by `npm run build:css` / the Dockerfile css stage, never committed.
+node_modules/
+app/static/tailwind.css

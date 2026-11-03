@@ -3619,8 +3619,8 @@ _tomtom_last_status: Dict[str, int] = {}
 app.mount("/icons", StaticFiles(directory="app/static/icons"), name="icons")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-_CACHE_BUSTED_ASSETS = ("index.js", "index.css", "js/widgets.js", "hud-theme.css")
-_ASSET_QUERY_RE = re.compile(r'(index\.js|index\.css|js/widgets\.js|hud-theme\.css)\?v=[^"\']*')
+_CACHE_BUSTED_ASSETS = ("index.js", "index.css", "js/widgets.js", "hud-theme.css", "tailwind.css")
+_ASSET_QUERY_RE = re.compile(r'(index\.js|index\.css|js/widgets\.js|hud-theme\.css|tailwind\.css)\?v=[^"\']*')
 
 
 def _asset_version() -> str:
