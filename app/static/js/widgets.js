@@ -1219,7 +1219,11 @@ document.addEventListener('alpine:init', () => {
             const adopt = () => {
                 const el = this.$el;
                 if (!el || !el.id) return;
-                const w = el.getBoundingClientRect().width;
+                // clientWidth, not getBoundingClientRect: the first adopt() runs
+                // while the widget's entry animation has it scaled to ~0.98, and a
+                // rect read there left the stage a few px short of 2:1 for good
+                // (the observer watches the border box, so it never corrected).
+                const w = el.clientWidth || el.getBoundingClientRect().width;
                 if (w > 40) this.walkmanBaseH = Math.max(120, Math.round(w / 2));
             };
             this.walkmanResizeListener = adopt;
@@ -2209,7 +2213,10 @@ document.addEventListener('alpine:init', () => {
             if (d.phase === 'reset') {
                 resizer.saveSize(el.id, null);
                 el.style.removeProperty('grid-column');
-                el.style.removeProperty('height');
+                // Never strip the height here: if the width does not change,
+                // Alpine's :style binding does not re-fire and the deck would
+                // fall back to the CSS auto height (min 180 / max 540). The
+                // binding owns it, and adopt() re-derives it when the width does.
                 window.dispatchEvent(new Event('resize'));
                 return;
             }

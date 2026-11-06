@@ -22,6 +22,7 @@ function makeEl(width) {
       contains: c => classes.has(c),
       toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)),
     },
+    clientWidth: width,
     getBoundingClientRect: () => ({ width, height: Math.round(width / 2) }),
     closest: sel => (sel === ".dashboard-grid" ? grid : null),
     querySelector: () => null,
@@ -58,6 +59,16 @@ test("height is the width over 2 (the device's own aspect)", async () => {
   assert.equal(w.walkmanHeight, 366);
 });
 
+test("a rect read mid entry animation does not shrink the stage", async () => {
+  // The widget fades in scaled to ~0.98, so getBoundingClientRect reports ~717
+  // for a 732 px card. adopt() must read the layout width (clientWidth), else
+  // the stage stays 361 px tall (2.03:1) for the rest of the session.
+  const { w } = await mountAt(732);
+  w.$el.getBoundingClientRect = () => ({ width: 717, height: 358 });
+  w.walkmanResizeListener();
+  assert.equal(w.walkmanBaseH, 366, "the layout width, not the scaled rect");
+});
+
 test("a height saved by the old corner grip is ignored, not applied", async () => {
   // 520 px on a 732 px card is a 1.4:1 stage: the old behaviour, which cropped
   // the deck. The width alone decides now. WidgetResizer is present here on
@@ -83,6 +94,7 @@ test("the library drawer adds its own band under a 2:1 stage", async () => {
 
 test("a width change re-derives the height", async () => {
   const { w } = await mountAt(732);
+  w.$el.clientWidth = 400;
   w.$el.getBoundingClientRect = () => ({ width: 400, height: 200 });
   w.walkmanResizeListener();
   assert.equal(w.walkmanBaseH, 200);

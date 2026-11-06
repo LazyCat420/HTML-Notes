@@ -846,7 +846,9 @@ writes only `{cols}` to `widget_sizes` — the height is never stored. A click t
 moves ≤ 3 px stores nothing (on a compact/mobile layout the widget renders one
 column wide, and saving from that would lock it at span 1), and a double-click on
 the bezel drops the saved size and returns to width-derived, unless a drag moved
-within the last 400 ms. `WidgetResizer.apply()` skips a widget that is mid-drag
+within the last 400 ms — the reset clears the grid-column span but never strips the
+inline height, because with no width change Alpine's binding would not re-fire and
+the deck would fall back to the auto height. `WidgetResizer.apply()` skips a widget that is mid-drag
 (`.is-resizing` / `.is-resizing-bezel`), so a canvas mutation during the drag
 cannot snap the columns back.
 

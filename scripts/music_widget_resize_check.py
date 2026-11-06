@@ -172,8 +172,15 @@ with sync_playwright() as p:
           f"h/w={after['ratio']:.3f}")
     check("only columns are saved (height is derived)",
           after["saved"] is not None and "height" not in after["saved"], str(after["saved"]))
-    inner = fr.evaluate(INNER)
-    ratio = inner["screen"]["w"] / inner["frame"]["w"] if inner["screen"] else 0
+    # model-viewer recomputes hotspot transforms on its next frame, so the LCD
+    # rect can trail the box by one paint. Poll for up to 2 s.
+    ratio = 0
+    for _ in range(10):
+        inner = fr.evaluate(INNER)
+        ratio = inner["screen"]["w"] / inner["frame"]["w"] if inner["screen"] else 0
+        if abs(ratio - LCD_RATIO) < 0.02:
+            break
+        pg.wait_for_timeout(200)
     check("deck still fills the frame after enlarging",
           abs(ratio - LCD_RATIO) < 0.02, f"lcd/frame={ratio:.3f} want {LCD_RATIO:.3f}")
 
