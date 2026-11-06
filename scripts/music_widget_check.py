@@ -99,19 +99,53 @@ with sync_playwright() as p:
         """() => Alpine.$data(document.querySelector('[x-data*="musicPlayerWidget"]')).queue.length""")
     check("queue holds multiple tracks", qlen > 1, f"queue={qlen}")
 
-    widget.locator('button[title="Queue"]').click()
-    pg.wait_for_timeout(400)
-    rows = widget.locator('[x-show="showQueue"] .group\\/row').count()
-    check("queue panel shows upcoming rows", rows >= 1, f"rows={rows}")
-
-    if rows >= 1:
-        before = pg.evaluate(
-            """() => Alpine.$data(document.querySelector('[x-data*="musicPlayerWidget"]')).currentIndex""")
-        widget.locator('[x-show="showQueue"] .group\\/row').first.click()
+    # The queue lives on the deck's card now: the drawer and its rows are inside
+    # the iframe (#queue / #qrows), opened by the k4 "Queue" key hotspot.
+    card = None
+    for _ in range(30):
+        card = next((f for f in pg.frames if "player.html" in (f.url or "")), None)
+        if card:
+            break
+        pg.wait_for_timeout(200)
+    check("walkman card iframe is present", card is not None, "no player.html frame")
+    if card:
+        card.evaluate("() => document.querySelectorAll('.hs-key')[4].click()")
+        try:
+            card.wait_for_function(
+                "() => document.getElementById('queue').classList.contains('on')", timeout=5000)
+            opened = True
+        except Exception:
+            opened = False
+        check("queue key opens the drawer on the deck", opened,
+              card.evaluate("() => document.getElementById('queue').className"))
+        rows = card.locator("#qrows .row").count()
+        check("queue panel shows upcoming rows", rows >= 1, f"rows={rows}")
         pg.wait_for_timeout(400)
-        after = pg.evaluate(
-            """() => Alpine.$data(document.querySelector('[x-data*="musicPlayerWidget"]')).currentIndex""")
-        check("clicking a queue row jumps the track", after == before + 1, f"{before} -> {after}")
+        host = pg.evaluate(
+            """() => {
+                const w = document.querySelector('[x-data*="musicPlayerWidget"]');
+                const d = Alpine.$data(w);
+                return { open: d.walkmanOpen, base: d.walkmanBaseH, h: d.walkmanHeight,
+                         box: Math.round(w.getBoundingClientRect().height) };
+            }""")
+        check("the card tells the host the drawer opened",
+              host["open"] is True and host["h"] == host["base"] + 148
+              and abs(host["box"] - host["h"]) <= 1, str(host))
+
+        if rows >= 1:
+            target = card.evaluate(
+                """() => { const r = [...document.querySelectorAll('#qrows .row')]
+                             .find(r => r.dataset.i === '1') || document.querySelector('#qrows .row');
+                           return r ? r.dataset.i : null; }""")
+            card.evaluate(
+                """() => { const r = [...document.querySelectorAll('#qrows .row')]
+                             .find(r => r.dataset.i === '1') || document.querySelector('#qrows .row');
+                           r.click(); }""")
+            pg.wait_for_timeout(800)
+            after = pg.evaluate(
+                """() => Alpine.$data(document.querySelector('[x-data*="musicPlayerWidget"]')).currentIndex""")
+            check("clicking a queue row jumps the track", str(after) == str(target),
+                  f"row {target} -> currentIndex {after}")
 
     # 4. The SSE stream must not linger: once done/playing, the EventSource is
     #    closed (reconnect-storm guard against the 10/min mix rate limit).

@@ -857,7 +857,11 @@ cannot snap the columns back.
 that 2:1 stage: `walkmanHeight = walkmanBaseH + (drawer ? 148 : 0)` (the open
 `#queue` measures 147 px: 132 content + 15 padding). `WidgetResizer.apply()` skips
 a stored height for a music widget, so a size saved by the retired grip in an old
-session cannot come back. Why it mattered: the camera is fixed at 0.4275 m with a
+session cannot come back. The width is read as `clientWidth`, not
+`getBoundingClientRect().width`: the first `adopt()` runs while the widget's entry
+animation has it scaled to about 0.98, and a rect read there pinned a 732 px card
+at a 361 px stage (2.03:1) for the whole session, because the observer watches the
+border box and so never corrected it. Why it mattered: the camera is fixed at 0.4275 m with a
 20° vertical field of view, so the visible height is 0.15076 m and the visible
 width is `0.15076 × aspect`. At 2:1 that is 0.3015 m and the 0.300 m body fills
 the frame; at a stored 732 × 520 (aspect 1.41) it is 0.212 m, so both sides of
