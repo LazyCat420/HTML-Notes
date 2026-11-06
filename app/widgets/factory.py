@@ -1317,7 +1317,7 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
                              "cardUrl": WALKMAN_CARD_URL})
 
     return f"""
-    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative text-white flex flex-col" :style="'height: ' + walkmanHeight + 'px'" data-hn-config="{hn_config}" x-data="musicPlayerWidget({cfg_js})">
+    <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative text-white flex flex-col" :style="{{ height: walkmanHeight + 'px' }}" data-hn-config="{hn_config}" x-data="musicPlayerWidget({cfg_js})">
         <!-- Every control lives on the deck itself: the LCD, the five transport
              keys, and six secondary keys (thumbs, history, mute, open, close)
              engraved into the body. Nothing floats above it, so the widget is

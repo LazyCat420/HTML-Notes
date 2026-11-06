@@ -226,11 +226,21 @@ window.WidgetResizer = {
         // Inline styles beat the Tailwind col-span-*/h-[380px] classes baked into
         // the widget HTML by the server factory.
         if (size.cols) el.style.gridColumn = `span ${size.cols}`;
-        if (size.height) el.style.height = `${size.height}px`;
+        // The walkman deck is a 0.300 x 0.150 m object: its height is derived
+        // from its width by the widget itself (walkmanBaseH = width / 2). A
+        // stored height from the old corner grip would crop the deck on both
+        // sides, so a music widget never takes one.
+        if (size.height && !el.classList.contains('music-widget-root')) {
+            el.style.height = `${size.height}px`;
+        }
     },
 
     decorate(el) {
         if (!el.id || el.querySelector(':scope > .widget-resize-handle')) return;
+        // The music widget has no frame box: it is resized by dragging the
+        // walkman's own silver bezel (the card posts that drag back), so it
+        // must not get the corner grip that draws a box around it.
+        if (el.classList.contains('music-widget-root')) return;
         const handle = document.createElement('div');
         handle.className = 'widget-resize-handle';
         handle.title = 'Drag to resize · double-click to reset';
@@ -3606,7 +3616,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     newWidget.className = widget.className.replace(/\bh-\[\d+px\]\b/g, '').replace(/\s+/g, ' ').trim();
                     if (!newWidget.className.includes('music-widget-root')) newWidget.className += ' music-widget-root';
                     newWidget.className = newWidget.className.replace(/\blg:col-span-3\b/g, '').replace(/\s+/g, ' ').trim();
-                    newWidget.setAttribute(':style', "'height: ' + walkmanHeight + 'px'");
+                    // Object form: Alpine's string form calls setAttribute('style', ...),
+                    // which REPLACES the whole inline style and wipes the
+                    // grid-column span written by a bezel drag.
+                    newWidget.setAttribute(':style', "{ height: walkmanHeight + 'px' }");
                     // The recovered config is strict JSON, which is also a valid
                     // JS object literal for the Alpine factory.
                     newWidget.setAttribute('data-hn-config', JSON.stringify(cfg));

@@ -215,21 +215,13 @@ body::after {
     border-radius: 0 !important;
     box-shadow: none !important;
 }
-/* No frame means no frame to drag by: the grip sits on the floating player,
-   faintly visible so the size affordance is discoverable without hovering.
-   Amber and L-shaped so it reads as part of the deck, not as a stray stroke. */
-.widget-container.music-widget-root .widget-resize-handle {
-    right: 4px;
-    bottom: 4px;
-    width: 14px;
-    height: 14px;
-    background-image: none;
-    border-right: 2px solid rgba(255, 186, 92, .55);
-    border-bottom: 2px solid rgba(255, 186, 92, .55);
-    border-bottom-right-radius: 4px;
-    opacity: .55;
+/* No frame means no frame to drag by: the deck's own silver bezel IS the grip.
+   The card catches the drag on its metal body and posts it to the widget, so
+   the corner grip is never decorated onto a music widget (WidgetResizer skips
+   it) — and no box is drawn while that drag runs. */
+.widget-container.music-widget-root.is-resizing-bezel {
+    outline: none !important;
 }
-.widget-container.music-widget-root:hover .widget-resize-handle { opacity: 1; }
 
 /* ─── HOLOGRAPHIC WIDGET FRAMES ─────────────────────────────────
    Covers factory widgets (.widget-container), LLM-injected cards

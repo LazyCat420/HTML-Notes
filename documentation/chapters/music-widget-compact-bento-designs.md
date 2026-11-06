@@ -1,7 +1,7 @@
 ---
 part: Music player
 status: shipped
-updated: 2026-11-03
+updated: 2026-11-06
 type: record
 ---
 
@@ -751,13 +751,14 @@ dark in both modes.
 **The bezel is the widget's edge.** With the box gone the deck still floated
 inside the widget with margins, because the widget was 716 × 284 (aspect 2.52)
 while the model is 0.300 × 0.150 m (2.0). Two changes put the device's own silver
-bezel on the widget's boundary: the closed height is now the width over two
-(`walkmanBaseH` comes from a `ResizeObserver` on the widget root, so 716 → 358,
-and a size the user drags with the corner grip still wins), and the card's camera
-sits at 0.4275 m instead of 0.55 m, so the 20° field of view spans exactly
-0.150 m — the device fills 99.5% of the frame. Measured at 716 × 358: 308
-background pixels (0.08%, the shell's rounded corners and antialiasing), and
-every mid-edge pixel is metal, not canvas.
+bezel on the widget's boundary: the closed height is the width over two
+(`walkmanBaseH` comes from a `ResizeObserver` on the widget root, so 716 → 358),
+and the card's camera sits at 0.4275 m instead of 0.55 m, so the 20° field of
+view spans exactly 0.150 m — the device fills 99.5% of the frame. Measured at
+716 × 358: 308 background pixels (0.08%, the shell's rounded corners and
+antialiasing), and every mid-edge pixel is metal, not canvas. Since 2026-11-06
+the height is **always** derived from the width; see "Resize is the bezel"
+below — a stored free height is what cropped the deck.
 
 **The controls are on the device, not around it.** Floating chips above the
 deck were the first version of this — but a row of buttons over a 3D object is
@@ -772,7 +773,7 @@ LCD and the transport row.
 | mute | key 4, speaker cone plus a cross | `mute` |
 | open in Music Player | key 5, box with an escaping arrow | `open` |
 | close widget | key 6, X | `close` → `WidgetManager.dismiss()` |
-| corner resize grip | the same `WidgetResizer` handle, an amber L bracket on the deck | — |
+| resize | the deck's own silver bezel — drag the metal body | `resize` (phase, dx, dy) |
 
 ![The six secondary keys — like, dislike, history, mute, open, close](artifacts/music-widget-designs/35-hn-aux-keys.png)
 
@@ -825,18 +826,57 @@ The widget is now **only the iframe**: `buttons: 0`, `close-widget-btn: 0`,
 automatic close-button pass for `.music-widget-root`, so a rendered widget cannot
 grow a chip back.
 
-**Resize is the canvas's resize.** The widget no longer has a frame to drag, so
-the grip is the existing `.widget-resize-handle` that `WidgetResizer.decorate()`
-appends to every widget. It writes `{cols, height}` to `widget_sizes` in
-localStorage exactly as before; the widget reads that size back as
-`walkmanBaseH` and renders `walkmanHeight = walkmanBaseH + (drawer ? 148 : 0)`,
-so the drawer rides on top of whatever size the grip chose instead of fighting
-it. A `window resize` listener and a `ResizeObserver` on the root adopt the
-stored size after every drag, and fall back to `width / 2` when the user has
-never dragged — which is what keeps the bezel on the widget's edge. Measured:
-drag to 344 px stores `widget_sizes.wtest1 = {cols: 2, height: 344}`,
-`walkmanBaseH` 344; opening the drawer then gives 492 and closing returns to
-344. Undragged at `col-span-2` the height is 358 and the drawer gives 506.
+**Resize is the bezel (2026-11-06).** The deck has no frame box, so the box's
+corner grip was the wrong affordance: `WidgetResizer.decorate()` now returns
+before appending `.widget-resize-handle` to a `.music-widget-root`, and the amber
+L bracket CSS is gone. The card's metal body is the grip instead. `player.html`
+catches `pointerdown` on the `model-viewer` surface — a hotspot (LCD, transport
+key, aux key, volume rail) still wins the event — captures the pointer (verified
+in Chromium: capture keeps delivering moves after the cursor leaves the iframe)
+and posts `{action:'resize', phase:'start'|'move'|'end'|'reset', dx, dy}` in its
+own viewport coordinates; the iframe's top-left edge never moves during a resize,
+so the deltas are stable. `walkmanResize()` in `widgets.js` turns the dominant
+axis into a width (the vertical axis counts double, the body is 2:1), snaps it to
+grid columns with the live `WidgetResizer.metrics()`, and writes only `{cols}` to
+`widget_sizes` — the height is never stored. A double-click on the bezel drops
+the saved size and returns to width-derived.
+
+**Height is derived, never stored.** `walkmanBaseH` is always `round(width/2)`
+(`ResizeObserver` on the widget root), and the drawer adds its own band under
+that 2:1 stage: `walkmanHeight = walkmanBaseH + (drawer ? 148 : 0)` (the open
+`#queue` measures 147 px: 132 content + 15 padding). `WidgetResizer.apply()` skips
+a stored height for a music widget, so a size saved by the retired grip in an old
+session cannot come back. Why it mattered: the camera is fixed at 0.4275 m with a
+20° vertical field of view, so the visible height is 0.15076 m and the visible
+width is `0.15076 × aspect`. At 2:1 that is 0.3015 m and the 0.300 m body fills
+the frame; at a stored 732 × 520 (aspect 1.41) it is 0.212 m, so both sides of
+the body fall outside the frustum — measured LCD `x = −49`, width 830 in a 732 px
+frame, i.e. the "cuts off slightly on the right" crop.
+
+**No box is painted during the drag.** The generic resizer adds `.is-resizing`,
+whose 1 px cyan outline is the rectangle the user saw around the deck. The bezel
+drag marks `.is-resizing-bezel` instead, which paints no outline (and does not set
+`pointer-events: none`, so the captured pointer keeps reaching the card).
+
+**Alpine's string `:style` wiped the span.** `:style="'height: ' + ..."`
+compiles to `setAttribute('style', ...)`, which replaces the whole inline style —
+so every height re-render erased the `grid-column` span a drag had just written
+(measured: `span 3` → `''` → `span 3` inside 16 ms). The template, the self-heal
+twin in `index.js` and the live check now use the object form
+`:style="{ height: walkmanHeight + 'px' }"`, which sets only that property. The
+server template is a Python f-string, so the braces are doubled there
+(`:style="{{ height: walkmanHeight + 'px' }}"`); the rendered markup is the
+single-brace form.
+
+**Verified live** (`scripts/music_widget_resize_check.py`, 13 checks, real mouse
+through the iframe): 13/13 after the fix and 3/13 on the previous commit (LCD
+`x = −49`, grip present, stored height applied, bezel drag inert). Checks: 2:1 at
+default; a stored 520 px height ignored; no corner grip; no outline while idle or
+dragging; LCD = 0.796 of the frame width and centred at both sizes (the glass in
+the shipped GLB is ~0.239 m, not 0.232); bezel drag widens by columns and stays
+2:1; only `{cols}` stored; dragging the LCD does not resize; double-click resets.
+Unit: `tests/test_music_widget_geometry.mjs` 10/10, and 4 of those go red when
+the width/2 derivation is mutated.
 
 ### The LCD scrambles into the next title
 

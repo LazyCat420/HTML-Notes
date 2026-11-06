@@ -38,7 +38,8 @@
   html.standalone body::after{content:"walkman-player · 300 × 150 (the size it takes in the hub) + drawer";
     position:fixed; bottom:12px; left:0; right:0; text-align:center;
     font:11px/1 ui-monospace,monospace; letter-spacing:.06em; color:#5d6a74}
-  model-viewer{width:100%; height:100%; display:block; --poster-color:transparent;}
+  model-viewer{width:100%; height:100%; display:block; --poster-color:transparent;
+    cursor:nwse-resize;}
   /* model-viewer fades hotspots to 25% by default — the LCD must stay fully lit */
   .hs-screen{width:186px; height:50px; pointer-events:auto; cursor:pointer;
     --min-hotspot-opacity:1;
@@ -561,6 +562,43 @@ const pulseTimers = [0, 0, 0, 0, 0];
 let volLampTimer = 0;
 function emit(msg){
   try { parent.postMessage({ type: 'walkman', ...msg }, '*'); } catch (e) {}
+}
+
+/* ---- resize from the silver bezel ----
+   The deck has no frame box of its own: its metal body is the widget's edge,
+   so dragging the metal is how the widget is made bigger or smaller. A
+   pointerdown that lands on the body (not on a key, the LCD or the volume
+   rail — those are hotspots/overlays inside #mv) starts a drag, captures the
+   pointer (capture keeps delivering moves even after the cursor leaves the
+   iframe — verified in Chromium), and posts the delta to the host widget,
+   which snaps the width to grid columns and derives the height. */
+if (window.self !== window.top){
+  let bezelDrag = null;
+  mv.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target !== mv) return;
+    bezelDrag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    try { mv.setPointerCapture(e.pointerId); } catch (err) {}
+    emit({ action: 'resize', phase: 'start', dx: 0, dy: 0 });
+    e.preventDefault();
+  });
+  mv.addEventListener('pointermove', e => {
+    if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
+    emit({ action: 'resize', phase: 'move',
+           dx: e.clientX - bezelDrag.x, dy: e.clientY - bezelDrag.y });
+  });
+  const endBezel = e => {
+    if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
+    emit({ action: 'resize', phase: 'end',
+           dx: e.clientX - bezelDrag.x, dy: e.clientY - bezelDrag.y });
+    bezelDrag = null;
+    try { mv.releasePointerCapture(e.pointerId); } catch (err) {}
+  };
+  mv.addEventListener('pointerup', endBezel);
+  mv.addEventListener('pointercancel', endBezel);
+  // Double-click the body to drop a saved size and go back to width-derived.
+  mv.addEventListener('dblclick', e => {
+    if (e.target === mv) emit({ action: 'resize', phase: 'reset' });
+  });
 }
 
 function lampOn(i, ms = Infinity){

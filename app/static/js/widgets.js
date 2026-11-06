@@ -1102,7 +1102,9 @@ document.addEventListener('alpine:init', () => {
             const base = this.walkmanBase || '/static/walkman/player.html';
             // driven=1: the host owns the clock, so the card never advances or
             // ends a track on its own. paused=1: no light until the host says.
-            return `${base}${base.includes('?') ? '&' : '?'}driven=1&paused=1`;
+            // v=2: the card gained the bezel-drag resize, which a cached copy
+            // from a previous session would not have.
+            return `${base}${base.includes('?') ? '&' : '?'}driven=1&paused=1&v=2`;
         },
 
         // The widget has no frame to drag any more, so its size lives in the
@@ -1206,25 +1208,17 @@ document.addEventListener('alpine:init', () => {
             window.addEventListener('message', this.walkmanListener);
             this.walkmanTimer = setInterval(() => this.pushWalkmanState(), 250);
 
-            // Adopt a size the corner grip already saved, then follow it: the
-            // resizer writes the inline height itself during the drag and fires
-            // a window `resize` when it lets go.
             // The card draws the walkman edge to edge, so the widget's frame IS
-            // the device's silver bezel: with no size of its own the height is
-            // the width over 2 (the model is 0.300 x 0.150 m). A size the corner
-            // grip saved still wins — the user chose it.
+            // the device's silver bezel: the height is always the width over 2
+            // (the model is 0.300 x 0.150 m). It is DERIVED, never stored — a
+            // saved height from the old corner grip (e.g. 500 px on a 732 px
+            // wide card) made the stage taller than 2:1, which shrinks the
+            // camera's horizontal span below the 0.300 m body and cropped the
+            // deck on both sides. Width is the only free dimension; the card's
+            // own bezel drag posts column changes back to us.
             const adopt = () => {
                 const el = this.$el;
                 if (!el || !el.id) return;
-                const size = window.WidgetResizer ? window.WidgetResizer.getSizes()[el.id] : null;
-                if (size && size.height) {
-                    // While the drawer is open the stored height already includes
-                    // it, so subtract before storing it as the closed height.
-                    this.walkmanBaseH = this.walkmanOpen
-                        ? Math.max(180, size.height - 148)
-                        : size.height;
-                    return;
-                }
                 const w = el.getBoundingClientRect().width;
                 if (w > 40) this.walkmanBaseH = Math.max(120, Math.round(w / 2));
             };
@@ -2188,11 +2182,72 @@ document.addEventListener('alpine:init', () => {
                 case 'history': this.toggleWalkmanHistory(); break;
                 case 'mute': this.toggleMute(); break;
                 case 'volume': this.setVolume(d.volume); break;
+                // the card's silver bezel is this widget's resize grip; a drag
+                // fires this at pointer rate, so it never falls through to the
+                // state push below.
+                case 'resize': return this.walkmanResize(d);
                 case 'open': this.openInFullPlayer(); break;
                 case 'close': window.WidgetManager.dismiss(this.$el); break;
                 default: return;
             }
             this.pushWalkmanState(true);
+        },
+
+        // Resize from the deck's own silver bezel. The card (player.html) owns
+        // the pointer capture and posts {phase:'start'|'move'|'end'|'reset',
+        // dx, dy} in ITS OWN viewport coordinates; the iframe's top-left edge
+        // never moves during a resize, so those deltas are stable. Width snaps
+        // to grid columns (the layout is the grid); height is never touched
+        // here — walkmanBaseH follows the width (2:1) through ResizeObserver.
+        walkmanResize(d) {
+            const el = this.$el;
+            const resizer = window.WidgetResizer;
+            if (!el || !el.id || !resizer) return;
+            const grid = el.closest('.dashboard-grid');
+            if (!grid) return;
+
+            if (d.phase === 'reset') {
+                resizer.saveSize(el.id, null);
+                el.style.removeProperty('grid-column');
+                el.style.removeProperty('height');
+                window.dispatchEvent(new Event('resize'));
+                return;
+            }
+
+            if (d.phase === 'start') {
+                const rect = el.getBoundingClientRect();
+                this._bezelDrag = {
+                    startW: rect.width,
+                    metrics: resizer.metrics(grid),
+                    cols: null,
+                };
+                el.classList.add('is-resizing-bezel');
+                return;
+            }
+
+            const drag = this._bezelDrag;
+            if (!drag) return;
+            // The deck scales as one object, so either axis drives the width:
+            // follow whichever one the pointer moved furthest along, with the
+            // vertical axis doubled (a 2:1 body grows 2 px wide per 1 px tall).
+            const dx = d.dx || 0;
+            const dy = d.dy || 0;
+            const grow = Math.abs(dx) >= Math.abs(dy * 2) ? dx : dy * 2;
+            const { colWidth, gap, trackCount } = drag.metrics;
+            let cols = Math.round((drag.startW + grow + gap) / (colWidth + gap));
+            cols = Math.min(Math.max(cols, resizer.MIN_COLS),
+                            Math.min(resizer.MAX_COLS, trackCount));
+            el.style.gridColumn = `span ${cols}`;
+            drag.cols = cols;
+
+            if (d.phase === 'end') {
+                if (drag.cols !== null) resizer.saveSize(el.id, { cols: drag.cols });
+                el.classList.remove('is-resizing-bezel');
+                this._bezelDrag = null;
+                // Charts/masonry re-measure on window resize; the widget's own
+                // height already followed through ResizeObserver.
+                window.dispatchEvent(new Event('resize'));
+            }
         },
 
         stopPlayback() {
