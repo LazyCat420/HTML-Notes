@@ -221,6 +221,11 @@ window.WidgetResizer = {
     },
 
     apply(el) {
+        // A drag owns the inline size until it ends. A canvas mutation can fire
+        // scan() mid-drag, and re-applying the stored size there would fight
+        // the pointer (grid-column snapping back and forth).
+        if (el.classList.contains('is-resizing') ||
+            el.classList.contains('is-resizing-bezel')) return;
         const size = this.getSizes()[el.id];
         if (!size) return;
         // Inline styles beat the Tailwind col-span-*/h-[380px] classes baked into
@@ -684,6 +689,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         ensureExpandButton(el) {
             if (!el || el.querySelector('.widget-expand-toggle')) return;
+            // The walkman deck has no compressible body: a "full / compact"
+            // chip on it would be a stray box that toggles nothing.
+            if (el.classList.contains('music-widget-root')) return;
             const btn = document.createElement('button');
             btn.className = 'widget-expand-toggle';
             btn.type = 'button';
@@ -3926,7 +3934,14 @@ document.addEventListener("DOMContentLoaded", () => {
             item.style.removeProperty('left');
             item.style.removeProperty('top');
             item.style.removeProperty('width');
-            item.style.removeProperty('height');
+            // The walkman widget's height is an Alpine :style binding that has
+            // ALREADY run by now (initTree is called just above); stripping it
+            // would leave the deck at the CSS auto height (min 180 / max 540),
+            // a 4:1 box around a 2:1 device. It is never a legacy tiler
+            // coordinate — canvas saves strip it before persisting.
+            if (!item.classList.contains('music-widget-root')) {
+                item.style.removeProperty('height');
+            }
             item.style.removeProperty('z-index');
             item.removeAttribute('draggable');
 

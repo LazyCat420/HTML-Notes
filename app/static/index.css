@@ -219,7 +219,8 @@ body::after {
    The card catches the drag on its metal body and posts it to the widget, so
    the corner grip is never decorated onto a music widget (WidgetResizer skips
    it) — and no box is drawn while that drag runs. */
-.widget-container.music-widget-root.is-resizing-bezel {
+.widget-container.music-widget-root.is-resizing-bezel,
+.widget-container.music-widget-root.is-moving {
     outline: none !important;
 }
 

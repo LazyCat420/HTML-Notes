@@ -2220,6 +2220,11 @@ document.addEventListener('alpine:init', () => {
                     startW: rect.width,
                     metrics: resizer.metrics(grid),
                     cols: null,
+                    // Which half of the deck the drag began on: pulling the
+                    // top/left bezel outward must GROW the widget, so the raw
+                    // delta is flipped for that side.
+                    dirX: (d.x ?? rect.width / 2) < rect.width / 2 ? -1 : 1,
+                    dirY: (d.y ?? rect.height / 2) < rect.height / 2 ? -1 : 1,
                 };
                 el.classList.add('is-resizing-bezel');
                 return;
@@ -2227,11 +2232,22 @@ document.addEventListener('alpine:init', () => {
 
             const drag = this._bezelDrag;
             if (!drag) return;
+            const raw = Math.abs(d.dx || 0) + Math.abs(d.dy || 0);
+            // A click that never moved is not a resize: on a compact/mobile
+            // layout the widget renders one column wide, and sizing it from
+            // that would shrink it for good.
+            if (raw <= 3) {
+                if (d.phase === 'end') {
+                    el.classList.remove('is-resizing-bezel');
+                    this._bezelDrag = null;
+                }
+                return;
+            }
             // The deck scales as one object, so either axis drives the width:
             // follow whichever one the pointer moved furthest along, with the
             // vertical axis doubled (a 2:1 body grows 2 px wide per 1 px tall).
-            const dx = d.dx || 0;
-            const dy = d.dy || 0;
+            const dx = (d.dx || 0) * drag.dirX;
+            const dy = (d.dy || 0) * drag.dirY;
             const grow = Math.abs(dx) >= Math.abs(dy * 2) ? dx : dy * 2;
             const { colWidth, gap, trackCount } = drag.metrics;
             let cols = Math.round((drag.startW + grow + gap) / (colWidth + gap));
@@ -2241,7 +2257,9 @@ document.addEventListener('alpine:init', () => {
             drag.cols = cols;
 
             if (d.phase === 'end') {
-                if (drag.cols !== null) resizer.saveSize(el.id, { cols: drag.cols });
+                if (drag.cols !== null && d.moved !== false) {
+                    resizer.saveSize(el.id, { cols: drag.cols });
+                }
                 el.classList.remove('is-resizing-bezel');
                 this._bezelDrag = null;
                 // Charts/masonry re-measure on window resize; the widget's own

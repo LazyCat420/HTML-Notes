@@ -60,8 +60,18 @@ test("height is the width over 2 (the device's own aspect)", async () => {
 
 test("a height saved by the old corner grip is ignored, not applied", async () => {
   // 520 px on a 732 px card is a 1.4:1 stage: the old behaviour, which cropped
-  // the deck. The width alone decides now.
-  const { w } = await mountAt(732, { saved: { "music-1": { cols: 2, height: 520 } } });
+  // the deck. The width alone decides now. WidgetResizer is present here on
+  // purpose — without it the old adopt() also fell back to width/2 and this
+  // assertion would pass against the buggy code.
+  const { factory, window: fakeWindow } = loadFactory();
+  fakeWindow.dispatchEvent = () => {};
+  fakeWindow.WidgetResizer = {
+    getSizes: () => ({ "music-1": { cols: 2, height: 520 } }),
+  };
+  const w = factory({ genre: "", autoplay: false });
+  w.$el = makeEl(732);
+  await w.init();
+  w.closeStream();
   assert.equal(w.walkmanBaseH, 366, "stored height must NOT win over width/2");
 });
 
@@ -125,6 +135,27 @@ test("a drag never goes below one column or past the grid's track count", async 
   assert.equal(w.$el.style.gridColumn, "span 1", "clamped to one column");
 });
 
+test("pulling the left bezel outward grows the widget (direction-aware)", async () => {
+  const { w, window: fakeWindow } = await mountAt(732);
+  fakeWindow.WidgetResizer = resizerStub();
+  // Started on the left half of a 732 px deck: dragging LEFT is outward.
+  w.walkmanResize({ phase: "start", x: 50, y: 100 });
+  w.walkmanResize({ phase: "move", dx: -200, dy: 0 });
+  assert.equal(w.$el.style.gridColumn, "span 3");
+});
+
+test("a click that never moved stores nothing (compact mode would lock span 1)", async () => {
+  const { w, window: fakeWindow } = await mountAt(732);
+  const stub = resizerStub();
+  fakeWindow.WidgetResizer = stub;
+  w.walkmanResize({ phase: "start", x: 400, y: 100 });
+  w.walkmanResize({ phase: "move", dx: 2, dy: 1 });
+  w.walkmanResize({ phase: "end", dx: 2, dy: 1, moved: false });
+  assert.equal(stub.saved.length, 0, "a stationary click must not save a size");
+  assert.equal(w.$el.style.gridColumn, undefined, "and must not write a span");
+  assert.ok(!w.$el.classes.has("is-resizing-bezel"), "drag state cleared");
+});
+
 test("double-click reset drops the saved size", async () => {
   const { w, window: fakeWindow } = await mountAt(732);
   const stub = resizerStub();
@@ -133,14 +164,17 @@ test("double-click reset drops the saved size", async () => {
   assert.deepEqual(stub.saved.at(-1), ["music-1", null]);
 });
 
-test("resize messages are handled without a state push per pointer move", async () => {
+test("resize messages reach the resizer without a state push per pointer move", async () => {
   const { w } = await mountAt(732);
   let pushes = 0;
+  const calls = [];
   w.pushWalkmanState = () => { pushes++; };
   const f = { contentWindow: {} };
   w.$refs = { walkman: f };
-  w.walkmanResize = () => {};
-  w.onWalkmanMessage({ data: { type: "walkman", action: "resize", phase: "move" },
+  w.walkmanResize = m => calls.push(m);
+  w.onWalkmanMessage({ data: { type: "walkman", action: "resize", phase: "move", dx: 40, dy: 0 },
                        source: f.contentWindow });
+  assert.equal(calls.length, 1, "the resize message must reach walkmanResize");
+  assert.equal(calls[0].dx, 40);
   assert.equal(pushes, 0, "a bezel drag fires at pointer rate; it must not re-push state");
 });

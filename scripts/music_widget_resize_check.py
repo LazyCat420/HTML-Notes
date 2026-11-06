@@ -192,6 +192,33 @@ with sync_playwright() as p:
           drag_on_screen["gridColumn"] == cols_before and not drag_on_screen["bezelClass"],
           f"{cols_before} -> {drag_on_screen['gridColumn']}")
 
+    # Pulling the LEFT bezel outward must grow the widget, not shrink it: the
+    # drag direction is resolved against the half of the deck it started on.
+    box = pg.locator("#" + WIDGET_ID).bounding_box()
+    left_x = box["x"] + 10
+    mid_y = box["y"] + box["height"] * 0.35
+    cols_before = pg.evaluate(MEASURE, WIDGET_ID)["gridColumn"]
+    pg.mouse.move(left_x, mid_y)
+    pg.mouse.down()
+    for i in range(1, 11):
+        pg.mouse.move(left_x - i * 20, mid_y)
+    pg.mouse.up()
+    pg.wait_for_timeout(600)
+    outward = pg.evaluate(MEASURE, WIDGET_ID)
+    check("pulling the left bezel outward grows the widget",
+          outward["w"] > box["width"] + 50,
+          f"{box['width']:.0f} -> {outward['w']:.0f} ({cols_before} -> {outward['gridColumn']})")
+
+    # A click on the metal that never moves must not resize anything.
+    before_click = pg.evaluate(MEASURE, WIDGET_ID)
+    pg.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + 8)
+    pg.wait_for_timeout(500)
+    after_click = pg.evaluate(MEASURE, WIDGET_ID)
+    check("a stationary click on the bezel changes nothing",
+          after_click["w"] == before_click["w"] and after_click["h"] == before_click["h"]
+          and after_click["gridColumn"] == before_click["gridColumn"],
+          f"{before_click['w']:.0f}x{before_click['h']:.0f} -> {after_click['w']:.0f}x{after_click['h']:.0f}")
+
     # The drawer adds its own band under the 2:1 stage, never squeezing it.
     fr.evaluate("() => window.walkmanPlayer.openQueue()")
     pg.wait_for_timeout(900)

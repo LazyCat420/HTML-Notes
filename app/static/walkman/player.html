@@ -571,33 +571,56 @@ function emit(msg){
    rail — those are hotspots/overlays inside #mv) starts a drag, captures the
    pointer (capture keeps delivering moves even after the cursor leaves the
    iframe — verified in Chromium), and posts the delta to the host widget,
-   which snaps the width to grid columns and derives the height. */
+   which snaps the width to grid columns and derives the height.
+
+   Deltas use screenX/screenY, not clientX/clientY: a widening widget can wrap
+   to another grid row and move this iframe, which would shift every clientX
+   mid-drag and oscillate the size. screenX is the page coordinate (verified:
+   clientX + the iframe's page offset) and does not move with layout. */
 if (window.self !== window.top){
   let bezelDrag = null;
+  let lastMovedAt = 0;
+  const px = e => (typeof e.screenX === 'number' ? e.screenX : e.clientX);
+  const py = e => (typeof e.screenY === 'number' ? e.screenY : e.clientY);
+  const bezelDelta = e => ({ dx: px(e) - bezelDrag.x, dy: py(e) - bezelDrag.y });
+  const endBezel = e => {
+    if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
+    const d = bezelDelta(e);
+    emit({ action: 'resize', phase: 'end', dx: d.dx, dy: d.dy, moved: bezelDrag.moved });
+    bezelDrag = null;
+    try { mv.releasePointerCapture(e.pointerId); } catch (err) {}
+  };
   mv.addEventListener('pointerdown', e => {
     if (e.button !== 0 || e.target !== mv) return;
-    bezelDrag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    // clientX/clientY pick the side of the deck the drag started on, so pulling
+    // the top/left bezel outward grows the widget instead of shrinking it.
+    bezelDrag = { id: e.pointerId, x: px(e), y: py(e),
+                  cx: e.clientX, cy: e.clientY, moved: false };
     try { mv.setPointerCapture(e.pointerId); } catch (err) {}
-    emit({ action: 'resize', phase: 'start', dx: 0, dy: 0 });
+    emit({ action: 'resize', phase: 'start', x: e.clientX, y: e.clientY, dx: 0, dy: 0 });
     e.preventDefault();
   });
   mv.addEventListener('pointermove', e => {
     if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
-    emit({ action: 'resize', phase: 'move',
-           dx: e.clientX - bezelDrag.x, dy: e.clientY - bezelDrag.y });
+    // A pointerup that lands outside every document never reaches us; the next
+    // move with no buttons down is the end of the drag.
+    if (e.buttons === 0) { endBezel(e); return; }
+    const d = bezelDelta(e);
+    if (Math.abs(d.dx) + Math.abs(d.dy) > 3) {
+      bezelDrag.moved = true;
+      lastMovedAt = performance.now();
+    }
+    emit({ action: 'resize', phase: 'move', dx: d.dx, dy: d.dy });
   });
-  const endBezel = e => {
-    if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
-    emit({ action: 'resize', phase: 'end',
-           dx: e.clientX - bezelDrag.x, dy: e.clientY - bezelDrag.y });
-    bezelDrag = null;
-    try { mv.releasePointerCapture(e.pointerId); } catch (err) {}
-  };
   mv.addEventListener('pointerup', endBezel);
   mv.addEventListener('pointercancel', endBezel);
+  mv.addEventListener('lostpointercapture', endBezel);
   // Double-click the body to drop a saved size and go back to width-derived.
+  // A drag that ends in two rapid clicks must not read as a reset.
   mv.addEventListener('dblclick', e => {
-    if (e.target === mv) emit({ action: 'resize', phase: 'reset' });
+    if (e.target !== mv) return;
+    if (performance.now() - lastMovedAt < 400) return;
+    emit({ action: 'resize', phase: 'reset' });
   });
 }
 

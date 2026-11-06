@@ -833,13 +833,22 @@ L bracket CSS is gone. The card's metal body is the grip instead. `player.html`
 catches `pointerdown` on the `model-viewer` surface — a hotspot (LCD, transport
 key, aux key, volume rail) still wins the event — captures the pointer (verified
 in Chromium: capture keeps delivering moves after the cursor leaves the iframe)
-and posts `{action:'resize', phase:'start'|'move'|'end'|'reset', dx, dy}` in its
-own viewport coordinates; the iframe's top-left edge never moves during a resize,
-so the deltas are stable. `walkmanResize()` in `widgets.js` turns the dominant
-axis into a width (the vertical axis counts double, the body is 2:1), snaps it to
-grid columns with the live `WidgetResizer.metrics()`, and writes only `{cols}` to
-`widget_sizes` — the height is never stored. A double-click on the bezel drops
-the saved size and returns to width-derived.
+and posts `{action:'resize', phase:'start'|'move'|'end'|'reset', dx, dy, x, y}`
+to the host. The deltas are measured in **screen** coordinates (`screenX/Y`, which
+in a frame are the page coordinate — verified: clientX + the iframe's page
+offset), not `clientX/Y`: a widget that grows past its column can wrap to another
+grid row and move the iframe mid-drag, which would shift every clientX and
+oscillate the size. `walkmanResize()` in `widgets.js` turns the dominant axis into
+a width (the vertical axis counts double, the body is 2:1), flips the delta for a
+drag that started on the top/left half (pulling that bezel outward grows, it does
+not shrink), snaps to grid columns with the live `WidgetResizer.metrics()`, and
+writes only `{cols}` to `widget_sizes` — the height is never stored. A click that
+moves ≤ 3 px stores nothing (on a compact/mobile layout the widget renders one
+column wide, and saving from that would lock it at span 1), and a double-click on
+the bezel drops the saved size and returns to width-derived, unless a drag moved
+within the last 400 ms. `WidgetResizer.apply()` skips a widget that is mid-drag
+(`.is-resizing` / `.is-resizing-bezel`), so a canvas mutation during the drag
+cannot snap the columns back.
 
 **Height is derived, never stored.** `walkmanBaseH` is always `round(width/2)`
 (`ResizeObserver` on the widget root), and the drawer adds its own band under
@@ -856,7 +865,18 @@ frame, i.e. the "cuts off slightly on the right" crop.
 **No box is painted during the drag.** The generic resizer adds `.is-resizing`,
 whose 1 px cyan outline is the rectangle the user saw around the deck. The bezel
 drag marks `.is-resizing-bezel` instead, which paints no outline (and does not set
-`pointer-events: none`, so the captured pointer keeps reaching the card).
+`pointer-events: none`, so the captured pointer keeps reaching the card). The
+dashed outline of a reorder drag (`.is-moving`) and the feed-aging "full / compact"
+chip are suppressed for the deck too — it has no compressible body, so that chip
+would be a stray box that toggles nothing.
+
+**The canvas re-render was stripping the height.** `initCanvasWidgets()` removes
+legacy tiler coordinates (`position/left/top/width/height`) from every widget after
+`Alpine.initTree()` has run. For the deck that height is the live `:style`
+binding, so stripping it left the card at the CSS auto height (min 180 / max 540
+px) — a 4:1 box around a 2:1 device, with no width change to make Alpine re-apply
+it. The strip now skips `.music-widget-root` (a canvas save never persists that
+height anyway: the serializer strips it first).
 
 **Alpine's string `:style` wiped the span.** `:style="'height: ' + ..."`
 compiles to `setAttribute('style', ...)`, which replaces the whole inline style —

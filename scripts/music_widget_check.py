@@ -77,6 +77,23 @@ with sync_playwright() as p:
             }""")
         check("audio streams from music-player", False, str(state))
 
+    # 2b. Geometry on the SSE-rendered widget (not an injected one): the canvas
+    # re-render path (renderDynamicComponents -> initCanvasWidgets) must keep the
+    # walkman's Alpine height binding. A stripped inline height leaves the deck
+    # in a 4:1 auto-height box, so the card would no longer be 2:1.
+    geo = pg.evaluate(
+        """() => {
+            const w = document.querySelector('[x-data*="musicPlayerWidget"]');
+            const r = w.getBoundingClientRect();
+            const cs = getComputedStyle(w);
+            return { w: r.width, h: r.height, inlineH: w.style.height,
+                     maxH: cs.maxHeight, handle: !!w.querySelector(':scope > .widget-resize-handle') };
+        }""")
+    check("SSE-rendered widget keeps its derived 2:1 height",
+          geo["w"] > 40 and abs(geo["h"] - geo["w"] / 2) <= 2,
+          str(geo))
+    check("no corner grip on the music widget", not geo["handle"], str(geo))
+
     # 3. Queue: more than one track landed; the panel opens and jumping works.
     qlen = pg.evaluate(
         """() => Alpine.$data(document.querySelector('[x-data*="musicPlayerWidget"]')).queue.length""")
