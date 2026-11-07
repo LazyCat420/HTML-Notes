@@ -2,10 +2,10 @@
 part: Modules and services
 type: reference
 status: verified
-updated: 2026-11-06
-last-verified: 2026-11-06
+updated: 2026-11-07
+last-verified: 2026-11-07
 review-by: 2026-12-06
-covers: html-notes:app/routes/message.py, html-notes:app/services/news_pipeline.py, html-notes:app/services/research/coordinator.py, html-notes:app/tooling/policy.py, html-notes:app/domain/canvas/service.py, html-notes:app/agents/orchestrator.py
+covers: html-notes:app/routes/message.py, html-notes:app/services/news_pipeline.py, html-notes:app/services/research/coordinator.py, html-notes:app/tooling/policy.py, html-notes:app/domain/canvas/service.py, html-notes:app/agents/orchestrator.py, html-notes:app/portal_registry.json
 ---
 
 # Modules and services
@@ -57,9 +57,13 @@ covers: html-notes:app/routes/message.py, html-notes:app/services/news_pipeline.
 
 `app/portal_registry.json` lists the apps the canvas can open. `app/domain/apps/service.py`
 owns the registry: an app is addressable by id, has a URL and a health contract, and
-the App Hub widget renders the registry, not a hardcoded list. `tests/test_app_hub.py`
-checks the registry URL expectations; its three failures after the dependency bump
-were URL-expectation mismatches, not dependency breakage.
+the App Hub widget renders the registry, not a hardcoded list. The `doc-client` entry
+launches the unified documentation hub at `http://10.0.0.16:8888/` (which redirects to
+`/documentation` on `trading-client`), replacing the retired standalone `:8910`
+`doc-client` server while `apps/doc-client/static/` remains the source directory for the
+3D walkman and CRT cards. `tests/test_app_hub.py` checks the registry URL expectations;
+its three failures after the dependency bump were URL-expectation mismatches, not
+dependency breakage.
 
 ## Tool policy
 
