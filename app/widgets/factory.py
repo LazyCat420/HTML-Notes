@@ -1339,38 +1339,19 @@ def render_youtube_player(widget_id: str, config: dict) -> str:
     query = config.get("query", "") or title
 
     return f"""
-    <div id="{widget_id}" class="widget-container youtube-player col-span-2 relative overflow-hidden rounded-[2rem] shadow-2xl bg-slate-900/60 backdrop-blur-xl border border-white/10 text-white flex flex-col group" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)}, {json_escape(candidates)}, {json_escape(query)})">
-        <!-- Title Bar -->
-        <div class="flex items-center justify-between bg-black/30 px-3 py-1.5 border-b border-white/10 relative z-20">
-            <div class="flex items-center gap-2 min-w-0">
-                <span class="text-base text-red-500">📺</span>
-                <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]" x-text="title"></h3>
-                <span x-show="isLoading" class="text-xs text-slate-400 italic animate-pulse">Resolving stream...</span>
-            </div>
-            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
-                <span class="material-symbols-outlined text-[1.2rem]">close</span>
-            </button>
-        </div>
-        <!-- Video Embed: 16:9 area sized by the grid column width; the slim
-             title bar rides on top, so the widget tracks the video, not a
-             fixed pixel height (exempted from the generic max-height cap). -->
-        <div class="w-full aspect-video bg-black relative flex items-center justify-center">
-            <!-- Loading state overlay -->
-            <div x-show="isLoading" class="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center z-10">
-                <span class="material-symbols-outlined text-4xl text-purple-400 animate-spin mb-2">sync</span>
-                <span class="text-sm text-slate-300">Searching YouTube...</span>
-            </div>
-            <!-- Error state overlay -->
-            <div x-show="error" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center z-10 gap-2">
-                <span class="material-symbols-outlined text-4xl text-red-500 mb-2">error</span>
-                <span class="text-sm text-slate-200" x-text="error"></span>
-                <a x-show="watchUrl" :href="watchUrl" target="_blank" rel="noopener" class="text-sm text-purple-300 underline hover:text-purple-200">Watch on YouTube ↗</a>
-            </div>
-            <!-- Iframe player -->
-            <template x-if="embedUrl">
-                <iframe :src="embedUrl" class="w-full h-full border-none" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
-            </template>
-        </div>
+    <div id="{widget_id}" class="widget-container youtube-player col-span-2 relative overflow-hidden text-white flex flex-col group" :style="{{ height: tvHeight + 'px' }}" x-data="youtubePlayerWidget({json_escape(video_id)}, {json_escape(title)}, {json_escape(candidates)}, {json_escape(query)})">
+        <!-- The whole widget IS the CRT card (app/static/crt/player.html, the
+             walkman split): the card draws the cabinet, the tube, the static,
+             the NO SIGNAL screen and the channel OSD; this frame contributes
+             only the aspect-locked box, the hover close chip and the hover
+             title chip. No rounded/backdrop/border — the 3D cabinet is the
+             surface. -->
+        <iframe x-ref="crt" :src="'/static/crt/player.html?v=1'" class="w-full h-full border-none block" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen title="YouTube on a CRT"></iframe>
+
+        <div class="absolute top-2 left-2 z-20 max-w-[60%] truncate bg-black/60 text-emerald-300 font-mono text-[11px] px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" x-text="title"></div>
+        <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn absolute top-2 right-2 z-20 text-white/60 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity">
+            <span class="material-symbols-outlined text-[1.1rem]">close</span>
+        </button>
     </div>
     """
 

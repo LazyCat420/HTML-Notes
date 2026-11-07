@@ -1,24 +1,5 @@
 // Global Alpine.js widget registry for the Smart Dashboard Lego System
 
-// Loads the YouTube IFrame API once. It is the only way to detect
-// "Video unavailable" / embed-blocked errors (codes 100/101/150) so the
-// player widget can auto-advance to an embeddable alternative.
-function loadYouTubeIframeApi() {
-    if (window.YT && window.YT.Player) return Promise.resolve();
-    if (window._ytApiPromise) return window._ytApiPromise;
-    window._ytApiPromise = new Promise(resolve => {
-        const prev = window.onYouTubeIframeAPIReady;
-        window.onYouTubeIframeAPIReady = () => {
-            if (typeof prev === 'function') prev();
-            resolve();
-        };
-        const tag = document.createElement('script');
-        tag.src = 'https://www.youtube.com/iframe_api';
-        document.head.appendChild(tag);
-    });
-    return window._ytApiPromise;
-}
-
 document.addEventListener('alpine:init', () => {
     
     // 1. Checklist Widget
@@ -2411,9 +2392,19 @@ document.addEventListener('alpine:init', () => {
     // 5. YouTube Player Widget
     // candidates: alternate video ids to try when a video refuses to embed
     // (music-label videos frequently block embedding — error 101/150).
-    Alpine.data('youtubePlayerWidget', (initialVideoId = '', title = 'YouTube Player', candidates = [], searchQuery = '') => ({
+    // The video itself lives INSIDE the CRT-TV card (app/static/crt/player.html):
+    // the card owns the YouTube player, the channel-change static, the knobs
+    // and the power-on flash; this component owns video resolution, the
+    // candidate fallback and grid sizing — the same split as the music widget
+    // and its walkman deck.
+    Alpine.data('youtubePlayerWidget', (initialVideoId = '', title = 'YouTube Player', candidates = [], searchQuery = '') => {
+        // The cabinet is one object: 0.600 x 0.330 m → aspect 1.8182
+        // (.agents/PLAN-youtube-crt-tv.md). Height is DERIVED from the width,
+        // never stored — a free height would break the camera fit and crop
+        // the cabinet.
+        const TV_ASPECT = 0.6 / 0.33;
+        return {
         videoId: initialVideoId,
-        embedUrl: '',
         isLoading: false,
         error: '',
         watchUrl: '',
@@ -2422,23 +2413,138 @@ document.addEventListener('alpine:init', () => {
         searchQuery: searchQuery || '',
         attemptedIds: [],
         fetchedMoreCandidates: false,
-        player: null,
+        // Closed height; adopt() keeps it at width / TV_ASPECT. The card's
+        // silver bezel is the resize grip (tvResize below), so WidgetResizer
+        // never decorates a corner handle nor applies a stored height here.
+        tvBaseH: 330,
+        tvResizeListener: null,
+        tvFitObserver: null,
+        crtListener: null,
+        // Knob settings the card reports; the card acts on them locally, we
+        // just remember them (e.g. for a future state push).
+        crtVolume: 100,
+        crtPowerOn: true,
+
+        get tvHeight() {
+            // No drawer: the cabinet's height IS the widget's height.
+            return this.tvBaseH;
+        },
 
         init() {
+            // The card is a separate document: it posts ready / embed-error /
+            // channel-up / volume / power / resize; we post tune / error.
+            this.crtListener = (e) => this.onCrtMessage(e);
+            window.addEventListener('message', this.crtListener);
+
+            // The widget's frame IS the cabinet, so the height always follows
+            // the width. Same clientWidth-not-rect rule as the music deck:
+            // the first adopt() runs while the entry animation scales the
+            // widget to ~0.98, and a rect read there would size it short.
+            const adopt = () => {
+                const el = this.$el;
+                if (!el || !el.id) return;
+                const w = el.clientWidth || el.getBoundingClientRect().width;
+                if (w > 40) this.tvBaseH = Math.max(120, Math.round(w / TV_ASPECT));
+            };
+            this.tvResizeListener = adopt;
+            adopt();
+            window.addEventListener('resize', this.tvResizeListener);
+            if (window.ResizeObserver) {
+                this.tvFitObserver = new ResizeObserver(adopt);
+                this.tvFitObserver.observe(this.$el);
+            }
+
             if (this.videoId) {
                 this.resolveVideo();
             }
         },
 
         destroy() {
-            this.destroyPlayer();
+            if (this.crtListener) {
+                window.removeEventListener('message', this.crtListener);
+                this.crtListener = null;
+            }
+            if (this.tvFitObserver) { this.tvFitObserver.disconnect(); this.tvFitObserver = null; }
+            if (this.tvResizeListener) {
+                window.removeEventListener('resize', this.tvResizeListener);
+                this.tvResizeListener = null;
+            }
         },
 
-        destroyPlayer() {
-            if (this.player) {
-                try { this.player.destroy(); } catch (e) {}
-                this.player = null;
+        // ── CRT card plumbing ────────────────────────────────────────────
+        sendCrt(msg) {
+            const f = this.$refs.crt;
+            if (!f || !f.contentWindow) return;
+            try { f.contentWindow.postMessage({ type: 'crt', ...msg }, '*'); } catch (e) {}
+        },
+
+        // The card draws every state (static, NO SIGNAL, OSD) — the parent has
+        // no overlays any more — so each error set must reach the card.
+        setError(msg) {
+            this.error = msg;
+            if (msg) this.sendCrt({ action: 'error', message: msg, watchUrl: this.watchUrl || '' });
+        },
+
+        onCrtMessage(e) {
+            const d = e.data;
+            if (!d || d.type !== 'crt') return;
+            const f = this.$refs.crt;
+            if (f && f.contentWindow && e.source && e.source !== f.contentWindow) return;
+            switch (d.action) {
+                case 'ready':
+                    // The card just (re)loaded; anything posted before its
+                    // listener existed was dropped — re-send the current tune.
+                    if (this.error) {
+                        this.sendCrt({ action: 'error', message: this.error,
+                                       watchUrl: this.watchUrl || '' });
+                    } else if (this.videoId) {
+                        this.sendCrt({ action: 'tune', video: this.videoId, title: this.title,
+                                       channel: Math.max(0, this.attemptedIds.indexOf(this.videoId)) });
+                    }
+                    return;
+                case 'embed-error': return this.handleEmbedError(d.code);
+                case 'channel-up': return this.channelUp();
+                // knobs work inside the card; we only remember the settings
+                case 'volume': this.crtVolume = d.volume; return;
+                case 'power': this.crtPowerOn = !!d.playing; return;
+                // the cabinet's bezel is this widget's resize grip
+                case 'resize': return this.tvResize(d);
+                default: return;
             }
+        },
+
+        // The channel knob: advance like a TV would. Next unattempted
+        // candidate → the one-shot re-search (same rule as handleEmbedError)
+        // → a fresh search as the last resort, so the knob never dead-ends.
+        async channelUp() {
+            let next = this.candidates.find(id => !this.attemptedIds.includes(id));
+            if (!next && !this.fetchedMoreCandidates && (this.searchQuery || this.title)) {
+                this.fetchedMoreCandidates = true;
+                try {
+                    const q = this.searchQuery || this.title;
+                    const res = await fetch(`/api/youtube/candidates?query=${encodeURIComponent(q)}&limit=8`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        this.candidates.push(...((data && data.results) || []).map(r => r.id).filter(Boolean));
+                        next = this.candidates.find(id => !this.attemptedIds.includes(id));
+                    }
+                } catch (e) {}
+            }
+            if (next) {
+                this.playById(next);
+                return;
+            }
+            const q = this.searchQuery || this.title;
+            if (!q) return;
+            try {
+                const res = await fetch(`/api/youtube/candidates?query=${encodeURIComponent(q)}&limit=8`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const ids = ((data && data.results) || []).map(r => r.id).filter(Boolean);
+                this.candidates.push(...ids);
+                const fresh = ids.find(id => !this.attemptedIds.includes(id));
+                if (fresh) this.playById(fresh);
+            } catch (e) {}
         },
 
         async resolveVideo() {
@@ -2477,13 +2583,13 @@ document.addEventListener('alpine:init', () => {
                             if (results[0].title) this.title = results[0].title;
                             this.playById(this.candidates.shift());
                         } else {
-                            this.error = 'No videos found for this search.';
+                            this.setError('No videos found for this search.');
                         }
                     } else {
-                        this.error = 'Failed to find video.';
+                        this.setError('Failed to find video.');
                     }
                 } catch (err) {
-                    this.error = 'Search connection error.';
+                    this.setError('Search connection error.');
                 } finally {
                     this.isLoading = false;
                 }
@@ -2491,48 +2597,93 @@ document.addEventListener('alpine:init', () => {
         },
 
         playById(id) {
-            this.attemptedIds.push(id);
             this.videoId = id;
             this.error = '';
             this.watchUrl = '';
-            this.destroyPlayer();
-            // Toggle embedUrl through '' so x-if rebuilds a fresh iframe for
-            // each attempt — the IFrame API binds to one iframe per video.
-            this.embedUrl = '';
-            this.$nextTick(() => {
-                // mute=1 is REQUIRED for autoplay to fire at all: browsers block
-                // UNMUTED autoplay inside a cross-origin iframe, so autoplay=1 on
-                // its own just loads the video paused (the "video won't play until
-                // I click it" complaint). Start muted so it actually plays, then
-                // unmute via the IFrame API in onReady below.
-                this.embedUrl = `https://www.youtube.com/embed/${id}?autoplay=1&mute=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`;
-                this.$nextTick(() => this.watchForEmbedErrors());
-            });
+            this.attemptedIds.push(id);
+            // The card owns everything YouTube: the static burst, the dial
+            // spin, the iframe swap, the power-on flash and the OSD. channel
+            // is this attempt's 0-based index into the tuning history.
+            this.sendCrt({ action: 'tune', video: id, title: this.title, channel: this.attemptedIds.length - 1 });
         },
 
-        async watchForEmbedErrors() {
-            try {
-                await loadYouTubeIframeApi();
-                const iframe = this.$el.querySelector('iframe');
-                if (!iframe || !window.YT || !window.YT.Player) return;
-                this.player = new YT.Player(iframe, {
-                    events: {
-                        onReady: (e) => {
-                            // The src autoplays muted (browser rule). Now that it
-                            // is playing, try to unmute: browsers permit a
-                            // programmatic unmute once the page has seen a user
-                            // gesture, and sending the chat message that spawned
-                            // this widget IS one. If a given browser refuses, it
-                            // stays muted-but-playing instead of paused — strictly
-                            // better than before.
-                            try { e.target.playVideo(); } catch (_) {}
-                            try { e.target.unMute(); e.target.setVolume(100); } catch (_) {}
-                        },
-                        onError: (e) => this.handleEmbedError(e.data)
-                    }
-                });
-            } catch (e) {
-                console.warn('[YouTubePlayer] IFrame API unavailable, embed errors will not auto-recover:', e);
+        // Resize from the cabinet's own bezel. The card (crt/player.html) owns
+        // the pointer capture and posts {phase:'start'|'move'|'end'|'reset',
+        // dx, dy, x, y} in ITS OWN viewport coordinates; the iframe's top-left
+        // edge never moves during a resize, so those deltas are stable. Width
+        // snaps to grid columns (the layout is the grid); height is never
+        // touched here — tvBaseH follows the width (1.8182:1) through
+        // ResizeObserver.
+        tvResize(d) {
+            const el = this.$el;
+            const resizer = window.WidgetResizer;
+            if (!el || !el.id || !resizer) return;
+            const grid = el.closest('.dashboard-grid');
+            if (!grid) return;
+
+            if (d.phase === 'reset') {
+                resizer.saveSize(el.id, null);
+                el.style.removeProperty('grid-column');
+                // Never strip the height here: if the width does not change,
+                // Alpine's :style binding does not re-fire and the cabinet
+                // would fall back to the CSS auto height. The binding owns
+                // it, and adopt() re-derives it when the width does.
+                window.dispatchEvent(new Event('resize'));
+                return;
+            }
+
+            if (d.phase === 'start') {
+                const rect = el.getBoundingClientRect();
+                this._bezelDrag = {
+                    startW: rect.width,
+                    metrics: resizer.metrics(grid),
+                    cols: null,
+                    // Which half of the cabinet the drag began on: pulling the
+                    // top/left bezel outward must GROW the widget, so the raw
+                    // delta is flipped for that side.
+                    dirX: (d.x ?? rect.width / 2) < rect.width / 2 ? -1 : 1,
+                    dirY: (d.y ?? rect.height / 2) < rect.height / 2 ? -1 : 1,
+                };
+                el.classList.add('is-resizing-bezel');
+                return;
+            }
+
+            const drag = this._bezelDrag;
+            if (!drag) return;
+            const raw = Math.abs(d.dx || 0) + Math.abs(d.dy || 0);
+            // A click that never moved is not a resize: on a compact/mobile
+            // layout the widget renders one column wide, and sizing it from
+            // that would shrink it for good.
+            if (raw <= 3) {
+                if (d.phase === 'end') {
+                    el.classList.remove('is-resizing-bezel');
+                    this._bezelDrag = null;
+                }
+                return;
+            }
+            // The cabinet scales as one object, so either axis drives the
+            // width: follow whichever one the pointer moved furthest along,
+            // with the vertical axis scaled by the cabinet aspect (1.818 px
+            // wide per 1 px tall).
+            const dx = (d.dx || 0) * drag.dirX;
+            const dy = (d.dy || 0) * drag.dirY;
+            const grow = Math.abs(dx) >= Math.abs(dy * TV_ASPECT) ? dx : dy * TV_ASPECT;
+            const { colWidth, gap, trackCount } = drag.metrics;
+            let cols = Math.round((drag.startW + grow + gap) / (colWidth + gap));
+            cols = Math.min(Math.max(cols, resizer.MIN_COLS),
+                            Math.min(resizer.MAX_COLS, trackCount));
+            el.style.gridColumn = `span ${cols}`;
+            drag.cols = cols;
+
+            if (d.phase === 'end') {
+                if (drag.cols !== null && d.moved !== false) {
+                    resizer.saveSize(el.id, { cols: drag.cols });
+                }
+                el.classList.remove('is-resizing-bezel');
+                this._bezelDrag = null;
+                // Charts/masonry re-measure on window resize; the widget's own
+                // height already followed through ResizeObserver.
+                window.dispatchEvent(new Event('resize'));
             }
         },
 
@@ -2555,10 +2706,9 @@ document.addEventListener('alpine:init', () => {
             if (next) {
                 this.playById(next);
             } else {
-                this.destroyPlayer();
-                this.embedUrl = '';
                 this.watchUrl = `https://www.youtube.com/watch?v=${this.attemptedIds[0] || this.videoId}`;
-                this.error = 'This video blocks embedding.';
+                // The card answers with static + "NO SIGNAL · PLEASE STAND BY".
+                this.setError('This video blocks embedding.');
             }
         },
 
@@ -2567,7 +2717,8 @@ document.addEventListener('alpine:init', () => {
             const match = url.match(regExp);
             return (match && match[2].length === 11) ? match[2] : null;
         }
-    }));
+        };
+    });
 
     // Confirm card for a destructive container action. The action is already
     // parked server-side; this button is the ONLY thing that fires it, and the

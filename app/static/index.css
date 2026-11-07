@@ -218,9 +218,14 @@ body::after {
 /* No frame means no frame to drag by: the deck's own silver bezel IS the grip.
    The card catches the drag on its metal body and posts it to the widget, so
    the corner grip is never decorated onto a music widget (WidgetResizer skips
-   it) — and no box is drawn while that drag runs. */
+   it) — and no box is drawn while that drag runs. The CRT cabinet works the
+   same way: its bezel is the grip (youtubePlayerWidget.tvResize). */
 .widget-container.music-widget-root.is-resizing-bezel,
 .widget-container.music-widget-root.is-moving {
+    outline: none !important;
+}
+.widget-container.youtube-player.is-resizing-bezel,
+.widget-container.youtube-player.is-moving {
     outline: none !important;
 }
 

@@ -234,8 +234,10 @@ window.WidgetResizer = {
         // The walkman deck is a 0.300 x 0.150 m object: its height is derived
         // from its width by the widget itself (walkmanBaseH = width / 2). A
         // stored height from the old corner grip would crop the deck on both
-        // sides, so a music widget never takes one.
-        if (size.height && !el.classList.contains('music-widget-root')) {
+        // sides, so a music widget never takes one. Same rule for the CRT
+        // cabinet (0.600 x 0.330 m): tvBaseH = width / 1.8182, derived.
+        if (size.height && !el.classList.contains('music-widget-root')
+                          && !el.classList.contains('youtube-player')) {
             el.style.height = `${size.height}px`;
         }
     },
@@ -244,8 +246,10 @@ window.WidgetResizer = {
         if (!el.id || el.querySelector(':scope > .widget-resize-handle')) return;
         // The music widget has no frame box: it is resized by dragging the
         // walkman's own silver bezel (the card posts that drag back), so it
-        // must not get the corner grip that draws a box around it.
-        if (el.classList.contains('music-widget-root')) return;
+        // must not get the corner grip that draws a box around it. Same for
+        // the CRT cabinet — its own bezel is the grip (tvResize).
+        if (el.classList.contains('music-widget-root')
+            || el.classList.contains('youtube-player')) return;
         const handle = document.createElement('div');
         handle.className = 'widget-resize-handle';
         handle.title = 'Drag to resize · double-click to reset';
@@ -690,8 +694,10 @@ document.addEventListener("DOMContentLoaded", () => {
         ensureExpandButton(el) {
             if (!el || el.querySelector('.widget-expand-toggle')) return;
             // The walkman deck has no compressible body: a "full / compact"
-            // chip on it would be a stray box that toggles nothing.
-            if (el.classList.contains('music-widget-root')) return;
+            // chip on it would be a stray box that toggles nothing. Same for
+            // the CRT cabinet — one object, no drawer.
+            if (el.classList.contains('music-widget-root')
+                || el.classList.contains('youtube-player')) return;
             const btn = document.createElement('button');
             btn.className = 'widget-expand-toggle';
             btn.type = 'button';
@@ -2246,9 +2252,10 @@ document.addEventListener("DOMContentLoaded", () => {
         // a provisional widget there is no real content underneath to keep.
         temp.querySelectorAll('[data-turn-envelope]').forEach(el => el.remove());
         
-        // Remove dynamically generated iframes inside youtube player widgets
-        const youtubeIframes = temp.querySelectorAll('[x-data*="youtubePlayerWidget"] iframe');
-        youtubeIframes.forEach(iframe => iframe.remove());
+        // (Removed 2026-11-06: the old strip of "dynamically generated"
+        // iframes inside youtubePlayerWidget. The embed iframe it targeted
+        // was template-generated from x-if="embedUrl"; the CRT card's iframe
+        // is STATIC widget content — like the walkman's — and must persist.)
         
         // Remove dynamically generated list items in checklists (keep fallback text and close button)
         const checklistItems = temp.querySelectorAll('[x-data*="checklistWidget"] ul li');
@@ -2324,6 +2331,14 @@ document.addEventListener("DOMContentLoaded", () => {
             // The card's height is now an Alpine :style binding; strip the
             // resolved value so a save while the drawer is open does not bake
             // the tall card into the canvas.
+            el.style.removeProperty('height');
+        });
+
+        // Same for the CRT cabinet: its height is the :style binding
+        // (tvHeight = width / 1.8182); baking the resolved pixels in would let
+        // a stale height survive a column-width change on rehydrate. The
+        // widget's init/adopt() re-derives it from the width.
+        temp.querySelectorAll('[x-data*="youtubePlayerWidget"]').forEach(el => {
             el.style.removeProperty('height');
         });
 
@@ -3681,36 +3696,22 @@ document.addEventListener("DOMContentLoaded", () => {
                     newWidget.id = widget.id;
                     newWidget.className = widget.className;
                     newWidget.setAttribute('x-data', `youtubePlayerWidget(${JSON.stringify(videoId)}, ${JSON.stringify(title)})`);
+                    // Object form via setAttribute, same as the music twin:
+                    // the derived cabinet height is an Alpine binding and
+                    // must survive the rebuild without wiping grid-column.
+                    newWidget.setAttribute(':style', "{ height: tvHeight + 'px' }");
+                    // Mirror of factory.render_youtube_player (2026-11-06 CRT
+                    // cutover): the card owns the player and draws every
+                    // state, so the rebuild is the aspect-locked box + the
+                    // hover chips only. candidates/searchQuery keep their
+                    // empty defaults — the widget re-searches via title.
                     newWidget.innerHTML = `
-                        <!-- Title Bar -->
-                        <div class="flex items-center justify-between bg-black/30 px-3 py-1.5 border-b border-white/10 relative z-20">
-                            <div class="flex items-center gap-2">
-                                <span class="text-base text-red-500">📺</span>
-                                <h3 class="font-bold text-white tracking-wide truncate max-w-[250px]" x-text="title"></h3>
-                                <span x-show="isLoading" class="text-xs text-slate-400 italic animate-pulse">Resolving stream...</span>
-                            </div>
-                            <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn text-white/50 hover:text-red-400 transition-colors">
-                                <span class="material-symbols-outlined text-[1.2rem]">close</span>
-                            </button>
-                        </div>
-                        <!-- Video Embed -->
-                        <div class="w-full aspect-video bg-black relative flex items-center justify-center">
-                            <!-- Loading state overlay -->
-                            <div x-show="isLoading" class="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center z-10">
-                                <span class="material-symbols-outlined text-4xl text-purple-400 animate-spin mb-2">sync</span>
-                                <span class="text-sm text-slate-300">Searching YouTube...</span>
-                            </div>
-                            <!-- Error state overlay -->
-                            <div x-show="error" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center z-10 gap-2">
-                                <span class="material-symbols-outlined text-4xl text-red-500 mb-2">error</span>
-                                <span class="text-sm text-slate-200" x-text="error"></span>
-                                <a x-show="watchUrl" :href="watchUrl" target="_blank" rel="noopener" class="text-sm text-purple-300 underline hover:text-purple-200">Watch on YouTube ↗</a>
-                            </div>
-                            <!-- Iframe player -->
-                            <template x-if="embedUrl">
-                                <iframe :src="embedUrl" class="w-full h-full border-none" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
-                            </template>
-                        </div>
+                        <iframe x-ref="crt" :src="'/static/crt/player.html?v=1'" class="w-full h-full border-none block" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen title="YouTube on a CRT"></iframe>
+
+                        <div class="absolute top-2 left-2 z-20 max-w-[60%] truncate bg-black/60 text-emerald-300 font-mono text-[11px] px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" x-text="title"></div>
+                        <button title="Close Widget" @click="window.WidgetManager.dismiss($el.closest('.widget-container'))" class="close-widget-btn absolute top-2 right-2 z-20 text-white/60 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                            <span class="material-symbols-outlined text-[1.1rem]">close</span>
+                        </button>
                     `;
                     widget.parentNode.replaceChild(newWidget, widget);
                     widget = newWidget;
@@ -3870,15 +3871,10 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
 
-        // Clean up any dynamic sibling elements generated by templates to avoid duplication
-        const youtubeIframes = container.querySelectorAll('[x-data*="youtubePlayerWidget"] iframe');
-        youtubeIframes.forEach(iframe => {
-            const widget = iframe.closest('.widget-container');
-            if (widget && (widget.__x || widget._x_dataStack)) {
-                return;
-            }
-            iframe.remove();
-        });
+        // (Removed 2026-11-06: the old "dynamic sibling iframe" cleanup for
+        // youtubePlayerWidget — it existed to drop template-generated embed
+        // iframes left on un-hydrated nodes. The CRT card iframe is static
+        // widget content; removing it would blank the TV on reload.)
         
         const checklistItems = container.querySelectorAll('[x-data*="checklistWidget"] ul li');
         checklistItems.forEach(li => {
@@ -3939,7 +3935,12 @@ document.addEventListener("DOMContentLoaded", () => {
             // would leave the deck at the CSS auto height (min 180 / max 540),
             // a 4:1 box around a 2:1 device. It is never a legacy tiler
             // coordinate — canvas saves strip it before persisting.
-            if (!item.classList.contains('music-widget-root')) {
+            // The music widget and the CRT cabinet drive their height from an
+            // Alpine :style binding (tvHeight / walkmanHeight); stripping the
+            // inline value here would drop them to the CSS auto height until
+            // the next adopt().
+            if (!item.classList.contains('music-widget-root')
+                && !item.classList.contains('youtube-player')) {
                 item.style.removeProperty('height');
             }
             item.style.removeProperty('z-index');
