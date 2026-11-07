@@ -59,7 +59,8 @@ export async function mountCrt(width, { videoId = "", title = "Test Channel", ca
 }
 
 // Deliver a message from the card. `source` defaults to the card's window; pass
-// a different object to simulate a foreign frame.
-export function fromCard(ctx, data, source = ctx.cardWindow) {
+// a different object (including null/undefined) to simulate a foreign frame.
+export function fromCard(ctx, data, ...rest) {
+  const source = rest.length > 0 ? rest[0] : ctx.cardWindow;
   ctx.window.emit("message", { data, source });
 }

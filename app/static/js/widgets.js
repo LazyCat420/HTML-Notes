@@ -2489,15 +2489,20 @@ document.addEventListener('alpine:init', () => {
             const d = e.data;
             if (!d || d.type !== 'crt') return;
             const f = this.$refs.crt;
-            if (f && f.contentWindow && e.source && e.source !== f.contentWindow) return;
+            if (!f || !f.contentWindow || e.source !== f.contentWindow) return;
             switch (d.action) {
                 case 'ready':
                     // The card just (re)loaded; anything posted before its
-                    // listener existed was dropped — re-send the current tune.
+                    // listener existed was dropped — re-send the current tune
+                    // (only once resolveVideo() has actually tuned an ID via
+                    // playById, never a raw "query:..." string mid-search).
+                    if (this.crtVolume !== 100) {
+                        this.sendCrt({ action: 'state', volume: this.crtVolume });
+                    }
                     if (this.error) {
                         this.sendCrt({ action: 'error', message: this.error,
                                        watchUrl: this.watchUrl || '' });
-                    } else if (this.videoId) {
+                    } else if (this.videoId && this.attemptedIds.length > 0) {
                         this.sendCrt({ action: 'tune', video: this.videoId, title: this.title,
                                        channel: Math.max(0, this.attemptedIds.indexOf(this.videoId)) });
                     }
@@ -2514,8 +2519,9 @@ document.addEventListener('alpine:init', () => {
         },
 
         // The channel knob: advance like a TV would. Next unattempted
-        // candidate → the one-shot re-search (same rule as handleEmbedError)
-        // → a fresh search as the last resort, so the knob never dead-ends.
+        // candidate → one-shot re-search (same rule as handleEmbedError) →
+        // wrap around the channels already discovered so the dial never
+        // dead-ends or double-fetches.
         async channelUp() {
             let next = this.candidates.find(id => !this.attemptedIds.includes(id));
             if (!next && !this.fetchedMoreCandidates && (this.searchQuery || this.title)) {
@@ -2525,7 +2531,9 @@ document.addEventListener('alpine:init', () => {
                     const res = await fetch(`/api/youtube/candidates?query=${encodeURIComponent(q)}&limit=8`);
                     if (res.ok) {
                         const data = await res.json();
-                        this.candidates.push(...((data && data.results) || []).map(r => r.id).filter(Boolean));
+                        for (const id of ((data && data.results) || []).map(r => r.id).filter(Boolean)) {
+                            if (!this.candidates.includes(id)) this.candidates.push(id);
+                        }
                         next = this.candidates.find(id => !this.attemptedIds.includes(id));
                     }
                 } catch (e) {}
@@ -2534,17 +2542,11 @@ document.addEventListener('alpine:init', () => {
                 this.playById(next);
                 return;
             }
-            const q = this.searchQuery || this.title;
-            if (!q) return;
-            try {
-                const res = await fetch(`/api/youtube/candidates?query=${encodeURIComponent(q)}&limit=8`);
-                if (!res.ok) return;
-                const data = await res.json();
-                const ids = ((data && data.results) || []).map(r => r.id).filter(Boolean);
-                this.candidates.push(...ids);
-                const fresh = ids.find(id => !this.attemptedIds.includes(id));
-                if (fresh) this.playById(fresh);
-            } catch (e) {}
+            if (this.attemptedIds.length > 0) {
+                const idx = this.attemptedIds.indexOf(this.videoId);
+                const wrap = this.attemptedIds[(idx + 1) % this.attemptedIds.length];
+                if (wrap) this.playById(wrap);
+            }
         },
 
         async resolveVideo() {
@@ -2638,6 +2640,7 @@ document.addEventListener('alpine:init', () => {
                     startW: rect.width,
                     metrics: resizer.metrics(grid),
                     cols: null,
+                    moved: false,
                     // Which half of the cabinet the drag began on: pulling the
                     // top/left bezel outward must GROW the widget, so the raw
                     // delta is flipped for that side.
@@ -2651,10 +2654,11 @@ document.addEventListener('alpine:init', () => {
             const drag = this._bezelDrag;
             if (!drag) return;
             const raw = Math.abs(d.dx || 0) + Math.abs(d.dy || 0);
+            if (raw > 3 || d.moved === true) drag.moved = true;
             // A click that never moved is not a resize: on a compact/mobile
             // layout the widget renders one column wide, and sizing it from
             // that would shrink it for good.
-            if (raw <= 3) {
+            if (!drag.moved && raw <= 3) {
                 if (d.phase === 'end') {
                     el.classList.remove('is-resizing-bezel');
                     this._bezelDrag = null;
@@ -2676,7 +2680,7 @@ document.addEventListener('alpine:init', () => {
             drag.cols = cols;
 
             if (d.phase === 'end') {
-                if (drag.cols !== null && d.moved !== false) {
+                if (drag.cols !== null && drag.moved && d.moved !== false) {
                     resizer.saveSize(el.id, { cols: drag.cols });
                 }
                 el.classList.remove('is-resizing-bezel');
@@ -2706,7 +2710,7 @@ document.addEventListener('alpine:init', () => {
             if (next) {
                 this.playById(next);
             } else {
-                this.watchUrl = `https://www.youtube.com/watch?v=${this.attemptedIds[0] || this.videoId}`;
+                this.watchUrl = `https://www.youtube.com/watch?v=${this.videoId || this.attemptedIds[0]}`;
                 // The card answers with static + "NO SIGNAL · PLEASE STAND BY".
                 this.setError('This video blocks embedding.');
             }

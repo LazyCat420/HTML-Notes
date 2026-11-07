@@ -188,12 +188,14 @@ body::after {
 
 /* ─── BOXLESS WIDGETS ───────────────────────────────────────────
    A widget whose content is itself a self-contained object (the 3D walkman
-   deck) opts out of the holographic frame: no fill, no border, no radius, no
-   shadow, no hairline. The object floats on the canvas and carries its own
-   controls as small chips. Every property here needs !important to beat the
-   frame rule below, which is itself !important. */
+   deck or the 3D CRT television) opts out of the holographic frame: no fill,
+   no border, no radius, no shadow, no hairline. The object floats on the
+   canvas and carries its own controls as small chips. Every property here
+   needs !important to beat the frame rule below, which is itself !important. */
 .widget-container.music-widget-root,
-.widget-container.music-widget-root:hover {
+.widget-container.music-widget-root:hover,
+.widget-container.youtube-player,
+.widget-container.youtube-player:hover {
     background: none !important;
     background-image: none !important;
     background-color: transparent !important;
@@ -204,12 +206,14 @@ body::after {
     -webkit-backdrop-filter: none !important;
     overflow: visible !important;
 }
-.widget-container.music-widget-root::after { content: none !important; }
+.widget-container.music-widget-root::after,
+.widget-container.youtube-player::after { content: none !important; }
 /* The frame's iframe chrome ("Iframes sit inside a glowing frame", below) would
    draw an opaque #02060c rectangle with a cyan border and glow around the deck —
    the box the user sees. The card is same-origin and paints its own device, so
    the iframe must be a window, not a panel. */
-.widget-container.music-widget-root iframe {
+.widget-container.music-widget-root iframe,
+.widget-container.youtube-player iframe {
     background: transparent !important;
     border: 0 !important;
     border-radius: 0 !important;

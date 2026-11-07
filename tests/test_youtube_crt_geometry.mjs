@@ -51,11 +51,23 @@ test("the card's ready message re-sends the current tune", async () => {
   assert.equal(ctx.posted[0].video, "abc123DEF45");
 });
 
-test("messages from a foreign frame are ignored", async () => {
+test("messages from a foreign frame or missing source are ignored", async () => {
   const ctx = await mountCrt(732, { videoId: "abc123DEF45", title: "T", candidates: ["bbbbbbbbbbb"] });
   ctx.posted.length = 0;
   fromCard(ctx, { type: "crt", action: "channel-up" }, { other: "frame" });
-  assert.equal(ctx.posted.filter(m => m.action === "tune").length, 0, "a foreign frame must not steer the TV");
+  fromCard(ctx, { type: "crt", action: "channel-up" }, null);
+  fromCard(ctx, { type: "crt", action: "channel-up" }, undefined);
+  assert.equal(ctx.posted.filter(m => m.action === "tune").length, 0, "a foreign or missing source must not steer the TV");
+});
+
+test("ready mid-search does not tune a raw query:... string, and restores custom volume", async () => {
+  const ctx = await mountCrt(732);
+  ctx.w.videoId = "query:lofi beats";
+  ctx.w.crtVolume = 55;
+  ctx.posted.length = 0;
+  fromCard(ctx, { type: "crt", action: "ready" });
+  assert.equal(ctx.posted.filter(m => m.action === "tune").length, 0, "must not tune an un-resolved query string");
+  assert.deepEqual(ctx.posted, [{ type: "crt", action: "state", volume: 55 }]);
 });
 
 test("an embed error falls back to the next candidate", async () => {
@@ -69,32 +81,43 @@ test("an embed error falls back to the next candidate", async () => {
   assert.equal(tune.channel, 1);
 });
 
-test("a dead channel puts NO SIGNAL on the tube with the watch url", async () => {
-  const ctx = await mountCrt(732, { videoId: "abc123DEF45", title: "T" });
+test("a dead channel puts NO SIGNAL on the tube with the failed channel's watch url", async () => {
+  const ctx = await mountCrt(732, { videoId: "abc123DEF45", title: "T", candidates: ["bbbbbbbbbbb"] });
+  fromCard(ctx, { type: "crt", action: "channel-up" });
+  await new Promise(r => setTimeout(r, 0));
   ctx.posted.length = 0;
   fromCard(ctx, { type: "crt", action: "embed-error", code: 150 });
   await new Promise(r => setTimeout(r, 0));
   const err = ctx.posted.find(m => m.action === "error");
   assert.ok(err, "the card must be told to draw the no-signal screen");
-  assert.equal(err.watchUrl, "https://www.youtube.com/watch?v=abc123DEF45");
+  assert.equal(err.watchUrl, "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+    "watchUrl must point to the channel that failed, not always channel 0");
   assert.equal(ctx.w.error, "This video blocks embedding.");
 });
 
-test("the channel knob advances to an unattempted candidate", async () => {
+test("the channel knob advances to an unattempted candidate and wraps around without dead-ending", async () => {
   const ctx = await mountCrt(732, { videoId: "abc123DEF45", title: "T", candidates: ["bbbbbbbbbbb"] });
   ctx.posted.length = 0;
   fromCard(ctx, { type: "crt", action: "channel-up" });
   await new Promise(r => setTimeout(r, 0));
-  const tune = ctx.posted.find(m => m.action === "tune");
-  assert.equal(tune.video, "bbbbbbbbbbb");
+  assert.equal(ctx.posted.find(m => m.action === "tune").video, "bbbbbbbbbbb");
+  // All candidates tried: next click wraps back to the first channel instead of dead-ending
+  ctx.posted.length = 0;
+  const fetchesBefore = ctx.fetchCalls.length;
+  fromCard(ctx, { type: "crt", action: "channel-up" });
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(ctx.posted.find(m => m.action === "tune").video, "abc123DEF45");
+  assert.equal(ctx.fetchCalls.length, fetchesBefore + 1, "at most one re-search fetch");
 });
 
 test("the knobs' settings are remembered, not acted on", async () => {
   const ctx = await mountCrt(732);
+  ctx.posted.length = 0;
   fromCard(ctx, { type: "crt", action: "volume", volume: 42 });
   fromCard(ctx, { type: "crt", action: "power", playing: false });
   assert.equal(ctx.w.crtVolume, 42);
   assert.equal(ctx.w.crtPowerOn, false);
+  assert.equal(ctx.posted.length, 0, "the card handles volume/power locally; parent posts nothing back");
 });
 
 test("dragging the bezel sets a column span and saves only cols", async () => {
@@ -112,6 +135,16 @@ test("a stationary click on the bezel is not a resize", async () => {
   fromCard(ctx, { type: "crt", action: "resize", phase: "end", dx: 1, dy: 1, x: 301, y: 201 });
   assert.equal(ctx.resizer.saved.length, 0);
   assert.equal(ctx.el.style.gridColumn, undefined);
+});
+
+test("dragging out and returning within 3 px of start still reconciles the final span", async () => {
+  const ctx = await mountCrt(732);
+  fromCard(ctx, { type: "crt", action: "resize", phase: "start", x: 700, y: 200 });
+  fromCard(ctx, { type: "crt", action: "resize", phase: "move", dx: 340, dy: 0, x: 1040, y: 200, moved: true });
+  assert.equal(ctx.el.style.gridColumn, "span 3");
+  fromCard(ctx, { type: "crt", action: "resize", phase: "end", dx: 1, dy: 0, x: 701, y: 200, moved: true });
+  assert.equal(ctx.el.style.gridColumn, "span 2", "returning to start restores the 2-column span");
+  assert.deepEqual(ctx.resizer.saved, [["yt-1", { cols: 2 }]]);
 });
 
 test("a vertical bezel drag grows the cabinet along its aspect", async () => {

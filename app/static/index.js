@@ -3661,20 +3661,29 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             }
             
-            // 3. Self-heal youtube player widgets that lost Alpine attributes or are empty
+            // 3. Self-heal youtube player widgets that lost Alpine attributes,
+            //    predate the CRT card cutover, or lost their CRT iframe.
             if (id.includes('youtube') || id.includes('video')) {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('youtubePlayerWidget');
                 const isOldFormat = hasXData && widget.getAttribute('x-data').includes("youtubePlayerWidget('");
+                const hasCrtIframe = !!widget.querySelector('iframe[x-ref="crt"]');
                 
-                if (!hasXData || isOldFormat || widget.children.length === 0) {
+                if (!hasXData || isOldFormat || !hasCrtIframe || widget.children.length === 0) {
                     let videoId = '';
                     let title = 'YouTube Player';
                     
                     const xdata = widget.getAttribute('x-data') || '';
-                    const xdataMatch = xdata.match(/youtubePlayerWidget\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"](.*)['"]\s*\)/);
+                    const xdataMatch = xdata.match(/youtubePlayerWidget\s*\(\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')(?:\s*,\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'))?/);
                     if (xdataMatch) {
-                        videoId = xdataMatch[1];
-                        title = xdataMatch[2];
+                        const unquote = (raw) => {
+                            if (!raw) return '';
+                            if (raw.startsWith('"')) {
+                                try { return JSON.parse(raw); } catch (e) {}
+                            }
+                            return raw.slice(1, -1).replace(/\\'/g, "'").replace(/\\"/g, '"');
+                        };
+                        videoId = unquote(xdataMatch[1]) || '';
+                        title = unquote(xdataMatch[2]) || title;
                     }
                     
                     if (!videoId) {
@@ -3694,7 +3703,12 @@ document.addEventListener("DOMContentLoaded", () => {
                     
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
-                    newWidget.className = widget.className;
+                    newWidget.className = 'widget-container youtube-player col-span-2 relative overflow-hidden text-white flex flex-col group';
+                    for (const attr of ['data-sig', 'data-widget-type', 'data-widget-title']) {
+                        if (widget.hasAttribute(attr)) {
+                            newWidget.setAttribute(attr, widget.getAttribute(attr));
+                        }
+                    }
                     newWidget.setAttribute('x-data', `youtubePlayerWidget(${JSON.stringify(videoId)}, ${JSON.stringify(title)})`);
                     // Object form via setAttribute, same as the music twin:
                     // the derived cabinet height is an Alpine binding and

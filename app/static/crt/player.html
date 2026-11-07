@@ -217,7 +217,9 @@ function setKnobZ(found, rad){
 }
 /* channel dial: 400 ms sweep to channel·30° with rAF, queueing a render each
    frame — model-viewer only redraws on demand with the orbit controls off. */
+let knobRaf = 0;
 function rotateChKnob(targetRad){
+  cancelAnimationFrame(knobRaf);
   const found = getThreeNode('TV_CH_KNOB');
   if (!found) return;
   const from = found.node.rotation.z, t0 = performance.now(), ms = 400;
@@ -225,7 +227,7 @@ function rotateChKnob(targetRad){
     const p = Math.min(1, (performance.now() - t0) / ms);
     const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
     setKnobZ(found, from + (targetRad - from) * e);
-    if (p < 1) requestAnimationFrame(step);
+    if (p < 1) knobRaf = requestAnimationFrame(step);
   })();
 }
 
@@ -320,9 +322,12 @@ function setYtVisible(on){
    browser autoplay rule blocks audible autoplay, so the clip starts muted and
    onReady unmutes it once the player proves it is live. */
 function swapIframe(video){
+  if (player && typeof player.destroy === 'function'){
+    try { player.destroy(); } catch (err) {}
+  }
+  player = null;
   const old = $('yt');
   if (old) old.remove();
-  player = null;
   const f = document.createElement('iframe');
   f.id = 'yt';
   f.setAttribute('frameborder', '0');
@@ -333,11 +338,12 @@ function swapIframe(video){
   screenEl.insertBefore(f, $('glass'));
   const seq = tuneSeq;
   loadYouTubeIframeApi().then(() => {
+    if (seq !== tuneSeq || !f.isConnected) return;
     try {
       player = new YT.Player(f, {
         events: {
           onReady: () => onPlayerReady(seq),
-          onError: e => emit({ action: 'embed-error', code: e.data })
+          onError: e => { if (seq !== tuneSeq) return; emit({ action: 'embed-error', code: e.data }); }
         }
       });
     } catch (err) { /* API unavailable offline: the 3.5 s deadline reveals */ }
@@ -377,6 +383,7 @@ function tune({ video, title, channel }){
   state.title = title || '';
   state.channel = Number(channel) || 0;
   clearTimeout(swapTimer); clearTimeout(revealTimer);
+  clearTimeout(osdTimer); $('osd').classList.remove('on');
   hideNosig();
   startNoise();
   setYtVisible(false);
@@ -392,11 +399,18 @@ function tune({ video, title, channel }){
 function noSignal(message, watchUrl){
   ++tuneSeq;                      // cancel any in-flight tune/reveal
   clearTimeout(swapTimer); clearTimeout(revealTimer);
+  clearTimeout(osdTimer); $('osd').classList.remove('on');
+  if (player && typeof player.destroy === 'function'){
+    try { player.destroy(); } catch (err) {}
+  }
+  player = null;
+  const old = $('yt');
+  if (old) old.remove();
   setYtVisible(false);
   startNoise();
   $('nosig').querySelector('.msg').textContent = message || '';
   const link = $('nosig-link');
-  if (watchUrl){
+  if (typeof watchUrl === 'string' && /^https?:\/\//i.test(watchUrl)){
     link.href = watchUrl;
     link.classList.add('on');
   } else {
@@ -468,7 +482,7 @@ if (window.self !== window.top){
   const px = e => (typeof e.screenX === 'number' ? e.screenX : e.clientX);
   const py = e => (typeof e.screenY === 'number' ? e.screenY : e.clientY);
   const delta = e => ({ dx: px(e) - bezelDrag.x, dy: py(e) - bezelDrag.y,
-                        x: bezelDrag.cx, y: bezelDrag.cy });
+                        x: bezelDrag.cx, y: bezelDrag.cy, moved: bezelDrag.moved });
   const endBezel = e => {
     if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
     emit({ action: 'resize', phase: 'end', ...delta(e) });
@@ -511,6 +525,7 @@ if (window.self !== window.top){
 addEventListener('message', e => {
   const d = e.data;
   if (!d || d.type !== 'crt') return;
+  if (e.source !== window.parent) return;
   if (d.action === 'tune') tune(d);
   else if (d.action === 'error') noSignal(d.message, d.watchUrl);
   else if (d.action === 'state'){

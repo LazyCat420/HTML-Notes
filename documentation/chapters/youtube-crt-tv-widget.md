@@ -99,14 +99,14 @@ nothing, so a fast second channel change cannot be overwritten by the first.
 | card → parent | `channel-up` | the channel knob was clicked |
 | card → parent | `volume` | `{volume}` — remembered, applied in the card |
 | card → parent | `power` | `{playing}` — remembered, applied in the card |
-| card → parent | `resize` | `{phase, dx, dy, x, y}` |
-| card → parent | `close` | — |
+| card → parent | `resize` | `{phase, dx, dy, x, y, moved}` |
 | parent → card | `tune` | `{video, title, channel}` |
 | parent → card | `error` | `{message, watchUrl}` — NO SIGNAL screen |
 | parent → card | `state` | `{volume}` |
 
-The parent ignores any message whose `source` is not its own card window, so a
-foreign frame on the page cannot steer the television.
+Both sides check `e.source` (`e.source === f.contentWindow` in the parent,
+`e.source === window.parent` in the card), so a foreign frame on the page
+cannot steer the television.
 
 ## Dead channels
 
@@ -114,8 +114,9 @@ A video that blocks embedding (error 101/150) is a dead channel: the tube stays
 full of snow and the OSD reads `NO SIGNAL / <reason> / PLEASE STAND BY`, with a
 `WATCH ON YOUTUBE ↗` link (the video's own page) when the widget knows it. The
 widget first walks its candidate list, then asks
-`/api/youtube/candidates` once for more, then gives up. The channel knob does
-the same walk, so it never dead-ends.
+`/api/youtube/candidates` once for more, then gives up. The channel knob walks
+candidates, fetches once if needed, and then wraps around the discovered
+channels so the dial never dead-ends.
 
 ## Files
 
@@ -129,16 +130,19 @@ the same walk, so it never dead-ends.
 | `apps/doc-client/tools/crt_tv/build_tv.py` | the Blender asset |
 | `scripts/sync-crt-card.sh` | card + assets → `app/static/crt/` |
 | `scripts/youtube_crt_check.py` | live check (aspect, tube fit, tune, static, knob, drag, reset) |
+| `scripts/youtube_crt_flow_check.py` | live SSE chat flow (video ask → CRT widget; second ask → static channel change) |
 | `tests/test_youtube_crt_geometry.mjs` | node tests against the real widget factory |
 | `tests/test_widgets.py` | template contract: the parent holds no YouTube embed |
 
 ## Verification
 
-- `node --test tests/test_youtube_crt_geometry.mjs` — 16 tests (aspect,
-  derived height, tune/channel numbering, foreign-frame guard, ready re-send,
-  candidate fallback, no-signal watch link, knob walk, bezel drag columns-only,
-  stationary click, vertical drag along the aspect, reset keeps the height).
+- `node --test tests/test_youtube_crt_geometry.mjs` — 18 tests (aspect,
+  derived height, tune/channel numbering, foreign-frame guard, ready re-send
+  and query race guard, candidate fallback, no-signal watch link, knob walk and
+  wrap-around, bezel drag columns-only, stationary click, return-to-origin
+  drag reconciliation, vertical drag along the aspect, reset keeps the height).
   Mutation-proven: each test fails when its rule is broken.
-- `scripts/youtube_crt_check.py` — live, against the deployed app.
+- `scripts/youtube_crt_check.py` and `scripts/youtube_crt_flow_check.py` — live,
+  against the deployed app.
 - The GLB was judged in model-viewer front / 3/4 / profile, not in Blender
   renders.

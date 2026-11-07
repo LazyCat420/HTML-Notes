@@ -12,7 +12,9 @@ Run: .venv/bin/python scripts/youtube_crt_check.py
 """
 import atexit
 import os
+import re
 import sys
+import time
 from playwright.sync_api import sync_playwright
 
 HOST = os.environ.get("HN_HOST", "http://10.0.0.16:8035")
@@ -61,16 +63,26 @@ MEASURE = """
   const el = document.getElementById(id);
   const r = el.getBoundingClientRect();
   const cs = getComputedStyle(el);
+  const after = getComputedStyle(el, '::after');
+  const ifr = el.querySelector('iframe');
+  const ics = ifr ? getComputedStyle(ifr) : null;
   const saved = (JSON.parse(localStorage.getItem('widget_sizes') || '{}'))[id] || null;
   return {
     w: r.width, h: r.height, ratio: r.width / r.height,
     gridColumn: el.style.gridColumn || '',
+    inlineHeight: el.style.height || '',
     radius: cs.borderTopLeftRadius,
+    borderWidth: cs.borderTopWidth,
+    bgImage: cs.backgroundImage,
+    boxShadow: cs.boxShadow,
+    afterContent: after.content,
+    iframeBorder: ics ? ics.borderTopWidth : '',
+    iframeBg: ics ? ics.backgroundColor : '',
     handle: !!el.querySelector(':scope > .widget-resize-handle'),
     bezelClass: el.classList.contains('is-resizing-bezel'),
     saved,
     iframes: el.querySelectorAll('iframe').length,
-    src: (el.querySelector('iframe') || {}).src || '',
+    src: (ifr || {}).src || '',
   };
 }
 """
@@ -92,7 +104,7 @@ CARD = """
     screen: sr ? {x: sr.x, y: sr.y, w: sr.width, h: sr.height} : null,
     screenRatio: sr ? sr.width / sr.height : 0,
     ytSrc: yt ? (yt.src || '') : '',
-    ytVisible: yt ? (getComputedStyle(yt).opacity !== '0' && getComputedStyle(yt).display !== 'none') : false,
+    ytVisible: yt ? (getComputedStyle(yt).visibility !== 'hidden' && getComputedStyle(yt).opacity !== '0' && getComputedStyle(yt).display !== 'none') : false,
     staticOn: stc ? (stc.opacity !== '0' && stc.display !== 'none') : false,
     osdText: osd ? osd.textContent : '',
     osdOn: osd ? osd.classList.contains('on') : false,
@@ -155,7 +167,14 @@ with sync_playwright() as p:
     check("the widget is the cabinet's 1.8182:1", abs(m["ratio"] - CABINET_ASPECT) < 0.02,
           f"{m['w']:.0f}x{m['h']:.0f} ratio {m['ratio']:.4f}")
     check("no corner grip on the cabinet", not m["handle"])
-    check("no rounded frame drawn around it", m["radius"] in ("0px", ""), m["radius"])
+    check("no holographic frame or border drawn around it",
+          m["radius"] in ("0px", "") and m["borderWidth"] in ("0px", "")
+          and m["bgImage"] == "none" and m["boxShadow"] == "none"
+          and m["afterContent"] in ("none", ""),
+          f"radius={m['radius']} border={m['borderWidth']} bg={m['bgImage'][:24]} after={m['afterContent']}")
+    check("the card iframe has no border or panel background",
+          m["iframeBorder"] in ("0px", "") and m["iframeBg"] in ("rgba(0, 0, 0, 0)", "transparent"),
+          f"border={m['iframeBorder']} bg={m['iframeBg']}")
     check("one iframe: the card owns the player", m["iframes"] == 1, str(m["iframes"]))
     check("the iframe is the CRT card", "crt/player.html" in m["src"], m["src"])
 
@@ -177,7 +196,7 @@ with sync_playwright() as p:
     # The OSD is a 3 s flash on reveal, so it must be caught, not sampled late.
     try:
         fr.wait_for_function("() => { const o = document.getElementById('osd');"
-                             " return o.classList.contains('on') && /CH 00/.test(o.textContent); }",
+                             " return o.classList.contains('on') && /CH \\d\\d/.test(o.textContent); }",
                              timeout=25000)
         check("the OSD names the channel", True)
     except Exception:
@@ -198,17 +217,28 @@ with sync_playwright() as p:
                          arg=VIDEO_B, timeout=25000)
     c = fr.evaluate(CARD)
     check("the new channel is playing", VIDEO_B in c["ytSrc"], c["ytSrc"][:80])
-    try:
-        fr.wait_for_function("() => { const o = document.getElementById('osd');"
-                             " return o.classList.contains('on') && /CH 01/.test(o.textContent); }",
-                             timeout=25000)
-        check("the OSD moved to the next channel", True)
-    except Exception:
+    # On a live page a blocked embed walks the candidate list, so the tube can
+    # land past the channel that was asked for, and each new tune restarts the
+    # 3 s OSD. Poll until the OSD, the dial and the widget's own tune counter
+    # agree — that is the invariant, not a fixed channel number.
+    import re
+    agreed = False
+    last = ""
+    deadline = time.time() + 60
+    while time.time() < deadline:
         c = fr.evaluate(CARD)
-        check("the OSD moved to the next channel", False, f"{c['osdText']} on={c['osdOn']}")
-    ang = fr.evaluate(KNOB, "TV_CH_KNOB")
-    check("the channel dial turned 30 degrees", ang is not None and abs(ang - 30 * 3.14159265 / 180) < 0.05,
-          f"{ang}")
+        tuned = pg.evaluate("() => window.__crt.attemptedIds.length - 1")
+        m = re.search(r"CH (\d+)", c["osdText"] or "")
+        if c["osdOn"] and m and int(m.group(1)) == tuned:
+            ang = fr.evaluate(KNOB, "TV_CH_KNOB")
+            if ang is not None and abs(ang - tuned * 3.14159265 / 6) < 0.06:
+                agreed = True
+                break
+            last = f"dial {ang} for CH {tuned}"
+        else:
+            last = f"OSD {c['osdText']!r} on={c['osdOn']} vs tuned {tuned}"
+        pg.wait_for_timeout(200)
+    check("the OSD, the dial and the tune counter agree", agreed, last)
 
     # ── a dead channel: NO SIGNAL + the watch link ──────────────────────────
     pg.evaluate("() => { window.__crt.watchUrl = 'https://www.youtube.com/watch?v=x';"
@@ -246,8 +276,11 @@ with sync_playwright() as p:
     fr.dblclick("#mv", position={"x": box["w"] * 0.05, "y": box["h"] * 0.95})
     pg.wait_for_timeout(500)
     m = pg.evaluate(MEASURE, WIDGET_ID)
-    check("double-clicking the cabinet drops the saved size", m["gridColumn"] == "", m["gridColumn"])
-    check("…and the height is still the derived one", m["saved"] is None, str(m["saved"]))
+    check("double-clicking the cabinet drops the saved size",
+          m["gridColumn"] == "" and m["saved"] is None, f"grid={m['gridColumn']} saved={m['saved']}")
+    check("…and the height is still the derived one",
+          m["inlineHeight"].endswith("px") and abs(m["h"] - round(m["w"] / CABINET_ASPECT)) <= 2,
+          f"inline={m['inlineHeight']} {m['w']:.0f}x{m['h']:.0f}")
     check("…still 1.8182:1", abs(m["ratio"] - CABINET_ASPECT) < 0.02, f"{m['ratio']:.4f}")
 
     b.close()
