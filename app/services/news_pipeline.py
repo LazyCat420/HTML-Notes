@@ -180,7 +180,7 @@ def parse_rfc_date(date_str: str) -> Optional[datetime]:
         pass
     try:
         # Try ISO 8601
-        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(date_str.replace(" UTC", "+00:00").replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
@@ -312,7 +312,7 @@ async def collect_candidates(req: NewsRequest) -> List[CandidateArticle]:
                         title=title,
                         url=url,
                         publisher=pub_name,
-                        snippet=str(r.get("snippet", "") or r.get("og_desc", "") or "").strip(),
+                        snippet=str(r.get("snippet", "") or r.get("og_desc", "") or r.get("summary", "") or "").strip(),
                         published_at=pub_date,
                         image=str(r.get("image", "") or "").strip(),
                         source_provider="lazy-agent",
@@ -345,7 +345,7 @@ async def collect_candidates(req: NewsRequest) -> List[CandidateArticle]:
                             title=title,
                             url=url,
                             publisher=pub_name,
-                            snippet=str(f.get("og_desc", "") or f.get("snippet", "") or "").strip(),
+                            snippet=str(f.get("snippet", "") or f.get("og_desc", "") or f.get("summary", "") or "").strip(),
                             published_at=pub_date,
                             image=str(f.get("image", "") or "").strip(),
                             source_provider="finnews",
@@ -387,7 +387,7 @@ async def collect_candidates(req: NewsRequest) -> List[CandidateArticle]:
                             title=title,
                             url=url,
                             publisher=pub_name,
-                            snippet=str(r.get("snippet", "")).strip(),
+                            snippet=str(r.get("snippet", "") or r.get("og_desc", "") or r.get("summary", "") or "").strip(),
                             published_at=pub_date,
                             image=str(r.get("image", "") or "").strip(),
                             source_provider="lazy-agent",
@@ -498,14 +498,101 @@ def validate_and_dedupe(
 
 # ── Step 4: Article Evidence Verification via scraper-service ────────────────
 
+def _fallback_verify_candidate(
+    cand: CandidateArticle,
+    req: NewsRequest,
+    fallback_text: Optional[str] = None
+) -> VerifiedArticle:
+    """Build a VerifiedArticle from headline/snippet when the body fetch fails.
+
+    Validated candidates keep their provider snippet instead of being dropped when
+    the article-body fetch times out, errors, or returns a short stub. Topic and
+    source-integrity rejections stay hard.
+    """
+    ev_id = f"art_{hashlib.md5(cand.url.encode()).hexdigest()[:10]}"
+    domain = urllib.parse.urlparse(cand.url).netloc.lower()
+    is_tier1 = any(t1 in domain for t1 in _TIER1_WIRE_DOMAINS)
+
+    clean_topic = (req.topic or "").strip().lower()
+    topic_tokens = set(re.findall(r"[a-z0-9]+", clean_topic)) - _STOPWORDS if clean_topic else set()
+    for alias in _ENTITY_ALIASES.get(clean_topic, set()):
+        topic_tokens.update(set(re.findall(r"[a-z0-9]+", alias)) - _STOPWORDS)
+
+    if req.mode in ("topic", "finance") and topic_tokens:
+        cand_tokens = set(re.findall(r"[a-z0-9]+", f"{cand.title} {cand.snippet}".lower()))
+        if not topic_tokens.intersection(cand_tokens):
+            return VerifiedArticle(
+                id=ev_id,
+                title=cand.title,
+                url=cand.url,
+                publisher=cand.publisher,
+                published_at=cand.published_at,
+                snippet=cand.snippet,
+                body_excerpt=None,
+                source_tier="primary_outlet" if is_tier1 else "aggregator",
+                verified=False,
+                relevance_score=0.0,
+                image=cand.image,
+                category=cand.category,
+                verification_reason="topic_mismatch"
+            )
+
+    excerpt = (fallback_text or cand.snippet or cand.title or "").strip()[:600]
+    if not excerpt:
+        return VerifiedArticle(
+            id=ev_id,
+            title=cand.title,
+            url=cand.url,
+            publisher=cand.publisher,
+            published_at=cand.published_at,
+            snippet=cand.snippet,
+            body_excerpt=None,
+            source_tier="primary_outlet" if is_tier1 else "aggregator",
+            verified=False,
+            relevance_score=0.0,
+            image=cand.image,
+            category=cand.category,
+            verification_reason="unverified"
+        )
+
+    if is_tier1 and (cand.consensus or 0) >= 2:
+        verif_reason = "tier1_wire_consensus"
+        relevance_score = 0.9
+    elif is_tier1:
+        verif_reason = "tier1_primary_outlet"
+        relevance_score = 0.85
+    else:
+        verif_reason = "snippet_fallback"
+        relevance_score = 0.6
+
+    return VerifiedArticle(
+        id=ev_id,
+        title=cand.title,
+        url=cand.url,
+        publisher=cand.publisher,
+        published_at=cand.published_at,
+        snippet=cand.snippet,
+        body_excerpt=excerpt,
+        source_tier="primary_outlet" if is_tier1 else ("wire_consensus" if verif_reason == "tier1_wire_consensus" else "aggregator"),
+        verified=True,
+        relevance_score=relevance_score,
+        image=cand.image,
+        category=cand.category,
+        verification_reason=verif_reason
+    )
+
+
 async def verify_top_candidates(
     candidates: List[CandidateArticle],
     req: NewsRequest,
     max_verify: int = 8,
-    timeout_s: float = 6.0
+    timeout_s: float = 2.5,
+    overall_timeout_s: Optional[float] = None,
 ) -> List[VerifiedArticle]:
     """Concurrently verify top candidate articles via scraper-service."""
     t0 = time.time()
+    budget_s = overall_timeout_s if overall_timeout_s is not None else max(timeout_s, 4.0)
+    per_fetch_s = min(timeout_s, budget_s)
     top_candidates = candidates[:max_verify]
     if not top_candidates:
         if req.trace:
@@ -531,7 +618,7 @@ async def verify_top_candidates(
 
         if scrape_fn:
             try:
-                res = await scrape_fn(cand.url)
+                res = await asyncio.wait_for(scrape_fn(cand.url), timeout=per_fetch_s)
                 if isinstance(res, dict):
                     success = bool(res.get("success", True))
                     scraped_content = str(res.get("content") or res.get("text") or "")
@@ -540,13 +627,16 @@ async def verify_top_candidates(
                     success = bool(res.strip())
                     scraped_content = res
             except Exception as e:
-                logger.debug(f"[NEWS VERIFY] patched scrape failed for {cand.url}: {e}")
+                logger.debug(f"[NEWS VERIFY] patched scrape failed/timed out for {cand.url}: {e}")
         else:
             try:
-                async with httpx.AsyncClient(timeout=timeout_s) as client:
-                    resp = await client.post(
-                        f"{config.SCRAPER_SERVICE_URL}/scrape",
-                        json={"url": cand.url, "engine": "auto"},
+                async with httpx.AsyncClient(timeout=per_fetch_s) as client:
+                    resp = await asyncio.wait_for(
+                        client.post(
+                            f"{config.SCRAPER_SERVICE_URL}/scrape",
+                            json={"url": cand.url, "engine": "auto"},
+                        ),
+                        timeout=per_fetch_s,
                     )
                     if resp.status_code == 200:
                         payload = resp.json()
@@ -554,68 +644,92 @@ async def verify_top_candidates(
                         scraped_content = payload.get("content") or ""
                         page_title = payload.get("title") or ""
             except Exception as e:
-                logger.debug(f"[NEWS VERIFY] scraper-service failed for {cand.url}: {e}")
+                logger.debug(f"[NEWS VERIFY] scraper-service failed/timed out for {cand.url}: {e}")
 
         # Verification checks
-        is_verified = False
-        verif_reason = "unverified"
-        body_excerpt = None
-
         clean_topic = (req.topic or "").strip().lower()
         topic_tokens = set(re.findall(r"[a-z0-9]+", clean_topic)) - _STOPWORDS if clean_topic else set()
         for alias in _ENTITY_ALIASES.get(clean_topic, set()):
             topic_tokens.update(set(re.findall(r"[a-z0-9]+", alias)) - _STOPWORDS)
 
-        if success and scraped_content:
-            first_lines = (page_title + " " + scraped_content[:400]).strip()
-            overlap = _token_overlap_score(cand.title, first_lines)
-            title_in_page = cand.title.lower() in scraped_content.lower()
+        if not success or not scraped_content:
+            # Body fetch timed out, errored, or returned nothing: keep the snippet.
+            return _fallback_verify_candidate(cand, req)
 
-            has_topic = True
-            if req.mode in ("topic", "finance") and topic_tokens:
-                content_tokens = set(re.findall(r"[a-z0-9]+", scraped_content[:4000].lower()))
-                has_topic = bool(topic_tokens.intersection(content_tokens))
+        first_lines = (page_title + " " + scraped_content[:400]).strip()
+        overlap = _token_overlap_score(cand.title, first_lines)
+        title_in_page = cand.title.lower() in scraped_content.lower()
 
-            # Must have content length >= 120, title overlap >= 0.35 (or title match), and topic match
-            if len(scraped_content.strip()) >= 120 and (overlap >= 0.35 or title_in_page) and has_topic:
-                is_verified = True
-                verif_reason = "scraper_content_verified"
-                body_excerpt = scraped_content[:600].strip()
-            elif overlap < 0.20 and not title_in_page:
-                verif_reason = "title_url_mismatch"
-                if req.trace and "title_url_mismatch" in req.trace.rejections:
-                    req.trace.rejections["title_url_mismatch"] += 1
-        elif is_tier1 and (cand.consensus or 0) >= 2:
-            # Wire consensus: Major Tier-1 publisher with cross-room consensus
-            is_verified = True
-            verif_reason = "tier1_wire_consensus"
-            body_excerpt = cand.snippet
-        elif is_tier1 and not scrape_fn:
-            # When scraper service is offline/unconfigured, Tier-1 primary outlet passes with snippet
-            is_verified = True
-            verif_reason = "tier1_primary_outlet"
-            body_excerpt = cand.snippet
+        has_topic = True
+        if req.mode in ("topic", "finance") and topic_tokens:
+            content_tokens = set(re.findall(r"[a-z0-9]+", scraped_content[:4000].lower()))
+            has_topic = bool(topic_tokens.intersection(content_tokens))
 
-        source_tier = "primary_outlet" if is_tier1 else ("wire_consensus" if verif_reason == "tier1_wire_consensus" else "aggregator")
+        def _reject(reason: str) -> VerifiedArticle:
+            return VerifiedArticle(
+                id=ev_id,
+                title=cand.title,
+                url=cand.url,
+                publisher=cand.publisher,
+                published_at=cand.published_at,
+                snippet=cand.snippet,
+                body_excerpt=None,
+                source_tier="primary_outlet" if is_tier1 else "aggregator",
+                verified=False,
+                relevance_score=0.0,
+                image=cand.image,
+                category=cand.category,
+                verification_reason=reason
+            )
 
-        return VerifiedArticle(
-            id=ev_id,
-            title=cand.title,
-            url=cand.url,
-            publisher=cand.publisher,
-            published_at=cand.published_at,
-            snippet=cand.snippet,
-            body_excerpt=body_excerpt,
-            source_tier=source_tier,
-            verified=is_verified,
-            relevance_score=1.0 if is_verified else 0.0,
-            image=cand.image,
-            category=cand.category,
-            verification_reason=verif_reason
-        )
+        # Hard source-integrity rejection: the scraped page is about something else.
+        if overlap < 0.20 and not title_in_page:
+            if req.trace and "title_url_mismatch" in req.trace.rejections:
+                req.trace.rejections["title_url_mismatch"] += 1
+            return _reject("title_url_mismatch")
 
-    fetch_tasks = [_verify_one(c) for c in top_candidates]
-    verified_results = await asyncio.gather(*fetch_tasks, return_exceptions=False)
+        # Hard topic rejection: scraped body does not cover the requested subject.
+        if req.mode in ("topic", "finance") and topic_tokens and not has_topic:
+            return _reject("topic_mismatch")
+
+        # Must have content length >= 120, title overlap >= 0.35 (or title match), and topic match
+        if len(scraped_content.strip()) >= 120 and (overlap >= 0.35 or title_in_page) and has_topic:
+            return VerifiedArticle(
+                id=ev_id,
+                title=cand.title,
+                url=cand.url,
+                publisher=cand.publisher,
+                published_at=cand.published_at,
+                snippet=cand.snippet,
+                body_excerpt=scraped_content[:600].strip(),
+                source_tier="primary_outlet" if is_tier1 else "aggregator",
+                verified=True,
+                relevance_score=1.0,
+                image=cand.image,
+                category=cand.category,
+                verification_reason="scraper_content_verified"
+            )
+
+        # Short stub that did not fail title/topic checks: fall back to the snippet.
+        return _fallback_verify_candidate(cand, req, fallback_text=cand.snippet or scraped_content.strip())
+
+    tasks = [asyncio.ensure_future(_verify_one(c)) for c in top_candidates]
+    done, pending = await asyncio.wait(tasks, timeout=budget_s)
+    for t in pending:
+        t.cancel()
+    if pending:
+        await asyncio.wait(pending)
+
+    verified_results: List[VerifiedArticle] = []
+    for idx, task in enumerate(tasks):
+        if task in done:
+            try:
+                verified_results.append(task.result())
+                continue
+            except Exception as e:
+                logger.debug(f"[NEWS VERIFY] verification task failed for {top_candidates[idx].url}: {e}")
+        # Budget expiry or unexpected exception: keep the item with its snippet.
+        verified_results.append(_fallback_verify_candidate(top_candidates[idx], req))
 
     elapsed_ms = round((time.time() - t0) * 1000, 1)
     if req.trace:
@@ -632,8 +746,13 @@ def filter_and_diversify(
     req: NewsRequest
 ) -> List[VerifiedArticle]:
     """Enforce diversity, publisher caps, and ensure unverified articles cannot outrank verified."""
-    # Split verified vs unverified
-    verified = [a for a in articles if a.verified]
+    # Split verified vs unverified, ranking full-body verified items ahead of
+    # snippet fallbacks while preserving candidate order within each tier.
+    verified = sorted(
+        [a for a in articles if a.verified],
+        key=lambda a: (a.verification_reason == "scraper_content_verified", a.relevance_score or 0.0),
+        reverse=True,
+    )
 
     # Rule: Unverified candidates cannot render ahead of verified candidates
     # Only verified articles are eligible for display
@@ -658,6 +777,16 @@ def filter_and_diversify(
         for art in verified:
             if art.publisher.lower() not in distinct_publishers and len(selected_verified) < req.limit:
                 selected_verified.append(art)
+
+    # Survival floor: never thin the card below 3 items when verified evidence exists.
+    floor = min(3, req.limit, len(verified))
+    if len(selected_verified) < floor:
+        for art in verified:
+            if len(selected_verified) >= floor:
+                break
+            if art in selected_verified:
+                continue
+            selected_verified.append(art)
 
     return selected_verified
 
@@ -855,7 +984,7 @@ async def build_news_response(
     valid = validate_and_dedupe(candidates, req)
 
     # Phase 4: Fetch & Verify Article Evidence (scraper-service)
-    verified = await verify_top_candidates(valid, req, max_verify=8, timeout_s=5.0)
+    verified = await verify_top_candidates(valid, req, max_verify=8, timeout_s=2.5, overall_timeout_s=4.0)
 
     # Phase 5 & 6: Rank Verified Articles (Restricted Fast LLM)
     ranked = await rank_verified_articles(verified, req)

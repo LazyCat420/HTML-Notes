@@ -399,3 +399,133 @@ async def test_end_to_end_benchmark_current_vs_new_route(patch_server):
 
     # Latency budget check: mocked unit benchmark must finish in under 500ms
     assert t_new_ms < 500.0, f"New pipeline exceeded latency budget: {t_new_ms}ms"
+
+
+@pytest.mark.asyncio
+async def test_slow_body_fetches_survive_with_snippets_under_budget(patch_server):
+    """TCK-1012: When most article-body fetches time out, fast items keep scraped
+    bodies and timed-out items survive with their provider snippets under budget."""
+    import asyncio
+
+    candidates_raw = [
+        {"title": "EU AI Act enforcement rules take effect for foundation models",
+         "url": "https://theverge.com/2026/10/ai-act-0",
+         "meta": "The Verge",
+         "snippet": "European regulators began enforcing transparency rules for AI models."},
+        {"title": "Senate panel advances bipartisan AI safety reporting framework",
+         "url": "https://arstechnica.com/tech-policy/2026/10/ai-safety-1",
+         "meta": "Ars Technica",
+         "snippet": "The Senate Commerce Committee approved mandatory AI incident disclosures."},
+        {"title": "NIST publishes updated evaluation suite for frontier AI systems",
+         "url": "https://techcrunch.com/2026/10/nist-ai-2",
+         "meta": "TechCrunch",
+         "snippet": "The AI Safety Institute released standardized red-teaming benchmarks."},
+        {"title": "California agency proposes compute thresholds for AI audits",
+         "url": "https://wired.com/story/california-ai-audits-3",
+         "meta": "Wired",
+         "snippet": "State regulators outlined third-party audit triggers for large training runs."},
+    ]
+
+    async def fake_news(topic, limit=12, **kw):
+        return [dict(c) for c in candidates_raw]
+
+    async def slow_scrape(url):
+        if url.endswith("ai-act-0"):
+            return {
+                "success": True,
+                "title": "EU AI Act enforcement rules take effect for foundation models",
+                "content": (
+                    "EU AI Act enforcement rules take effect for foundation models. "
+                    "Brussels regulators formally activated compliance obligations for "
+                    "general-purpose AI providers across the European Union today."
+                ),
+            }
+        # Simulate slow/hanging article-body fetches for the remaining 3 URLs
+        await asyncio.sleep(0.5)
+        return {"success": True, "title": "Late page", "content": "Too late " * 30}
+
+    async def fake_llm(instruction, max_tokens=256):
+        return {"overview": "Regulators in the EU and US advanced AI rules.", "ranked_indices": [0, 1, 2, 3]}
+
+    patch_server("news_search", fake_news)
+    patch_server("_scrape", slow_scrape)
+    patch_server("fast_llm_json", fake_llm)
+
+    req = normalize_news_request("news about AI")
+    cands = await collect_candidates(req)
+    valid = validate_and_dedupe(cands, req)
+
+    t0 = time.time()
+    verified = await verify_top_candidates(valid, req, max_verify=8, timeout_s=0.05, overall_timeout_s=0.15)
+    elapsed_s = time.time() - t0
+
+    # 1. Per-fetch timeout under overall budget prevents waiting 0.5s for slow scrapes
+    assert elapsed_s < 0.35, f"Verification did not enforce timeout budget: took {elapsed_s:.3f}s"
+
+    # 2. All 4 items survive (no thinning to 1 link)
+    ranked = await rank_verified_articles(verified, req)
+    resp = render_news_response(ranked, req)
+    items = resp.card_config["items"]
+    assert len(items) == 4, f"Expected all 4 stories to survive, got {len(items)}"
+
+    # 3. Fast item leads with its full scraped body excerpt; slow items survive with snippets
+    assert items[0]["url"] == "https://theverge.com/2026/10/ai-act-0"
+    assert "Brussels regulators formally activated" in items[0]["description"]
+    by_url = {it["url"]: it["description"] for it in items}
+    assert by_url["https://arstechnica.com/tech-policy/2026/10/ai-safety-1"] == (
+        "The Senate Commerce Committee approved mandatory AI incident disclosures."
+    )
+    assert by_url["https://techcrunch.com/2026/10/nist-ai-2"] == (
+        "The AI Safety Institute released standardized red-teaming benchmarks."
+    )
+    assert by_url["https://wired.com/story/california-ai-audits-3"] == (
+        "State regulators outlined third-party audit triggers for large training runs."
+    )
+
+
+@pytest.mark.asyncio
+async def test_all_body_fetches_timeout_still_renders_snippet_summaries(patch_server):
+    """TCK-1012: When every article-body fetch times out, the card does not thin
+    out to 'News Unavailable' (0 items); items survive on their snippets."""
+    import asyncio
+
+    async def timeout_scrape(url):
+        await asyncio.sleep(0.5)
+        return ""
+
+    patch_server("_scrape", timeout_scrape)
+
+    candidates = [
+        CandidateArticle(
+            title="Chipmakers expand US wafer fab capacity",
+            url="https://theverge.com/chips-1",
+            publisher="The Verge",
+            snippet="Semiconductor firms announced new domestic packaging lines.",
+        ),
+        CandidateArticle(
+            title="Cloud providers boost AI server orders for Q4",
+            url="https://arstechnica.com/cloud-2",
+            publisher="Ars Technica",
+            snippet="Hyperscale data center capex rose sharply in quarterly filings.",
+        ),
+        CandidateArticle(
+            title="Grid operators fast-track interconnections for data centers",
+            url="https://techcrunch.com/grid-3",
+            publisher="TechCrunch",
+            snippet="Regional transmission organizations approved new power capacity.",
+        ),
+    ]
+
+    req = NewsRequest(topic=None, mode="general", limit=6)
+    verified = await verify_top_candidates(candidates, req, timeout_s=0.05, overall_timeout_s=0.15)
+    diversified = filter_and_diversify(verified, req)
+    resp = render_news_response(diversified, req)
+
+    assert resp.card_config["_verified"] is True
+    assert resp.card_config["title"] != "News Unavailable"
+    assert len(resp.card_config["items"]) == 3
+    assert [it["description"] for it in resp.card_config["items"]] == [
+        "Semiconductor firms announced new domestic packaging lines.",
+        "Hyperscale data center capex rose sharply in quarterly filings.",
+        "Regional transmission organizations approved new power capacity.",
+    ]
