@@ -128,12 +128,13 @@ So x in [-0.244, 0.124], y in [-0.1135, 0.0935] and z = 0.1405: exactly the
 projected rectangle into `#screen`, so the iframe **is** the glass at any
 widget width. Before the GLB loads (or if it fails) it falls back to the
 nominal inset from the 0.600 x 0.330 box (`TUBE_LEFT` 0.056 m, `TUBE_TOP`
-0.0715 m). The overlay's corner radius is the mask's 0.018 m radius scaled by
-the tube height, `18 * h / 207` px (18 px at 207 px), clamped to at least 4 px.
+0.0715 m). The overlay's corner radius is the mask's 0.022 m radius scaled by
+the tube height, `22 * h / 207` px (22 px at 207 px), clamped to at least 4 px.
 
 The invisible pick targets track the same projection: 0.055 m squares over the
-VHF and UHF wells at `0.197 0.056 0.152` and `0.197 -0.004 0.152`, and a
-0.022 m square over the power switch at `0.264 -0.105 0.146`. The camera sits
+VHF and UHF wells at `0.197 0.056 0.152` and `0.197 -0.004 0.152` (`#hot-ch`
+and `#hot-vol`). The 6 decorative micro-controls on the far-right strip are
+non-selectable (`user-select: none`, no hotspot buttons). The camera sits
 at `0deg 90deg 1.0658m` with a 20° field of view and targets `0m -0.005m 0m`,
 chosen so the front plane (z = 0.130) fills the frame:
 `d = 0.130 + 0.330 / (2·tan 10°) = 1.0658 m`.

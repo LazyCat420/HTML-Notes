@@ -12,6 +12,7 @@
      around the cabinet in the widget (same rule as the walkman card). */
   html.standalone{ color-scheme: dark; }
   html,body{margin:0; height:100%; background:transparent; overflow:hidden;
+    user-select:none; -webkit-user-select:none;
     font:13px/1.3 ui-sans-serif,system-ui,sans-serif; color:#e6ebf0}
   #card{position:relative; display:flex; flex-direction:column;
     width:100%; height:100%; min-height:150px;
@@ -42,7 +43,6 @@
     -webkit-tap-highlight-color:transparent}
   #hot-ch{cursor:pointer}
   #hot-vol{cursor:ew-resize; touch-action:none}
-  #hot-power{cursor:pointer}
   /* The tube. Positioned by syncScreen() onto the four projected corner
      anchors; rounded like a Sony Trinitron aperture-grille tube face. */
   #screen{position:absolute; left:0; top:0; width:10px; height:10px;
@@ -106,11 +106,10 @@
     <div class="hs-anchor" id="sc-bl" slot="hotspot-sc-bl" data-position="-0.244 -0.1135 0.1405"></div>
     <div class="hs-anchor" id="sc-br" slot="hotspot-sc-br" data-position="0.124 -0.1135 0.1405"></div>
     <!-- knob pick targets above the 3D Sony Trinitron controls:
-         VHF upper square tuner well (0.197, +0.056), UHF lower square tuner well (0.197, -0.004),
-         and lower-right power switch (0.264, -0.105). -->
+         VHF upper square tuner well (0.197, +0.056) and UHF lower square tuner well (0.197, -0.004).
+         The 6 decorative micro-controls on the far-right strip are non-selectable. -->
     <button class="hs-knob" id="hot-ch"    slot="hotspot-ch"    data-position="0.197 0.056 0.152" aria-label="Channel up" title="Channel"></button>
     <button class="hs-knob" id="hot-vol"   slot="hotspot-vol"   data-position="0.197 -0.004 0.152" aria-label="Volume" title="Drag to set volume"></button>
-    <button class="hs-knob" id="hot-power" slot="hotspot-power" data-position="0.264 -0.105 0.146" aria-label="Power" title="Play / pause"></button>
   </model-viewer>
   <div id="screen">
     <!-- the YouTube iframe is created by JS (swapIframe) and inserted here -->
@@ -177,7 +176,7 @@ function syncScreen(){
   // Trinitron tube corners have a 0.022 m radius on the 0.207 m tall aperture (22 * h / 207 px).
   screenEl.style.borderRadius = Math.max(4, Math.round(22 * h / 207)) + 'px';
 
-  // knob pick targets follow the projection too (square VHF/UHF wells = 0.055 m, power = 0.022 m)
+  // knob pick targets follow the projection too (square VHF/UHF wells = 0.055 m)
   const setSize = (el, m) => {
     if (!el) return;
     const s = Math.max(10, Math.round(m * pxPerM));
@@ -185,7 +184,6 @@ function syncScreen(){
   };
   setSize($('hot-ch'), 0.055);
   setSize($('hot-vol'), 0.055);
-  setSize($('hot-power'), 0.022);
 }
 mv.addEventListener('camera-change', syncScreen);
 addEventListener('resize', syncScreen);
@@ -457,17 +455,6 @@ const endVolDrag = e => {
 };
 $('hot-vol').addEventListener('pointerup', endVolDrag);
 $('hot-vol').addEventListener('pointercancel', endVolDrag);
-
-/* Power knob toggles play/pause through the YT player. */
-$('hot-power').addEventListener('click', e => {
-  e.stopPropagation();
-  if (!player) return;
-  try {
-    if (state.playing){ player.pauseVideo(); state.playing = false; }
-    else { player.playVideo(); state.playing = true; }
-    emit({ action: 'power', playing: state.playing });
-  } catch (err) {}
-});
 
 /* ---- resize from the cabinet bezel (widget only) --------------------------/
    Anywhere on the model that is not the screen or a knob is the cabinet: a
