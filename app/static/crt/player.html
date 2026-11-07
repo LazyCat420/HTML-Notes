@@ -174,8 +174,8 @@ function syncScreen(){
   screenEl.style.top = Math.round(t) + 'px';
   screenEl.style.width = Math.round(w) + 'px';
   screenEl.style.height = Math.round(h) + 'px';
-  // Trinitron tube corners have a 0.018 m radius on the 0.207 m tall aperture (18 * h / 207 px).
-  screenEl.style.borderRadius = Math.max(4, Math.round(18 * h / 207)) + 'px';
+  // Trinitron tube corners have a 0.022 m radius on the 0.207 m tall aperture (22 * h / 207 px).
+  screenEl.style.borderRadius = Math.max(4, Math.round(22 * h / 207)) + 'px';
 
   // knob pick targets follow the projection too (square VHF/UHF wells = 0.055 m, power = 0.022 m)
   const setSize = (el, m) => {
