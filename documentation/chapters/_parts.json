@@ -1,30 +1,38 @@
 [
   {
     "part": "Start Here",
-    "blurb": "How the documentation is organised, what each area holds, and the rules that stop it becoming a pile."
+    "blurb": "How this TDD works, the 13 sections, the ledger rules, and where the code lives."
   },
   {
     "part": "Runtime and architecture",
-    "blurb": "How HTML-Notes talks to the shared lazy-agent-service runtime: boundaries, contracts, note ownership, migration."
+    "blurb": "What the product is for, its boundaries, and how HTML-Notes talks to the shared lazy-agent-service runtime."
+  },
+  {
+    "part": "Execution pipeline",
+    "blurb": "The ordered stages of one chat turn, from message to stored canvas, with every deterministic fallback."
+  },
+  {
+    "part": "Modules and services",
+    "blurb": "What each module owns and how the layers depend on each other."
+  },
+  {
+    "part": "Domain features",
+    "blurb": "News, research, music, YouTube and the widget behaviours behind them."
+  },
+  {
+    "part": "State and storage",
+    "blurb": "Every table, cache and client-side store, with its writer and retention."
   },
   {
     "part": "Canvas and widgets",
-    "blurb": "The canvas, widget factory and widget packs, App Hub, control plane, and the widget-wave handoffs."
+    "blurb": "The canvas, widget factory, HUD theme and the device-style cards."
   },
   {
-    "part": "Routing and agent",
-    "blurb": "How a chat turn is routed (tier gates, classifiers, follow-up targeting) and the agent roadmap."
+    "part": "Operations",
+    "blurb": "Build, deploy, live checks, recovery runbooks, and what is proven by which command."
   },
   {
-    "part": "News and research",
-    "blurb": "The evidence-first news pipeline, web search, research reliability, and the audits that shaped them."
-  },
-  {
-    "part": "Music player",
-    "blurb": "The canvas mini player, its hand-off to music-player, ratings sync, and playback health."
-  },
-  {
-    "part": "Ops and quality",
-    "blurb": "Test-suite health, dependency refreshes, deploy notes."
+    "part": "Governance",
+    "blurb": "Settled decisions, the generated ticket ledger, and security/dependency baselines."
   }
 ]

@@ -1,0 +1,158 @@
+{
+  "title": "HTML-Notes Chat-Turn Execution Graph",
+  "updated": "2026-11-06",
+  "nodes": [
+    {
+      "id": "turn_ingest",
+      "label": "Turn Ingest — POST /session/message, SSE Open, Transcript Write",
+      "stage": 0,
+      "repo": "html-notes",
+      "entry": "app/routes/message.py:send_message",
+      "covers": [
+        "html-notes:app/routes/message.py",
+        "html-notes:app/main.py",
+        "html-notes:app/database.py",
+        "html-notes:requirements.txt"
+      ],
+      "areas": ["server", "chat"],
+      "timeout_s": null,
+      "skip_or_fallback": "Runtime down answers with an unavailable SSE frame instead of dropping the turn; the user message is recorded before any model call so the routing eval stays complete.",
+      "inputs": ["chat_transcript"],
+      "outputs": ["session_context"]
+    },
+    {
+      "id": "route_lanes",
+      "label": "Fast Lanes & LLM Router — music/news/video gates, modifiers.kind",
+      "stage": 1,
+      "repo": "html-notes",
+      "entry": "app/main.py:classify_news_ask",
+      "covers": [
+        "html-notes:app/routes/message.py",
+        "html-notes:app/main.py",
+        "html-notes:app/llm.py",
+        "html-notes:app/config.py"
+      ],
+      "areas": ["routing"],
+      "timeout_s": null,
+      "skip_or_fallback": "Music fast lane plays a fallback within MUSIC_ROUTER_BUDGET_S (1.5 s) and refines in place within MUSIC_ROUTER_REFINE_S (25 s); video/live/news keep deterministic overrides.",
+      "inputs": ["session_context"],
+      "outputs": ["router_decision"]
+    },
+    {
+      "id": "runtime_agent",
+      "label": "Shared Runtime Turn — /agent via runtime adapter with attribution headers",
+      "stage": 2,
+      "repo": "html-notes",
+      "entry": "app/adapters/runtime/config.py",
+      "covers": [
+        "html-notes:app/adapters/runtime/config.py",
+        "html-notes:app/agents/orchestrator.py",
+        "html-notes:app/tooling/policy.py",
+        "html-notes:app/services/runtime_chat_adapter.py"
+      ],
+      "areas": ["agent", "infra"],
+      "timeout_s": null,
+      "skip_or_fallback": "Shared-box saturation (Jetson/Gold Spark) degrades to the lane's deterministic answer instead of an empty canvas; probes must carry x-project/x-headers like /agent.",
+      "inputs": ["router_decision"],
+      "outputs": ["widget_frames"]
+    },
+    {
+      "id": "news_pipeline",
+      "label": "News Pipeline — corpus-first collect, verify, diversify, summarize",
+      "stage": 3,
+      "repo": "html-notes",
+      "entry": "app/services/news_pipeline.py:build_news_response",
+      "covers": [
+        "html-notes:app/services/news_pipeline.py",
+        "html-notes:app/services/news_corpus.py",
+        "html-notes:app/services/search.py"
+      ],
+      "areas": ["news", "research"],
+      "timeout_s": null,
+      "skip_or_fallback": "A slow source loses only itself; the editor must not drop a gated story. Named live networks play their own stream, never a look-alike.",
+      "inputs": ["router_decision", "external_corpus"],
+      "outputs": ["widget_frames"]
+    },
+    {
+      "id": "research_ledger",
+      "label": "Research Coordinator — worker dispatch, evidence ledger, answer versions",
+      "stage": 3,
+      "repo": "html-notes",
+      "entry": "app/services/research/coordinator.py:execute_research_stream",
+      "covers": [
+        "html-notes:app/services/research/coordinator.py",
+        "html-notes:app/services/research/ledger.py"
+      ],
+      "areas": ["research"],
+      "timeout_s": null,
+      "skip_or_fallback": "Budget module caps worker calls and wall time; a capped run returns the evidence it has. An answer that cannot cite evidence is returned partial with the missing evidence named.",
+      "inputs": ["router_decision"],
+      "outputs": ["evidence_ledger", "widget_frames"]
+    },
+    {
+      "id": "widget_render",
+      "label": "Widget Factory — server-render with strict data-hn-config",
+      "stage": 4,
+      "repo": "html-notes",
+      "entry": "app/canvas_manager.py:render_widget",
+      "covers": [
+        "html-notes:app/canvas_manager.py",
+        "html-notes:app/widgets/factory.py",
+        "html-notes:app/presentation/widgets/catalog.py",
+        "html-notes:app/static/tailwind.css"
+      ],
+      "areas": ["ui", "widgets"],
+      "timeout_s": null,
+      "skip_or_fallback": "Types absent from the catalog cannot be requested; degenerate widget renders are coerced or dropped, and only utilities present in the compiled Tailwind build are emitted.",
+      "inputs": ["router_decision", "evidence_ledger"],
+      "outputs": ["widget_frames"]
+    },
+    {
+      "id": "canvas_persist",
+      "label": "Canvas Commit — per-session lock, placement, note-row serialize",
+      "stage": 5,
+      "repo": "html-notes",
+      "entry": "app/canvas_manager.py:commit_canvas",
+      "covers": [
+        "html-notes:app/canvas_manager.py",
+        "html-notes:app/domain/canvas/service.py",
+        "html-notes:app/domain/notes/service.py"
+      ],
+      "areas": ["storage"],
+      "timeout_s": null,
+      "skip_or_fallback": "A corrupt widget row is skipped and logged, never aborting the canvas; singleton media widgets are reused or replaced under the session lock.",
+      "inputs": ["widget_frames"],
+      "outputs": ["canvas_store"]
+    },
+    {
+      "id": "client_repair",
+      "label": "Client Mount & Self-Heal — rebuild from data-hn-config only",
+      "stage": 5,
+      "repo": "html-notes",
+      "entry": "app/static/index.js:musicWidgetNeedsRebuild",
+      "covers": [
+        "html-notes:app/static/index.js",
+        "html-notes:app/static/js/widgets.js",
+        "html-notes:app/static/crt/player.html"
+      ],
+      "areas": ["ui", "widgets"],
+      "timeout_s": null,
+      "skip_or_fallback": "A widget with no data-hn-config is left as-is and reported — never rebuilt from guessed defaults; device-style widgets skip the resizer and derive height from width.",
+      "inputs": ["canvas_store"],
+      "outputs": ["client_prefs"]
+    }
+  ],
+  "edges": [
+    {"from": "turn_ingest", "to": "route_lanes", "label": "message, session context, current canvas", "kind": "control"},
+    {"from": "route_lanes", "to": "runtime_agent", "label": "selected path + modifiers for the /agent turn", "kind": "control"},
+    {"from": "route_lanes", "to": "news_pipeline", "label": "news ask normalized (topic or live network)", "kind": "parallel"},
+    {"from": "route_lanes", "to": "research_ledger", "label": "research intent and budget when the ask needs current facts", "kind": "parallel"},
+    {"from": "route_lanes", "to": "widget_render", "label": "music fast-lane widget plan (query, kind)", "kind": "control"},
+    {"from": "runtime_agent", "to": "widget_render", "label": "parsed widget plan from the runtime answer", "kind": "control"},
+    {"from": "news_pipeline", "to": "widget_render", "label": "vetted, deduped, diversified stories", "kind": "control"},
+    {"from": "research_ledger", "to": "widget_render", "label": "cited evidence for the synthesized answer", "kind": "control"},
+    {"from": "widget_render", "to": "canvas_persist", "label": "widget frame with data-hn-config over SSE", "kind": "control"},
+    {"from": "canvas_persist", "to": "client_repair", "label": "stored canvas HTML served to the client", "kind": "control"},
+    {"from": "client_repair", "to": "canvas_persist", "label": "widget actions posted back; server owns the canvas", "kind": "async"}
+  ]
+}

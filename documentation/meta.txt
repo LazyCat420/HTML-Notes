@@ -1,0 +1,2 @@
+HTML-Notes — Technical Design Document
+Local-first AI knowledge journal: chat-routed canvas, server-rendered widgets, shared lazy-agent-service runtime, and a 13-section TDD with execution graph, state-flow, and ticket ledger.

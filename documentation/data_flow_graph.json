@@ -1,0 +1,115 @@
+{
+  "title": "HTML-Notes Data State-Flow Graph",
+  "updated": "2026-11-06",
+  "layers": {
+    "0": "Chat Ingest & Transcript",
+    "1": "Session Context & Follow-up Targeting",
+    "2": "Router Decisions & Lane Flags",
+    "3": "Evidence & News Corpora",
+    "4": "Widget Frames & SSE Stream",
+    "5": "Canvas Rows & Client Stores"
+  },
+  "stores": [
+    {
+      "id": "chat_transcript",
+      "kind": "sqlite",
+      "layer": 0,
+      "join_keys": ["session_id", "id"],
+      "ttl": "permanent",
+      "writers": ["turn_ingest"],
+      "readers": ["turn_ingest"],
+      "purpose": "chat_sessions and chat_messages in notes.db; the only writer is the /session/message route, and the routing eval mines this table read-only."
+    },
+    {
+      "id": "session_context",
+      "kind": "in_memory",
+      "layer": 1,
+      "join_keys": ["session_id"],
+      "ttl": "per-turn",
+      "writers": ["turn_ingest"],
+      "readers": ["route_lanes", "runtime_agent"],
+      "purpose": "Recent turns, the current canvas HTML, and the active note loaded at turn start; follow-up targeting reuses widget ids from it."
+    },
+    {
+      "id": "router_decision",
+      "kind": "in_memory",
+      "layer": 2,
+      "join_keys": ["session_id", "path"],
+      "ttl": "per-turn",
+      "writers": ["route_lanes"],
+      "readers": ["runtime_agent", "news_pipeline", "research_ledger", "widget_render"],
+      "purpose": "Selected lane plus modifiers (music kind/subject, news class, follow-up target), grounded by music_query_grounded before the builder trusts it."
+    },
+    {
+      "id": "external_corpus",
+      "kind": "external",
+      "layer": 3,
+      "join_keys": ["url"],
+      "ttl": "minutes",
+      "writers": ["news_pipeline"],
+      "readers": ["news_pipeline"],
+      "purpose": "trading-service's pre-scraped news corpus plus ddgs search and scraped article bodies, read before external APIs; canonicalized by canonicalize_url."
+    },
+    {
+      "id": "evidence_ledger",
+      "kind": "sqlite",
+      "layer": 3,
+      "join_keys": ["run_id", "evidence_id"],
+      "ttl": "permanent",
+      "writers": ["research_ledger"],
+      "readers": ["widget_render", "research_ledger"],
+      "purpose": "research_runs, research_tasks, research_evidence and research_answer_versions: the audit trail an answer must cite to be written."
+    },
+    {
+      "id": "widget_frames",
+      "kind": "in_memory",
+      "layer": 4,
+      "join_keys": ["session_id", "widget_id"],
+      "ttl": "per-turn",
+      "writers": ["runtime_agent", "news_pipeline", "research_ledger", "widget_render"],
+      "readers": ["canvas_persist"],
+      "purpose": "Server-rendered widget HTML with strict data-hn-config, streamed over SSE ahead of the assistant message."
+    },
+    {
+      "id": "canvas_store",
+      "kind": "sqlite",
+      "layer": 5,
+      "join_keys": ["session_id", "widget_id"],
+      "ttl": "permanent",
+      "writers": ["canvas_persist"],
+      "readers": ["client_repair", "canvas_persist"],
+      "purpose": "The serialized canvas in the notes row: widget type, position, size and state; only {cols} is saved for device-style widgets."
+    },
+    {
+      "id": "client_prefs",
+      "kind": "client",
+      "layer": 5,
+      "join_keys": ["track_id", "widget_id"],
+      "ttl": "until-cleared",
+      "writers": ["client_repair"],
+      "readers": ["client_repair"],
+      "purpose": "localStorage hn_music_song_prefs and hn_music_widget_prefs, the window.__hnMusicCarry parked audio element (2 s expiry), and Alpine widget state."
+    }
+  ],
+  "flows": [
+    {"from": "turn_ingest", "to": "chat_transcript", "key": "session_id,id", "label": "user and assistant messages written before any model call"},
+    {"from": "chat_transcript", "to": "turn_ingest", "key": "session_id", "label": "recent turns loaded as session context"},
+    {"from": "turn_ingest", "to": "session_context", "key": "session_id", "label": "recent turns, current canvas, active note"},
+    {"from": "session_context", "to": "route_lanes", "key": "session_id", "label": "message plus canvas state for fast-lane gates and follow-up reuse"},
+    {"from": "route_lanes", "to": "router_decision", "key": "session_id,path", "label": "lane, path and grounded modifiers.kind"},
+    {"from": "router_decision", "to": "runtime_agent", "key": "session_id,path", "label": "selected path for the /agent turn"},
+    {"from": "router_decision", "to": "news_pipeline", "key": "session_id,path", "label": "normalized NewsRequest (topic or live network)"},
+    {"from": "router_decision", "to": "research_ledger", "key": "session_id,path", "label": "research intent with worker and wall-time budget"},
+    {"from": "external_corpus", "to": "news_pipeline", "key": "url", "label": "pre-scraped corpus rows, ddgs results, fetched article bodies"},
+    {"from": "news_pipeline", "to": "external_corpus", "key": "url", "label": "fetched sources cached after canonicalization"},
+    {"from": "research_ledger", "to": "evidence_ledger", "key": "run_id,evidence_id", "label": "worker dispatches, cited evidence, answer versions"},
+    {"from": "evidence_ledger", "to": "widget_render", "key": "run_id", "label": "evidence citations an answer must carry to be written"},
+    {"from": "router_decision", "to": "widget_render", "key": "session_id,path", "label": "music plan (query, kind) trusted verbatim by the builder"},
+    {"from": "widget_render", "to": "widget_frames", "key": "session_id,widget_id", "label": "widget HTML with data-hn-config stamped"},
+    {"from": "widget_frames", "to": "canvas_persist", "key": "session_id,widget_id", "label": "SSE frame committed under the session lock"},
+    {"from": "canvas_persist", "to": "canvas_store", "key": "session_id,widget_id", "label": "serialized canvas written to the note row"},
+    {"from": "canvas_store", "to": "client_repair", "key": "session_id", "label": "stored canvas served to the client for mount and self-heal"},
+    {"from": "client_repair", "to": "client_prefs", "key": "track_id,widget_id", "label": "per-song thumbs, deck prefs, 2 s music carry"},
+    {"from": "client_repair", "to": "canvas_persist", "key": "session_id,widget_id", "label": "widget actions posted back; the client never writes the canvas"}
+  ]
+}
