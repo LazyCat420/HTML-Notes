@@ -24,7 +24,11 @@ The news pipeline is evidence-first:
 4. **Summarise**: each vetted story is scraped in its own call
    (`_attach_article_bodies`), so one slow site loses only itself. On a gated topic
    ask the editor cannot drop a story; any story it skips is summarised on its own
-   (`_summarize_sources_individually`).
+   (`_summarize_sources_individually`). In the deterministic pipeline
+   (`news_pipeline.verify_top_candidates`) each body fetch has a 2.5 s cap under a
+   4 s overall budget; a story whose fetch times out, fails, or returns a short stub
+   survives on its provider snippet (`verification_reason="snippet_fallback"`) and
+   ranks below full-body stories. Title/URL and topic mismatches are still rejected.
 5. **Render** the news card with the vetted stories and their summaries.
 
 A topic card reads article bodies, not ~200-character provider snippets. The live
