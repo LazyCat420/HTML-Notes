@@ -27,7 +27,7 @@ export class FakeEventSource {
   close() { this.closed = true; }
 }
 
-export function loadFactory() {
+export function loadFactory(component = "musicPlayerWidget") {
   const registry = {};
   let onInit = null;
   const fakeDocument = {
@@ -42,9 +42,16 @@ export function loadFactory() {
     location: { hostname: "nas", href: "http://nas/" },
     open() { return null; },
     // The component listens for hn:mute / hn:theme on window since the
-    // walkman card landed; without these every mount() threw.
-    addEventListener() {},
-    removeEventListener() {},
+    // walkman card landed; without these every mount() threw. A real registry
+    // (not no-ops) lets the CRT tests dispatch postMessage events.
+    _listeners: {},
+    addEventListener(t, f) { (this._listeners[t] ||= []).push(f); },
+    removeEventListener(t, f) {
+      const l = this._listeners[t];
+      if (l) { const i = l.indexOf(f); if (i >= 0) l.splice(i, 1); }
+    },
+    emit(t, ev) { (this._listeners[t] || []).slice().forEach(f => f(ev)); },
+    dispatchEvent() {},
   };
   const env = {
     document: fakeDocument, Alpine: fakeAlpine, window: fakeWindow,
@@ -63,7 +70,7 @@ export function loadFactory() {
   const run = new Function(...Object.keys(env), widgetsJs);
   run(...Object.values(env));
   onInit();
-  return { factory: registry.musicPlayerWidget, window: fakeWindow, fetchCalls, store };
+  return { factory: registry[component], registry, window: fakeWindow, fetchCalls, store };
 }
 
 export async function mount(factory, genre) {

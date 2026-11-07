@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CRT TV player — embeddable card</title>
+<script type="module" src="/static/crt/model-viewer.min.js"></script>
+<style>
+  /* Dark form controls only when the card is opened on its own. In an iframe
+     the root must stay light-scheme: Chrome paints the document's base
+     background behind transparent content, which would show as an opaque box
+     around the cabinet in the widget (same rule as the walkman card). */
+  html.standalone{ color-scheme: dark; }
+  html,body{margin:0; height:100%; background:transparent; overflow:hidden;
+    font:13px/1.3 ui-sans-serif,system-ui,sans-serif; color:#e6ebf0}
+  #card{position:relative; display:flex; flex-direction:column;
+    width:100%; height:100%; min-height:150px;
+    border-radius:0; overflow:visible; background:transparent}
+  #stage{position:relative; flex:1 1 auto; min-height:0}
+  /* opened directly (not embedded): dark page, the card at the size the widest
+     widget slot takes (600 x 330), centred, plus a caption — walkman pattern. */
+  html.standalone, html.standalone body{height:auto; min-height:100%}
+  html.standalone body{display:block; overflow:auto;
+    padding:max(24px, calc(50vh - 165px)) 24px 48px;
+    background:radial-gradient(90% 120% at 50% 0%, #141a1f 0%, #070a0c 70%)}
+  html.standalone #card{width:600px; height:330px; min-height:0; margin:0 auto}
+  html.standalone body::after{content:"crt-tv-player · 600 × 330 (the widget's cabinet aspect 1.8182)";
+    position:fixed; bottom:12px; left:0; right:0; text-align:center;
+    font:11px/1 ui-monospace,monospace; letter-spacing:.06em; color:#5d6a74}
+  model-viewer{width:100%; height:100%; display:block; --poster-color:transparent;
+    cursor:nwse-resize}
+  /* the resize cursor is a widget affordance only; standalone has no drag */
+  html.standalone model-viewer{cursor:default}
+  /* zero-size projected points at the tube corners (glTF coords, y-up).
+     model-viewer fades hotspots to 25% by default — keep them measurable. */
+  .hs-anchor{position:absolute; width:0; height:0; pointer-events:none;
+    --min-hotspot-opacity:1}
+  /* invisible pick targets over the 3D knobs; sized from the projection in
+     syncScreen() so they track the card at any widget width. */
+  .hs-knob{position:relative; border:none; background:transparent; outline:none;
+    padding:0; cursor:pointer; --min-hotspot-opacity:1;
+    -webkit-tap-highlight-color:transparent}
+  #hot-ch{cursor:pointer}
+  #hot-vol{cursor:ew-resize; touch-action:none}
+  #hot-power{cursor:pointer}
+  /* The tube. Positioned by syncScreen() onto the four projected corner
+     anchors; rounded like a tube face, radius scaled with its height. */
+  #screen{position:absolute; left:0; top:0; width:10px; height:10px;
+    z-index:3; overflow:hidden; border-radius:6px; background:#04070a;
+    box-shadow:inset 0 0 22px rgba(0,0,0,.9)}
+  /* YouTube iframe fills the tube rect (16:9 by construction — the anchors
+     sit at the corners of a 0.400 × 0.225 m glass). */
+  #screen iframe{position:absolute; inset:0; width:100%; height:100%; border:0;
+    z-index:1; background:#000}
+  /* always-on CRT finish: diagonal glass glare, vignette to the corners, and
+     scanlines at a ~3 px period. Purely decorative: never eats pointer events. */
+  #glass{position:absolute; inset:0; pointer-events:none; z-index:2;
+    background:
+      linear-gradient(115deg, rgba(255,255,255,.09) 0%, rgba(255,255,255,.025) 16%, rgba(255,255,255,0) 42%),
+      radial-gradient(125% 130% at 50% 48%, rgba(0,0,0,0) 52%, rgba(0,0,0,.55) 100%),
+      repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 1px, rgba(0,0,0,0) 1px 3px)}
+  /* NO SIGNAL card: stacked UNDER #static so the snow flutters over it. */
+  #nosig{position:absolute; inset:0; display:none; flex-direction:column;
+    align-items:center; justify-content:center; gap:.55em; z-index:3;
+    pointer-events:none; text-align:center; padding:0 8%;
+    font:600 clamp(10px, 4.5cqh, 20px)/1.25 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:#7dff9a; text-shadow:0 0 8px rgba(125,255,154,.45); letter-spacing:.12em}
+  #nosig.on{display:flex}
+  #nosig .msg{font-weight:400; opacity:.85; letter-spacing:.04em}
+  /* the one thing a dead channel can still offer: the video's own page */
+  #nosig-link{display:none; pointer-events:auto; color:#7dff9a; font-size:.8em;
+    letter-spacing:.08em; text-decoration:underline; text-underline-offset:2px}
+  #nosig-link.on{display:block}
+  /* snow: a tiny 220×124 noise bitmap scaled up blocky — a tube's snow is
+     coarse, and it keeps the regeneration cheap at any card size. */
+  #static{position:absolute; inset:0; width:100%; height:100%; z-index:4;
+    display:none; image-rendering:pixelated; background:#000}
+  #static.on{display:block}
+  /* power-on flash: a bright line at the tube centre that expands to full
+     height and fades — driven by the Web Animations API in JS. */
+  #flash{position:absolute; left:0; right:0; top:50%; height:2px; z-index:5;
+    transform:translateY(-50%); background:#fff; opacity:0; display:none;
+    pointer-events:none}
+  /* on-screen display: green phosphor channel/title, bottom-left, 3 s. */
+  #osd{position:absolute; left:10px; bottom:8px; z-index:6;
+    pointer-events:none; opacity:0; transition:opacity .25s ease;
+    font:600 clamp(10px, 4cqh, 16px)/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:#7dff9a; text-shadow:0 0 6px rgba(125,255,154,.5);
+    letter-spacing:.08em; white-space:nowrap; max-width:calc(100% - 20px);
+    overflow:hidden; text-overflow:ellipsis}
+  #osd.on{opacity:1}
+</style>
+</head>
+<body>
+<div id="card">
+  <div id="stage">
+  <model-viewer id="mv" src="/static/crt/models/crt-tv-v1-lite.glb"
+    camera-orbit="0deg 90deg 1.0658m" camera-target="0m -0.005m 0m" field-of-view="20deg"
+    environment-image="/static/crt/models/studio.hdr"
+    tone-mapping="aces" exposure="1" shadow-intensity="1" shadow-softness="1"
+    interaction-prompt="none" disable-tap disable-pan disable-rotate alt="3D CRT television">
+    <!-- tube corners (glTF x, y-up, z; the front face sits at z ≈ 0.1405) -->
+    <div class="hs-anchor" id="sc-tl" slot="hotspot-sc-tl" data-position="-0.255 0.1325 0.1405"></div>
+    <div class="hs-anchor" id="sc-tr" slot="hotspot-sc-tr" data-position="0.145 0.1325 0.1405"></div>
+    <div class="hs-anchor" id="sc-bl" slot="hotspot-sc-bl" data-position="-0.255 -0.0925 0.1405"></div>
+    <div class="hs-anchor" id="sc-br" slot="hotspot-sc-br" data-position="0.145 -0.0925 0.1405"></div>
+    <!-- knob pick targets above the 3D knobs (0.225, y, front): dial +0.075,
+         volume 0.000, power −0.075 — the asset table's knob heights. -->
+    <button class="hs-knob" id="hot-ch"    slot="hotspot-ch"    data-position="0.225 0.075 0.146" aria-label="Channel up" title="Channel"></button>
+    <button class="hs-knob" id="hot-vol"   slot="hotspot-vol"   data-position="0.225 0.000 0.146" aria-label="Volume" title="Drag to set volume"></button>
+    <button class="hs-knob" id="hot-power" slot="hotspot-power" data-position="0.225 -0.075 0.146" aria-label="Power" title="Play / pause"></button>
+  </model-viewer>
+  <div id="screen">
+    <!-- the YouTube iframe is created by JS (swapIframe) and inserted here -->
+    <div id="glass"></div>
+    <div id="nosig"><div>NO SIGNAL</div><div class="msg"></div><div>PLEASE STAND BY</div>
+      <a id="nosig-link" target="_blank" rel="noopener" href="#">WATCH ON YOUTUBE &#8599;</a></div>
+    <canvas id="static" width="220" height="124"></canvas>
+    <div id="flash"></div>
+    <div id="osd"></div>
+  </div>
+  </div><!-- /stage -->
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const mv = $('mv'), stage = $('stage'), screenEl = $('screen');
+
+/* The tube glass is 0.400 × 0.225 m on a cabinet with visible bounds
+   0.600 × 0.330 m. The camera distance is chosen so the FRONT PLANE (z = 0.130)
+   exactly fills the frame: d = 0.130 + 0.330 / (2·tan(10°)) = 1.0658 m. The
+   fallback screen rect uses these constants when the anchors have not projected. */
+const TUBE_W = 0.400, TUBE_H = 0.225, CAB_W = 0.600;
+const TUBE_LEFT = 0.0703, TUBE_TOP = 0.0785;   // corner anchors inset from the cabinet box
+
+const state = { video: null, title: '', channel: 0, volume: 100, playing: false };
+
+function emit(msg){
+  try { parent.postMessage({ type: 'crt', ...msg }, '*'); } catch (e) {}
+}
+
+/* ---- screen placement ----------------------------------------------------
+   The tube is NOT sized from pixels-per-metre like the walkman LCD: the four
+   corner anchors are projected every frame, and #screen becomes exactly the
+   rect they span. The iframe then *is* the glass at any widget width, with no
+   rounding between the video edges and the drawn bezel. */
+function syncScreen(){
+  const anchors = [$('sc-tl'), $('sc-tr'), $('sc-bl'), $('sc-br')];
+  if (!anchors.every(Boolean)) return;
+  const stageR = stage.getBoundingClientRect();
+  const r = anchors.map(el => el.getBoundingClientRect());
+  const stageW = stageR.width || 1, stageH = stageR.height || 1;
+  // Before the GLB loads (or if it fails) the anchors never project: all four
+  // sit on the same zero point. Detect that and fall back to the nominal rect.
+  const projected = (r[1].left - r[0].left) > 4 && (r[2].top - r[0].top) > 4;
+  let l, t, w, h, pxPerM;
+  if (projected){
+    l = r[0].left - stageR.left;
+    t = r[0].top - stageR.top;
+    w = r[1].left - r[0].left;
+    h = r[2].top - r[0].top;
+    pxPerM = w / TUBE_W;
+  } else {
+    pxPerM = stageW / CAB_W;
+    l = TUBE_LEFT * pxPerM;
+    t = TUBE_TOP * pxPerM;
+    w = TUBE_W * pxPerM;
+    h = TUBE_H * pxPerM;
+  }
+  if (w <= 0 || h <= 0) return;
+  screenEl.style.left = Math.round(l) + 'px';
+  screenEl.style.top = Math.round(t) + 'px';
+  screenEl.style.width = Math.round(w) + 'px';
+  screenEl.style.height = Math.round(h) + 'px';
+  // tube corners are soft: 6 px at the 225 px-tall reference tube, scaled.
+  screenEl.style.borderRadius = Math.max(2, Math.round(6 * h / 225)) + 'px';
+
+  // knob pick targets follow the projection too (diameters from the asset table)
+  const setSize = (el, m) => {
+    if (!el) return;
+    const s = Math.max(10, Math.round(m * pxPerM));
+    if (el.style.width !== s + 'px'){ el.style.width = s + 'px'; el.style.height = s + 'px'; }
+  };
+  setSize($('hot-ch'), 0.076);
+  setSize($('hot-vol'), 0.036);
+  setSize($('hot-power'), 0.020);
+}
+mv.addEventListener('camera-change', syncScreen);
+addEventListener('resize', syncScreen);
+setTimeout(syncScreen, 400);
+// cqh units in #osd/#nosig need the screen element as their query container.
+screenEl.style.containerType = 'size';
+
+/* ---- real 3D knobs -------------------------------------------------------
+   model-viewer keeps its Three.js scene on a Symbol-keyed property (there is
+   no public accessor); grab it once per load and look the named meshes up by
+   their glTF node names — the walkman VOL_KNOB technique. The build applied a
+   90° X rotation at export, so rotation.z spins a knob about the front axis. */
+let knobCache = null;
+function getThreeNode(name){
+  if (knobCache && knobCache[name]) return knobCache[name];
+  const syms = Object.getOwnPropertySymbols(mv);
+  const sceneSym = syms.find(s => s.description === 'scene');
+  if (!sceneSym || !mv[sceneSym]) return null;
+  const scene = mv[sceneSym];
+  const node = scene.getObjectByName ? scene.getObjectByName(name) : null;
+  if (!node) return null;
+  (knobCache = knobCache || {})[name] = { node, scene };
+  return knobCache[name];
+}
+function setKnobZ(found, rad){
+  if (!found) return;
+  found.node.rotation.z = rad;
+  if (found.node.updateMatrix) found.node.updateMatrix();
+  if (found.node.updateMatrixWorld) found.node.updateMatrixWorld(true);
+  if (found.scene.queueRender) found.scene.queueRender();
+}
+/* channel dial: 400 ms sweep to channel·30° with rAF, queueing a render each
+   frame — model-viewer only redraws on demand with the orbit controls off. */
+function rotateChKnob(targetRad){
+  const found = getThreeNode('TV_CH_KNOB');
+  if (!found) return;
+  const from = found.node.rotation.z, t0 = performance.now(), ms = 400;
+  (function step(){
+    const p = Math.min(1, (performance.now() - t0) / ms);
+    const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    setKnobZ(found, from + (targetRad - from) * e);
+    if (p < 1) requestAnimationFrame(step);
+  })();
+}
+
+/* ---- snow ----------------------------------------------------------------/
+   A 220 × 124 ImageData is re-randomised every ~40 ms and shown blocky
+   (image-rendering:pixelated). Pixels carry a random alpha so the NO SIGNAL
+   text stacked underneath stays readable; a brighter band scrolls down (the
+   rolling vertical-sync band) and the whole canvas jitters 1–2 px (vertical
+   hold), with a faint tear line drifting slower than the band. */
+const noise = $('static');
+const nctx = noise.getContext('2d');
+const nimg = nctx.createImageData(noise.width, noise.height);
+let noiseTimer = 0, bandY = -12, tearY = 30;
+function drawNoise(){
+  const d = nimg.data;
+  for (let i = 0; i < d.length; i += 4){
+    const v = (Math.random() * 255) | 0;
+    d[i] = d[i + 1] = d[i + 2] = v;
+    d[i + 3] = 64 + ((Math.random() * 191) | 0);
+  }
+  nctx.putImageData(nimg, 0, 0);
+  bandY = (bandY + 2.5) % (noise.height + 24) - 12;
+  nctx.fillStyle = 'rgba(255,255,255,.28)';
+  nctx.fillRect(0, bandY, noise.width, 10);
+  nctx.fillStyle = 'rgba(255,255,255,.45)';
+  nctx.fillRect(0, tearY | 0, noise.width, 1);
+  tearY = tearY + 0.35 > noise.height ? 0 : tearY + 0.35;
+  // vertical hold: snap the whole plate 1–2 px up/down a fraction of frames
+  noise.style.transform = Math.random() < 0.35
+    ? `translateY(${(Math.random() < 0.5 ? -1 : 1) * (1 + Math.round(Math.random()))}px)`
+    : 'translateY(0)';
+}
+function startNoise(){
+  if (noiseTimer) return;
+  noise.classList.add('on');
+  noiseTimer = setInterval(drawNoise, 40);
+  drawNoise();
+}
+function stopNoise(){
+  clearInterval(noiseTimer); noiseTimer = 0;
+  noise.classList.remove('on');
+  noise.style.transform = 'translateY(0)';
+}
+
+/* ---- on-screen display + power-on flash ----------------------------------*/
+let osdTimer = 0;
+function showOsd(){
+  const ch = String(state.channel).padStart(2, '0');
+  $('osd').textContent = `CH ${ch} · ${state.title}`;
+  $('osd').classList.add('on');
+  clearTimeout(osdTimer);
+  osdTimer = setTimeout(() => $('osd').classList.remove('on'), 3000);
+}
+function powerOnFlash(){
+  const f = $('flash');
+  f.style.display = 'block';
+  if (f.animate){
+    const a = f.animate(
+      [{ height: '2px', opacity: 1 }, { height: '100%', opacity: 0 }],
+      { duration: 250, easing: 'ease-out' });
+    a.onfinish = () => { f.style.display = 'none'; };
+  } else {
+    setTimeout(() => { f.style.display = 'none'; }, 250);
+  }
+}
+
+/* ---- YouTube IFrame API (loaded once, resolved when ready) ---------------*/
+let ytApiPromise = null;
+function loadYouTubeIframeApi(){
+  if (ytApiPromise) return ytApiPromise;
+  ytApiPromise = new Promise(resolve => {
+    if (window.YT && window.YT.Player) return resolve();
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { if (prev) prev(); resolve(); };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+  });
+  return ytApiPromise;
+}
+
+let player = null;
+let tuneSeq = 0, swapTimer = 0, revealTimer = 0;
+
+function setYtVisible(on){
+  const f = $('yt');
+  if (f) f.style.visibility = on ? 'visible' : 'hidden';
+}
+
+/* The iframe is always rebuilt (never reused): a fresh src with autoplay=1
+   &mute=1 is the only way an unattended widget may start playing at all — the
+   browser autoplay rule blocks audible autoplay, so the clip starts muted and
+   onReady unmutes it once the player proves it is live. */
+function swapIframe(video){
+  const old = $('yt');
+  if (old) old.remove();
+  player = null;
+  const f = document.createElement('iframe');
+  f.id = 'yt';
+  f.setAttribute('frameborder', '0');
+  f.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture');
+  f.setAttribute('allowfullscreen', '');
+  f.src = 'https://www.youtube.com/embed/' + encodeURIComponent(video)
+        + '?autoplay=1&mute=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin);
+  screenEl.insertBefore(f, $('glass'));
+  const seq = tuneSeq;
+  loadYouTubeIframeApi().then(() => {
+    try {
+      player = new YT.Player(f, {
+        events: {
+          onReady: () => onPlayerReady(seq),
+          onError: e => emit({ action: 'embed-error', code: e.data })
+        }
+      });
+    } catch (err) { /* API unavailable offline: the 3.5 s deadline reveals */ }
+  });
+}
+
+function onPlayerReady(seq){
+  if (seq !== tuneSeq) return;
+  if (player){
+    try {
+      player.playVideo();
+      // mute=1 above → unmute here; the volume the parent last set (100 by default)
+      player.unMute();
+      player.setVolume(state.volume);
+    } catch (e) {}
+  }
+  state.playing = true;
+  reveal(seq);
+}
+
+function reveal(seq){
+  if (seq !== tuneSeq) return;
+  clearTimeout(revealTimer);
+  hideNosig();
+  stopNoise();
+  setYtVisible(true);
+  powerOnFlash();
+  showOsd();
+}
+
+/* ---- channel change ------------------------------------------------------/
+   static on + iframe hidden at once → dial sweeps (400 ms) → iframe swapped
+   after 450 ms → revealed when the player is ready, 3.5 s hard deadline. */
+function tune({ video, title, channel }){
+  const seq = ++tuneSeq;
+  state.video = video;
+  state.title = title || '';
+  state.channel = Number(channel) || 0;
+  clearTimeout(swapTimer); clearTimeout(revealTimer);
+  hideNosig();
+  startNoise();
+  setYtVisible(false);
+  rotateChKnob(state.channel * 30 * Math.PI / 180);
+  swapTimer = setTimeout(() => {
+    if (seq !== tuneSeq) return;
+    swapIframe(video);
+    revealTimer = setTimeout(() => reveal(seq), 3500);
+  }, 450);
+}
+
+/* ---- no signal: the snow stays on, the card sits under it ----------------*/
+function noSignal(message, watchUrl){
+  ++tuneSeq;                      // cancel any in-flight tune/reveal
+  clearTimeout(swapTimer); clearTimeout(revealTimer);
+  setYtVisible(false);
+  startNoise();
+  $('nosig').querySelector('.msg').textContent = message || '';
+  const link = $('nosig-link');
+  if (watchUrl){
+    link.href = watchUrl;
+    link.classList.add('on');
+  } else {
+    link.removeAttribute('href');
+    link.classList.remove('on');
+  }
+  $('nosig').classList.add('on');
+}
+function hideNosig(){ $('nosig').classList.remove('on'); }
+
+/* ---- knob controls --------------------------------------------------------*/
+$('hot-ch').addEventListener('click', e => {
+  e.stopPropagation();
+  emit({ action: 'channel-up' });
+});
+
+/* Volume knob: horizontal drag maps 0–100 % across ~140 px at the reference
+   card width; the 3D TV_VOL_KNOB mirrors it (−135°…+135°) and the YT player
+   gets each change. setPointerCapture keeps moves coming while the cursor
+   leaves the knob — and even the iframe. */
+let volDrag = null;
+const volAngle = v => (-135 + (v / 100) * 270) * Math.PI / 180;
+function applyVolume(v, notify){
+  state.volume = Math.max(0, Math.min(100, Math.round(v)));
+  setKnobZ(getThreeNode('TV_VOL_KNOB'), volAngle(state.volume));
+  if (player){ try { player.setVolume(state.volume); } catch (e) {} }
+  if (notify) emit({ action: 'volume', volume: state.volume });
+}
+$('hot-vol').addEventListener('pointerdown', e => {
+  e.preventDefault(); e.stopPropagation();
+  volDrag = { id: e.pointerId, x: e.clientX, v: state.volume };
+  try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
+});
+$('hot-vol').addEventListener('pointermove', e => {
+  if (!volDrag || e.pointerId !== volDrag.id) return;
+  applyVolume(volDrag.v + (e.clientX - volDrag.x) * 0.7, true);
+});
+const endVolDrag = e => {
+  if (!volDrag || e.pointerId !== volDrag.id) return;
+  volDrag = null;
+  try { e.target.releasePointerCapture(e.pointerId); } catch (err) {}
+};
+$('hot-vol').addEventListener('pointerup', endVolDrag);
+$('hot-vol').addEventListener('pointercancel', endVolDrag);
+
+/* Power knob toggles play/pause through the YT player. */
+$('hot-power').addEventListener('click', e => {
+  e.stopPropagation();
+  if (!player) return;
+  try {
+    if (state.playing){ player.pauseVideo(); state.playing = false; }
+    else { player.playVideo(); state.playing = true; }
+    emit({ action: 'power', playing: state.playing });
+  } catch (err) {}
+});
+
+/* ---- resize from the cabinet bezel (widget only) --------------------------/
+   Anywhere on the model that is not the screen or a knob is the cabinet: a
+   drag there resizes the widget (the parent snaps to grid columns). A
+   pointerdown whose target is exactly #mv means the WebGL canvas itself was
+   hit — hotspot buttons and the tube overlay stop their events / live above
+   it, so they never reach here. Deltas use screenX/screenY, not clientX/Y:
+   a widening widget re-wraps the grid and moves this iframe, which would
+   shift every clientX mid-drag and oscillate the size. clientX/Y only pick
+   the start side, so they ride along as x/y for the parent. */
+if (window.self !== window.top){
+  let bezelDrag = null;
+  let lastMovedAt = 0;
+  const px = e => (typeof e.screenX === 'number' ? e.screenX : e.clientX);
+  const py = e => (typeof e.screenY === 'number' ? e.screenY : e.clientY);
+  const delta = e => ({ dx: px(e) - bezelDrag.x, dy: py(e) - bezelDrag.y,
+                        x: bezelDrag.cx, y: bezelDrag.cy });
+  const endBezel = e => {
+    if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
+    emit({ action: 'resize', phase: 'end', ...delta(e) });
+    bezelDrag = null;
+    try { mv.releasePointerCapture(e.pointerId); } catch (err) {}
+  };
+  mv.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target !== mv) return;
+    bezelDrag = { id: e.pointerId, x: px(e), y: py(e),
+                  cx: e.clientX, cy: e.clientY, moved: false };
+    try { mv.setPointerCapture(e.pointerId); } catch (err) {}
+    emit({ action: 'resize', phase: 'start', dx: 0, dy: 0, x: e.clientX, y: e.clientY });
+    e.preventDefault();
+  });
+  mv.addEventListener('pointermove', e => {
+    if (!bezelDrag || e.pointerId !== bezelDrag.id) return;
+    // a pointerup outside every document never arrives; buttons===0 on a move
+    // is the practical end of the drag.
+    if (e.buttons === 0){ endBezel(e); return; }
+    const d = delta(e);
+    if (Math.abs(d.dx) + Math.abs(d.dy) > 3){
+      bezelDrag.moved = true;
+      lastMovedAt = performance.now();
+    }
+    emit({ action: 'resize', phase: 'move', ...d });
+  });
+  mv.addEventListener('pointerup', endBezel);
+  mv.addEventListener('pointercancel', endBezel);
+  mv.addEventListener('lostpointercapture', endBezel);
+  // Double-click the cabinet to drop a saved size; a drag that ended in two
+  // quick clicks must not read as a reset.
+  mv.addEventListener('dblclick', e => {
+    if (e.target !== mv) return;
+    if (performance.now() - lastMovedAt < 400) return;
+    emit({ action: 'resize', phase: 'reset' });
+  });
+}
+
+/* ---- parent messages ------------------------------------------------------*/
+addEventListener('message', e => {
+  const d = e.data;
+  if (!d || d.type !== 'crt') return;
+  if (d.action === 'tune') tune(d);
+  else if (d.action === 'error') noSignal(d.message, d.watchUrl);
+  else if (d.action === 'state'){
+    if (d.volume !== undefined){
+      state.volume = Math.max(0, Math.min(100, Number(d.volume) || 0));
+      if (player){ try { player.setVolume(state.volume); } catch (err) {} }
+      setKnobZ(getThreeNode('TV_VOL_KNOB'), volAngle(state.volume));
+    }
+  }
+});
+
+/* ---- boot ------------------------------------------------------------------*/
+if (window.self === window.top) document.documentElement.classList.add('standalone');
+let readySent = false;
+mv.addEventListener('load', () => {
+  knobCache = null;
+  syncScreen();
+  if (!readySent){ readySent = true; emit({ action: 'ready' }); }
+});
+// GLB missing/broken: never blank the page — the tube shows snow instead.
+mv.addEventListener('error', () => { syncScreen(); startNoise(); });
+syncScreen();
+
+// standalone demo helpers: ?video=…&title=…&channel=… tunes without a parent
+const q = new URLSearchParams(location.search);
+if (q.get('video')) tune({ video: q.get('video'), title: q.get('title') || '', channel: q.get('channel') });
+</script>
+</body>
+</html>

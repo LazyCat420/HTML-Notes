@@ -120,7 +120,14 @@ def test_youtube_player_bakes_candidates_and_query():
     assert "youtubePlayerWidget(" in out
     assert "xyz987GHI65" in out and "qrs456JKL21" in out
     assert "2pac i get around" in out
-    assert "Watch on YouTube" in out
+    # The parent frame is only the aspect-locked box: the YouTube player, the
+    # static and the OSD live in the CRT card (app/static/crt/player.html).
+    # A parent-side embed here would mean two players fighting over the tube.
+    assert "/static/crt/player.html" in out
+    assert 'x-ref="crt"' in out
+    assert "tvHeight + 'px'" in out
+    assert "youtube.com/embed" not in out
+    assert "Watch on YouTube" not in out
 
 # ─── Content signature (client reconcile keys on this to avoid widget stutter) ──
 
