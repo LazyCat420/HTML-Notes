@@ -690,7 +690,7 @@ def test_resolve_portal_app_spark_console_and_prism():
     app_doc, exact = portal.resolve_portal_app("documentation", catalog, strict=True)
     assert app_doc is not None
     assert app_doc["id"] == "doc-client"
-    assert app_doc["launch_url"] == "http://10.0.0.16:8910"
+    assert app_doc["launch_url"] == "http://10.0.0.16:8888/"
 
     # 'music player' resolves to music-player
     app, exact = portal.resolve_portal_app("music player", catalog, strict=True)
@@ -744,7 +744,7 @@ async def test_all_curated_apps_use_lan_10_0_0_16_without_tailscale(monkeypatch)
         "portal-client": "http://10.0.0.16:4000",
         "prism-client": "http://10.0.0.16:3333",
         "spark-console": "http://10.0.0.16:8801",
-        "doc-client": "http://10.0.0.16:8910",
+        "doc-client": "http://10.0.0.16:8888/",
     }
     for app_id, url in expected_lan.items():
         assert by_id[app_id]["launch_url"] == url

@@ -145,7 +145,7 @@
       "icon": "📄",
       "icon_url": "icons/doc-client.png",
       "icon_svg": "icons/doc-client.svg",
-      "launch_url": "http://10.0.0.16:8910",
+      "launch_url": "http://10.0.0.16:8888/",
       "client": true,
       "aliases": [
         "doc",

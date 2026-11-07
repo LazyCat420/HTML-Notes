@@ -311,7 +311,7 @@ overlay path as icon/name/aliases.
   `braindeadbot-client` at `:5174`, `drift-king` at `:5580`,
   `youtube-wallgarden` at `:8007`, `treesearch-client` at `:8006`,
   `portal-client` at `:4000`, `prism-client` at `:3333`, `pinball-knight` at
-  `:8789`, `doc-client` at `:8910`). All `.ts.net` Tailscale references were
+  `:8789`, `doc-client` at `http://10.0.0.16:8888/`). All `.ts.net` Tailscale references were
   removed.
 - **Clean Vector App Icons (`app/static/icons/*.svg` + compact `*.png`):**
   Replaced the 100 KB+ AI-generated raster icons with crisp full-bleed 64x64
