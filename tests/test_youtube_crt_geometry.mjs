@@ -5,9 +5,35 @@
 // tests run the real youtubePlayerWidget factory from widgets.js.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { mountCrt, fromCard } from "./_crt_widget_harness.mjs";
 
+const here = dirname(fileURLToPath(import.meta.url));
+const indexCss = readFileSync(join(here, "..", "app", "static", "index.css"), "utf8");
+
 const ASPECT = 0.6 / 0.33;
+
+// The cabinet and the deck paint themselves, so the holographic frame must be
+// suppressed entirely: hud-theme.css clips the frame to an octagon (which would
+// shave the cabinet's corners), lifts it 2px on hover, and draws cyan L-brackets
+// on ::before plus a light-sweep on ::after. None of that may reach these cards.
+test("index.css opts the boxless deck and CRT out of the frame chrome", () => {
+  const from = indexCss.indexOf("/* ─── BOXLESS WIDGETS");
+  const to = indexCss.indexOf("/* ─── HOLOGRAPHIC WIDGET FRAMES");
+  assert.ok(from > 0 && to > from, "the BOXLESS WIDGETS block must exist");
+  const rules = indexCss.slice(from, to);
+  assert.match(rules, /clip-path:\s*none\s*!important/, "the octagon clip would crop the cabinet");
+  assert.match(rules, /transform:\s*none\s*!important/, "the hover lift would slide the device");
+  for (const sel of [".widget-container.youtube-player::before",
+                     ".widget-container.music-widget-root::before"]) {
+    const at = rules.indexOf(sel);
+    assert.ok(at > 0, `${sel} must be suppressed`);
+    const decl = rules.slice(at, rules.indexOf("}", at));
+    assert.match(decl, /content:\s*none\s*!important/, `${sel} must not draw the cyan corner bracket`);
+  }
+});
 
 test("height is the width over the cabinet's 1.8182 aspect", async () => {
   const { w } = await mountCrt(732);

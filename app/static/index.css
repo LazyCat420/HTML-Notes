@@ -205,9 +205,20 @@ body::after {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
     overflow: visible !important;
+    /* hud-theme.css cuts the frame's octagon with clip-path and lifts it 2px on
+       hover; on a boxless widget both would clip or slide the device itself. */
+    clip-path: none !important;
+    transform: none !important;
 }
+/* Both pseudo-elements go: ::before draws the L-shaped cyan corner brackets,
+   ::after the light-sweep. Neither belongs on a device that is its own object. */
+.widget-container.music-widget-root::before,
 .widget-container.music-widget-root::after,
-.widget-container.youtube-player::after { content: none !important; }
+.widget-container.youtube-player::before,
+.widget-container.youtube-player::after {
+    content: none !important;
+    display: none !important;
+}
 /* The frame's iframe chrome ("Iframes sit inside a glowing frame", below) would
    draw an opaque #02060c rectangle with a cyan border and glow around the deck —
    the box the user sees. The card is same-origin and paints its own device, so

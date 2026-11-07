@@ -44,20 +44,21 @@
   #hot-vol{cursor:ew-resize; touch-action:none}
   #hot-power{cursor:pointer}
   /* The tube. Positioned by syncScreen() onto the four projected corner
-     anchors; rounded like a tube face, radius scaled with its height. */
+     anchors; rounded like a Sony Trinitron aperture-grille tube face. */
   #screen{position:absolute; left:0; top:0; width:10px; height:10px;
-    z-index:3; overflow:hidden; border-radius:6px; background:#04070a;
-    box-shadow:inset 0 0 22px rgba(0,0,0,.9)}
+    z-index:3; overflow:hidden; border-radius:14px; background:#04070a;
+    box-shadow:inset 0 0 0 2px rgba(8,12,18,.92), inset 0 0 24px rgba(0,0,0,.92)}
   /* YouTube iframe fills the tube rect (16:9 by construction — the anchors
-     sit at the corners of a 0.400 × 0.225 m glass). */
+     sit at the corners of the 0.368 × 0.207 m Sony Trinitron glass). */
   #screen iframe{position:absolute; inset:0; width:100%; height:100%; border:0;
     z-index:1; background:#000}
-  /* always-on CRT finish: diagonal glass glare, vignette to the corners, and
-     scanlines at a ~3 px period. Purely decorative: never eats pointer events. */
+  /* always-on CRT finish: diagonal glass glare, cylindrical Trinitron sheen,
+     vignette to the rounded corners, and scanlines at a ~3 px period. */
   #glass{position:absolute; inset:0; pointer-events:none; z-index:2;
+    box-shadow:inset 0 0 18px rgba(0,0,0,.85);
     background:
-      linear-gradient(115deg, rgba(255,255,255,.09) 0%, rgba(255,255,255,.025) 16%, rgba(255,255,255,0) 42%),
-      radial-gradient(125% 130% at 50% 48%, rgba(0,0,0,0) 52%, rgba(0,0,0,.55) 100%),
+      linear-gradient(115deg, rgba(255,255,255,.11) 0%, rgba(255,255,255,.03) 18%, rgba(255,255,255,0) 44%),
+      radial-gradient(122% 126% at 50% 48%, rgba(0,0,0,0) 54%, rgba(0,0,0,.62) 100%),
       repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 1px, rgba(0,0,0,0) 1px 3px)}
   /* NO SIGNAL card: stacked UNDER #static so the snow flutters over it. */
   #nosig{position:absolute; inset:0; display:none; flex-direction:column;
@@ -100,15 +101,16 @@
     tone-mapping="aces" exposure="1" shadow-intensity="1" shadow-softness="1"
     interaction-prompt="none" disable-tap disable-pan disable-rotate alt="3D CRT television">
     <!-- tube corners (glTF x, y-up, z; the front face sits at z ≈ 0.1405) -->
-    <div class="hs-anchor" id="sc-tl" slot="hotspot-sc-tl" data-position="-0.255 0.1325 0.1405"></div>
-    <div class="hs-anchor" id="sc-tr" slot="hotspot-sc-tr" data-position="0.145 0.1325 0.1405"></div>
-    <div class="hs-anchor" id="sc-bl" slot="hotspot-sc-bl" data-position="-0.255 -0.0925 0.1405"></div>
-    <div class="hs-anchor" id="sc-br" slot="hotspot-sc-br" data-position="0.145 -0.0925 0.1405"></div>
-    <!-- knob pick targets above the 3D knobs (0.225, y, front): dial +0.075,
-         volume 0.000, power −0.075 — the asset table's knob heights. -->
-    <button class="hs-knob" id="hot-ch"    slot="hotspot-ch"    data-position="0.225 0.075 0.146" aria-label="Channel up" title="Channel"></button>
-    <button class="hs-knob" id="hot-vol"   slot="hotspot-vol"   data-position="0.225 0.000 0.146" aria-label="Volume" title="Drag to set volume"></button>
-    <button class="hs-knob" id="hot-power" slot="hotspot-power" data-position="0.225 -0.075 0.146" aria-label="Power" title="Play / pause"></button>
+    <div class="hs-anchor" id="sc-tl" slot="hotspot-sc-tl" data-position="-0.244 0.0935 0.1405"></div>
+    <div class="hs-anchor" id="sc-tr" slot="hotspot-sc-tr" data-position="0.124 0.0935 0.1405"></div>
+    <div class="hs-anchor" id="sc-bl" slot="hotspot-sc-bl" data-position="-0.244 -0.1135 0.1405"></div>
+    <div class="hs-anchor" id="sc-br" slot="hotspot-sc-br" data-position="0.124 -0.1135 0.1405"></div>
+    <!-- knob pick targets above the 3D Sony Trinitron controls:
+         VHF upper square tuner well (0.197, +0.056), UHF lower square tuner well (0.197, -0.004),
+         and lower-right power switch (0.264, -0.105). -->
+    <button class="hs-knob" id="hot-ch"    slot="hotspot-ch"    data-position="0.197 0.056 0.152" aria-label="Channel up" title="Channel"></button>
+    <button class="hs-knob" id="hot-vol"   slot="hotspot-vol"   data-position="0.197 -0.004 0.152" aria-label="Volume" title="Drag to set volume"></button>
+    <button class="hs-knob" id="hot-power" slot="hotspot-power" data-position="0.264 -0.105 0.146" aria-label="Power" title="Play / pause"></button>
   </model-viewer>
   <div id="screen">
     <!-- the YouTube iframe is created by JS (swapIframe) and inserted here -->
@@ -126,12 +128,12 @@
 const $ = id => document.getElementById(id);
 const mv = $('mv'), stage = $('stage'), screenEl = $('screen');
 
-/* The tube glass is 0.400 × 0.225 m on a cabinet with visible bounds
-   0.600 × 0.330 m. The camera distance is chosen so the FRONT PLANE (z = 0.130)
-   exactly fills the frame: d = 0.130 + 0.330 / (2·tan(10°)) = 1.0658 m. The
-   fallback screen rect uses these constants when the anchors have not projected. */
-const TUBE_W = 0.400, TUBE_H = 0.225, CAB_W = 0.600;
-const TUBE_LEFT = 0.0703, TUBE_TOP = 0.0785;   // corner anchors inset from the cabinet box
+/* The Sony Trinitron tube glass is 0.368 × 0.207 m on a cabinet with visible bounds
+   0.600 × 0.330 m (including top carry handle & rabbit-ear antennas). The camera
+   distance is chosen so the FRONT PLANE (z = 0.130) fills the frame:
+   d = 0.130 + 0.330 / (2·tan(10°)) = 1.0658 m. */
+const TUBE_W = 0.368, TUBE_H = 0.207, CAB_W = 0.600;
+const TUBE_LEFT = 0.056, TUBE_TOP = 0.0715;   // fallback corner inset from the 0.600x0.330 box
 
 const state = { video: null, title: '', channel: 0, volume: 100, playing: false };
 
@@ -172,18 +174,18 @@ function syncScreen(){
   screenEl.style.top = Math.round(t) + 'px';
   screenEl.style.width = Math.round(w) + 'px';
   screenEl.style.height = Math.round(h) + 'px';
-  // tube corners are soft: 6 px at the 225 px-tall reference tube, scaled.
-  screenEl.style.borderRadius = Math.max(2, Math.round(6 * h / 225)) + 'px';
+  // Trinitron tube corners have a 0.018 m radius on the 0.207 m tall aperture (18 * h / 207 px).
+  screenEl.style.borderRadius = Math.max(4, Math.round(18 * h / 207)) + 'px';
 
-  // knob pick targets follow the projection too (diameters from the asset table)
+  // knob pick targets follow the projection too (square VHF/UHF wells = 0.055 m, power = 0.022 m)
   const setSize = (el, m) => {
     if (!el) return;
     const s = Math.max(10, Math.round(m * pxPerM));
     if (el.style.width !== s + 'px'){ el.style.width = s + 'px'; el.style.height = s + 'px'; }
   };
-  setSize($('hot-ch'), 0.076);
-  setSize($('hot-vol'), 0.036);
-  setSize($('hot-power'), 0.020);
+  setSize($('hot-ch'), 0.055);
+  setSize($('hot-vol'), 0.055);
+  setSize($('hot-power'), 0.022);
 }
 mv.addEventListener('camera-change', syncScreen);
 addEventListener('resize', syncScreen);
