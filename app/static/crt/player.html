@@ -186,7 +186,21 @@ function syncScreen(){
   setSize($('hot-vol'), 0.055);
 }
 mv.addEventListener('camera-change', syncScreen);
-addEventListener('resize', syncScreen);
+// A resize does not fire camera-change, and model-viewer re-projects the
+// hotspot anchors only on its next rendered frame — syncing synchronously
+// reads the old corners, leaving the video at its previous size. Re-sync
+// across the following frames and once more after the drag settles.
+let resyncTimer = 0;
+function syncAfterResize(){
+  syncScreen();
+  let frames = 4;
+  const tick = () => { syncScreen(); if (--frames > 0) requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+  clearTimeout(resyncTimer);
+  resyncTimer = setTimeout(syncScreen, 200);
+}
+addEventListener('resize', syncAfterResize);
+new ResizeObserver(syncAfterResize).observe(stage);
 setTimeout(syncScreen, 400);
 // cqh units in #osd/#nosig need the screen element as their query container.
 screenEl.style.containerType = 'size';
