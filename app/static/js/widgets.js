@@ -1589,11 +1589,11 @@ document.addEventListener('alpine:init', () => {
             const ctrl = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), 20000);
             try {
-                const res = await fetch(`${this.base}/api/youtube/playable/${encodeURIComponent(id)}`,
+                const res = await fetch(`${this.base}/api/youtube/stream-info/${encodeURIComponent(id)}`,
                                         { signal: ctrl.signal });
                 if (!res.ok) return true;
                 const d = await res.json();
-                return d.playable !== false;
+                return d.found !== false;
             } catch (e) {
                 // Unknown, not dead — a blip must never discard a good track.
                 return true;

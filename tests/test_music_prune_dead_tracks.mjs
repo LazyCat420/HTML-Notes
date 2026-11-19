@@ -35,11 +35,12 @@ const make = new Function("fetch", "setTimeout", "clearTimeout", "AbortControlle
 function widget({ dead = [], failFetch = false, badJson = false } = {}) {
   const asked = [];
   const fakeFetch = async (url) => {
+    assert.match(url, /\/api\/youtube\/stream-info\//, `expected /api/youtube/stream-info/, got ${url}`);
     const id = url.split("/").pop();
     asked.push(id);
     if (failFetch) throw new Error("network down");
     if (badJson) return { ok: true, json: async () => { throw new Error("not json"); } };
-    return { ok: true, json: async () => ({ video_id: id, playable: !dead.includes(id) }) };
+    return { ok: true, json: async () => ({ video_id: id, found: !dead.includes(id) }) };
   };
   const self = {
     base: "http://svc:8002",
@@ -133,9 +134,10 @@ const makeSettle = new Function("fetch", "setTimeout", "clearTimeout", "AbortCon
 function settler({ dead = [] } = {}) {
   const asked = [];
   const fakeFetch = async (url) => {
+    assert.match(url, /\/api\/youtube\/stream-info\//, `expected /api/youtube/stream-info/, got ${url}`);
     const id = url.split("/").pop();
     asked.push(id);
-    return { ok: true, json: async () => ({ playable: !dead.includes(id) }) };
+    return { ok: true, json: async () => ({ video_id: id, found: !dead.includes(id) }) };
   };
   const self = {
     base: "http://svc:8002",
