@@ -127,11 +127,15 @@
         "destructive": false,
         "description": "Record that a track was played, so the music library's history and smart mixes learn from canvas listening too.",
         "params": {
-          "track_id": "REQUIRED track identifier.",
+          "track_id": "REQUIRED track identifier (e.g. 'youtube://<id>' or local path).",
           "artist": "REQUIRED artist name.",
           "title": "REQUIRED track title.",
-          "duration": "Seconds listened.",
-          "source": "Where it played, e.g. 'canvas'."
+          "album": "Optional album name (default empty string).",
+          "duration": "Track duration in seconds (integer).",
+          "listened_seconds": "Optional seconds actually listened.",
+          "completion_rate": "Optional fraction listened in [0.0, 1.0].",
+          "end_reason": "Optional end reason: 'complete', 'skip', or 'replace'.",
+          "source": "Where it played, e.g. 'youtube' or 'local'."
         },
         "body": {
           "id": "$track_id!",
@@ -140,7 +144,9 @@
           "title": "$title!",
           "album": "$album",
           "duration": "$duration",
+          "listened_seconds": "$listened_seconds",
           "completion_rate": "$completion_rate",
+          "end_reason": "$end_reason",
           "source": "$source",
           "context": "canvas"
         }

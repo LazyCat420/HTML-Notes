@@ -159,9 +159,8 @@ def _play_event_model():
     tree = ast.parse(src)
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "PlayEvent")
     ns: dict = {}
-    exec(compile(ast.Module(body=[
-        ast.parse("from pydantic import BaseModel").body[0], cls], type_ignores=[]),
-        "music-player/history.py", "exec"), ns)
+    imports = ast.parse("from typing import Literal, Optional\nfrom pydantic import BaseModel").body
+    exec(compile(ast.Module(body=[*imports, cls], type_ignores=[]), "music-player/history.py", "exec"), ns)
     return ns["PlayEvent"]
 
 
@@ -178,12 +177,62 @@ console.log(JSON.stringify({js_expr}));
 
 def test_play_event_from_widget_validates_against_music_player_model():
     PlayEvent = _play_event_model()
-    body = _widget('w.buildPlayEvent({ id: "cb2w2m1JmCY", isYoutube: true, '
-                   'title: "Take the A Train", artist: "Duke Ellington" })')
+    body = _widget(
+        'w.buildPlayEvent({ id: "cb2w2m1JmCY", isYoutube: true, '
+        'title: "Take the A Train", artist: "Duke Ellington" }, '
+        '{ listenedSeconds: 213.4, duration: 213.4, endReason: "complete" })'
+    )
     ev = PlayEvent(**body)               # raises ValidationError on the old body → 422
     assert ev.track_id == "youtube://cb2w2m1JmCY"
     assert ev.duration == 213
+    assert ev.completion_rate == 1.0
     assert ev.context == "html-notes"
+    assert body["end_reason"] == "complete"
+    assert body["listened_seconds"] == 213.4
+    assert body["genre_key"] == "jazz"
+
+
+def test_widget_posts_history_only_on_end_or_replace_not_start():
+    """G3 / L1: starting a track must NOT POST completion_rate=0; ending a 3-min play records a full listen."""
+    script = """
+import { streams, loadFactory, mount } from "./_music_widget_harness.mjs";
+const env = loadFactory();
+const w = await mount(env.factory, "jazz");
+streams.at(-1).fire("tracks", { tracks: [
+  { id: "song1", title: "So What", artist: "Miles Davis", duration: 180 },
+  { id: "song2", title: "Blue in Green", artist: "Miles Davis", duration: 200 },
+] });
+const afterStart = env.fetchCalls.filter(c => c.url.endsWith("/api/music/history")).length;
+// Simulate full 3-minute playback ending cleanly
+w.audio.duration = 180;
+w.audio.currentTime = 180;
+w.audio.emit("durationchange");
+w.audio.emit("ended");
+w.closeStream();
+const afterEnd = env.fetchCalls.filter(c => c.url.endsWith("/api/music/history"));
+console.log(JSON.stringify({ afterStart, count: afterEnd.length, body: afterEnd[0]?.body || null }));
+process.exit(0);
+"""
+    out = _run_node(script)
+    assert out["afterStart"] == 0, "must not POST completion_rate=0 when a track starts"
+    assert out["count"] == 1
+    assert out["body"]["end_reason"] == "complete"
+    assert out["body"]["completion_rate"] == 1.0
+    assert out["body"]["listened_seconds"] >= 180
+    assert out["body"]["duration"] == 180
+    assert out["body"]["genre_key"] == "jazz"
+
+
+def test_app_actions_record_play_declares_all_body_params():
+    """G10: every $param referenced in music-player.record_play body is declared in params."""
+    actions = json.loads((ROOT / "app" / "app_actions.json").read_text())
+    spec = actions["actions"]["music-player"]["record_play"]
+    params = set(spec["params"].keys())
+    for val in spec["body"].values():
+        if isinstance(val, str) and val.startswith("$"):
+            name = val.lstrip("$").rstrip("!")
+            assert name in params, f"undeclared param ${name} in music-player.record_play"
+    assert "listened_seconds" in params and "end_reason" in params and "completion_rate" in params
 
 
 def test_old_history_body_is_what_the_service_rejected():

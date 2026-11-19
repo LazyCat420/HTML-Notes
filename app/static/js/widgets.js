@@ -1052,6 +1052,11 @@ document.addEventListener('alpine:init', () => {
         activeTab: 'queue',
         recentHistory: [],
         lastLoggedTrackId: null,
+        activePlayTrack: null,
+        activePlayDuration: 0,
+        activePlayStartedAt: 0,
+        activePlayAccumulated: 0,
+        activePlayReported: false,
         // Next-track cache warmer (see prefetchUpcoming). One 30s timer max.
         prefetchTimer: null,
         // Thumbs feedback for the CURRENT SONG ('up' | 'down' | null),
@@ -1147,8 +1152,10 @@ document.addEventListener('alpine:init', () => {
             // (a final timeupdate especially) still fire afterwards.
             this.audio.addEventListener('ended', () => {
                 if (!this.audio) return;
+                this.flushPlayEvent('complete');
                 if (this.isRepeat) {
                     this.audio.currentTime = 0;
+                    this.beginPlaySession(this.currentTrack);
                     this.audio.play();
                 } else {
                     this.nextTrack({ auto: true });
@@ -1157,19 +1164,34 @@ document.addEventListener('alpine:init', () => {
             });
             this.audio.addEventListener('play', () => {
                 this.isPlaying = true;
+                if (this.activePlayTrack && !this.activePlayStartedAt) {
+                    this.activePlayStartedAt = Date.now();
+                }
             });
             this.audio.addEventListener('pause', () => {
                 this.isPlaying = false;
+                if (this.activePlayStartedAt) {
+                    this.activePlayAccumulated += Math.max(0, (Date.now() - this.activePlayStartedAt) / 1000);
+                    this.activePlayStartedAt = 0;
+                }
             });
             this.audio.addEventListener('timeupdate', () => {
                 if (this.audio) this.currentTime = this.audio.currentTime;
             });
             this.audio.addEventListener('durationchange', () => {
-                if (this.audio) this.duration = this.audio.duration || 0;
+                if (this.audio) {
+                    const dur = isFinite(this.audio.duration) ? (this.audio.duration || 0) : 0;
+                    this.duration = dur;
+                    if (dur > 0 && this.activePlayTrack) {
+                        this.activePlayDuration = dur;
+                        this.activePlayTrack.duration = dur;
+                    }
+                }
             });
             this.audio.addEventListener('error', (e) => {
                 if (!this.audio || !this.audio.src) return;
                 console.error('[MusicPlayer] Native audio playback error:', e);
+                this.activePlayReported = true; // never log playback errors as skips
                 this.handleStreamError();
             });
             try {
@@ -1181,6 +1203,9 @@ document.addEventListener('alpine:init', () => {
                 // Our own track is audible now: the inherited music can stop.
                 this.releaseCarry();
                 this.notePlaybackStarted();
+                if (this.activePlayTrack && !this.activePlayStartedAt) {
+                    this.activePlayStartedAt = Date.now();
+                }
                 this.recordPlayHistory(this.currentTrack);
             });
 
@@ -1483,12 +1508,23 @@ document.addEventListener('alpine:init', () => {
                 .finally(() => { this.refillInFlight = false; });
         },
 
+        beginPlaySession(track) {
+            this.activePlayTrack = track || null;
+            this.activePlayDuration = (track && Number(track.duration)) || 0;
+            this.activePlayStartedAt = 0;
+            this.activePlayAccumulated = 0;
+            this.activePlayReported = false;
+            this.duration = this.activePlayDuration;
+            this.currentTime = 0;
+        },
+
         loadTrack() {
             this.pruneAhead();
             if (!this.currentTrack) return;
             if (!this.audio) {
                 this.audio = new Audio();
             }
+            this.beginPlaySession(this.currentTrack);
             this.audio.volume = this.isMuted ? 0 : this.volume;
             if (this.currentTrack.isYoutube) {
                 this.audio.src = `${this.base}/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
@@ -1504,6 +1540,9 @@ document.addEventListener('alpine:init', () => {
         playAt(i, { auto = false } = {}) {
             if (!auto) this.cancelHandoff();
             if (i < 0 || i >= this.queue.length) return;
+            if (this.activePlayTrack && this.activePlayTrack !== this.queue[i]) {
+                this.flushPlayEvent(auto ? 'skip' : 'replace');
+            }
             this.currentIndex = i;
             this.loadTrack();
             const shouldPlay = auto ? this.autoplayWanted : true;
@@ -1542,7 +1581,10 @@ document.addEventListener('alpine:init', () => {
         nextTrack({ auto = false } = {}) {
             // Auto-advance (track ended, or a stream the CDN refused) must NOT
             // abandon a pending handoff — only a deliberate "next" does.
-            if (!auto) this.cancelHandoff();
+            if (!auto) {
+                this.cancelHandoff();
+                this.flushPlayEvent('skip');
+            }
             if (this.queue.length === 0) return;
             const wasPlaying = this.isPlaying;
             this.currentIndex = (this.currentIndex + 1) % this.queue.length;
@@ -1564,6 +1606,7 @@ document.addEventListener('alpine:init', () => {
                 this.audio.currentTime = 0;
                 return;
             }
+            this.flushPlayEvent('skip');
             const wasPlaying = this.isPlaying;
             this.currentIndex = (this.currentIndex - 1 + this.queue.length) % this.queue.length;
             this.loadTrack();
@@ -1719,7 +1762,10 @@ document.addEventListener('alpine:init', () => {
             this.lastLoggedTrackId = track.id;
             console.log(`[MusicPlayer] 🎵 Now Playing: "${track.title || 'Unknown'}" by "${track.artist || 'Unknown'}" (ID: ${track.id})`);
 
-            // Cache locally in localStorage['hn_music_history']
+            // Cache locally in localStorage['hn_music_history'] immediately so the
+            // drawer shows what's playing. Server POST to /api/music/history happens
+            // in flushPlayEvent() when the track ends or is replaced (G3 / L1), so
+            // we never record bogus completion_rate: 0 start events.
             try {
                 const historyItem = {
                     id: track.id,
@@ -1738,24 +1784,47 @@ document.addEventListener('alpine:init', () => {
             } catch (e) {
                 console.warn('[MusicPlayer] LocalStorage history error:', e);
             }
+        },
 
-            // Dispatch to backend music service. The body must match the
-            // service's PlayEvent model (music-player apps/api/app/routers/
-            // history.py): id, track_id, timestamp, duration, completion_rate,
-            // source, context are REQUIRED — the old {track_path, is_youtube,…}
-            // body 422'd on every track (2026-11-03). track_id uses the same
-            // "youtube://<id>" path the music-player web app records, so both
-            // clients' plays group into one history row per song.
+        getActiveListenedSeconds() {
+            let elapsed = this.activePlayAccumulated || 0;
+            if (this.activePlayStartedAt) {
+                elapsed += Math.max(0, (Date.now() - this.activePlayStartedAt) / 1000);
+            }
+            const audioPos = (this.audio && isFinite(this.audio.currentTime)) ? (this.audio.currentTime || 0) : 0;
+            return Math.max(elapsed, audioPos, this.currentTime || 0);
+        },
+
+        flushPlayEvent(endReason = 'skip') {
+            const track = this.activePlayTrack;
+            if (!track || !track.id || this.activePlayReported) return;
+            if (this.activePlayStartedAt) {
+                this.activePlayAccumulated += Math.max(0, (Date.now() - this.activePlayStartedAt) / 1000);
+                this.activePlayStartedAt = 0;
+            }
+            let listened = this.getActiveListenedSeconds();
+            const dur = this.activePlayDuration || Number(track.duration) || 0;
+            if (endReason === 'complete' && dur > 0) {
+                listened = Math.max(listened, dur);
+            }
+            this.activePlayReported = true;
+            // Ignore sub-second accidental blips unless the track ended cleanly
+            if (listened < 1 && endReason !== 'complete') return;
+
             try {
                 fetch(`${this.base}/api/music/history`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.buildPlayEvent(track))
+                    body: JSON.stringify(this.buildPlayEvent(track, {
+                        listenedSeconds: listened,
+                        duration: dur,
+                        endReason,
+                    }))
                 }).catch(err => console.warn('[MusicPlayer] Failed to POST /api/music/history:', err));
             } catch {}
         },
 
-        buildPlayEvent(track) {
+        buildPlayEvent(track, { listenedSeconds = 0, duration = null, endReason = 'skip' } = {}) {
             // crypto.randomUUID exists only in secure contexts; the NAS serves
             // plain http, so fall back to a time+random id.
             const uid = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -1764,6 +1833,14 @@ document.addEventListener('alpine:init', () => {
             const trackId = track.isYoutube
                 ? `youtube://${track.id}`
                 : (track.path || track.id);
+            const dur = Math.round(duration != null ? duration : (track.duration || this.duration || 0));
+            const listened = Math.max(0, Number(listenedSeconds) || 0);
+            const rate = dur > 0
+                ? Math.min(listened / dur, 1.0)
+                : (endReason === 'complete' ? 1.0 : 0);
+            const genreKey = (this.resolvedType === 'genre' && this.genreFilter)
+                ? String(this.genreFilter).toLowerCase().trim()
+                : null;
             return {
                 id: uid,
                 track_id: trackId,
@@ -1771,10 +1848,11 @@ document.addEventListener('alpine:init', () => {
                 title: track.title || 'Unknown',
                 album: track.album || '',
                 timestamp: new Date().toISOString(),
-                duration: Math.round(this.duration || track.duration || 0),
-                // Logged at play start; the service's popularity queries only
-                // count completion_rate >= 0.5, so a start event never inflates them.
-                completion_rate: 0,
+                duration: dur,
+                completion_rate: Number(rate.toFixed(3)),
+                listened_seconds: Number(listened.toFixed(2)),
+                end_reason: endReason,
+                genre_key: genreKey,
                 source: track.isYoutube ? 'youtube' : 'local',
                 context: 'html-notes'
             };
@@ -2306,6 +2384,7 @@ document.addEventListener('alpine:init', () => {
 
         stopPlayback() {
             this.cancelHandoff();
+            this.flushPlayEvent('skip');
             if (this.audio) {
                 try { this.audio.pause(); } catch (e) {}
                 this.audio.currentTime = 0;
@@ -2382,6 +2461,7 @@ document.addEventListener('alpine:init', () => {
                     return;
                 }
             }
+            this.flushPlayEvent('replace');
             this.releaseCarry();
             this.stopAudio();
         },
