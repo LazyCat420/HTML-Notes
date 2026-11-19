@@ -127,7 +127,7 @@ test("removeAt keeps the playing track and fixes indices", () => {
   assert.deepEqual(s.queue.map(t => t.id), ["b", "c"]);
 });
 
-test("maybeRefill gating: threshold, in-flight, and 90s floor", () => {
+test("maybeRefill uses bounded next-batch with genre/exclude and drops refresh=true", () => {
   // Mirrors the guards; the source asserts below pin the real values.
   const gate = (remaining, inFlight, msSinceLast, hasTerm = true) =>
     !(remaining > 5 || inFlight || !hasTerm) && msSinceLast >= 90000;
@@ -138,8 +138,30 @@ test("maybeRefill gating: threshold, in-flight, and 90s floor", () => {
   assert.equal(gate(3, false, 91000), true, "low queue, idle, past floor — refill");
   assert.match(musicSrc, /remaining > 5 \|\| this\.refillInFlight \|\| !this\.genreFilter/,
     "source gate must match the mirror");
-  assert.match(musicSrc, /< 90000/, "90s floor (mix endpoint is rate-limited 10/min)");
-  assert.match(musicSrc, /refresh=true/, "refill must ask the pipeline for fresh tracks");
+  assert.match(musicSrc, /< 90000/, "90s floor");
+  const refillBody = musicSrc.slice(
+    musicSrc.indexOf("maybeRefill() {"),
+    musicSrc.indexOf("loadTrack() {"));
+  assert.match(refillBody, /\/api\/music\/history\/smart\/endless-mix\/next-batch/,
+    "refill must use the bounded endless-mix next-batch endpoint");
+  assert.match(refillBody, /params\.set\('exclude'/, "refill must pass queued video IDs in exclude");
+  assert.doesNotMatch(musicSrc, /refresh=true/, "widget must never send refresh=true");
+});
+
+test("SSE handles heartbeat, parses server {code}, and gates artist failover on unknown kind + empty", () => {
+  const startStreamBody = musicSrc.slice(
+    musicSrc.indexOf("startStream(term, type"),
+    musicSrc.indexOf("closeStream() {"));
+  assert.match(startStreamBody, /addEventListener\('heartbeat'/, "must listen for heartbeat frames");
+  assert.match(startStreamBody, /45000/, "must enforce 45s idle watchdog");
+  assert.match(startStreamBody, /90000/, "must enforce 90s first-track deadline");
+  assert.match(startStreamBody, /payload\.code/, "must parse server error {code}");
+
+  const failoverBody = musicSrc.slice(
+    musicSrc.indexOf("async failover("),
+    musicSrc.indexOf("maybeRefill() {"));
+  assert.match(failoverBody, /!this\.kind/, "must only fall back genre→artist when kind is unknown");
+  assert.match(failoverBody, /code !== 'empty'/, "non-empty server errors must stop instead of failing over");
 });
 
 // ── Routing passes `kind`; the widget and template carry it ─────────────────

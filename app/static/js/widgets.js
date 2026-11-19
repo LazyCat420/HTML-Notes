@@ -1048,6 +1048,7 @@ document.addEventListener('alpine:init', () => {
         isMuted: false,
         prevVolume: 1.0,
         watchdogTimer: null,
+        idleWatchdogTimer: null,
         activeTab: 'queue',
         recentHistory: [],
         lastLoggedTrackId: null,
@@ -1241,11 +1242,13 @@ document.addEventListener('alpine:init', () => {
         },
 
         asTrack(v) {
+            const vid = v.id || v.youtubeId || (typeof v.track_id === 'string' && v.track_id.startsWith('youtube://') ? v.track_id.slice(10) : '');
             return {
-                id: v.id,
+                id: vid,
                 title: v.title,
                 artist: v.artist || v.uploader || 'YouTube Music',
-                path: v.id,
+                duration: Number(v.duration) || 0,
+                path: vid,
                 isYoutube: true
             };
         },
@@ -1253,8 +1256,8 @@ document.addEventListener('alpine:init', () => {
         /** Append fresh (unseen) tracks to the queue. Returns how many landed. */
         enqueue(raw) {
             const fresh = (raw || [])
-                .filter(v => v && v.id && !this.seenIds.has(v.id))
-                .map(v => this.asTrack(v));
+                .map(v => v ? this.asTrack(v) : null)
+                .filter(t => t && t.id && !this.seenIds.has(t.id));
             fresh.forEach(t => this.seenIds.add(t.id));
             this.queue.push(...fresh);
             if (fresh.length) this.pruneAhead();
@@ -1274,24 +1277,51 @@ document.addEventListener('alpine:init', () => {
             this.resolvedType = type;
             this.streamStatus = 'Tuning in…';
             const url = `${this.base}/api/youtube/mix/${encodeURIComponent(term)}/stream`
-                      + `?type=${type}${refresh ? '&refresh=true' : ''}`;
+                      + `?type=${type}${refresh ? '&refresh=1' : ''}`;
             let gotTracks = false;
             let transportRetried = false;
-            // The cold genre pipeline emits its first tracks batch well inside
-            // 60s; silence past that means it's wedged, not slow.
-            if (this.watchdogTimer) {
-                clearTimeout(this.watchdogTimer);
-                this.watchdogTimer = null;
-            }
+
+            const armIdleWatchdog = () => {
+                if (this.idleWatchdogTimer) {
+                    clearTimeout(this.idleWatchdogTimer);
+                    this.idleWatchdogTimer = null;
+                }
+                // 45s = 3 missed 15s server heartbeats → stream wedged/dead.
+                this.idleWatchdogTimer = setTimeout(() => {
+                    this.closeStream();
+                    if (!gotTracks) this.failover(term, type, { errorCode: 'timeout', errorMessage: 'Mix stream timed out.' });
+                }, 45000);
+            };
+
+            armIdleWatchdog();
+            // 90s first-track deadline even if heartbeats continue.
             this.watchdogTimer = setTimeout(() => {
-                if (!gotTracks) { this.closeStream(); this.failover(term, type); }
-            }, 60000);
+                if (!gotTracks) {
+                    this.closeStream();
+                    this.failover(term, type, { errorCode: 'timeout', errorMessage: 'Mix stream timed out waiting for tracks.' });
+                }
+            }, 90000);
 
             this.es = new EventSource(url);
             this.es.addEventListener('status', e => {
+                armIdleWatchdog();
                 try { this.streamStatus = JSON.parse(e.data).message || ''; } catch {}
             });
+            this.es.addEventListener('heartbeat', e => {
+                armIdleWatchdog();
+                try {
+                    const d = JSON.parse(e.data);
+                    if (d && d.phase && !gotTracks) {
+                        const sec = typeof d.elapsed_s === 'number' ? ` · ${Math.round(d.elapsed_s)}s` : '';
+                        this.streamStatus = `${d.phase}${sec}`;
+                    }
+                } catch {}
+            });
+            this.es.addEventListener('artists', () => {
+                armIdleWatchdog();
+            });
             this.es.addEventListener('tracks', e => {
+                armIdleWatchdog();
                 let d = {};
                 try { d = JSON.parse(e.data); } catch { return; }
                 const landed = this.enqueue(d.tracks);
@@ -1309,29 +1339,34 @@ document.addEventListener('alpine:init', () => {
                 if (!gotTracks && landed > 0 && !d.provisional) {
                     gotTracks = true;
                     this.error = '';
+                    if (this.watchdogTimer) {
+                        clearTimeout(this.watchdogTimer);
+                        this.watchdogTimer = null;
+                    }
                 }
             });
             this.es.addEventListener('done', () => {
-                if (this.watchdogTimer) {
-                    clearTimeout(this.watchdogTimer);
-                    this.watchdogTimer = null;
-                }
                 this.streamStatus = '';
                 // CRITICAL: close on done. EventSource auto-reconnects after a
                 // server-side close, which would re-run the entire discovery
                 // pipeline in a loop and burn the service's 10/min mix limit.
                 this.closeStream();
-                if (!gotTracks) this.failover(term, type);
+                if (!gotTracks) this.failover(term, type, { errorCode: 'empty' });
             });
-            this.es.addEventListener('error', () => {
-                // Server-sent terminal error event (named "error" in the SSE
-                // protocol of the mix endpoint) — distinct from transport onerror.
-                if (this.watchdogTimer) {
-                    clearTimeout(this.watchdogTimer);
-                    this.watchdogTimer = null;
-                }
+            this.es.addEventListener('error', e => {
+                // Server-sent terminal error event carries JSON e.data with
+                // {code, message}; transport drops have no e.data and are
+                // handled by es.onerror below.
+                if (!e || typeof e.data !== 'string' || !e.data.length) return;
+                let code = '';
+                let message = '';
+                try {
+                    const payload = JSON.parse(e.data);
+                    code = String(payload.code || '').toLowerCase();
+                    message = String(payload.message || '');
+                } catch {}
                 this.closeStream();
-                if (!gotTracks) this.failover(term, type);
+                if (!gotTracks) this.failover(term, type, { errorCode: code, errorMessage: message });
             });
             this.es.onerror = () => {
                 // Transport-level failure. Allow ONE built-in reconnect (flaky
@@ -1339,18 +1374,10 @@ document.addEventListener('alpine:init', () => {
                 // closed uncleanly — stop and fail over if nothing played yet.
                 if (!this.es) return;
                 if (gotTracks) {
-                    if (this.watchdogTimer) {
-                        clearTimeout(this.watchdogTimer);
-                        this.watchdogTimer = null;
-                    }
                     this.closeStream();
                     return;
                 }
                 if (!transportRetried) { transportRetried = true; return; }
-                if (this.watchdogTimer) {
-                    clearTimeout(this.watchdogTimer);
-                    this.watchdogTimer = null;
-                }
                 this.closeStream();
                 this.failover(term, type, { transportDead: true });
             };
@@ -1361,6 +1388,10 @@ document.addEventListener('alpine:init', () => {
                 clearTimeout(this.watchdogTimer);
                 this.watchdogTimer = null;
             }
+            if (this.idleWatchdogTimer) {
+                clearTimeout(this.idleWatchdogTimer);
+                this.idleWatchdogTimer = null;
+            }
             if (this.es) {
                 this.es.close();
                 this.es = null;
@@ -1369,7 +1400,8 @@ document.addEventListener('alpine:init', () => {
 
         /**
          * Fallback ladder, in order of honesty:
-         *   genre miss → artist mix (covers "Jungle" the band routed as genre)
+         *   genre empty + unknown kind → artist mix (covers "Jungle" the band)
+         *   transient/service errors (timeout, llm_down, scrape_down, ai_disabled) → honest error, no failover
          *   artist miss → plain YouTube search
          *   still nothing + user named something → say so and STOP. Never dump
          *     the personal library for a named genre — that's the Burzum bug.
@@ -1377,13 +1409,18 @@ document.addEventListener('alpine:init', () => {
          *   service unreachable → offline message (the library lives on the
          *     same host, so it can't help either).
          */
-        async failover(term, type, { transportDead = false } = {}) {
+        async failover(term, type, { transportDead = false, errorCode = '', errorMessage = '' } = {}) {
             this.streamStatus = '';
             if (transportDead) {
                 this.error = 'Music service is offline.';
                 return;
             }
-            if (type === 'genre' && !this.triedArtistFallback) {
+            const code = String(errorCode || '').toLowerCase();
+            if (code && code !== 'empty') {
+                this.error = errorMessage || `Couldn't build "${term}" mix (${code}).`;
+                return;
+            }
+            if (type === 'genre' && !this.triedArtistFallback && !this.kind && (!code || code === 'empty')) {
                 this.triedArtistFallback = true;
                 console.warn(`[MusicPlayer] Genre mix empty for "${term}" — retrying as artist.`);
                 this.startStream(term, 'artist');
@@ -1398,7 +1435,7 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
             if (this.genreFilter) {
-                this.error = `Couldn't find "${term}" — try a different genre or artist.`;
+                this.error = errorMessage || `Couldn't find "${term}" — try a different genre or artist.`;
                 return;
             }
             // Bare rehydrated widget with no query at all: the library is fine.
@@ -1414,10 +1451,10 @@ document.addEventListener('alpine:init', () => {
         },
 
         /**
-         * Background refill when the queue runs low. refresh=true re-runs the
-         * discovery pipeline (slow, but we're already playing); enqueue()'s
-         * seenIds dedupe keeps repeats out. Floored at 90s between attempts —
-         * the mix endpoint is rate-limited to 10/min service-side.
+         * Background refill when the queue runs low. Calls the bounded
+         * endless-mix/next-batch endpoint with genre + exclude IDs instead of
+         * forcing a full pipeline refresh (which used to block on 600s research).
+         * Floored at 90s between attempts.
          */
         maybeRefill() {
             const remaining = this.queue.length - this.currentIndex - 1;
@@ -1425,11 +1462,22 @@ document.addEventListener('alpine:init', () => {
             if (Date.now() - this.lastRefillAt < 90000) return;
             this.refillInFlight = true;
             this.lastRefillAt = Date.now();
-            const term = this.genreFilter;
+            const params = new URLSearchParams();
+            if (this.resolvedType === 'genre') {
+                params.set('genre', this.genreFilter);
+            }
+            const excludeIds = this.queue
+                .filter(t => t && t.isYoutube && t.id)
+                .map(t => t.id)
+                .slice(-50);
+            if (excludeIds.length) {
+                params.set('exclude', excludeIds.join(','));
+            }
             this.fetchJson(
-                `${this.base}/api/youtube/mix/${encodeURIComponent(term)}?type=${this.resolvedType}&refresh=true`, 60000)
+                `${this.base}/api/music/history/smart/endless-mix/next-batch?${params.toString()}`, 95000)
                 .then(d => {
-                    const landed = this.enqueue((d && d.videos) || []);
+                    const batch = Array.isArray(d) ? d : ((d && d.tracks) || []);
+                    const landed = this.enqueue(batch);
                     if (landed) console.log(`[MusicPlayer] Refilled queue with ${landed} tracks.`);
                 })
                 .finally(() => { this.refillInFlight = false; });
