@@ -1285,22 +1285,40 @@ document.addEventListener('alpine:init', () => {
             };
         },
 
-        /** Return canonical blockable artist name, keeping hyphenated/lowercase artists while stripping channel wrappers. */
+        /** Return canonical blockable artist name, keeping real artists like Channel Tres while stripping channel wrappers. */
         canonicalArtistKey(track) {
             if (!track) return '';
             const rawArtist = String(track.artist || '').replace(/\s*-\s*Topic$/i, '').trim();
-            const isPlaceholderOrChannel = !rawArtist
-                || /^(youtube(?:\s+music)?|various\s+artists)$/i.test(rawArtist)
-                || /\b(vault|records|official|channel)\b/i.test(rawArtist)
+            const isPlaceholder = !rawArtist || /^(youtube(?:\s+music)?|various\s+artists)$/i.test(rawArtist);
+            const isChannelWrapper = isPlaceholder
+                || /\s+(?:vault|records|official|channel)$/i.test(rawArtist)
+                || /^music\s+video\s+vault$/i.test(rawArtist)
                 || /^[a-z0-9_]+(?:vids|uploads|hd|tv)$/i.test(rawArtist);
-            if (!isPlaceholderOrChannel) return rawArtist;
+            if (!isChannelWrapper) return rawArtist;
             const title = String(track.title || '').trim();
             const sep = title.indexOf(' - ');
             if (sep > 0) {
                 const candidate = title.slice(0, sep).replace(/\s*-\s*Topic$/i, '').trim();
                 if (candidate && !/^(youtube(?:\s+music)?|various\s+artists)$/i.test(candidate)) return candidate;
             }
-            return '';
+            return isPlaceholder ? '' : rawArtist;
+        },
+
+        isTrackBlocked(track) {
+            if (!track || !this.blockedArtists || !this.blockedArtists.size) return false;
+            const k = this.canonicalArtistKey(track);
+            return !!(k && this.blockedArtists.has(k.toLowerCase()));
+        },
+
+        findNextUnblockedIndex(fromIdx, step = 1, allowWrap = true) {
+            const len = this.queue ? this.queue.length : 0;
+            if (!len) return -1;
+            const maxSteps = allowWrap ? len : (step > 0 ? len - 1 - fromIdx : fromIdx);
+            for (let s = 1; s <= maxSteps; s++) {
+                const idx = allowWrap ? (((fromIdx + s * step) % len) + len) % len : (fromIdx + s * step);
+                if (idx >= 0 && idx < len && !this.isTrackBlocked(this.queue[idx])) return idx;
+            }
+            return -1;
         },
 
         /** Append fresh (unseen) tracks to the queue. Returns how many landed. */
@@ -1621,13 +1639,23 @@ document.addEventListener('alpine:init', () => {
             if (this.queue.length === 0) return;
             const wasPlaying = this.isPlaying;
             const shouldResume = wasPlaying || auto;
-            if (this.currentIndex + 1 < this.queue.length) {
-                this.currentIndex = this.currentIndex + 1;
+            const nextFwd = this.findNextUnblockedIndex
+                ? this.findNextUnblockedIndex(this.currentIndex, 1, false)
+                : (this.currentIndex + 1 < this.queue.length ? this.currentIndex + 1 : -1);
+            if (nextFwd >= 0) {
+                this.currentIndex = nextFwd;
             } else if (this.isEndless && this.moreLikeCurrent) {
                 const startGen = this.mixGeneration || 0;
                 void this.moreLikeCurrent({ autoPlayNext: true, resumePlayback: shouldResume }).then((landed) => {
                     if (landed !== 0 || startGen !== (this.mixGeneration || 0) || !this.queue || this.queue.length === 0) return;
-                    this.currentIndex = (this.currentIndex + 1) % this.queue.length;
+                    const wrapIdx = this.findNextUnblockedIndex
+                        ? this.findNextUnblockedIndex(this.currentIndex, 1, true)
+                        : ((this.currentIndex + 1) % this.queue.length);
+                    if (wrapIdx < 0) {
+                        this.stopPlayback();
+                        return;
+                    }
+                    this.currentIndex = wrapIdx;
                     this.loadTrack();
                     if (shouldResume && this.audio) {
                         this.audio.play().catch(e => {
@@ -1638,7 +1666,14 @@ document.addEventListener('alpine:init', () => {
                 });
                 return;
             } else {
-                this.currentIndex = (this.currentIndex + 1) % this.queue.length;
+                const wrapIdx = this.findNextUnblockedIndex
+                    ? this.findNextUnblockedIndex(this.currentIndex, 1, true)
+                    : ((this.currentIndex + 1) % this.queue.length);
+                if (wrapIdx < 0) {
+                    this.stopPlayback();
+                    return;
+                }
+                this.currentIndex = wrapIdx;
             }
             this.loadTrack();
             if (shouldResume && this.audio) {
@@ -1659,7 +1694,14 @@ document.addEventListener('alpine:init', () => {
             }
             this.flushPlayEvent('skip');
             const wasPlaying = this.isPlaying;
-            this.currentIndex = (this.currentIndex - 1 + this.queue.length) % this.queue.length;
+            const prevIdx = this.findNextUnblockedIndex
+                ? this.findNextUnblockedIndex(this.currentIndex, -1, true)
+                : ((this.currentIndex - 1 + this.queue.length) % this.queue.length);
+            if (prevIdx < 0) {
+                this.stopPlayback();
+                return;
+            }
+            this.currentIndex = prevIdx;
             this.loadTrack();
             if (wasPlaying) this.audio.play();
         },
@@ -2090,6 +2132,9 @@ document.addEventListener('alpine:init', () => {
             this.mixGeneration = (this.mixGeneration || 0) + 1;
             this.lastRefillAt = 0;
             this.moreInFlight = false;
+            this.moreInFlightPromise = null;
+            this.pendingAutoAdvance = null;
+            this.lastMoreLanded = null;
             this.refillInFlight = false;
             if (this.audio) {
                 this.audio.pause();
@@ -2108,11 +2153,23 @@ document.addEventListener('alpine:init', () => {
         },
 
         async moreLikeCurrent({ autoPlayNext = false, resumePlayback } = {}) {
-            if (this.moreInFlight) return null;
             const gen = this.mixGeneration || 0;
+            if (this.moreInFlightPromise) {
+                if (autoPlayNext) {
+                    this.pendingAutoAdvance = { gen, startIdx: this.currentIndex, startTrack: this.currentTrack, resumePlayback };
+                }
+                await this.moreInFlightPromise;
+                if (gen !== (this.mixGeneration || 0)) return null;
+                if (autoPlayNext && this.lastMoreLanded === 0) return 0;
+                return 'deferred';
+            }
             const startIdx = this.currentIndex;
             const startTrack = this.currentTrack;
             this.moreInFlight = true;
+            this.lastMoreLanded = null;
+            this.pendingAutoAdvance = autoPlayNext ? { gen, startIdx, startTrack, resumePlayback } : null;
+            let resolveInFlight;
+            this.moreInFlightPromise = new Promise(r => { resolveInFlight = r; });
             try {
                 const params = new URLSearchParams();
                 if (this.genreFilter && this.resolvedType === 'genre') params.set('genre', this.genreFilter);
@@ -2130,10 +2187,13 @@ document.addEventListener('alpine:init', () => {
                 const batch = Array.isArray(d) ? d : ((d && d.tracks) || []);
                 const prevLen = this.queue.length;
                 const landed = this.enqueue(batch);
+                this.lastMoreLanded = landed;
+                const pending = (this.pendingAutoAdvance && this.pendingAutoAdvance.gen === gen) ? this.pendingAutoAdvance : null;
+                this.pendingAutoAdvance = null;
                 if (landed) {
                     this.streamStatus = `Added ${landed} more tracks.`;
-                    if (autoPlayNext && this.currentIndex === startIdx && this.currentTrack === startTrack) {
-                        const resume = resumePlayback !== undefined ? resumePlayback : (this.isPlaying || autoPlayNext);
+                    if (pending && this.currentIndex === pending.startIdx && this.currentTrack === pending.startTrack) {
+                        const resume = pending.resumePlayback !== undefined ? pending.resumePlayback : (this.isPlaying || true);
                         this.currentIndex = prevLen;
                         this.loadTrack();
                         if (resume && this.audio) {
@@ -2148,7 +2208,9 @@ document.addEventListener('alpine:init', () => {
                 }
                 return landed;
             } finally {
+                this.moreInFlightPromise = null;
                 if (gen === (this.mixGeneration || 0)) this.moreInFlight = false;
+                if (resolveInFlight) resolveInFlight();
             }
         },
 
@@ -2170,6 +2232,8 @@ document.addEventListener('alpine:init', () => {
             this.blockedArtists.add(artistLower);
             this.cancelHandoff();
             this.flushPlayEvent('skip');
+            if (this.audio && !this.audio.paused) this.audio.pause();
+            this.isPlaying = false;
             const trackId = track.isYoutube ? `youtube://${track.id}` : (track.path || track.id);
             fetch(`${this.base}/api/radio/feedback`, {
                 method: 'POST',
@@ -2184,17 +2248,25 @@ document.addEventListener('alpine:init', () => {
                     context: 'html-notes',
                 }),
             }).catch(() => {});
-            const cur = this.currentIndex;
-            this.queue = this.queue.filter((t, i) => i <= cur || (this.canonicalArtistKey ? this.canonicalArtistKey(t) : String((t && t.artist) || '')).toLowerCase() !== artistLower);
+            this.queue = this.queue.filter(t => t === track || !this.isTrackBlocked(t));
+            const keptIdx = this.queue.indexOf(track);
+            if (keptIdx >= 0) this.currentIndex = keptIdx;
             this.showThumbStatus(`Blocked ${artist}.`);
-            if (this.currentIndex + 1 < this.queue.length) {
+            const nextFwd = this.findNextUnblockedIndex(this.currentIndex, 1, false);
+            if (nextFwd >= 0) {
                 this.nextTrack({ auto: true });
             } else if (this.isEndless) {
+                const startGen = this.mixGeneration || 0;
                 void this.moreLikeCurrent({ autoPlayNext: true, resumePlayback: true }).then((landed) => {
-                    if (!landed) this.stopPlayback();
+                    if (landed === 0 && startGen === (this.mixGeneration || 0)) this.stopPlayback();
                 });
             } else {
-                this.stopPlayback();
+                const wrapIdx = this.findNextUnblockedIndex(this.currentIndex, 1, true);
+                if (wrapIdx >= 0) {
+                    this.nextTrack({ auto: true });
+                } else {
+                    this.stopPlayback();
+                }
             }
         },
 

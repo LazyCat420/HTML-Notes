@@ -221,7 +221,43 @@ test("canonicalArtistKey keeps lowercase/hyphenated real artists and extracts fr
   const w = await mount(env.factory, "synth");
   assert.equal(w.canonicalArtistKey({ artist: "a-ha", title: "Take On Me" }), "a-ha");
   assert.equal(w.canonicalArtistKey({ artist: "deadmau5", title: "Strobe" }), "deadmau5");
+  assert.equal(w.canonicalArtistKey({ artist: "Channel Tres", title: "Controller" }), "Channel Tres");
+  assert.equal(w.canonicalArtistKey({ artist: "Official Hige Dandism", title: "Pretender" }), "Official Hige Dandism");
   assert.equal(w.canonicalArtistKey({ artist: "Music Video Vault", title: "Burial - Archangel" }), "Burial");
   assert.equal(w.canonicalArtistKey({ artist: "YouTube Music", title: "Untitled" }), "");
+  w.destroy();
+}));
+
+test("blocking an artist skips their earlier tracks on next/prev/wrap and handles concurrent MORE (R3-F1..F3)", withTimers(async () => {
+  const env = loadFactory();
+  const w = await mount(env.factory, "house");
+  streams.at(-1).fire("tracks", {
+    tracks: [
+      { id: "a1", title: "A1", artist: "Artist A" },
+      { id: "b1", title: "B1", artist: "Artist B" },
+      { id: "a2", title: "A2", artist: "Artist A" },
+    ],
+  });
+  w.isEndless = false;
+  w.currentIndex = 2; // a2 by Artist A (after earlier a1 at index 0)
+  w.blockCurrentArtist();
+  // Earlier duplicate a1 must be purged so wrap & prev only land on Artist B
+  assert.deepEqual(w.queue.map(t => t.id), ["b1", "a2"]);
+  assert.equal(w.currentTrack.id, "b1");
+  w.nextTrack({ auto: true });
+  assert.equal(w.currentTrack.id, "b1", "wrapping skips kept cur track of blocked artist");
+  w.prevTrack();
+  assert.equal(w.currentTrack.id, "b1", "prev skips blocked artist");
+
+  // R3-F2 + R3-F3: MORE in flight does not freeze end-of-queue auto-advance or stop playback
+  let resolveMore = null;
+  w.isEndless = true;
+  w.fetchJson = () => new Promise(r => { resolveMore = r; });
+  void w.moreLikeCurrent(); // user pressed MORE
+  w.nextTrack({ auto: true }); // song ended while MORE is loading
+  resolveMore({ tracks: [{ id: "c1", title: "C1", artist: "Artist C" }] });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(w.currentTrack.id, "c1", "pending auto-advance must play once in-flight MORE resolves");
   w.destroy();
 }));
