@@ -947,7 +947,7 @@ def render_settings(widget_id: str, config: dict) -> str:
     via window.HN. `active` is the current theme; `apply` (when set) is a theme
     the agent wants applied on render — the widget applies it in init()."""
     themes = config.get("themes") or []
-    active = config.get("active") or "hud"
+    active = config.get("active") or "brute"
     apply = config.get("apply") or ""
     cfg_js = (f"{{ themes: {json_escape(themes)}, active: {json_escape(active)}, "
               f"apply: {json_escape(apply)} }}")
@@ -995,7 +995,9 @@ def render_settings(widget_id: str, config: dict) -> str:
             <!-- App Icon Style -->
             <div class="flex flex-col gap-2 border-t border-white/10 pt-3">
                 <div class="text-[0.62rem] uppercase tracking-wider text-slate-500">App Icon Style</div>
-                <div class="grid grid-cols-3 gap-1.5">
+                <div class="grid grid-cols-2 gap-1.5">
+                    <button @click="setIconStyle('3d')" class="px-2 py-1 rounded-lg text-xs border transition-colors"
+                            :class="iconStyle === '3d' ? 'border-white/40 bg-white/10 text-white' : 'border-white/10 text-slate-400 hover:bg-white/5'">3D Toon</button>
                     <button @click="setIconStyle('vector')" class="px-2 py-1 rounded-lg text-xs border transition-colors"
                             :class="iconStyle === 'vector' ? 'border-white/40 bg-white/10 text-white' : 'border-white/10 text-slate-400 hover:bg-white/5'">Vector</button>
                     <button @click="setIconStyle('hud')" class="px-2 py-1 rounded-lg text-xs border transition-colors"

@@ -188,3 +188,27 @@ def test_app_rail_uses_theme_variables():
     assert ".app-rail" in css
     assert "var(--hud-panel)" in css
 
+
+def test_brute_ink_theme_and_3d_toon_rail_wired():
+    """Brute Ink is in THEME_CATALOG, picked by brute/brutalist prompts,
+    removes HUD scanlines/clip-path/glow, and vendors local Three.js for 3D Toon rail icons."""
+    assert m.pick_theme("switch to brute ink") == "brute"
+    assert m.pick_theme("brutalist black and white") == "brute"
+    assert ':root[data-theme="brute"]' in HUD_CSS
+    assert ':root[data-theme="brute"] .widget-container' in HUD_CSS
+    assert ".app-rail .rail-3d-canvas" in HUD_CSS
+    assert ".app-rail .rail-icon-3d" in HUD_CSS
+    assert (ROOT / "app/static/lib/three.module.min.js").is_file()
+    assert (ROOT / "app/static/lib/three.core.min.js").is_file()
+    assert (ROOT / "app/static/js/rail-3d-icons.js").is_file()
+    assert 'js/rail-3d-icons.js' in INDEX_HTML
+    assert not re.search(r'https?://[^"\']*three', INDEX_HTML), "Three.js must be vendored locally, not CDN"
+    cfg = {
+        "themes": [{"name": t["name"], "label": t["label"], "swatch": t["swatch"]}
+                   for t in m.THEME_CATALOG],
+    }
+    html = generate_widget_html("settings", "settings-panel", cfg)
+    assert "setIconStyle('3d')" in html
+    assert '"active": "brute"' in html or '&quot;brute&quot;' in html
+
+

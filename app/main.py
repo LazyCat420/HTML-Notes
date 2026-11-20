@@ -139,8 +139,11 @@ _yahoo_crumb: dict = {"crumb": None, "cookies": None}
 # theme client-side by name; the server only ever RESOLVES a fuzzy request
 # ("forest vibe", "dark mode") to the closest catalog name.
 THEME_CATALOG = [
+    {"name": "brute", "label": "Brute Ink", "swatch": ["#000000", "#111111", "#ffffff"],
+     "dark": True, "keywords": ["brute", "brutal", "brutalist", "ink", "noir",
+                                 "contrast", "monolith", "default"]},
     {"name": "hud", "label": "HUD Cyan", "swatch": ["#050a12", "#0a1626", "#55d6ff"],
-     "dark": True, "keywords": ["hud", "cyan", "default", "blue", "tech", "sci-fi",
+     "dark": True, "keywords": ["hud", "cyan", "blue", "tech", "sci-fi",
                                  "scifi", "cyberpunk", "cockpit", "teal", "aqua"]},
     {"name": "midnight", "label": "Midnight", "swatch": ["#070b16", "#141a2e", "#818cf8"],
      "dark": True, "keywords": ["dark", "midnight", "night", "black", "indigo",

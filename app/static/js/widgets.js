@@ -902,11 +902,11 @@ document.addEventListener('alpine:init', () => {
     // here changes the theme/mute for real, no round-trip.
     Alpine.data('settingsWidget', (cfg = {}) => ({
         themes: (cfg && cfg.themes && cfg.themes.length) ? cfg.themes : ((window.HN && window.HN.THEMES) || []),
-        active: (cfg && cfg.active) || 'hud',
+        active: (cfg && cfg.active) || 'brute',
         muted: false,
         customAccent: '',
         customBg: '',
-        iconStyle: 'vector',
+        iconStyle: '3d',
 
         init() {
             // The agent asked for a specific theme this turn → apply it now.

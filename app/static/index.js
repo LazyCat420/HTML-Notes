@@ -746,12 +746,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // the live ones). An inline script in <head> applies the saved theme before
     // first paint to avoid a flash; this re-applies it to also sync the charts.
     const THEME_KEY = "html_notes_theme";
+    const THEME_V2_KEY = "html_notes_theme_v2";
     const CUSTOM_COLORS_KEY = "html_notes_custom_colors";
     const ICON_STYLE_KEY = "html_notes_icon_style";
     window.HN = window.HN || {};
     window.__hnCharts = window.__hnCharts || new Set();
 
     window.HN.THEMES = [
+        { name: "brute", label: "Brute Ink", swatch: ["#000000", "#111111", "#ffffff"] },
         { name: "hud", label: "HUD Cyan", swatch: ["#050a12", "#0a1626", "#55d6ff"] },
         { name: "midnight", label: "Midnight", swatch: ["#070b16", "#141a2e", "#818cf8"] },
         { name: "forest", label: "Forest", swatch: ["#06120c", "#0e2218", "#4ade80"] },
@@ -843,20 +845,24 @@ document.addEventListener("DOMContentLoaded", () => {
         }));
     };
 
+    const _VALID_ICON_STYLES = new Set(["3d", "hud", "mono", "vector"]);
     window.HN.getIconStyle = function () {
         try {
             const s = localStorage.getItem(ICON_STYLE_KEY);
-            return (s === "hud" || s === "mono" || s === "vector") ? s : "vector";
+            return _VALID_ICON_STYLES.has(s) ? s : "3d";
         } catch (e) {
-            return "vector";
+            return "3d";
         }
     };
 
     window.HN.setIconStyle = function (style) {
-        const valid = (style === "hud" || style === "mono" || style === "vector") ? style : "vector";
+        const valid = _VALID_ICON_STYLES.has(style) ? style : "3d";
         try { localStorage.setItem(ICON_STYLE_KEY, valid); } catch (e) {}
         const rail = document.getElementById("app-rail");
-        if (rail) rail.classList.toggle("icon-style-hud", valid === "hud");
+        if (rail) {
+            rail.classList.toggle("icon-style-hud", valid === "hud");
+            rail.classList.toggle("icon-style-3d", valid === "3d");
+        }
         window.dispatchEvent(new CustomEvent("hn:iconstyle", { detail: { style: valid } }));
     };
 
@@ -902,18 +908,29 @@ document.addEventListener("DOMContentLoaded", () => {
         return document.documentElement.getAttribute("data-theme") || "hud";
     };
     window.HN.applyTheme = function (name, keepCustom = false) {
+        const resolved = name || "brute";
         const root = document.documentElement;
         if (!keepCustom) window.HN.resetCustomColors(false);
-        if (!name || name === "hud") root.removeAttribute("data-theme");
-        else root.setAttribute("data-theme", name);
-        try { localStorage.setItem(THEME_KEY, name || "hud"); } catch (e) {}
+        if (resolved === "hud") root.removeAttribute("data-theme");
+        else root.setAttribute("data-theme", resolved);
+        try { localStorage.setItem(THEME_KEY, resolved); } catch (e) {}
         window.HN._syncCharts();
         // Interactive widgets (stock card) listen to redraw their own canvas.
-        window.dispatchEvent(new CustomEvent("hn:theme", { detail: { name: name || "hud" } }));
+        window.dispatchEvent(new CustomEvent("hn:theme", { detail: { name: resolved } }));
     };
+    // One-time v2 migration promotes unset/legacy-hud defaults to Brute Ink + 3D Toon icons.
+    try {
+        if (!localStorage.getItem(THEME_V2_KEY)) {
+            const prevTheme = localStorage.getItem(THEME_KEY);
+            if (!prevTheme || prevTheme === "hud") localStorage.setItem(THEME_KEY, "brute");
+            const prevIcon = localStorage.getItem(ICON_STYLE_KEY);
+            if (!prevIcon || prevIcon === "vector") localStorage.setItem(ICON_STYLE_KEY, "3d");
+            localStorage.setItem(THEME_V2_KEY, "1");
+        }
+    } catch (e) {}
     // Sync Chart.defaults + charts to the theme the head script already applied,
     // and restore any saved custom colors on top.
-    window.HN.applyTheme(localStorage.getItem(THEME_KEY) || "hud", true);
+    window.HN.applyTheme(localStorage.getItem(THEME_KEY) || "brute", true);
     const _savedCustom = window.HN.getCustomColors();
     if (_savedCustom.accent || _savedCustom.bg) {
         window.HN.applyCustomColors(_savedCustom);
@@ -1183,6 +1200,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const iconGroup = document.createElement("div");
             iconGroup.className = "rs-seg-group";
             for (const opt of [
+                { id: "3d", label: "3D Toon" },
                 { id: "vector", label: "Vector" },
                 { id: "hud", label: "HUD Glow" },
                 { id: "mono", label: "Monogram" },
@@ -1252,6 +1270,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const iconStyle = window.HN.getIconStyle();
             rail.classList.toggle("expanded", open);
             rail.classList.toggle("icon-style-hud", iconStyle === "hud");
+            rail.classList.toggle("icon-style-3d", iconStyle === "3d");
             document.body.classList.toggle("rail-expanded", open);
 
             const toggleBtn = document.createElement("button");
@@ -1279,7 +1298,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 const iconSrc = (iconStyle !== "mono") ? (a.icon_svg || a.icon_url) : "";
                 const iconSpan = document.createElement("span");
-                if (iconSrc) {
+                if (iconStyle === "3d") {
+                    iconSpan.className = "rail-icon rail-icon-3d";
+                    iconSpan.setAttribute("data-app-id", String(a.id || ""));
+                    if (iconSrc) {
+                        const fallbackImg = document.createElement("img");
+                        fallbackImg.className = "rail-img rail-icon-3d-fallback";
+                        fallbackImg.src = iconSrc;
+                        fallbackImg.alt = String(a.name || "");
+                        iconSpan.appendChild(fallbackImg);
+                    } else {
+                        const fbMono = document.createElement("span");
+                        fbMono.className = "rail-icon-3d-fallback rail-mono";
+                        fbMono.textContent = String(a._mono || "?");
+                        iconSpan.appendChild(fbMono);
+                    }
+                } else if (iconSrc) {
                     iconSpan.className = "rail-icon rail-icon-img";
                     const img = document.createElement("img");
                     img.className = "rail-img";
@@ -1292,7 +1326,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     iconSpan.textContent = String(a._mono || "?");
                 }
                 const dot = document.createElement("span");
-                dot.className = "rail-dot";
+                const statusClass = a.status === "healthy"
+                    ? "status-healthy"
+                    : (a.status === "unknown" || a.status == null) ? "status-unknown" : "status-offline";
+                dot.className = `rail-dot ${statusClass}`;
                 dot.style.background = dotColor(a.status);
                 iconSpan.appendChild(dot);
 
@@ -1324,6 +1361,11 @@ document.addEventListener("DOMContentLoaded", () => {
             footer.appendChild(settingsBtn);
 
             rail.replaceChildren(toggleBtn, nav, footer);
+            if (iconStyle === "3d" && window.HN && window.HN.Rail3D) {
+                window.HN.Rail3D.sync(rail);
+            } else if (window.HN && window.HN.Rail3D) {
+                window.HN.Rail3D.stop();
+            }
         }
 
         async function refresh() {
@@ -1369,6 +1411,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         window.addEventListener("hn:iconstyle", () => render());
+        window.addEventListener("hn:rail3d-ready", () => render());
         window.addEventListener("hn:theme", () => { if (settingsOpen) renderSettingsDrawer(); });
 
         render();
