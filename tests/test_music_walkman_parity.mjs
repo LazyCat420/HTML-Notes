@@ -215,3 +215,13 @@ test("streamTicket appends ?ticket= query parameter on YouTube stream URLs", wit
   w.destroy();
   m.destroy();
 }));
+
+test("canonicalArtistKey keeps lowercase/hyphenated real artists and extracts from channel wrappers (R3)", withTimers(async () => {
+  const env = loadFactory();
+  const w = await mount(env.factory, "synth");
+  assert.equal(w.canonicalArtistKey({ artist: "a-ha", title: "Take On Me" }), "a-ha");
+  assert.equal(w.canonicalArtistKey({ artist: "deadmau5", title: "Strobe" }), "deadmau5");
+  assert.equal(w.canonicalArtistKey({ artist: "Music Video Vault", title: "Burial - Archangel" }), "Burial");
+  assert.equal(w.canonicalArtistKey({ artist: "YouTube Music", title: "Untitled" }), "");
+  w.destroy();
+}));

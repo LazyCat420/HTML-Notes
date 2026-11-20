@@ -1285,14 +1285,25 @@ document.addEventListener('alpine:init', () => {
             };
         },
 
-        /** Append fresh (unseen) tracks to the queue. Returns how many landed. */
+        /** Return canonical blockable artist name, keeping hyphenated/lowercase artists while stripping channel wrappers. */
         canonicalArtistKey(track) {
             if (!track) return '';
-            const cleaned = this.cleanTrack ? String(this.cleanTrack(track).artist || '').trim() : String(track.artist || '').trim();
-            if (!cleaned || /^youtube\s+music$/i.test(cleaned)) return '';
-            return cleaned;
+            const rawArtist = String(track.artist || '').replace(/\s*-\s*Topic$/i, '').trim();
+            const isPlaceholderOrChannel = !rawArtist
+                || /^(youtube(?:\s+music)?|various\s+artists)$/i.test(rawArtist)
+                || /\b(vault|records|official|channel)\b/i.test(rawArtist)
+                || /^[a-z0-9_]+(?:vids|uploads|hd|tv)$/i.test(rawArtist);
+            if (!isPlaceholderOrChannel) return rawArtist;
+            const title = String(track.title || '').trim();
+            const sep = title.indexOf(' - ');
+            if (sep > 0) {
+                const candidate = title.slice(0, sep).replace(/\s*-\s*Topic$/i, '').trim();
+                if (candidate && !/^(youtube(?:\s+music)?|various\s+artists)$/i.test(candidate)) return candidate;
+            }
+            return '';
         },
 
+        /** Append fresh (unseen) tracks to the queue. Returns how many landed. */
         enqueue(raw) {
             const blocked = this.blockedArtists;
             const fresh = (raw || [])
