@@ -1303,26 +1303,24 @@ def render_mini_music_player(widget_id: str, config: dict) -> str:
     # iframe owns the body, LCD, keys and the library drawer, while this
     # component keeps the real player (audio element, queue, history, thumbs)
     # and drives the card over postMessage.
-    from app.config import MUSIC_PLAYER_URL, MUSIC_PLAYER_WEB_URL, WALKMAN_CARD_URL
+    from app.config import MUSIC_PLAYER_URL, MUSIC_PLAYER_WEB_URL, WALKMAN_CARD_URL, WALLGARDEN_URL
     genre = config.get("genre", "")
     # 'genre' | 'artist' | '' — routing's guess at what the query names.
     # The widget tries the genre pipeline first when unset; a miss fails over
     # to the artist mix client-side, so a wrong guess self-corrects.
     kind = config.get("kind", "")
     autoplay = str(config.get("autoplay", False)).lower()
-    cfg_js = (f'{{ genre: {json_escape(genre)}, kind: {json_escape(kind)}, '
-              f'autoplay: {autoplay}, base: {json_escape(MUSIC_PLAYER_URL)}, '
-              f'webBase: {json_escape(MUSIC_PLAYER_WEB_URL)}, '
-              f'cardUrl: {json_escape(WALKMAN_CARD_URL)} }}')
-    # data-hn-config: the same config as strict JSON. The client's self-heal
-    # reads THIS when it has to rebuild a node, instead of sniffing the DOM and
-    # falling back to a hardcoded genre (the 2026-11-03 "buckethead plays jazz"
-    # bug: the rebuild ran on every render and threw the real config away).
-    hn_config = json_escape({"genre": genre, "kind": kind,
-                             "autoplay": autoplay == "true",
-                             "base": MUSIC_PLAYER_URL,
-                             "webBase": MUSIC_PLAYER_WEB_URL,
-                             "cardUrl": WALKMAN_CARD_URL})
+    stream_ticket = (config.get("stream_ticket") or config.get("streamTicket") or "").strip()
+    cfg_dict = {"genre": genre, "kind": kind, "autoplay": autoplay == "true",
+                "base": MUSIC_PLAYER_URL, "webBase": MUSIC_PLAYER_WEB_URL,
+                "cardUrl": WALKMAN_CARD_URL, "wallgardenUrl": WALLGARDEN_URL,
+                **({"streamTicket": stream_ticket} if stream_ticket else {})}
+    ticket_js = f', streamTicket: {json_escape(stream_ticket)}' if stream_ticket else ''
+    cfg_js = (f'{{ genre: {json_escape(genre)}, kind: {json_escape(kind)}, autoplay: {autoplay}, '
+              f'base: {json_escape(MUSIC_PLAYER_URL)}, webBase: {json_escape(MUSIC_PLAYER_WEB_URL)}, '
+              f'cardUrl: {json_escape(WALKMAN_CARD_URL)}, wallgardenUrl: {json_escape(WALLGARDEN_URL)}{ticket_js} }}')
+    # data-hn-config preserves strict JSON config across self-heal rebuilds.
+    hn_config = json_escape(cfg_dict)
 
     return f"""
     <div id="{widget_id}" class="widget-container music-widget-root col-span-2 relative text-white flex flex-col" :style="{{ height: walkmanHeight + 'px' }}" data-hn-config="{hn_config}" x-data="musicPlayerWidget({cfg_js})">

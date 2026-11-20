@@ -102,6 +102,8 @@
     font:9px/1 ui-monospace,monospace; letter-spacing:.08em;
     color:#9aa6b0; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12)}
   #queue .shuf.on{color:#ffcf87; border-color:rgba(255,179,71,.6); background:rgba(255,179,71,.14)}
+  #queue .shuf.danger:hover{color:#f87171; border-color:rgba(248,113,113,.6)}
+  #queue .acts{gap:4px; justify-content:flex-start}
   #qrows{flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain}
   #qrows .row{display:flex; gap:8px; align-items:baseline; padding:3px 4px;
     border-radius:5px; cursor:pointer; font-size:11px}
@@ -172,7 +174,11 @@
   </div><!-- /stage -->
   <div id="queue">
     <div class="bar">
-      <input id="qsearch" type="search" placeholder="Search artist…" aria-label="Search artists">
+      <input id="qsearch" type="search" placeholder="Search queue or type mix…" aria-label="Search queue or request mix">
+      <button class="shuf" id="qmix" title="Start mix from query">MIX</button>
+      <button class="shuf" id="qmore" title="Queue more like current song">MORE</button>
+      <button class="shuf" id="qendless" aria-pressed="false" title="Toggle endless mix auto-refill">ENDLESS</button>
+      <button class="shuf danger" id="qblock" title="Never play current artist">BLOCK</button>
       <button class="shuf" id="qshuffle" aria-pressed="false" title="Shuffle">SHUF</button>
       <button class="close" id="qclose" aria-label="Close library" title="Close">×</button>
     </div>
@@ -249,6 +255,7 @@ const DEFAULTS = {
   position: 0,
   playing: true,
   shuffle: false,
+  endless: false,
   thumb: null,      // 'up' | 'down' | null — steady light on the matching aux key
   muted: false,
   volume: 0.78,
@@ -852,6 +859,8 @@ function renderQueue(){
     : '<div class="empty">No artist matches</div>';
   $('qshuffle').classList.toggle('on', state.shuffle);
   $('qshuffle').setAttribute('aria-pressed', String(state.shuffle));
+  $('qendless').classList.toggle('on', !!state.endless);
+  $('qendless').setAttribute('aria-pressed', String(!!state.endless));
 }
 function toggleQueue(open = !queueOpen){
   queueOpen = open;
@@ -864,14 +873,30 @@ function toggleQueue(open = !queueOpen){
 }
 function openQueue(){ if (!queueOpen) toggleQueue(); }
 
+function emitSearchMix(){
+  const query = ($('qsearch').value || '').trim();
+  if (!query) return false;
+  emit({ action: 'request_mix', query });
+  return true;
+}
 $('qsearch').addEventListener('input', renderQueue);
 $('qclose').addEventListener('click', () => toggleQueue(false));
 $('qsearch').addEventListener('keydown', e => {
   if (e.key === 'Escape'){ toggleQueue(false); return; }
   if (e.key !== 'Enter') return;
+  if (emitSearchMix()) return;
   const first = $('qrows').querySelector('.row');
   if (first) load(Number(first.dataset.i));
 });
+$('qmix').addEventListener('click', () => { click(true); emitSearchMix(); });
+$('qmore').addEventListener('click', () => { click(true); emit({ action: 'more_like' }); });
+$('qendless').addEventListener('click', () => {
+  click(true);
+  state.endless = !state.endless;
+  renderQueue();
+  emit({ action: 'toggle_endless', endless: !!state.endless });
+});
+$('qblock').addEventListener('click', () => { click(true); emit({ action: 'block_artist' }); });
 $('qrows').addEventListener('click', e => {
   const row = e.target.closest('.row');
   if (!row || row.dataset.i === undefined) return;
@@ -896,7 +921,7 @@ window.walkmanPlayer = {
       syncVolume3D();
       syncScreen();
     }
-    if (t.library) renderQueue();
+    if (t.library || t.endless !== undefined) renderQueue();
     if (state.playing !== wasPlaying) lampOn(state.playing ? 1 : -1, Infinity);
     drawScreen();
     if (queueOpen) renderQueue();

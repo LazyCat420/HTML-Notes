@@ -6,7 +6,7 @@
 #
 # Run this after every change to the doc-client card, then rebuild/deploy.
 set -euo pipefail
-SRC="$(cd "$(dirname "$0")/../../doc-client/static" && pwd)"
+SRC="${DOC_CLIENT_STATIC:-$(cd "$(dirname "$0")/../../doc-client/static" && pwd)}"
 DST="$(cd "$(dirname "$0")/.." && pwd)/app/static/walkman"
 mkdir -p "$DST/models"
 cp "$SRC/model-viewer.min.js" "$DST/"

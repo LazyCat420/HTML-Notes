@@ -86,6 +86,7 @@ def execute_post_kwargs() -> dict:
     return {"headers": h} if h else {}
 TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "http://10.0.0.16:3032")
 MUSIC_PLAYER_URL = os.getenv("MUSIC_PLAYER_URL", "http://10.0.0.16:8002")
+WALLGARDEN_URL = os.getenv("WALLGARDEN_URL", "http://10.0.0.16:8007")
 # The music-player WEB app, not its API — the mini player hands a track off to
 # it. Pinned to the port for the same reason the App Hub pins it: the registry
 # domain music.braindeadbot.com has no DNS record.

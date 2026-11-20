@@ -1022,6 +1022,9 @@ document.addEventListener('alpine:init', () => {
         autoplayWanted: !!cfg.autoplay,
         base: cfg.base || `http://${window.location.hostname}:8002`,
         webBase: cfg.webBase || `http://${window.location.hostname}:3232`,
+        wallgardenUrl: cfg.wallgardenUrl || 'http://10.0.0.16:8007',
+        streamTicket: cfg.streamTicket || '',
+        isEndless: cfg.endless !== false,
         es: null,
         streamStatus: '',
         showQueue: false,
@@ -1029,6 +1032,7 @@ document.addEventListener('alpine:init', () => {
         resolvedType: 'genre',  // whichever mix type actually filled the queue
         triedArtistFallback: false,
         refillInFlight: false,
+        moreInFlight: false,
         lastRefillAt: 0,
         currentTime: 0,
         duration: 0,
@@ -1483,7 +1487,7 @@ document.addEventListener('alpine:init', () => {
          */
         maybeRefill() {
             const remaining = this.queue.length - this.currentIndex - 1;
-            if (remaining > 5 || this.refillInFlight || !this.genreFilter) return;
+            if (!this.isEndless || remaining > 5 || this.refillInFlight || !this.genreFilter) return;
             if (Date.now() - this.lastRefillAt < 90000) return;
             this.refillInFlight = true;
             this.lastRefillAt = Date.now();
@@ -1527,7 +1531,8 @@ document.addEventListener('alpine:init', () => {
             this.beginPlaySession(this.currentTrack);
             this.audio.volume = this.isMuted ? 0 : this.volume;
             if (this.currentTrack.isYoutube) {
-                this.audio.src = `${this.base}/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
+                const streamUrl = `${this.base}/api/youtube/stream/${encodeURIComponent(this.currentTrack.id)}`;
+                this.audio.src = this.streamTicket ? `${streamUrl}?ticket=${encodeURIComponent(this.streamTicket)}` : streamUrl;
             } else {
                 const encodedPath = encodeURIComponent(this.currentTrack.path);
                 this.audio.src = `${this.base}/api/music/stream?path=${encodedPath}`;
@@ -1587,7 +1592,14 @@ document.addEventListener('alpine:init', () => {
             }
             if (this.queue.length === 0) return;
             const wasPlaying = this.isPlaying;
-            this.currentIndex = (this.currentIndex + 1) % this.queue.length;
+            if (this.currentIndex + 1 < this.queue.length) {
+                this.currentIndex = this.currentIndex + 1;
+            } else if (this.isEndless && this.moreLikeCurrent) {
+                void this.moreLikeCurrent({ autoPlayNext: wasPlaying || auto });
+                return;
+            } else {
+                this.currentIndex = (this.currentIndex + 1) % this.queue.length;
+            }
             this.loadTrack();
             const shouldResume = wasPlaying || auto;
             if (shouldResume && this.audio) {
@@ -1989,13 +2001,29 @@ document.addEventListener('alpine:init', () => {
                 }).catch(() => {});
             }
 
+            if (this.thumbState === 'down' && track.artist) {
+                fetch(`${this.base}/api/radio/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        artist: track.artist,
+                        title: track.title || '',
+                        track_id: favPath,
+                        sentiment: 'disliked',
+                        target: 'song',
+                        genre: this.resolvedType === 'genre' && this.genreFilter ? this.genreFilter : null,
+                        context: 'html-notes',
+                    }),
+                }).catch(() => {});
+            }
+
             if (this.thumbState === null) return; // toggled off: nothing else to rate
 
             // Wallgarden feed: rate the video. Only the ratings key — the
             // server merges fields (last write wins per entry), exactly the
             // shape the wallgarden extension writes for LIKE/DISLIKE.
             if (track.isYoutube) {
-                fetch('http://10.0.0.16:8007/sync/global', {
+                fetch(`${this.wallgardenUrl || 'http://10.0.0.16:8007'}/sync/global`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -2010,6 +2038,90 @@ document.addEventListener('alpine:init', () => {
                         },
                     }),
                 }).catch(() => {});
+            }
+        },
+
+        requestMix(query) {
+            const q = String(query || '').trim();
+            if (!q) return;
+            if (this.audio) {
+                this.audio.pause();
+                this.audio.src = '';
+            }
+            this.isPlaying = false;
+            this.genreFilter = q;
+            this.kind = '';
+            this.resolvedType = 'genre';
+            this.triedArtistFallback = false;
+            this.error = '';
+            this.queue = [];
+            this.currentIndex = -1;
+            this.seenIds = new Set();
+            this.startStream(q, 'genre');
+        },
+
+        async moreLikeCurrent({ autoPlayNext = false } = {}) {
+            if (this.moreInFlight) return 0;
+            this.moreInFlight = true;
+            try {
+                const params = new URLSearchParams();
+                if (this.genreFilter && this.resolvedType === 'genre') params.set('genre', this.genreFilter);
+                const t = this.currentTrack;
+                if (t) {
+                    params.set('seed_track_id', t.isYoutube ? `youtube://${t.id}` : (t.path || t.id));
+                    if (t.artist) params.set('seed_artist', t.artist);
+                }
+                const excludeIds = this.queue.filter(x => x && x.isYoutube && x.id).map(x => x.id).slice(-50);
+                if (excludeIds.length) params.set('exclude', excludeIds.join(','));
+                const d = await this.fetchJson(
+                    `${this.base}/api/music/history/smart/endless-mix/next-batch?${params.toString()}`, 95000);
+                const batch = Array.isArray(d) ? d : ((d && d.tracks) || []);
+                const prevLen = this.queue.length;
+                const landed = this.enqueue(batch);
+                if (landed) {
+                    this.streamStatus = `Added ${landed} more tracks.`;
+                    if (autoPlayNext) this.playAt(prevLen, { auto: true });
+                } else {
+                    this.streamStatus = 'No additional tracks found.';
+                }
+                return landed;
+            } finally {
+                this.moreInFlight = false;
+            }
+        },
+
+        toggleEndless(forced) {
+            this.isEndless = typeof forced === 'boolean' ? forced : !this.isEndless;
+            this.showThumbStatus(this.isEndless ? 'Endless mix on.' : 'Endless mix off.');
+            if (this.isEndless) this.maybeRefill();
+        },
+
+        blockCurrentArtist() {
+            const track = this.currentTrack;
+            const artist = track && String(track.artist || '').trim();
+            if (!artist) return;
+            const trackId = track.isYoutube ? `youtube://${track.id}` : (track.path || track.id);
+            fetch(`${this.base}/api/radio/feedback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    artist,
+                    title: track.title || '',
+                    track_id: trackId,
+                    sentiment: 'disliked',
+                    target: 'artist',
+                    genre: null,
+                    context: 'html-notes',
+                }),
+            }).catch(() => {});
+            const artistLower = artist.toLowerCase();
+            const cur = this.currentIndex;
+            this.queue = this.queue.filter((t, i) => i <= cur || String(t && t.artist || '').trim().toLowerCase() !== artistLower);
+            this.showThumbStatus(`Blocked ${artist}.`);
+            if (this.currentIndex + 1 < this.queue.length) {
+                this.nextTrack({ auto: true });
+            } else {
+                this.stopPlayback();
             }
         },
 
@@ -2253,7 +2365,7 @@ document.addEventListener('alpine:init', () => {
             const title = this.lcdLabel(t);
             const sig = [
                 title, Math.round(this.duration || 0), Math.round(this.currentTime || 0),
-                this.isPlaying ? 1 : 0, this.isShuffle ? 1 : 0,
+                this.isPlaying ? 1 : 0, this.isShuffle ? 1 : 0, this.isEndless ? 1 : 0,
                 this.thumbState || '', this.isMuted ? 1 : 0,
                 Math.round((this.volume ?? 1) * 100),
             ].join('|');
@@ -2266,6 +2378,7 @@ document.addEventListener('alpine:init', () => {
                 position: Math.round(this.currentTime || 0),
                 playing: !!this.isPlaying,
                 shuffle: !!this.isShuffle,
+                endless: !!this.isEndless,
                 // steady lights on the deck's secondary keys
                 thumb: this.thumbState || null,
                 muted: !!this.isMuted,
@@ -2287,6 +2400,10 @@ document.addEventListener('alpine:init', () => {
                 case 'select': this.walkmanSelect(d.index); break;
                 case 'toggle': this.walkmanOpen = !!d.queueOpen; break;
                 case 'ended': this.nextTrack({ auto: true }); break;
+                case 'request_mix': this.requestMix(d.query); break;
+                case 'more_like': void this.moreLikeCurrent(); break;
+                case 'toggle_endless': this.toggleEndless(d.endless); break;
+                case 'block_artist': this.blockCurrentArtist(); break;
                 // the six secondary keys on the deck + 3D silver volume fader
                 case 'thumb_up': this.sendThumb('up'); break;
                 case 'thumb_down': this.sendThumb('down'); break;
