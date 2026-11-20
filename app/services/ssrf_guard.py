@@ -167,9 +167,9 @@ def _is_allowed_text_type(content_type: str) -> tuple[bool, str]:
 
 
 async def _read_bounded_response(resp: httpx.Response, max_bytes: int) -> Optional[str]:
-    """Decode response body up to max_bytes, rejecting declared oversized payloads."""
+    """Decode response body truncating at max_bytes, rejecting multi-cap declared payloads."""
     raw_len = (resp.headers.get("content-length") or "").strip()
-    if raw_len.isdigit() and int(raw_len) > max_bytes:
+    if raw_len.isdigit() and int(raw_len) > max_bytes * 8:
         return None
     if hasattr(resp, "aiter_bytes"):
         chunks: list[bytes] = []
@@ -178,19 +178,21 @@ async def _read_bounded_response(resp: httpx.Response, max_bytes: int) -> Option
             if not chunk:
                 continue
             need = max_bytes - total
+            if need <= 0:
+                break
             chunks.append(chunk[:need])
-            total += len(chunk)
-            if total > max_bytes:
-                return None
+            total += min(len(chunk), need)
+            if total >= max_bytes:
+                break
         encoding = getattr(resp, "encoding", None) or "utf-8"
         return b"".join(chunks).decode(encoding, errors="replace")
     raw_content = getattr(resp, "content", b"")
     if isinstance(raw_content, (bytes, bytearray)) and len(raw_content) > max_bytes:
-        return None
+        encoding = getattr(resp, "encoding", None) or "utf-8"
+        return bytes(raw_content[:max_bytes]).decode(encoding, errors="replace")
     text = resp.text or ""
-    if len(text.encode("utf-8", errors="replace")) > max_bytes:
-        return None
-    return text
+    encoded = text.encode("utf-8", errors="replace")
+    return encoded[:max_bytes].decode("utf-8", errors="replace") if len(encoded) > max_bytes else text
 
 
 async def _fetch_text_once(

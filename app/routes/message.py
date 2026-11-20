@@ -41,10 +41,9 @@ async def get_models():
             #   * it offered embeddinggemma as a selectable chat model — that
             #     endpoint 404s on /v1/chat/completions, so picking it can only
             #     fail. The catalog's own "Tool Calling" claim is not evidence.
-            #   * it listed providers in catalog dict order, and the client picks
-            #     from the top — so the dropdown landed on whatever Gold Spark
-            #     served rather than the Jetson. Order by PREFERRED_AGENT_PROVIDERS
-            #     (Jetson first); unknown providers keep their order after those.
+            #   * it listed providers in catalog dict order, so the client picked
+            #     from arbitrary dict order. Order by PREFERRED_AGENT_PROVIDERS
+            #     (cluster vLLM hosts vllm-2/vllm-4/vllm-5 first, then vllm).
             def _rank(provider_id):
                 try:
                     return PREFERRED_AGENT_PROVIDERS.index(provider_id)

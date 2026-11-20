@@ -3,7 +3,6 @@ import os
 _DEFAULT_VLLM_URL = "http://10.0.0.141:8000"
 PORT = int(os.getenv("PORT", "8035"))
 VLLM_URL = os.getenv("VLLM_URL", _DEFAULT_VLLM_URL)
-VLLM_FAST_URL = os.getenv("VLLM_FAST_URL", _DEFAULT_VLLM_URL)
 # CHAT endpoints, configured via VLLM_ENDPOINTS (model ids resolved dynamically from /v1/models).
 _DEFAULT_CLUSTER_ENDPOINTS = (
     "http://10.0.0.141:8000",

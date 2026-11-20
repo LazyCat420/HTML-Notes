@@ -246,8 +246,12 @@ async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patc
                 yield _StreamResp(302, {"location": "http://127.0.0.1:8035/secret"}, [])
             elif "pdf" in host:
                 yield _StreamResp(200, {"content-type": "application/pdf"}, [b"%PDF-1.7"])
+            elif "declared-huge" in host:
+                yield _StreamResp(200, {"content-type": "text/html", "content-length": str(50_000_000)}, [b"too big"])
             elif "huge" in host:
-                yield _StreamResp(200, {"content-type": "text/html"}, [b"x" * 1_500_000, b"y" * 1_500_000])
+                head = ("<html><body><article><p>" + ("Truncated headline article content stays intact. " * 6) + "</p></article>").encode("utf-8")
+                pad = b" " * (2_100_000 - len(head))
+                yield _StreamResp(200, {"content-type": "text/html"}, [head, pad, b"TRAILING_AFTER_2MB" * 100])
             else:
                 yield _StreamResp(200, {"content-type": "text/html"}, [article_html.encode("utf-8")])
 
@@ -259,6 +263,7 @@ async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patc
         blocked = await read_web_page("https://evil.example/bounce")
         pdf_res = await read_web_page("https://pdf.example/report.pdf")
         huge_res = await read_web_page("https://huge.example/stream")
+        decl_res = await read_web_page("https://declared-huge.example/file")
 
     assert called_scraper is False
     assert res.get("is_error") is not True
@@ -269,7 +274,10 @@ async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patc
     assert seen[0] == ("https://93.184.216.34/story", "news.example", "news.example")
     assert blocked["is_error"] is True
     assert pdf_res["is_error"] is True
-    assert huge_res["is_error"] is True
+    assert huge_res.get("is_error") is not True
+    assert "Truncated headline article content" in huge_res["content"]
+    assert "TRAILING_AFTER_2MB" not in huge_res["content"]
+    assert decl_res["is_error"] is True
 
 
 def test_canvas_domain_service_upsert_sanitizes_returned_id():

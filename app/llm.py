@@ -34,11 +34,14 @@ _ENDPOINT_LAST_FAILURE: dict = {}
 
 
 def _configured_vllm_urls() -> list[str]:
-    """Collect deduplicated local vLLM URLs, honoring VLLM_URL overrides first."""
+    """Collect deduplicated local vLLM URLs, honoring VLLM_URL overrides or env config first."""
+    from app import config as _cfg
     configured_urls = list(getattr(main, "VLLM_ENDPOINTS", None) or [])
     vllm_primary = str(getattr(main, "VLLM_URL", "") or "").strip()
+    default_url = getattr(main, "_DEFAULT_VLLM_URL", getattr(_cfg, "_DEFAULT_VLLM_URL", ""))
+    vllm_explicit = bool(os.getenv("VLLM_URL")) or (bool(vllm_primary) and vllm_primary != default_url)
     urls: list[str] = []
-    if vllm_primary and (not configured_urls or vllm_primary != "http://10.0.0.141:8000"):
+    if vllm_primary and (not configured_urls or vllm_explicit):
         urls.append(vllm_primary)
     for u in configured_urls:
         if u and u not in urls:

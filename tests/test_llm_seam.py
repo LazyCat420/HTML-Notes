@@ -104,6 +104,12 @@ def test_chat_pool_excludes_the_embedding_port(monkeypatch):
     assert overridden[0] == "http://10.0.0.37:8000", (
         f"overridden VLLM_URL should lead _configured_vllm_urls(): {overridden}")
 
+    monkeypatch.setenv("VLLM_URL", m._DEFAULT_VLLM_URL)
+    monkeypatch.setattr(m, "VLLM_URL", m._DEFAULT_VLLM_URL)
+    monkeypatch.setattr(m, "VLLM_ENDPOINTS", ["http://10.0.0.37:8000", m._DEFAULT_VLLM_URL])
+    explicit_default = m._configured_vllm_urls()
+    assert explicit_default[0] == m._DEFAULT_VLLM_URL, explicit_default
+
 
 def test_vllm_endpoints_default_to_internal_cluster_boxes():
     """VLLM_URL and VLLM_ENDPOINTS default to internal local instances without .30."""

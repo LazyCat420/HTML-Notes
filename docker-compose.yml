@@ -25,7 +25,7 @@ services:
       - MONGO_URI=${MONGO_URI:-}
       # Shared secret for /internal/execute auth (caller: lazy-agent-service).
       # Interpolated from the staged .env (deploy-kit/.env.deploy) at deploy;
-      # empty = endpoint runs in compat (unauthenticated) mode with a warning.
+      # empty = HTTP /internal/execute fails closed (503) unless RUNTIME_AUTH_SECRET signs requests.
       - INTERNAL_EXECUTE_TOKEN=${INTERNAL_EXECUTE_TOKEN:-}
       - EXECUTE_API_KEY=${EXECUTE_API_KEY:-}
       - RUNTIME_AUTH_SECRET=${RUNTIME_AUTH_SECRET:-}

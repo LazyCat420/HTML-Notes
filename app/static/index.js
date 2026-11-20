@@ -147,6 +147,7 @@ window.WidgetManager = {
     MAX_CLOSED_STACK: 10,
     closedStack: [],
     _dismissedTimes: {},
+    _pendingDismiss: {},
     _undoTimer: null,
 
     _sessionId() {
@@ -263,7 +264,7 @@ window.WidgetManager = {
             this.showUndoToast(id, title);
 
             if (!opts.skipServer && typeof fetch === 'function' && sid) {
-                fetch(`/api/session/${encodeURIComponent(sid)}/canvas/dismiss`, {
+                const reqPromise = fetch(`/api/session/${encodeURIComponent(sid)}/canvas/dismiss`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ widget_id: id }),
@@ -276,23 +277,33 @@ window.WidgetManager = {
                         }
                         if (Array.isArray(data.closed)) {
                             const htmlMap = new Map(this.closedStack.map(x => [x.id, x.html]));
+                            const stillDismissed = new Set(this.getDismissed());
                             if (data.removed) {
-                                this.closedStack = data.closed.slice(0, this.MAX_CLOSED_STACK).map(item => ({
-                                    ...item,
-                                    html: htmlMap.get(item.id) || '',
-                                }));
+                                this.closedStack = data.closed
+                                    .filter(item => stillDismissed.has(item.id))
+                                    .slice(0, this.MAX_CLOSED_STACK)
+                                    .map(item => ({
+                                        ...item,
+                                        html: htmlMap.get(item.id) || '',
+                                    }));
                             } else {
                                 const seen = new Set(this.closedStack.map(x => x.id));
                                 const merged = [...this.closedStack];
                                 for (const item of data.closed) {
-                                    if (!seen.has(item.id)) merged.push({ ...item, html: htmlMap.get(item.id) || '' });
+                                    if (!seen.has(item.id) && stillDismissed.has(item.id)) {
+                                        merged.push({ ...item, html: htmlMap.get(item.id) || '' });
+                                    }
                                 }
                                 this.closedStack = merged.slice(0, this.MAX_CLOSED_STACK);
                             }
                             if (window.CanvasToolbar?.refresh) window.CanvasToolbar.refresh();
                         }
                     })
-                    .catch(() => {});
+                    .catch(() => {})
+                    .finally(() => {
+                        if (this._pendingDismiss[id] === reqPromise) delete this._pendingDismiss[id];
+                    });
+                this._pendingDismiss[id] = reqPromise;
             }
         }
         teardownWidget(widgetElement);
@@ -324,6 +335,11 @@ window.WidgetManager = {
         this.closedStack = this.closedStack.filter(x => x.id !== targetId);
         const toast = document.getElementById('undo-dismiss-toast');
         if (toast) toast.hidden = true;
+
+        const pending = this._pendingDismiss[targetId];
+        if (pending) {
+            try { await pending; } catch {}
+        }
 
         const sid = this._sessionId();
         let restoredViaServer = false;

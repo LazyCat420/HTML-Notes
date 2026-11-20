@@ -312,3 +312,68 @@ test("dismiss migrates legacy storage, merges on empty server stack, clears pre-
   assert.match(indexJs, /if\s*\(!res\.ok\)\s*\{[\s\S]*?retryText:\s*text,\s*retryOpts:\s*turnOpts/);
   assert.match(indexJs, /addEventListener\("keydown",[\s\S]*?e\.target\.closest\?\.\("a\[href\]"\)[\s\S]*?e\.target\.matches\?\.\("input, textarea, select, button"\)/);
 });
+
+test("fast Undo awaits in-flight dismiss before POST restore and keeps closedStack clean (claude R3-F5)", async () => {
+  const from = indexJs.indexOf("window.WidgetManager = {");
+  const to = indexJs.indexOf("window.WidgetResizer = {", from);
+  const src = indexJs.slice(from, to);
+  const store = new Map();
+  const localStorageMock = {
+    getItem: k => store.get(k) ?? null,
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  let releaseDismiss = null;
+  const calls = [];
+  const fetchMock = (url) => {
+    calls.push(url);
+    if (url.endsWith("/canvas/dismiss")) {
+      return new Promise(resolve => {
+        releaseDismiss = () => resolve({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            removed: true,
+            version: 2,
+            closed: [{ id: "race-w1", title: "Race Card", widget_type: "note" }],
+          }),
+        });
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      json: async () => ({ ok: true, restored_id: "race-w1", content: '<div id="race-w1"></div>', version: 3, closed: [] }),
+    });
+  };
+  const painted = [];
+  const windowMock = {
+    HN: {
+      getSessionId: () => "sess-race",
+      paintCanvas: (html, ver) => painted.push([html, ver]),
+    },
+  };
+  const docMock = { getElementById: () => null, querySelector: () => null };
+  const fn = new Function("window", "localStorage", "document", "teardownWidget", "fetch", `${src}; return window.WidgetManager;`);
+  const wm = fn(windowMock, localStorageMock, docMock, () => {}, fetchMock);
+
+  wm.dismiss({
+    id: "race-w1",
+    dataset: {},
+    classList: { contains: () => false, remove() {}, add() {} },
+    getAttribute: a => (a === "data-widget-title" ? "Race Card" : "note"),
+    outerHTML: '<div id="race-w1"></div>',
+    closest: () => null,
+    addEventListener() {},
+    remove() {},
+  });
+  const restorePromise = wm.restore("race-w1");
+  // Restore must NOT issue /canvas/restore while /canvas/dismiss is still in flight
+  assert.equal(calls.filter(u => u.endsWith("/canvas/restore")).length, 0);
+  releaseDismiss();
+  const ok = await restorePromise;
+  assert.equal(ok, true);
+  assert.deepEqual(calls, ["/api/session/sess-race/canvas/dismiss", "/api/session/sess-race/canvas/restore"]);
+  assert.equal(wm.closedStack.length, 0);
+  assert.equal(wm.isDismissed("race-w1"), false);
+  assert.equal(painted.length, 1);
+});

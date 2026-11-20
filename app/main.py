@@ -582,7 +582,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, LAZY_AGENT_URL, VLLM_URL, VLLM_FAST_URL, VLLM_ENDPOINTS, VLLM_ENDPOINT_PROVIDERS, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL, MUSIC_ROUTER_BUDGET_S, MUSIC_ROUTER_REFINE_S
+from app.config import _DEFAULT_VLLM_URL, PORT, LAZY_AGENT_URL, VLLM_URL, VLLM_ENDPOINTS, VLLM_ENDPOINT_PROVIDERS, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL, MUSIC_ROUTER_BUDGET_S, MUSIC_ROUTER_REFINE_S
 import asyncio
 import contextvars
 import datetime
@@ -2010,11 +2010,10 @@ def _is_chat_capable_model(model_id: str) -> bool:
     return not any(marker in name for marker in _NON_CHAT_MODEL_MARKERS)
 
 
-# Which gateway provider to hand an agent turn to, in order. The Jetson's
-# nemotron35 leads because it is the box that measurably works: native
-# tool_calls parsed at 0.38-0.55s, versus Gold Spark head-of-line blocked at
-# ~21 tok/s with requests sitting in "deferred". This is a PREFERENCE with a
-# fallback, not a pin — an unavailable box is skipped and rejoins on its own.
+# Which gateway provider to hand an agent turn to, in order. High-capacity
+# cluster vLLM boxes lead (vllm-2 goldspark .141, vllm-4 dellbox2 .131,
+# vllm-5 dellbox1 .37) ahead of legacy fallback vllm. This is a PREFERENCE
+# with fallback — an unavailable box is skipped dynamically via /config-local.
 PREFERRED_AGENT_PROVIDERS = ("vllm-2", "vllm-4", "vllm-5", "vllm")
 
 
