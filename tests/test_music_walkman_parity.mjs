@@ -121,48 +121,73 @@ test("toggleEndless refills at queue end and falls back to wrap if refill return
   wNoAuto.$el = { dataset: {} };
   await wNoAuto.init();
   streams.at(-1).fire("tracks", { tracks: [{ id: "x1", title: "T1", artist: "A" }] });
+  let playedCount = 0;
+  const origPlay = wNoAuto.audio.play.bind(wNoAuto.audio);
+  wNoAuto.audio.play = () => { playedCount++; return origPlay(); };
   wNoAuto.isPlaying = true;
   wNoAuto.fetchJson = async () => ({ tracks: [{ id: "x2", title: "T2", artist: "B", duration: 180 }] });
   wNoAuto.nextTrack({ auto: false });
   await new Promise(r => setImmediate(r));
   assert.equal(wNoAuto.currentIndex, 1);
   assert.equal(wNoAuto.currentTrack.id, "x2");
+  assert.equal(playedCount, 1, "audio.play() must fire using shouldResume even when autoplay=false");
   w.destroy();
   wNoAuto.destroy();
 }));
 
-test("blockCurrentArtist posts target=artist, purges queue, filters blockedArtists in enqueue (R1-F5)", withTimers(async () => {
+test("blockCurrentArtist posts target=artist, flushes skip, normalizes Topic channels, and seeds non-blocked tracks (R1-F5, R2-F4..F6)", withTimers(async () => {
   const env = loadFactory();
   const w = await seedTwoArtists(env);
+  w.activePlayAccumulated = 12;
   w.blockCurrentArtist();
   const fb = env.fetchCalls.find(c => c.url.endsWith("/api/radio/feedback") && c.method === "POST");
   assert.ok(fb, "must POST /api/radio/feedback");
   assert.equal(fb.body.target, "artist");
   assert.equal(fb.body.sentiment, "disliked");
   assert.equal(fb.body.artist, "Artist A");
+  assert.ok(env.fetchCalls.some(c => c.url.endsWith("/api/music/history") && c.body.end_reason === "skip"), "R2-F5 skip flushed");
   assert.deepEqual(w.queue.map(t => t.artist), ["Artist A", "Artist B"]);
   assert.equal(w.currentTrack.id, "v3", "must advance past blocked artist onto Artist B");
-  // R1-F5: subsequent SSE or endless refills must skip blocked Artist A
+  // R1-F5 + R2-F4: subsequent refills filter both exact and '- Topic' variants
   const added = w.enqueue([
-    { id: "v99", title: "Blocked Return", artist: "Artist A" },
+    { id: "v99", title: "Blocked Return", artist: "Artist A - Topic" },
     { id: "v100", title: "Allowed", artist: "Artist C" },
   ]);
   assert.equal(added, 1);
   assert.ok(!w.queue.some(t => t.id === "v99"));
+
+  // R2-F6: blocking the last track must not seed next-batch with the blocked artist
+  w.currentIndex = w.queue.length - 1; // v100 by Artist C (last track)
+  const refillUrls = [];
+  w.fetchJson = async (url) => { refillUrls.push(url); return { tracks: [] }; };
+  w.blockCurrentArtist();
+  await new Promise(r => setImmediate(r));
+  assert.equal(refillUrls.length, 1);
+  assert.ok(!refillUrls[0].includes("seed_artist=Artist+C"));
   w.destroy();
 }));
 
-test("requestMix bumps mixGeneration so stale in-flight refills are discarded (R1-F4)", withTimers(async () => {
+test("requestMix bumps mixGeneration so stale refills discard without wrapping new mix (R1-F4, R2-F2, R2-F3)", withTimers(async () => {
   const env = loadFactory();
   const w = await seedTwoArtists(env);
-  let resolveSlow;
-  w.fetchJson = () => new Promise(res => { resolveSlow = res; });
-  const slowRefill = w.moreLikeCurrent({ autoPlayNext: true });
+  w.currentIndex = w.queue.length - 1;
+  let resolveSlow = null;
+  w.fetchJson = () => {
+    if (!resolveSlow) return new Promise(res => { resolveSlow = res; });
+    return Promise.resolve({ tracks: [] });
+  };
+  w.nextTrack({ auto: true });
   w.requestMix("techno");
+  streams.at(-1).fire("tracks", {
+    tracks: [
+      { id: "t1", title: "Techno 1", artist: "DJ1" },
+      { id: "t2", title: "Techno 2", artist: "DJ2" },
+    ],
+  });
   resolveSlow({ tracks: [{ id: "old1", title: "Stale", artist: "Old" }] });
-  const landed = await slowRefill;
-  assert.equal(landed, 0);
+  await new Promise(r => setImmediate(r));
   assert.equal(w.genreFilter, "techno");
+  assert.equal(w.currentTrack.id, "t1", "R2-F3: stale refill must NOT wrap new mix onto t2");
   assert.ok(!w.queue.some(t => t.id === "old1"));
   w.destroy();
 }));
