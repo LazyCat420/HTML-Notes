@@ -1029,6 +1029,8 @@ document.addEventListener('alpine:init', () => {
         streamStatus: '',
         showQueue: false,
         seenIds: null,          // Set — created in init (Alpine clones data objects)
+        blockedArtists: null,   // Set of lowercased blocked artists this session
+        mixGeneration: 0,       // bumped per requestMix so stale refills drop
         resolvedType: 'genre',  // whichever mix type actually filled the queue
         triedArtistFallback: false,
         refillInFlight: false,
@@ -1131,6 +1133,7 @@ document.addEventListener('alpine:init', () => {
         async init() {
             console.log(`[MusicPlayer] Init. term="${this.genreFilter}" kind="${this.kind}" base=${this.base}`);
             this.seenIds = new Set();
+            this.blockedArtists = new Set();
             try {
                 const savedVol = localStorage.getItem('hn_music_volume');
                 if (savedVol !== null) {
@@ -1284,9 +1287,14 @@ document.addEventListener('alpine:init', () => {
 
         /** Append fresh (unseen) tracks to the queue. Returns how many landed. */
         enqueue(raw) {
+            const blocked = this.blockedArtists;
             const fresh = (raw || [])
                 .map(v => v ? this.asTrack(v) : null)
-                .filter(t => t && t.id && !this.seenIds.has(t.id));
+                .filter(t => {
+                    if (!t || !t.id || this.seenIds.has(t.id)) return false;
+                    const artistLower = String(t.artist || '').trim().toLowerCase();
+                    return !(blocked && artistLower && blocked.has(artistLower));
+                });
             fresh.forEach(t => this.seenIds.add(t.id));
             this.queue.push(...fresh);
             if (fresh.length) this.pruneAhead();
@@ -1489,6 +1497,7 @@ document.addEventListener('alpine:init', () => {
             const remaining = this.queue.length - this.currentIndex - 1;
             if (!this.isEndless || remaining > 5 || this.refillInFlight || !this.genreFilter) return;
             if (Date.now() - this.lastRefillAt < 90000) return;
+            const gen = this.mixGeneration || 0;
             this.refillInFlight = true;
             this.lastRefillAt = Date.now();
             const params = new URLSearchParams();
@@ -1505,6 +1514,7 @@ document.addEventListener('alpine:init', () => {
             this.fetchJson(
                 `${this.base}/api/music/history/smart/endless-mix/next-batch?${params.toString()}`, 95000)
                 .then(d => {
+                    if (gen !== (this.mixGeneration || 0)) return;
                     const batch = Array.isArray(d) ? d : ((d && d.tracks) || []);
                     const landed = this.enqueue(batch);
                     if (landed) console.log(`[MusicPlayer] Refilled queue with ${landed} tracks.`);
@@ -1592,16 +1602,26 @@ document.addEventListener('alpine:init', () => {
             }
             if (this.queue.length === 0) return;
             const wasPlaying = this.isPlaying;
+            const shouldResume = wasPlaying || auto;
             if (this.currentIndex + 1 < this.queue.length) {
                 this.currentIndex = this.currentIndex + 1;
             } else if (this.isEndless && this.moreLikeCurrent) {
-                void this.moreLikeCurrent({ autoPlayNext: wasPlaying || auto });
+                void this.moreLikeCurrent({ autoPlayNext: true, resumePlayback: shouldResume }).then((landed) => {
+                    if (landed > 0 || !this.queue || this.queue.length === 0) return;
+                    this.currentIndex = (this.currentIndex + 1) % this.queue.length;
+                    this.loadTrack();
+                    if (shouldResume && this.audio) {
+                        this.audio.play().catch(e => {
+                            console.warn('[MusicPlayer] Play failed on wrap fallback:', e);
+                            this.isPlaying = false;
+                        });
+                    }
+                });
                 return;
             } else {
                 this.currentIndex = (this.currentIndex + 1) % this.queue.length;
             }
             this.loadTrack();
-            const shouldResume = wasPlaying || auto;
             if (shouldResume && this.audio) {
                 this.audio.play().catch(e => {
                     console.warn('[MusicPlayer] Play failed on advance:', e);
@@ -1964,7 +1984,9 @@ document.addEventListener('alpine:init', () => {
         //   up    → the song joins music-player's favorites (the same
         //           `youtube://<id>` entry the full app writes), and wallgarden
         //           rates the video +5
-        //   down  → the song leaves favorites, wallgarden rates the video -5
+        //   down  → the song leaves favorites, posts a song-level
+        //           (`target: 'song'`) dislike to `/api/radio/feedback`, and
+        //           wallgarden rates the video -5
         //   clear → the song leaves favorites
         sendThumb(sentiment) {
             const track = this.currentTrack;
@@ -2044,6 +2066,10 @@ document.addEventListener('alpine:init', () => {
         requestMix(query) {
             const q = String(query || '').trim();
             if (!q) return;
+            this.flushPlayEvent('replace');
+            this.cancelHandoff();
+            this.mixGeneration = (this.mixGeneration || 0) + 1;
+            this.lastRefillAt = 0;
             if (this.audio) {
                 this.audio.pause();
                 this.audio.src = '';
@@ -2060,8 +2086,9 @@ document.addEventListener('alpine:init', () => {
             this.startStream(q, 'genre');
         },
 
-        async moreLikeCurrent({ autoPlayNext = false } = {}) {
+        async moreLikeCurrent({ autoPlayNext = false, resumePlayback } = {}) {
             if (this.moreInFlight) return 0;
+            const gen = this.mixGeneration || 0;
             this.moreInFlight = true;
             try {
                 const params = new URLSearchParams();
@@ -2075,12 +2102,23 @@ document.addEventListener('alpine:init', () => {
                 if (excludeIds.length) params.set('exclude', excludeIds.join(','));
                 const d = await this.fetchJson(
                     `${this.base}/api/music/history/smart/endless-mix/next-batch?${params.toString()}`, 95000);
+                if (gen !== (this.mixGeneration || 0)) return 0;
                 const batch = Array.isArray(d) ? d : ((d && d.tracks) || []);
                 const prevLen = this.queue.length;
                 const landed = this.enqueue(batch);
                 if (landed) {
                     this.streamStatus = `Added ${landed} more tracks.`;
-                    if (autoPlayNext) this.playAt(prevLen, { auto: true });
+                    if (autoPlayNext) {
+                        const resume = resumePlayback !== undefined ? resumePlayback : (this.isPlaying || autoPlayNext);
+                        this.currentIndex = prevLen;
+                        this.loadTrack();
+                        if (resume && this.audio) {
+                            this.audio.play().catch(e => {
+                                console.warn('[MusicPlayer] Play failed on refill advance:', e);
+                                this.isPlaying = false;
+                            });
+                        }
+                    }
                 } else {
                     this.streamStatus = 'No additional tracks found.';
                 }
@@ -2100,6 +2138,9 @@ document.addEventListener('alpine:init', () => {
             const track = this.currentTrack;
             const artist = track && String(track.artist || '').trim();
             if (!artist) return;
+            const artistLower = artist.toLowerCase();
+            if (!this.blockedArtists) this.blockedArtists = new Set();
+            this.blockedArtists.add(artistLower);
             const trackId = track.isYoutube ? `youtube://${track.id}` : (track.path || track.id);
             fetch(`${this.base}/api/radio/feedback`, {
                 method: 'POST',
@@ -2114,12 +2155,13 @@ document.addEventListener('alpine:init', () => {
                     context: 'html-notes',
                 }),
             }).catch(() => {});
-            const artistLower = artist.toLowerCase();
             const cur = this.currentIndex;
             this.queue = this.queue.filter((t, i) => i <= cur || String(t && t.artist || '').trim().toLowerCase() !== artistLower);
             this.showThumbStatus(`Blocked ${artist}.`);
             if (this.currentIndex + 1 < this.queue.length) {
                 this.nextTrack({ auto: true });
+            } else if (this.isEndless) {
+                void this.moreLikeCurrent({ autoPlayNext: true, resumePlayback: true });
             } else {
                 this.stopPlayback();
             }

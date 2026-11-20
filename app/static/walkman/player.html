@@ -884,9 +884,9 @@ $('qclose').addEventListener('click', () => toggleQueue(false));
 $('qsearch').addEventListener('keydown', e => {
   if (e.key === 'Escape'){ toggleQueue(false); return; }
   if (e.key !== 'Enter') return;
-  if (emitSearchMix()) return;
   const first = $('qrows').querySelector('.row');
-  if (first) load(Number(first.dataset.i));
+  if (first) { click(true); load(Number(first.dataset.i)); return; }
+  emitSearchMix();
 });
 $('qmix').addEventListener('click', () => { click(true); emitSearchMix(); });
 $('qmore').addEventListener('click', () => { click(true); emit({ action: 'more_like' }); });

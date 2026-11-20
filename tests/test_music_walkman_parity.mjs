@@ -53,6 +53,7 @@ test("Walkman card drawer includes MIX, MORE, ENDLESS, BLOCK inside #queue witho
   for (const pos of keyPositions) {
     assert.ok(pos.endsWith(" -0.0535 0.0205"), `unexpected deck key position ${pos}`);
   }
+  assert.match(walkmanHtml, /if\s*\(first\)\s*\{\s*click\(true\);\s*load\(Number\(first\.dataset\.i\)\);\s*return;\s*\}/);
   assert.match(walkmanHtml, /emit\(\{\s*action:\s*'request_mix'/);
   assert.match(walkmanHtml, /emit\(\{\s*action:\s*'more_like'/);
   assert.match(walkmanHtml, /emit\(\{\s*action:\s*'toggle_endless'/);
@@ -92,28 +93,45 @@ test("moreLikeCurrent requests endless next-batch with seed_track_id and seed_ar
   w.destroy();
 }));
 
-test("toggleEndless refills at queue end instead of wrapping % queue.length when enabled", withTimers(async () => {
+test("toggleEndless refills at queue end and falls back to wrap if refill returns 0 (R1-F1, R1-F3)", withTimers(async () => {
   const env = loadFactory();
   const w = await seedTwoArtists(env);
   w.currentIndex = w.queue.length - 1;
   let moreCalls = 0;
-  w.moreLikeCurrent = async ({ autoPlayNext } = {}) => {
+  w.moreLikeCurrent = async ({ autoPlayNext, resumePlayback } = {}) => {
     moreCalls++;
     assert.equal(autoPlayNext, true);
+    assert.equal(resumePlayback, true);
     return 0;
   };
   assert.equal(w.isEndless, true);
   w.nextTrack({ auto: true });
-  assert.equal(moreCalls, 1, "endless mode must refill at end instead of wrapping to 0");
+  await Promise.resolve();
+  assert.equal(moreCalls, 1, "endless mode tries refill at end");
+  assert.equal(w.currentIndex, 0, "when refill returns 0, wraps instead of silence");
 
   w.toggleEndless(false);
   assert.equal(w.isEndless, false);
+  w.currentIndex = w.queue.length - 1;
   w.nextTrack({ auto: true });
   assert.equal(w.currentIndex, 0, "when endless is off, nextTrack wraps cleanly");
+
+  // R1-F3: successful refill advances and resumes via resumePlayback even if autoplay=false
+  const wNoAuto = env.factory({ genre: "house", autoplay: false, base: "http://svc" });
+  wNoAuto.$el = { dataset: {} };
+  await wNoAuto.init();
+  streams.at(-1).fire("tracks", { tracks: [{ id: "x1", title: "T1", artist: "A" }] });
+  wNoAuto.isPlaying = true;
+  wNoAuto.fetchJson = async () => ({ tracks: [{ id: "x2", title: "T2", artist: "B", duration: 180 }] });
+  wNoAuto.nextTrack({ auto: false });
+  await new Promise(r => setImmediate(r));
+  assert.equal(wNoAuto.currentIndex, 1);
+  assert.equal(wNoAuto.currentTrack.id, "x2");
   w.destroy();
+  wNoAuto.destroy();
 }));
 
-test("blockCurrentArtist posts target=artist, purges upcoming tracks by artist, and advances", withTimers(async () => {
+test("blockCurrentArtist posts target=artist, purges queue, filters blockedArtists in enqueue (R1-F5)", withTimers(async () => {
   const env = loadFactory();
   const w = await seedTwoArtists(env);
   w.blockCurrentArtist();
@@ -124,6 +142,28 @@ test("blockCurrentArtist posts target=artist, purges upcoming tracks by artist, 
   assert.equal(fb.body.artist, "Artist A");
   assert.deepEqual(w.queue.map(t => t.artist), ["Artist A", "Artist B"]);
   assert.equal(w.currentTrack.id, "v3", "must advance past blocked artist onto Artist B");
+  // R1-F5: subsequent SSE or endless refills must skip blocked Artist A
+  const added = w.enqueue([
+    { id: "v99", title: "Blocked Return", artist: "Artist A" },
+    { id: "v100", title: "Allowed", artist: "Artist C" },
+  ]);
+  assert.equal(added, 1);
+  assert.ok(!w.queue.some(t => t.id === "v99"));
+  w.destroy();
+}));
+
+test("requestMix bumps mixGeneration so stale in-flight refills are discarded (R1-F4)", withTimers(async () => {
+  const env = loadFactory();
+  const w = await seedTwoArtists(env);
+  let resolveSlow;
+  w.fetchJson = () => new Promise(res => { resolveSlow = res; });
+  const slowRefill = w.moreLikeCurrent({ autoPlayNext: true });
+  w.requestMix("techno");
+  resolveSlow({ tracks: [{ id: "old1", title: "Stale", artist: "Old" }] });
+  const landed = await slowRefill;
+  assert.equal(landed, 0);
+  assert.equal(w.genreFilter, "techno");
+  assert.ok(!w.queue.some(t => t.id === "old1"));
   w.destroy();
 }));
 
