@@ -2,8 +2,14 @@ import base64
 import hashlib
 import html
 import json
+import re
 import urllib.parse
 from typing import Any, Optional
+
+
+def _safe_dom_id(raw_id: Any) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "-", str(raw_id or "").lstrip("#").strip()).strip("-")[:80]
+    return cleaned or "widget"
 
 def json_escape(val: Any) -> str:
     return html.escape(json.dumps(val))
@@ -78,7 +84,7 @@ def widget_header(title: str, icon: str = "widgets", subtitle: str = "", ask: st
         <div class="widget-header flex items-center justify-between bg-black/30 px-3 py-1.5 border-b border-white/10 relative z-20 shrink-0">
             <div class="flex items-baseline gap-2 min-w-0">
                 <span class="material-symbols-outlined text-[1rem] text-purple-300 self-center shrink-0">{esc(icon)}</span>
-                <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight shrink-0"{f' data-ask="{esc(ask)}" title="Ask about this"' if ask else ''}>{esc(title)}</h3>
+                <h3 class="font-bold text-white tracking-wide truncate text-sm leading-tight shrink-0"{f' data-ask="{esc(ask)}" tabindex="0" role="button" title="Ask about this"' if ask else ''}>{esc(title)}</h3>
                 {subtitle_html}
             </div>
             <div class="flex items-center gap-2 shrink-0 ml-2">
@@ -431,7 +437,7 @@ def render_data_card(widget_id: str, config: dict) -> str:
         # keeps this card as the follow-up target so the answer lands IN it.
         title_html = (f'<span class="text-sm font-semibold text-white leading-snug" '
                       f'data-ask="tell me more about {esc(i_title)}" data-ask-focus="1" '
-                      f'title="Ask about this">{esc(i_title)}</span>')
+                      f'tabindex="0" role="button" title="Ask about this">{esc(i_title)}</span>')
         source_html = (
             f'<a href="{esc(i_url)}" target="_blank" rel="noopener" '
             f'class="item-source text-[0.65rem] text-purple-300/70 hover:text-purple-200 hover:underline truncate">'
@@ -692,7 +698,7 @@ def render_products(widget_id: str, config: dict) -> str:
                 {media}
                 <div class="flex flex-col gap-1 min-w-0 flex-grow">
                     <div class="flex items-start justify-between gap-2">
-                        <span class="text-sm font-semibold text-white leading-snug line-clamp-2" data-ask="more about {esc(i_title)}" title="Ask about this">{esc(i_title)}</span>
+                        <span class="text-sm font-semibold text-white leading-snug line-clamp-2" data-ask="more about {esc(i_title)}" tabindex="0" role="button" title="Ask about this">{esc(i_title)}</span>
                         {price_html}
                     </div>
                     {f'<div class="text-xs text-slate-300 leading-relaxed line-clamp-3">{esc(i_desc)}</div>' if i_desc else ''}
@@ -1740,7 +1746,7 @@ def render_scoreboard(widget_id: str, config: dict) -> str:
             <div class="flex items-center justify-between gap-2 py-0.5">
                 <div class="flex items-center gap-2 min-w-0">
                     {badge}
-                    <span class="text-[0.8rem] truncate {name_cls}" data-ask="{esc((side.get("name") or "TBD") + " news")}" title="Ask about this team">{name}</span>
+                    <span class="text-[0.8rem] truncate {name_cls}" data-ask="{esc((side.get("name") or "TBD") + " news")}" tabindex="0" role="button" title="Ask about this team">{name}</span>
                     {record_html}
                 </div>
                 <span class="text-sm tabular-nums shrink-0 {score_cls}">{esc(score if score not in (None, "") else "—")}</span>
@@ -2106,7 +2112,7 @@ def render_table(widget_id: str, config: dict) -> str:
     def _row_ask(r):
         v = r.get(cols[0]["key"]) if cols else None
         v = "" if v is None else str(v).strip()
-        return f' data-ask="{esc(v)}"' if v and not cols[0]["numeric"] else ""
+        return f' data-ask="{esc(v)}" tabindex="0" role="button"' if v and not cols[0]["numeric"] else ""
     body = "".join(
         f"<tr class='hover:bg-white/5 transition-colors'{_row_ask(r)}>" + "".join(
             f'<td class="px-2.5 py-1.5 border-b border-white/5 align-top text-sm '
@@ -2496,6 +2502,7 @@ def render_custom(widget_id: str, config: dict) -> str:
     /widgets/custom/<id>. The `?v=` rides the content hash so an
     update_widget re-render (new data-sig ⇒ node replaced) also reloads the
     document instead of serving the browser's cached copy."""
+    widget_id = _safe_dom_id(widget_id)
     title = config.get("title") or "Widget"
     subtitle = config.get("subtitle") or ""
     content_hash = hashlib.md5(json.dumps(
@@ -2549,7 +2556,7 @@ def render_app_grid(widget_id: str, config: dict) -> str:
                             </span>
                             <span class="text-[0.7rem] font-semibold text-white text-center leading-tight line-clamp-2"
                                   x-text="app.name"></span>
-                            <span class="hn-ask-chip text-[0.6rem] text-white/40 hover:text-white/90 ml-1" :data-ask="'tell me about ' + app.name" title="Ask about this app">?</span>
+                            <span class="hn-ask-chip text-[0.6rem] text-white/40 hover:text-white/90 ml-1" :data-ask="'tell me about ' + app.name" tabindex="0" role="button" title="Ask about this app">?</span>
                             <span class="text-[0.55rem] text-slate-400" x-show="app.pinned">📌</span>
                         </a>
                         <div class="absolute top-1 right-1 hidden group-hover/tile:flex gap-0.5">
@@ -2794,6 +2801,7 @@ def _content_sig(widget_type: str, config: dict) -> str:
 
 def generate_widget_html(widget_type: str, widget_id: str, config: dict) -> str:
     """Factory function to route widget creation."""
+    widget_id = _safe_dom_id(widget_id)
     if not isinstance(config, dict):
         config = {}
     renderer = WIDGET_RENDERERS.get(widget_type)

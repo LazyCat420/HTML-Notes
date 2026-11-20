@@ -11,8 +11,7 @@ window.HN = (function () {
     function widgetTypes(html) {
         const out = [];
         try {
-            const tmp = document.createElement('div');
-            tmp.innerHTML = html || '';
+            const tmp = new DOMParser().parseFromString(html || '', 'text/html').body;
             tmp.querySelectorAll('.widget-container, .glass-card, .rendered-component').forEach(el => {
                 // data-widget-type is the authoritative stamp (set by
                 // generate_widget_html on every widget root); the class
@@ -122,13 +121,16 @@ function recoverMusicWidgetConfig(el) {
 // ─── LEGO: WIDGET MANAGER ─────────────────────────────────────────
 function teardownWidget(el) {
     if (!el || !el.querySelectorAll) return;
+    if (el.__hnDestroyed) return;
+    el.__hnDestroyed = true;
     try {
         const targets = [el, ...Array.from(el.querySelectorAll('[x-data]'))];
         targets.forEach(node => {
             if (window.Alpine && typeof window.Alpine.$data === 'function') {
                 try {
                     const data = window.Alpine.$data(node);
-                    if (data && typeof data.destroy === 'function') {
+                    if (data && typeof data.destroy === 'function' && !data.__hnDestroyed) {
+                        data.__hnDestroyed = true;
                         data.destroy();
                     }
                 } catch {}
@@ -141,24 +143,121 @@ function teardownWidget(el) {
 window.teardownWidget = teardownWidget;
 
 window.WidgetManager = {
+    MAX_DISMISSED: 100,
+    MAX_CLOSED_STACK: 10,
+    closedStack: [],
+    _undoTimer: null,
+
+    _sessionId() {
+        try {
+            if (window.HN && typeof window.HN.getSessionId === 'function') {
+                return window.HN.getSessionId() || 'default';
+            }
+            return localStorage.getItem('html_notes_session_id') || 'default';
+        } catch {
+            return 'default';
+        }
+    },
+    _storageKey(sid) {
+        return `dismissed_widgets:${sid || this._sessionId()}`;
+    },
     getDismissed() {
         try {
-            return JSON.parse(localStorage.getItem('dismissed_widgets') || '[]');
+            const raw = localStorage.getItem(this._storageKey());
+            const parsed = JSON.parse(raw || '[]');
+            return Array.isArray(parsed) ? parsed.slice(-this.MAX_DISMISSED) : [];
         } catch {
             return [];
         }
     },
+    _saveDismissed(ids) {
+        try {
+            const trimmed = Array.isArray(ids) ? ids.slice(-this.MAX_DISMISSED) : [];
+            localStorage.setItem(this._storageKey(), JSON.stringify(trimmed));
+        } catch {}
+    },
+    setClosedWidgets(items) {
+        this.closedStack = Array.isArray(items)
+            ? items.slice(0, this.MAX_CLOSED_STACK)
+            : [];
+        if (window.CanvasToolbar && typeof window.CanvasToolbar.refresh === 'function') {
+            window.CanvasToolbar.refresh();
+        }
+    },
+    showUndoToast(id, title) {
+        const toast = document.getElementById('undo-dismiss-toast');
+        if (!toast) return;
+        clearTimeout(this._undoTimer);
+        toast.textContent = '';
+        const msg = document.createElement('span');
+        msg.textContent = `Closed "${title || id}"`;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'undo-dismiss-btn';
+        btn.textContent = 'Undo';
+        btn.addEventListener('click', () => {
+            clearTimeout(this._undoTimer);
+            toast.hidden = true;
+            this.restore(id);
+        });
+        toast.append(msg, btn);
+        toast.hidden = false;
+        this._undoTimer = setTimeout(() => {
+            toast.hidden = true;
+        }, 8000);
+    },
     dismiss(widgetElement) {
         if (!widgetElement) return;
+        const opts = arguments[1] || {};
         // Tells media widgets this is the USER closing them: the music player
         // otherwise keeps its audio going for a replacement to adopt.
         if (widgetElement.dataset) widgetElement.dataset.userDismissed = '1';
         const id = widgetElement.id;
+        const title = (
+            widgetElement.getAttribute?.('data-widget-title')
+            || widgetElement.querySelector?.('h3, h2, h4')?.textContent?.trim()
+            || id
+            || 'Widget'
+        );
+        const widgetType = widgetElement.getAttribute?.('data-widget-type') || 'widget';
+        const sid = this._sessionId();
         if (id) {
             const dismissed = this.getDismissed();
             if (!dismissed.includes(id)) {
                 dismissed.push(id);
-                localStorage.setItem('dismissed_widgets', JSON.stringify(dismissed));
+                this._saveDismissed(dismissed);
+            }
+            const entry = {
+                id,
+                title,
+                widget_type: widgetType,
+                html: widgetElement.outerHTML || '',
+            };
+            this.closedStack = [entry, ...this.closedStack.filter(x => x.id !== id)].slice(0, this.MAX_CLOSED_STACK);
+            this.showUndoToast(id, title);
+
+            if (!opts.skipServer && typeof fetch === 'function' && sid) {
+                fetch(`/api/session/${encodeURIComponent(sid)}/canvas/dismiss`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ widget_id: id }),
+                })
+                    .then(r => (r.ok ? r.json() : null))
+                    .then(data => {
+                        if (!data) return;
+                        if (typeof data.version === 'number' && window.HN?.adoptCanvasVersion) {
+                            window.HN.adoptCanvasVersion(data.version);
+                        }
+                        if (Array.isArray(data.closed)) {
+                            const htmlMap = new Map(this.closedStack.map(x => [x.id, x.html]));
+                            this.closedStack = data.closed.slice(0, this.MAX_CLOSED_STACK).map(item => ({
+                                ...item,
+                                html: htmlMap.get(item.id) || '',
+                            }));
+                            if (window.CanvasToolbar?.refresh) window.CanvasToolbar.refresh();
+                        }
+                    })
+                    .catch(() => {});
             }
         }
         teardownWidget(widgetElement);
@@ -168,12 +267,71 @@ window.WidgetManager = {
         if (widgetElement.classList.contains('crt-off')) return;
         widgetElement.classList.remove('crt-on');
         widgetElement.classList.add('crt-off');
+        const grid = widgetElement.closest ? widgetElement.closest('#dashboard-grid') : null;
         const detach = () => {
             teardownWidget(widgetElement);
             widgetElement.remove();
+            if (window.CanvasDensity) window.CanvasDensity.update(grid || document.querySelector('#dashboard-grid'));
+            if (window.CanvasToolbar?.refresh) window.CanvasToolbar.refresh();
+            if (window.__masonryLayout) requestAnimationFrame(window.__masonryLayout);
         };
         widgetElement.addEventListener('animationend', detach, { once: true });
         setTimeout(detach, 700);
+    },
+    async restore(widgetId) {
+        const entry = widgetId
+            ? this.closedStack.find(x => x.id === widgetId)
+            : this.closedStack[0];
+        const targetId = widgetId || (entry && entry.id) || '';
+        if (!targetId) return false;
+
+        this._saveDismissed(this.getDismissed().filter(x => x !== targetId));
+        this.closedStack = this.closedStack.filter(x => x.id !== targetId);
+        const toast = document.getElementById('undo-dismiss-toast');
+        if (toast) toast.hidden = true;
+
+        const sid = this._sessionId();
+        let restoredViaServer = false;
+        if (typeof fetch === 'function' && sid) {
+            try {
+                const res = await fetch(`/api/session/${encodeURIComponent(sid)}/canvas/restore`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ widget_id: targetId }),
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data.closed)) {
+                        const htmlMap = new Map(this.closedStack.map(x => [x.id, x.html]));
+                        this.closedStack = data.closed.slice(0, this.MAX_CLOSED_STACK).map(item => ({
+                            ...item,
+                            html: htmlMap.get(item.id) || '',
+                        }));
+                    }
+                    if (data.content && window.HN?.paintCanvas) {
+                        window.HN.paintCanvas(data.content, data.version);
+                        restoredViaServer = true;
+                    }
+                }
+            } catch {}
+        }
+
+        if (!restoredViaServer && entry && entry.html) {
+            const liveCanvas = document.getElementById('live-canvas');
+            const grid = document.querySelector('#dashboard-grid');
+            if (liveCanvas && grid && window.HN?.reconcileCanvasHtml) {
+                window.HN.reconcileCanvasHtml(`<div id="dashboard-grid" class="dashboard-grid">${entry.html}${grid.innerHTML}</div>`);
+            } else if (grid) {
+                const doc = new DOMParser().parseFromString(entry.html, 'text/html');
+                const node = doc.body.firstElementChild;
+                if (node) grid.prepend(node);
+            }
+        }
+        const gridNow = document.querySelector('#dashboard-grid');
+        if (window.CanvasDensity) window.CanvasDensity.update(gridNow);
+        if (window.CanvasToolbar?.refresh) window.CanvasToolbar.refresh();
+        if (window.__masonryLayout) requestAnimationFrame(window.__masonryLayout);
+        return true;
     },
     isDismissed(id) {
         if (!id) return false;
@@ -196,19 +354,41 @@ window.WidgetResizer = {
     MAX_COLS: 4,
     MIN_HEIGHT: 180,
     MAX_HEIGHT: 1400,
+    MAX_SAVED_SIZES: 100,
+    _rawSizesCache: null,
+    _parsedSizesCache: null,
 
     getSizes() {
         try {
-            return JSON.parse(localStorage.getItem('widget_sizes') || '{}');
+            const raw = localStorage.getItem('widget_sizes') || '{}';
+            if (raw === this._rawSizesCache && this._parsedSizesCache) {
+                return this._parsedSizesCache;
+            }
+            const parsed = JSON.parse(raw);
+            this._rawSizesCache = raw;
+            this._parsedSizesCache = parsed && typeof parsed === 'object' ? parsed : {};
+            return this._parsedSizesCache;
         } catch {
             return {};
         }
     },
     saveSize(id, size) {
         if (!id) return;
-        const sizes = this.getSizes();
-        if (size) sizes[id] = size; else delete sizes[id];
-        localStorage.setItem('widget_sizes', JSON.stringify(sizes));
+        const sizes = { ...this.getSizes() };
+        if (size) {
+            delete sizes[id];
+            sizes[id] = size;
+            const keys = Object.keys(sizes);
+            while (keys.length > this.MAX_SAVED_SIZES) {
+                delete sizes[keys.shift()];
+            }
+        } else {
+            delete sizes[id];
+        }
+        const serialized = JSON.stringify(sizes);
+        localStorage.setItem('widget_sizes', serialized);
+        this._rawSizesCache = serialized;
+        this._parsedSizesCache = sizes;
     },
 
     /** Grid geometry, so a pixel drag can be converted into a column count. */
@@ -326,8 +506,21 @@ window.WidgetResizer = {
         if (!canvas || this._observing) return;
         this._observing = true;
         this.scan(canvas);
-        new MutationObserver(() => this.scan(canvas))
-            .observe(canvas, { childList: true, subtree: true });
+        let gridObs = null;
+        let currentGrid = null;
+        const bindGrid = () => {
+            const grid = canvas.querySelector('#dashboard-grid');
+            if (!grid || grid === currentGrid) return;
+            if (gridObs) gridObs.disconnect();
+            currentGrid = grid;
+            gridObs = new MutationObserver(() => this.scan(grid));
+            gridObs.observe(grid, { childList: true });
+        };
+        bindGrid();
+        new MutationObserver(() => {
+            bindGrid();
+            this.scan(canvas);
+        }).observe(canvas, { childList: true });
     }
 };
 
@@ -344,13 +537,15 @@ window.WidgetResizer = {
 // a MutationObserver, so reordering the DOM can't feed back into itself.
 window.WidgetLayout = {
     KEY: 'widget_order',
+    MAX_SAVED_ORDER: 100,
 
     getOrder() {
         try { return JSON.parse(localStorage.getItem(this.KEY) || '[]'); }
         catch { return []; }
     },
     saveOrder(ids) {
-        localStorage.setItem(this.KEY, JSON.stringify(ids));
+        const capped = Array.isArray(ids) ? ids.slice(0, this.MAX_SAVED_ORDER) : [];
+        localStorage.setItem(this.KEY, JSON.stringify(capped));
     },
     /** Snapshot the grid's current child order as the saved arrangement. */
     capture(grid) {
@@ -448,15 +643,32 @@ window.WidgetLayout = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-    // Configure DOMPurify globally to allow Alpine.js attributes and event listeners
-    if (window.DOMPurify) {
-        DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
-            const name = data.attrName;
+    // Scope Alpine attribute allowance strictly to canvas sanitization so
+    // chat-bubble HTML cannot smuggle x-data/x-init/@click payloads.
+    function sanitizeCanvasHtml(dirty) {
+        if (!window.DOMPurify) return dirty || "";
+        const hook = (node, data) => {
+            const name = data.attrName || "";
             if (name.startsWith('x-') || name.startsWith('@') || name.startsWith(':')) {
                 data.forceKeepAttr = true;
             }
+        };
+        DOMPurify.addHook('uponSanitizeAttribute', hook);
+        try {
+            return DOMPurify.sanitize(dirty || "", CANVAS_DOMPURIFY_CONFIG);
+        } finally {
+            DOMPurify.removeHooks('uponSanitizeAttribute');
+        }
+    }
+    window.__hnSanitizeCanvasHtml = sanitizeCanvasHtml;
+
+    function sanitizeChatHtml(dirty) {
+        if (!window.DOMPurify) return dirty || "";
+        return DOMPurify.sanitize(dirty || "", {
+            ADD_ATTR: ['style', 'class', 'target', 'rel']
         });
     }
+    window.__hnSanitizeChatHtml = sanitizeChatHtml;
 
     const state = {
         sessionId: localStorage.getItem("html_notes_session_id") || generateUUID(),
@@ -1158,6 +1370,17 @@ document.addEventListener("DOMContentLoaded", () => {
             e.stopPropagation();
             if (window.HN && HN.ask) HN.ask(text, { keepFocus: t.hasAttribute("data-ask-focus") });
         }, true);
+        canvas.addEventListener("keydown", (e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            const t = e.target.closest?.("[data-ask]");
+            if (!t || !canvas.contains(t)) return;
+            if (t.matches("input, textarea, select")) return;
+            const text = t.getAttribute("data-ask");
+            if (!text) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (window.HN && HN.ask) HN.ask(text, { keepFocus: t.hasAttribute("data-ask-focus") });
+        }, true);
         // A sandboxed iframe (the map) cannot reach the parent DOM; it posts
         // {type:"hn-ask"}. Accept it ONLY from a frame that is on the canvas
         // (source check) and sandboxed (opaque origin, serialised as "null").
@@ -1327,6 +1550,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     document.addEventListener("keydown", (e) => {
+        if (e.target && e.target.id === "canvas-search-input") return;
         if (e.key === "Escape" && (activeTurns.size || chatQueue.length)) {
             stopEverything();
         }
@@ -1345,6 +1569,187 @@ document.addEventListener("DOMContentLoaded", () => {
     ["pointerdown", "keydown", "touchstart"].forEach(evt => {
         window.addEventListener(evt, primeAudioPlayback, { once: true, passive: true });
     });
+
+    window.CanvasToolbar = (function () {
+        let query = "";
+        let activeType = "all";
+        let popoverOpen = false;
+        let initialized = false;
+
+        const els = () => ({
+            bar: document.getElementById("canvas-toolbar"),
+            search: document.getElementById("canvas-search-input"),
+            clear: document.getElementById("canvas-search-clear"),
+            pills: document.getElementById("canvas-type-pills"),
+            closedBtn: document.getElementById("canvas-closed-btn"),
+            popover: document.getElementById("closed-widgets-popover"),
+        });
+
+        function gridCards() {
+            const grid = document.querySelector("#dashboard-grid");
+            if (!grid) return [];
+            return Array.from(grid.querySelectorAll(":scope > .widget-container, :scope > .glass-card:not(.system-message):not(.turn-envelope)"))
+                .filter(el => el.id !== "welcome-message" && !el.hasAttribute("data-turn-envelope"));
+        }
+
+        function applyFilter() {
+            const q = query.trim().toLowerCase();
+            const cards = gridCards();
+            for (const card of cards) {
+                const cType = (card.getAttribute("data-widget-type") || "widget").toLowerCase();
+                const title = (card.getAttribute("data-widget-title") || "").toLowerCase();
+                const bodyText = (card.textContent || "").toLowerCase();
+                const typeOk = activeType === "all" || cType === activeType;
+                const textOk = !q || title.includes(q) || cType.includes(q) || bodyText.includes(q);
+                card.classList.toggle("is-filtered-out", !(typeOk && textOk));
+            }
+            const { clear } = els();
+            if (clear) clear.hidden = !q && activeType === "all";
+            if (window.__masonryLayout) requestAnimationFrame(window.__masonryLayout);
+        }
+
+        function renderClosedPopover(closedBtn, popover, closedItems) {
+            if (!closedBtn || !popover) return;
+            closedBtn.hidden = closedItems.length === 0;
+            closedBtn.textContent = `Closed (${closedItems.length})`;
+            closedBtn.setAttribute("aria-expanded", String(popoverOpen && closedItems.length > 0));
+            if (closedItems.length === 0) {
+                popoverOpen = false;
+                popover.hidden = true;
+                popover.textContent = "";
+                return;
+            }
+            popover.hidden = !popoverOpen;
+            popover.textContent = "";
+            for (const item of closedItems) {
+                const row = document.createElement("div");
+                row.className = "closed-widget-row";
+                const label = document.createElement("span");
+                label.textContent = `${item.title || item.id} (${item.widget_type || "widget"})`;
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "closed-widget-restore";
+                btn.textContent = "Restore";
+                btn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    window.WidgetManager?.restore?.(item.id);
+                });
+                row.append(label, btn);
+                popover.appendChild(row);
+            }
+        }
+
+        function refresh() {
+            const { bar, pills, closedBtn, popover } = els();
+            if (!bar) return;
+            const cards = gridCards();
+            const closedItems = (window.WidgetManager && Array.isArray(window.WidgetManager.closedStack))
+                ? window.WidgetManager.closedStack
+                : [];
+            bar.hidden = cards.length === 0 && closedItems.length === 0;
+
+            const typeCounts = new Map();
+            for (const card of cards) {
+                const t = (card.getAttribute("data-widget-type") || "widget").toLowerCase();
+                typeCounts.set(t, (typeCounts.get(t) || 0) + 1);
+            }
+            if (activeType !== "all" && !typeCounts.has(activeType)) {
+                activeType = "all";
+            }
+
+            if (pills) {
+                pills.textContent = "";
+                if (cards.length > 0) {
+                    const allBtn = document.createElement("button");
+                    allBtn.type = "button";
+                    allBtn.className = "canvas-type-pill" + (activeType === "all" ? " active" : "");
+                    allBtn.dataset.filterType = "all";
+                    allBtn.textContent = `All (${cards.length})`;
+                    allBtn.addEventListener("click", () => {
+                        activeType = "all";
+                        refresh();
+                    });
+                    pills.appendChild(allBtn);
+
+                    for (const [typeName, cnt] of Array.from(typeCounts.entries()).sort()) {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "canvas-type-pill" + (activeType === typeName ? " active" : "");
+                        btn.dataset.filterType = typeName;
+                        btn.textContent = `${typeName.replace(/_/g, " ")} (${cnt})`;
+                        btn.addEventListener("click", () => {
+                            activeType = activeType === typeName ? "all" : typeName;
+                            refresh();
+                        });
+                        pills.appendChild(btn);
+                    }
+                }
+            }
+
+            renderClosedPopover(closedBtn, popover, closedItems);
+            applyFilter();
+        }
+
+        function init() {
+            if (initialized) return;
+            initialized = true;
+            const { search, clear, closedBtn, popover } = els();
+            if (search) {
+                search.addEventListener("input", () => {
+                    query = search.value || "";
+                    applyFilter();
+                });
+                search.addEventListener("keydown", (e) => {
+                    if (e.key === "Escape") {
+                        e.stopPropagation();
+                        query = "";
+                        activeType = "all";
+                        search.value = "";
+                        refresh();
+                        search.blur();
+                    }
+                });
+            }
+            if (clear) {
+                clear.addEventListener("click", () => {
+                    query = "";
+                    activeType = "all";
+                    if (search) search.value = "";
+                    refresh();
+                });
+            }
+            if (closedBtn) {
+                closedBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    popoverOpen = !popoverOpen;
+                    const closedItems = window.WidgetManager?.closedStack || [];
+                    renderClosedPopover(closedBtn, popover, closedItems);
+                });
+            }
+            document.addEventListener("click", (e) => {
+                if (!popoverOpen) return;
+                if (popover && !popover.contains(e.target) && e.target !== closedBtn) {
+                    popoverOpen = false;
+                    if (popover) popover.hidden = true;
+                    if (closedBtn) closedBtn.setAttribute("aria-expanded", "false");
+                }
+            });
+            document.addEventListener("keydown", (e) => {
+                if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+                const active = document.activeElement;
+                const tag = active && active.tagName ? active.tagName.toUpperCase() : "";
+                if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || active?.isContentEditable) return;
+                const { bar, search: s } = els();
+                if (!bar || bar.hidden || !s) return;
+                e.preventDefault();
+                s.focus();
+            });
+            refresh();
+        }
+
+        return { init, refresh, applyFilter, setQuery(q) { query = String(q || ""); applyFilter(); }, setType(t) { activeType = String(t || "all"); refresh(); } };
+    })();
+    window.CanvasToolbar.init();
 
     // Load history
     loadHistory();
@@ -1378,7 +1783,7 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.btnForget.addEventListener("click", async () => {
             if (!confirm("Forget everything the assistant remembers about you (name, location, preferences)?")) return;
             try {
-                const res = await fetch("/user/memory", { method: "DELETE" });
+                const res = await fetch("/user/memory", { method: "DELETE", headers: { "X-HN-Client": "1" } });
                 const data = await res.json().catch(() => ({}));
                 appendChatMessageToHistory("assistant",
                     data && data.forgotten ? `Done — forgot ${data.forgotten} thing${data.forgotten === 1 ? "" : "s"} about you.`
@@ -1411,8 +1816,16 @@ document.addEventListener("DOMContentLoaded", () => {
     if (elements.btnClearHistory) {
         elements.btnClearHistory.addEventListener("click", () => {
             if (confirm("Are you sure you want to clear chat history and start a new canvas?")) {
+                stopEverything();
+                closeEventStream();
+                widgetSourceSnapshots.clear();
+                lastRenderedComponentHtml = "";
+                canvasVersion = 0;
                 state.sessionId = generateUUID();
                 localStorage.setItem("html_notes_session_id", state.sessionId);
+                if (window.WidgetManager && window.WidgetManager.setClosedWidgets) {
+                    window.WidgetManager.setClosedWidgets([]);
+                }
                 elements.chatHistoryMessages.innerHTML = "";
                 elements.liveCanvas.innerHTML = `
                     <div id="dashboard-grid" class="dashboard-grid">
@@ -1423,6 +1836,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>
                 `;
                 clearSpeechQueue();
+                openEventStream();
+                if (window.CanvasToolbar && window.CanvasToolbar.refresh) {
+                    window.CanvasToolbar.refresh();
+                }
             }
         });
     }
@@ -1956,7 +2373,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function reconcileCanvas(container, rawHtml) {
-        const clean = DOMPurify.sanitize(rawHtml, CANVAS_DOMPURIFY_CONFIG);
+        const clean = sanitizeCanvasHtml(rawHtml);
         const doc = new DOMParser().parseFromString(clean, 'text/html');
 
         let grid = container.querySelector('#dashboard-grid');
@@ -2002,6 +2419,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let anyNewWidget = false;
         newWidgets.forEach(newWidget => {
             const id = newWidget.id;
+            if (id && window.WidgetManager && window.WidgetManager.isDismissed(id)) return;
 
             // No id to key on — safest to treat as new content every time.
             if (!id) {
@@ -2101,6 +2519,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (changed && window.__masonryLayout) {
             requestAnimationFrame(window.__masonryLayout);
         }
+        if (window.CanvasToolbar && window.CanvasToolbar.refresh) {
+            window.CanvasToolbar.refresh();
+        }
         return changed;
     }
 
@@ -2163,6 +2584,9 @@ document.addEventListener("DOMContentLoaded", () => {
             // commit up to it, so the server won't judge our next current_canvas
             // stale (see _run_turn's stale-snapshot guard).
             if (data.canvas_version) canvasVersion = data.canvas_version;
+            if (Array.isArray(data.closed_widgets) && window.WidgetManager && window.WidgetManager.setClosedWidgets) {
+                window.WidgetManager.setClosedWidgets(data.closed_widgets);
+            }
             if (data.messages && data.messages.length > 0) {
                 // Populate chat history panel
                 if (elements.chatHistoryMessages) elements.chatHistoryMessages.innerHTML = "";
@@ -2178,10 +2602,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     const lastMsg = assistantMessages[assistantMessages.length - 1];
                     // canvas_html is split out by the server; fall back to parsing
                     // content for history saved before that change.
-                    let temp = document.createElement("div");
-                    temp.innerHTML = lastMsg.canvas_html || lastMsg.content;
-                    
-                    let gridElement = temp.querySelector("#dashboard-grid");
+                    const parsedDoc = new DOMParser().parseFromString(lastMsg.canvas_html || lastMsg.content || "", "text/html");
+                    let gridElement = parsedDoc.body.querySelector("#dashboard-grid");
                     
                     if (gridElement) {
                         // Apply filters inside the grid
@@ -2191,7 +2613,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             if (c.id && window.WidgetManager && window.WidgetManager.isDismissed(c.id)) c.remove();
                         });
                         
-                        elements.liveCanvas.innerHTML = DOMPurify.sanitize(gridElement.outerHTML, CANVAS_DOMPURIFY_CONFIG);
+                        elements.liveCanvas.innerHTML = sanitizeCanvasHtml(gridElement.outerHTML);
                         const loadedGrid = elements.liveCanvas.querySelector('#dashboard-grid');
                         window.WidgetLayout.apply(loadedGrid);
                         if (window.CanvasDensity) window.CanvasDensity.update(loadedGrid);
@@ -2205,7 +2627,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         renderDynamicComponents(elements.liveCanvas);
                     } else {
                         // Fallback for older saved history without #dashboard-grid
-                        let components = temp.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component");
+                        let components = parsedDoc.body.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component");
                         let htmlOnly = "";
                         components.forEach(c => {
                             if (c.textContent.includes("Unknown widget type:")) return;
@@ -2214,7 +2636,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         });
                         
                         if (htmlOnly) {
-                            elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${DOMPurify.sanitize(htmlOnly, CANVAS_DOMPURIFY_CONFIG)}</div>`;
+                            elements.liveCanvas.innerHTML = `<div id="dashboard-grid" class="dashboard-grid">${sanitizeCanvasHtml(htmlOnly)}</div>`;
                             const fallbackGrid = elements.liveCanvas.querySelector('#dashboard-grid');
                             window.WidgetLayout.apply(fallbackGrid);
                             if (window.CanvasDensity) window.CanvasDensity.update(fallbackGrid);
@@ -2227,6 +2649,10 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         } catch (err) {
             console.error("Failed to load history:", err);
+        } finally {
+            if (window.CanvasToolbar && window.CanvasToolbar.refresh) {
+                window.CanvasToolbar.refresh();
+            }
         }
     }
 
@@ -2245,6 +2671,8 @@ document.addEventListener("DOMContentLoaded", () => {
         // into the canonical canvas would persist a permanently-loading card.
         temp.querySelectorAll('[data-provisional]')
             .forEach(el => el.removeAttribute('data-provisional'));
+        temp.querySelectorAll('.is-filtered-out')
+            .forEach(el => el.classList.remove('is-filtered-out'));
         // The same hazard in its worst form. An envelope is the UI for a turn
         // that is still running; the server ADOPTS this HTML as the canonical
         // canvas, so leaking one in would persist a card that loads forever and
@@ -2851,6 +3279,15 @@ document.addEventListener("DOMContentLoaded", () => {
     document.addEventListener("visibilitychange", () => {
         if (document.hidden) closeEventStream(); else openEventStream();
     });
+    window.HN.getSessionId = function () { return state.sessionId; };
+    window.HN.adoptCanvasVersion = function (v) {
+        if (typeof v === "number" && v > canvasVersion) canvasVersion = v;
+    };
+    window.HN.reconcileCanvasHtml = function (rawHtml) {
+        const painted = reconcileCanvas(elements.liveCanvas, rawHtml);
+        renderDynamicComponents(elements.liveCanvas);
+        return painted;
+    };
     window.HN.openEventStream = openEventStream;
 
     window.HN.ask = function (text, opts) {
@@ -2862,7 +3299,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // stamped is the right hint. Every other chrome-driven ask clears it.
         if (!opts.keepFocus) state.focusWidgetId = null;
         appendChatMessageToHistory("user", text);
-        chatQueue.push(text);
+        chatQueue.push({ text, opts });
         updateQueueIndicator();
         if (elements.liveCanvas) {
             elements.liveCanvas.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2872,12 +3309,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function drainChatQueue() {
         while (chatQueue.length && activeTurns.size < MAX_CONCURRENT_TURNS) {
-            const text = chatQueue.shift();
+            const entry = chatQueue.shift();
+            const text = typeof entry === "string" ? entry : entry.text;
+            const turnOpts = (entry && typeof entry === "object" && entry.opts) || {};
             const controller = new AbortController();
             activeTurns.add(controller);
             updateQueueIndicator();
 
-            runChatTurn(text, controller)
+            runChatTurn(text, controller, turnOpts)
                 .catch(err => {
                     if (err.name !== "AbortError") console.error("Chat turn failed:", err);
                 })
@@ -2889,7 +3328,10 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    async function runChatTurn(text, controller) {
+    async function runChatTurn(text, controller, turnOpts) {
+        turnOpts = turnOpts || {};
+        let sawDoneEvent = false;
+        let sawErrorEvent = false;
         // Only wipe the shared speech queue when this is the ONLY turn running.
         // Unconditionally clearing here meant that firing three questions in
         // quick succession cut question 1's spoken answer off mid-sentence the
@@ -2937,19 +3379,39 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.execLogContent.appendChild(logGroup);
 
         let lastStatusStep = null;
+        function setStepContent(target, entry) {
+            target.textContent = "";
+            if (entry && typeof entry === "object") {
+                if (entry.before) target.appendChild(document.createTextNode(String(entry.before)));
+                if (entry.strong) {
+                    const s = document.createElement("strong");
+                    s.textContent = String(entry.strong);
+                    target.appendChild(s);
+                }
+                if (entry.after) target.appendChild(document.createTextNode(String(entry.after)));
+                return;
+            }
+            target.textContent = String(entry ?? "");
+        }
         function addLogStep(text, icon) {
             if (icon === "🧠") {
-                const cleanText = text.replace(/\.+$/, "");
+                const cleanText = typeof text === "string" ? text.replace(/\.+$/, "") : text;
                 if (lastStatusStep) {
                     const stepText = lastStatusStep.querySelector(".step-text");
-                    if (stepText) {
-                        stepText.innerHTML = cleanText;
-                    }
+                    if (stepText) setStepContent(stepText, cleanText);
                     return;
                 }
                 const step = document.createElement("div");
                 step.className = "log-step status-step";
-                step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${cleanText}</span><span class="dot-flashing ml-2 inline-block"></span>`;
+                const ic = document.createElement("span");
+                ic.className = "step-icon";
+                ic.textContent = icon;
+                const st = document.createElement("span");
+                st.className = "step-text";
+                setStepContent(st, cleanText);
+                const dots = document.createElement("span");
+                dots.className = "dot-flashing ml-2 inline-block";
+                step.append(ic, st, dots);
                 logGroup.appendChild(step);
                 lastStatusStep = step;
                 elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
@@ -2959,7 +3421,13 @@ document.addEventListener("DOMContentLoaded", () => {
             lastStatusStep = null;
             const step = document.createElement("div");
             step.className = "log-step";
-            step.innerHTML = `<span class="step-icon">${icon}</span><span class="step-text">${text}</span>`;
+            const ic = document.createElement("span");
+            ic.className = "step-icon";
+            ic.textContent = icon;
+            const st = document.createElement("span");
+            st.className = "step-text";
+            setStepContent(st, text);
+            step.append(ic, st);
             logGroup.appendChild(step);
             elements.execLogContent.scrollTop = elements.execLogContent.scrollHeight;
         }
@@ -3092,6 +3560,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     // anything can honestly say so.
                     if (data.path === "agent") envelope.expand();
                 } else if (data.type === "done") {
+                    sawDoneEvent = true;
                     HN.log("done", "generation finished");
                     HN.groupEnd();
                     // Belt-and-braces: no widget should still read "composing…"
@@ -3127,29 +3596,29 @@ document.addEventListener("DOMContentLoaded", () => {
                         // the page was reloaded.
                         renderDynamicComponents(elements.liveCanvas);
                     }
-                    scrollToBottom();
                 } else if (data.type === "tool_call") {
                     HN.log("tool", data.tool, data.args || data.input || "");
                     // The Activity log keeps the RAW name and args — full fidelity
                     // lives there. The envelope gets the readable version.
-                    addLogStep(`Calling tool: <strong>${data.tool}</strong>...`, "🔧");
+                    addLogStep({ before: "Calling tool: ", strong: data.tool || "", after: "..." }, "🔧");
                     statusBar.stage(`Tool: ${data.tool}`, 55);
                     envelope.phase(data.phase);
                     envelope.detail(humanizeTool(data.tool, data.args || data.input));
                 } else if (data.type === "open_url") {
                     HN.log("open_url", data.url);
-                    addLogStep(`Opening <strong>${data.name || data.url}</strong> in a new tab…`, "🚀");
+                    addLogStep({ before: "Opening ", strong: data.name || data.url || "", after: " in a new tab…" }, "🚀");
                     const win = window.open(data.url, "_blank", "noopener,noreferrer");
                     if (!win) showOpenLinkToast(data.url, data.name);
                 } else if (data.type === "error") {
+                    sawErrorEvent = true;
                     HN.error(data.message);
                     addLogStep(`Error: ${data.message}`, "❌");
-                    renderError(data.message || "An error occurred.");
+                    renderError(data.message || "An error occurred.", { retryText: text, retryOpts: turnOpts });
                     statusBar.finish("error", data.message || "An error occurred");
                     envelope.finish("error");
                 } else if (data.type === "research.started") {
                     HN.log("research", "started", data.mode, data.summary);
-                    addLogStep(`Research protocol: <strong>${data.mode}</strong> — ${data.summary}`, "🔬");
+                    addLogStep({ before: "Research protocol: ", strong: data.mode || "", after: ` — ${data.summary || ""}` }, "🔬");
                     statusBar.stage(data.summary || "Researching...", 25);
                 } else if (data.type === "research.plan") {
                     HN.log("research", "plan", data.tasks);
@@ -3210,10 +3679,14 @@ document.addEventListener("DOMContentLoaded", () => {
             // Final cleanup. No canvas repaint — `component` already painted the
             // newest version, and this turn's copy may be behind a sibling's.
             renderDynamicComponents(elements.liveCanvas);
-            // Streams that end without a `done` event (dropped connection mid-
-            // stream) would otherwise leave the bar spinning forever.
-            statusBar.finish("done");
-            envelope.finish("done");
+            if (sawDoneEvent) {
+                statusBar.finish("done");
+                envelope.finish("done");
+            } else if (!sawErrorEvent) {
+                renderError("Connection lost before response finished.", { retryText: text, retryOpts: turnOpts });
+                statusBar.finish("error", "Connection lost");
+                envelope.finish("error");
+            }
             hideLogWhenIdle();
 
         } catch (err) {
@@ -3224,12 +3697,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 envelope.finish("stopped");
             } else {
                 console.error("Network error:", err);
-                renderError("Network error. Is the server running?");
+                renderError("Network error. Is the server running?", { retryText: text, retryOpts: turnOpts });
                 statusBar.finish("error", "Network error");
                 envelope.finish("error");
             }
             hideLogWhenIdle();
         } finally {
+            if (elements.liveCanvas) {
+                elements.liveCanvas.querySelectorAll('[data-provisional]')
+                    .forEach(el => el.removeAttribute('data-provisional'));
+            }
             // This turn is still counted in activeTurns until drainChatQueue's
             // .finally() removes it, so "last one out" means size <= 1.
             const lastOneOut = activeTurns.size <= 1 && chatQueue.length === 0;
@@ -3249,7 +3726,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }, 3000);
     }
 
-    function renderError(msg) {
+    function renderError(msg, meta) {
         // NEVER wipe the canvas: this used to assign liveCanvas.innerHTML, so one
         // failed turn (an SSE error, an HTTP 500, a network blip) replaced every
         // widget — including ones committed by successful sibling turns — with a
@@ -3262,9 +3739,25 @@ document.addEventListener("DOMContentLoaded", () => {
         const banner = document.createElement('div');
         banner.className = 'system-message system-error-banner';
         banner.style.cssText = 'color: var(--danger-color); margin: 0.5rem 0;';
-        banner.textContent = msg;
+        const textSpan = document.createElement('span');
+        textSpan.className = 'system-error-text';
+        textSpan.textContent = msg;
+        banner.appendChild(textSpan);
+        if (meta && meta.retryText) {
+            const retryBtn = document.createElement('button');
+            retryBtn.type = 'button';
+            retryBtn.className = 'turn-retry-btn';
+            retryBtn.textContent = '↻ Retry';
+            retryBtn.addEventListener('click', () => {
+                banner.remove();
+                if (window.HN && typeof window.HN.ask === 'function') {
+                    window.HN.ask(meta.retryText, meta.retryOpts || {});
+                }
+            });
+            banner.appendChild(retryBtn);
+        }
         elements.liveCanvas.prepend(banner);
-        setTimeout(() => banner.remove(), 10000);
+        setTimeout(() => banner.remove(), meta && meta.retryText ? 18000 : 10000);
     }
 
     function scrollToBottom() {
@@ -3576,10 +4069,18 @@ document.addEventListener("DOMContentLoaded", () => {
         const widgets = container.querySelectorAll('.widget-container, .glass-card, .canvas-widget');
         widgets.forEach(origWidget => {
             let widget = origWidget;
-            const id = widget.id || "";
-            
+            const widgetTypeAttr = (widget.getAttribute('data-widget-type') || '').toLowerCase();
+            const xDataAttr = widget.getAttribute('x-data') || '';
+            const resolvedType = widgetTypeAttr || (
+                xDataAttr.includes('clockWidget') ? 'clock'
+                : xDataAttr.includes('musicPlayerWidget') ? 'music_player'
+                : xDataAttr.includes('youtubePlayerWidget') ? 'youtube'
+                : xDataAttr.includes('checklistWidget') ? 'checklist'
+                : ''
+            );
+
             // 1. Self-heal clock widgets that lost Alpine attributes or are empty
-            if (id.includes('clock')) {
+            if (resolvedType === 'clock') {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('clockWidget');
                 const hasTime = widget.querySelector('.text-4xl');
                 
@@ -3587,6 +4088,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
                     newWidget.className = widget.className;
+                    for (const attr of ['data-sig', 'data-widget-type', 'data-widget-title']) {
+                        if (widget.hasAttribute(attr)) newWidget.setAttribute(attr, widget.getAttribute(attr));
+                    }
+                    if (!newWidget.hasAttribute('data-widget-type')) newWidget.setAttribute('data-widget-type', 'clock');
                     // Keep the server's own clockWidget(tz, mode, duration) call
                     // when it survived; 'local' only for a node that never had one.
                     newWidget.setAttribute('x-data', hasXData ? widget.getAttribute('x-data') : "clockWidget('local')");
@@ -3626,7 +4131,7 @@ document.addEventListener("DOMContentLoaded", () => {
             // NOTE: this innerHTML is a hand-maintained twin of the server
             // template in app/widgets/factory.py (render_mini_music_player).
             // Structural changes there must be mirrored here.
-            if ((id.includes('music') || id.includes('player')) && !id.includes('youtube') && !id.includes('video')) {
+            if (resolvedType === 'music_player' || resolvedType === 'music') {
                 // See MUSIC SELF-HEAL HELPERS: a healthy server-rendered node
                 // is left alone; a rebuild keeps the server's config.
                 if (musicWidgetNeedsRebuild(widget)) {
@@ -3634,6 +4139,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
+                    for (const attr of ['data-sig', 'data-widget-type', 'data-widget-title']) {
+                        if (widget.hasAttribute(attr)) newWidget.setAttribute(attr, widget.getAttribute(attr));
+                    }
+                    if (!newWidget.hasAttribute('data-widget-type')) newWidget.setAttribute('data-widget-type', 'music_player');
                     // Height moved from a static class to a :class binding so the
                     // queue panel can expand the card — strip any stale static one.
                     newWidget.className = widget.className.replace(/\bh-\[\d+px\]\b/g, '').replace(/\s+/g, ' ').trim();
@@ -3663,7 +4172,7 @@ document.addEventListener("DOMContentLoaded", () => {
             
             // 3. Self-heal youtube player widgets that lost Alpine attributes,
             //    predate the CRT card cutover, or lost their CRT iframe.
-            if (id.includes('youtube') || id.includes('video')) {
+            if (resolvedType === 'youtube' || resolvedType === 'youtube_player' || resolvedType === 'video') {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('youtubePlayerWidget');
                 const isOldFormat = hasXData && widget.getAttribute('x-data').includes("youtubePlayerWidget('");
                 const hasCrtIframe = !!widget.querySelector('iframe[x-ref="crt"]');
@@ -3733,7 +4242,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             // 4. Self-heal checklist widgets that lost Alpine attributes or are empty
-            if (id.includes('checklist') || id.includes('todo')) {
+            if (resolvedType === 'checklist' || resolvedType === 'todo') {
                 const hasXData = widget.getAttribute('x-data') && widget.getAttribute('x-data').includes('checklistWidget');
                 const isOldFormat = hasXData && widget.getAttribute('x-data').includes("checklistWidget('");
                 
@@ -3761,6 +4270,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     const newWidget = document.createElement('div');
                     newWidget.id = widget.id;
                     newWidget.className = widget.className;
+                    for (const attr of ['data-sig', 'data-widget-type', 'data-widget-title']) {
+                        if (widget.hasAttribute(attr)) newWidget.setAttribute(attr, widget.getAttribute(attr));
+                    }
+                    if (!newWidget.hasAttribute('data-widget-type')) newWidget.setAttribute('data-widget-type', 'checklist');
                     newWidget.setAttribute('x-data', `checklistWidget(${JSON.stringify(title)}, ${itemsJson})`);
                     newWidget.innerHTML = `
                         <!-- Close Button -->
@@ -3953,9 +4466,14 @@ document.addEventListener("DOMContentLoaded", () => {
             // Alpine :style binding (tvHeight / walkmanHeight); stripping the
             // inline value here would drop them to the CSS auto height until
             // the next adopt().
-            if (!item.classList.contains('music-widget-root')
+            const savedSize = item.id && window.WidgetResizer ? window.WidgetResizer.getSizes()[item.id] : null;
+            if (!savedSize?.height
+                && !item.classList.contains('music-widget-root')
                 && !item.classList.contains('youtube-player')) {
                 item.style.removeProperty('height');
+            }
+            if (savedSize && window.WidgetResizer) {
+                window.WidgetResizer.apply(item);
             }
             item.style.removeProperty('z-index');
             item.removeAttribute('draggable');
@@ -3986,10 +4504,21 @@ document.addEventListener("DOMContentLoaded", () => {
                 const data = await res.json();
                 elements.modelSelect.innerHTML = "";
                 
+                const labelCounts = {};
+                data.models.forEach(m => {
+                    const lbl = m.label || m.model || '';
+                    labelCounts[lbl] = (labelCounts[lbl] || 0) + 1;
+                });
+
                 data.models.forEach(m => {
                     const option = document.createElement("option");
                     option.value = JSON.stringify({ provider: m.provider, model: m.model });
-                    option.textContent = m.label;
+                    const baseLabel = m.label || m.model || 'Unknown model';
+                    const displayLabel = labelCounts[baseLabel] > 1
+                        ? `${baseLabel} (${m.provider || m.endpoint || 'alt'})`
+                        : baseLabel;
+                    option.textContent = displayLabel;
+                    option.title = `${displayLabel} — ${m.model || ''}`;
                     elements.modelSelect.appendChild(option);
                 });
                 
@@ -4212,37 +4741,23 @@ document.addEventListener("DOMContentLoaded", () => {
     function formatAssistantChatBubble(content, canvasUpdated = false) {
         // Canvas HTML never belongs in the chat bubble — it renders on the canvas.
         content = (content || "").replace(/<!--CANVAS_HTML_START-->[\s\S]*?<!--CANVAS_HTML_END-->/g, "");
-        let temp = document.createElement("div");
-        temp.innerHTML = content;
+        const parsed = new DOMParser().parseFromString(content, "text/html").body;
 
-        let components = temp.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component, .chart-container, .dashboard-grid, .system-message, style, script");
+        let components = parsed.querySelectorAll(".widget-container, .glass-card, .canvas-element, .rendered-component, .chart-container, .dashboard-grid, .system-message, style, script");
         let hasComponent = components.length > 0 || canvasUpdated;
 
         components.forEach(el => el.remove());
-        let cleaned = temp.innerHTML;
+        let cleaned = parsed.innerHTML;
         
         let htmlText = "";
         if (cleaned.trim()) {
-            // 'target'/'rel' must be allowed here too. DOMPurify's default allowlist
-            // covers href and rel but NOT target, so without this a link in chat
-            // history kept its href and navigated the whole app away in-tab —
-            // losing the canvas — while the same link on the canvas opened a new
-            // tab. Matches CANVAS_DOMPURIFY_CONFIG.
-            htmlText = DOMPurify.sanitize(marked.parse(cleaned), {
-                ADD_ATTR: ['style', 'class', 'target', 'rel'],
-                FORCE_BODY: true
-            });
-            // marked emits <a href> with no target, so chat links navigated the
-            // whole app away in-tab and the canvas was lost. Applied AFTER
-            // sanitize so we're decorating markup DOMPurify has already cleared,
-            // never smuggling attributes past it.
-            const linkFix = document.createElement('div');
-            linkFix.innerHTML = htmlText;
-            linkFix.querySelectorAll('a[href]').forEach(a => {
+            htmlText = sanitizeChatHtml(marked.parse(cleaned));
+            const linkDoc = new DOMParser().parseFromString(htmlText, "text/html").body;
+            linkDoc.querySelectorAll('a[href]').forEach(a => {
                 a.setAttribute('target', '_blank');
                 a.setAttribute('rel', 'noopener noreferrer');
             });
-            htmlText = linkFix.innerHTML;
+            htmlText = linkDoc.innerHTML;
         }
 
         if (hasComponent) {

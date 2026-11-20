@@ -166,8 +166,8 @@ async def api_notes_list():
                 fm = {"title": p.stem, "tags": []}
             out.append({"slug": p.stem, "title": fm.get("title") or p.stem,
                         "tags": fm.get("tags") or [],
-                        "updated": datetime.datetime.utcfromtimestamp(
-                            p.stat().st_mtime).replace(microsecond=0).isoformat()})
+                        "updated": datetime.datetime.fromtimestamp(
+                            p.stat().st_mtime, datetime.timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()})
     except Exception as e:
         logger.warning(f"note list failed: {e}")
     out.sort(key=lambda n: n["updated"], reverse=True)

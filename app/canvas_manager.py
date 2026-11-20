@@ -142,6 +142,15 @@ def get_session_canvas(session_id: str) -> str:
     return _session_canvas.get(session_id, "")
 
 
+from app.canvas_dismiss import (
+    _prune_session_maps,
+    dismiss_canvas_widget,
+    list_dismissed_widgets,
+    restore_canvas_widget,
+    sanitize_widget_id,
+)
+
+
 def set_session_canvas(session_id: str, html: str, bump_version: bool = True) -> int:
     """Store the canvas and return its version.
 
@@ -154,8 +163,10 @@ def set_session_canvas(session_id: str, html: str, bump_version: bool = True) ->
     of the session, until a reload reseeded the version from /history."""
     global _last_active_session
     _session_canvas[session_id] = html
+    _session_lru[session_id] = time.time()
     if bump_version or session_id not in _session_canvas_version:
         _session_canvas_version[session_id] = next(_version_counter)
+    _prune_session_maps()
     _last_active_session = session_id
     return _session_canvas_version[session_id]
 
@@ -1057,13 +1068,9 @@ def _resolve_agent_widget_id(session_id: str, widget_type: str,
         if model_widget_id and resolved != str(model_widget_id).lstrip("#").strip():
             logger.info(f"[WIDGET TARGET] agent id {model_widget_id!r} matched no "
                         f"{widget_type} on canvas — retargeted to #{resolved}")
-        return resolved
-    # Nothing to reuse: this is a new widget, so the model's chosen id is fine
-    # (and keeps naming stable if it reuses it next turn). Only mint when the
-    # model gave us nothing — discarding its id here would have renamed every
-    # first-of-its-kind widget.
+        return sanitize_widget_id(resolved)
     if model_widget_id:
-        return str(model_widget_id).lstrip("#").strip()
+        return sanitize_widget_id(model_widget_id)
     return f"widget-{uuid.uuid4().hex[:8]}"
 
 
@@ -1126,3 +1133,13 @@ async def _drop_offsubject_widgets(message: str, good: list) -> list:
 
 
 __all__ = [k for k in globals().keys() if not k.startswith('__')]
+
+# If app.canvas_manager is imported before app.main finishes executing its
+# bottom wildcard imports, backfill exported symbols onto main / routes modules
+# unless they already define their own override (e.g. get_session_canvas).
+for _mod_name in ("app.main", "app.routes.message"):
+    _target_mod = sys.modules.get(_mod_name)
+    if _target_mod is not None:
+        for _export in __all__:
+            if _export != "get_session_canvas" and not hasattr(_target_mod, _export):
+                setattr(_target_mod, _export, globals()[_export])

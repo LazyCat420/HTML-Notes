@@ -556,23 +556,16 @@ def _fmt_usd(v) -> str:
 
 
 async def _image_url_loads(url: str) -> bool:
-    """Does this URL actually serve an image?
-
-    Only ever used on a URL the MODEL supplied. The agent has no image-search
-    tool, so such a URL is recalled, not looked up, and a plausible-looking one
-    is frequently dead (observed: a Wikimedia thumb path for "red panda" that
-    404s at the CDN and returns 400). An <img> with a dead src is indis-
-    tinguishable from a good one in the DOM, so check the bytes.
-    """
+    """Does this URL actually serve an image from a public HTTP(S) host?"""
     if not url or not url.startswith(("http://", "https://")):
         return False
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=6.0) as client:
-            r = await client.head(url)
-            # Some CDNs refuse HEAD; fall back to a ranged GET before believing it.
-            if r.status_code >= 400:
-                r = await client.get(url, headers={"Range": "bytes=0-2047"})
-            return (r.status_code < 400
+        from app.services.search import safe_public_request
+        async with httpx.AsyncClient(follow_redirects=False, timeout=6.0) as client:
+            r = await safe_public_request(client, "HEAD", url)
+            if r is None or r.status_code >= 400:
+                r = await safe_public_request(client, "GET", url, headers={"Range": "bytes=0-2047"})
+            return (r is not None and r.status_code < 400
                     and r.headers.get("content-type", "").lower().startswith("image/"))
     except Exception as e:
         logger.info(f"[WIDGET INJECTOR] image URL check failed for {url[:80]!r}: {e}")

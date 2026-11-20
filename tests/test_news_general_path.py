@@ -92,7 +92,7 @@ def test_a_subject_ask_still_uses_every_tier(monkeypatch):
     monkeypatch.setattr(S, "web_search", web)
 
     run(S.news_search("israel hamas ceasefire", limit=6))
-    # The scraper-service DuckDuckGo tier is gone (docs/WEB_SEARCH.md).
+    # The scraper-service DuckDuckGo tier is gone (see doc-client html-notes decisions).
     assert [n for n, _ in called] == ["gdelt", "web"]
 
 

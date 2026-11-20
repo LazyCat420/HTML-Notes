@@ -68,6 +68,35 @@ async def get_models():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _first_chat_model_from_endpoint(endpoint: str) -> Optional[str]:
+    """Query one vLLM /v1/models endpoint and return its first chat-capable model id."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{endpoint.rstrip('/')}/v1/models")
+        if resp.status_code != 200:
+            return None
+        for entry in resp.json().get("data", []):
+            mid = entry.get("id")
+            if _is_chat_capable_model(mid):
+                return mid
+    except Exception as e:
+        logger.warning(f"Failed to fetch dynamic model from {endpoint}: {e}")
+    return None
+
+
+async def _discover_fallback_vllm_model() -> Optional[str]:
+    """Resolve a live chat model id dynamically from configured VLLM_ENDPOINTS."""
+    candidate_endpoints = list(getattr(main, "VLLM_ENDPOINTS", None) or VLLM_ENDPOINTS or [])
+    vllm_primary = getattr(main, "VLLM_URL", None) or VLLM_URL
+    if vllm_primary and vllm_primary not in candidate_endpoints:
+        candidate_endpoints.insert(0, vllm_primary)
+    for ep in candidate_endpoints:
+        found = await _first_chat_model_from_endpoint(ep)
+        if found:
+            return found
+    return None
+
+
 @router.post("/session/message")
 async def send_message(req: MessageRequest):
     import app.main as _main
@@ -1693,7 +1722,7 @@ async def send_message(req: MessageRequest):
         }
 
         # Start loading history
-        history = database.get_session_messages(req.session_id)
+        history = database.get_session_messages(req.session_id, limit=100)
 
         # The user's live app inventory for the prompt (cached ~15ms; "" on a
         # portal outage so a turn is never blocked by it).
@@ -2027,29 +2056,14 @@ async def send_message(req: MessageRequest):
             except Exception as e:
                 logger.warning(f"Failed to fetch model catalog from {target_url}: {e}")
         if not model_name:
-            # Fall back to whatever VLLM_URL is serving, mapping the URL to the
-            # gateway provider id it is registered under — the pair must match or
-            # the gateway 404s with "model does not exist" on the wrong instance.
-            # VLLM_URL defaults to the Jetson (10.0.0.30:8000) = provider "vllm".
-            try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.get(f"{VLLM_URL}/v1/models")
-                if resp.status_code == 200:
-                    for entry in resp.json().get("data", []):
-                        if _is_chat_capable_model(entry.get("id")):
-                            model_name = entry.get("id")
-                            break
-                    if model_name:
-                        if "10.0.0.141" in VLLM_URL:
-                            req.provider = "vllm-2"
-                        else:
-                            req.provider = "vllm"
-            except Exception as e:
-                logger.warning(f"Failed to fetch dynamic model from {VLLM_URL}: {e}")
-            if not model_name:
-                # Last resort: the Jetson instance/model pair.
-                req.provider = "vllm"
-                model_name = "nemotron35"
+            model_name = await _discover_fallback_vllm_model()
+            if model_name:
+                req.provider = req.provider or "vllm"
+        if not model_name:
+            async def _no_model_sse():
+                yield f'data: {json.dumps({"type": "error", "message": "No local vLLM model is currently reachable."})}\n\n'
+                yield f'data: {json.dumps({"type": "done"})}\n\n'
+            return StreamingResponse(_no_model_sse(), media_type="text/event-stream")
         # REMOVED: a PUT {target_url}/settings that rewrote the gateway's GLOBAL
         # memory.extractionModel on EVERY turn. Three problems: (1) a client has no
         # business mutating a shared gateway's global config — it raced every other
@@ -3646,7 +3660,7 @@ async def transcribe_audio(req: TranscribeRequest):
 @router.get("/session/{session_id}/history")
 async def get_session_history(session_id: str):
     try:
-        history = database.get_session_messages(session_id)
+        history = database.get_session_messages(session_id, limit=100)
         # Persisted assistant messages embed the canvas snapshot; split it into
         # canvas_html so the client shows only text in the chat panel.
         messages = []
@@ -3660,8 +3674,10 @@ async def get_session_history(session_id: str):
             messages.append(msg)
         # Seed the client's canvasVersion so its next request's snapshot isn't
         # judged stale against commits it has in fact seen (via this restore).
+        from app import canvas_manager as _cm
         return {"messages": messages,
-                "canvas_version": _session_canvas_version.get(session_id, 0)}
+                "canvas_version": _session_canvas_version.get(session_id, 0),
+                "closed_widgets": _cm.list_dismissed_widgets(session_id)}
     except Exception as e:
         logger.error(f"Error fetching history: {e}")
         raise HTTPException(status_code=500, detail=str(e))

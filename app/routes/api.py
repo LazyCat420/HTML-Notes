@@ -148,6 +148,42 @@ async def api_youtube_candidates(query: str, limit: int = 6,
     return {"results": results, "count": len(results)}
 
 
+@router.get("/api/session/{session_id}/canvas/dismissed")
+async def api_canvas_dismissed(session_id: str):
+    """List recently dismissed widgets available to restore for this session."""
+    from app import canvas_manager as _cm
+    return {"closed": _cm.list_dismissed_widgets(session_id)}
+
+
+@router.post("/api/session/{session_id}/canvas/dismiss")
+async def api_canvas_dismiss(session_id: str, request: Request):
+    """Remove a dismissed widget server-side and push it onto the 10-item undo stack."""
+    from app import canvas_manager as _cm
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    widget_id = str(body.get("widget_id") or "").strip()
+    if not widget_id:
+        raise HTTPException(status_code=400, detail="widget_id required")
+    return await _cm.dismiss_canvas_widget(session_id, widget_id)
+
+
+@router.post("/api/session/{session_id}/canvas/restore")
+async def api_canvas_restore(session_id: str, request: Request):
+    """Restore the most recently dismissed widget (or named widget_id) back onto the canvas."""
+    from app import canvas_manager as _cm
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    widget_id = str(body.get("widget_id") or "").strip()
+    try:
+        return await _cm.restore_canvas_widget(session_id, widget_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.get("/api/youtube/search")
 async def api_youtube_search(query: str):
     try:

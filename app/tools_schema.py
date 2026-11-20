@@ -2,7 +2,7 @@
 # SUPERSEDED HISTORICAL FILE — DO NOT EDIT OR USE AS SCHEMA AUTHORITY.
 #
 # Authoritative source of truth:
-# - CONTRACT_OWNERSHIP.md
+# - apps/doc-client/documentation/projects/html-notes/chapters/10-decisions.md
 # - app/tooling/manifests/html_notes.domain-tools.json
 # - app/tooling/manifests/html_notes.profile.json
 # - app/tooling/manifests/html_notes.widget-catalog.json

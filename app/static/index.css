@@ -409,7 +409,9 @@ body::after {
     transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
 .widget-container:hover .widget-expand-toggle,
+.widget-container:focus-within .widget-expand-toggle,
 .glass-card:hover .widget-expand-toggle,
+.glass-card:focus-within .widget-expand-toggle,
 .widget-container.is-expanded .widget-expand-toggle {
     opacity: 1;
 }
@@ -437,6 +439,7 @@ body::after {
         linear-gradient(135deg, transparent 64%, rgba(127, 212, 255, .55) 64%, rgba(127, 212, 255, .55) 76%, transparent 76%);
 }
 .widget-container:hover .widget-resize-handle,
+.widget-container:focus-within .widget-resize-handle,
 .widget-container.is-resizing .widget-resize-handle { opacity: 1; }
 
 /* Kill the CRT/hover transitions mid-drag so the widget tracks the cursor
@@ -472,12 +475,13 @@ body::after {
 .widget-move-handle .material-symbols-outlined { font-size: 20px; line-height: 1; }
 /* Header used as the drag surface: signal grab on hover, but keep the close
    button (and any header control) on the normal pointer. */
-.widget-drag-surface { cursor: grab; }
+.widget-drag-surface { cursor: grab; touch-action: none; }
 .widget-drag-surface button,
 .widget-drag-surface a { cursor: pointer; }
 .widget-container.is-moving .widget-drag-surface { cursor: grabbing; }
 .widget-move-handle:hover { background: rgba(15, 23, 42, .85); }
 .widget-container:hover .widget-move-handle,
+.widget-container:focus-within .widget-move-handle,
 .widget-container.is-moving .widget-move-handle { opacity: 1; }
 .widget-container.is-moving .widget-move-handle { cursor: grabbing; }
 
@@ -1947,7 +1951,11 @@ body::after { display: none !important; }
     border: none !important;
     color: var(--ink-dim) !important;
     font-size: 0.8rem;
-    max-width: 130px;
+    max-width: 150px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
 }
 .model-select option { background: #1c1c20; color: var(--ink); }
@@ -2758,6 +2766,247 @@ body.has-rail .live-canvas { padding-left: calc(52px + 1.5rem); }
    delegateAsks). Quiet until hovered, so cards do not read as link soup. */
 .widget-container [data-ask] { cursor: pointer; }
 .widget-container [data-ask]:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.widget-container [data-ask]:focus-visible {
+    outline: 2px solid rgba(127, 212, 255, 0.85);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* Focus + touch parity for widget controls (TCK-1030) */
+.widget-container:focus-within .close-widget-btn,
+.glass-card:focus-within .close-widget-btn,
+.canvas-widget:focus-within .close-widget-btn {
+    opacity: 1 !important;
+}
+@media (hover: none) {
+    .widget-container .close-widget-btn,
+    .glass-card .close-widget-btn,
+    .canvas-widget .close-widget-btn,
+    .widget-container .widget-resize-handle,
+    .widget-container .widget-move-handle,
+    .widget-container .widget-expand-toggle,
+    .glass-card .widget-expand-toggle {
+        opacity: 0.85 !important;
+    }
+}
+
+/* Command palette & status bars clear the 52px app rail at all widths */
+body.has-rail .command-palette,
+body.has-rail .turn-status-container {
+    left: calc(52px + (100vw - 52px) / 2);
+    width: min(800px, calc(100vw - 52px - 1.5rem));
+}
+
+@media (max-width: 640px) {
+    body.has-rail .live-canvas {
+        padding-left: calc(52px + 0.75rem);
+        padding-right: 0.75rem;
+        padding-bottom: 10.5rem;
+    }
+    body.has-rail .canvas-toolbar {
+        padding-left: calc(52px + 0.75rem);
+        padding-right: 0.75rem;
+    }
+    body.has-rail .command-palette,
+    body.has-rail .turn-status-container {
+        left: calc(52px + (100vw - 52px) / 2);
+        width: calc(100vw - 52px - 1rem);
+        bottom: 0.75rem;
+    }
+    body.has-rail .turn-status-container {
+        bottom: 7.5rem;
+    }
+    .command-palette .input-row {
+        flex-wrap: wrap;
+        align-items: center;
+        border-radius: 14px !important;
+        padding: 0.45rem 0.55rem !important;
+        gap: 0.35rem !important;
+    }
+    #chat-input {
+        flex: 1 1 100%;
+        order: -1;
+        width: 100%;
+        min-width: 200px;
+        padding: 0.45rem 0.5rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+    }
+    .model-select {
+        flex: 1 1 90px;
+        min-width: 0;
+        max-width: 140px;
+        margin-right: 0;
+    }
+    .btn-send, .btn-stop {
+        margin-left: auto;
+        flex-shrink: 0;
+    }
+    .btn-icon {
+        width: 34px;
+        height: 34px;
+        flex-shrink: 0;
+    }
+}
+
+/* ── Canvas search / filter / closed tray toolbar (I1, I2) ─────────────── */
+.canvas-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0.75rem 2.5rem 0.35rem;
+    z-index: 30;
+    position: relative;
+}
+.canvas-toolbar[hidden] { display: none !important; }
+body.has-rail .canvas-toolbar { padding-left: calc(52px + 1.5rem); }
+.canvas-toolbar:not([hidden]) + .live-canvas { padding-top: 1.25rem; }
+
+.canvas-search-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-width: 190px;
+    max-width: 280px;
+    flex: 0 1 240px;
+}
+.canvas-search-input {
+    width: 100%;
+    padding: 0.36rem 1.8rem 0.36rem 0.65rem;
+    border-radius: 8px;
+    border: 1px solid rgba(127, 212, 255, 0.25);
+    background: rgba(6, 14, 26, 0.72);
+    color: var(--ink, #e2effa);
+    font-size: 0.8rem;
+    outline: none;
+}
+.canvas-search-input:focus {
+    border-color: rgba(127, 212, 255, 0.7);
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.16);
+}
+.canvas-search-clear {
+    position: absolute;
+    right: 6px;
+    border: none;
+    background: transparent;
+    color: var(--ink-dim, #94a3b8);
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+}
+.canvas-type-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.canvas-type-pill,
+.canvas-closed-btn {
+    padding: 0.28rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid rgba(127, 212, 255, 0.24);
+    background: rgba(6, 14, 26, 0.62);
+    color: var(--ink-dim, #cbd5e1);
+    font-size: 0.74rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.canvas-type-pill.active {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: rgba(127, 212, 255, 0.7);
+    color: #fff;
+}
+.canvas-closed-wrap {
+    margin-left: auto;
+    position: relative;
+}
+.closed-widgets-popover {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 240px;
+    max-width: 320px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 8px;
+    border-radius: 10px;
+    background: rgba(8, 17, 31, 0.96);
+    border: 1px solid rgba(127, 212, 255, 0.3);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    z-index: 80;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.closed-widgets-popover[hidden] { display: none !important; }
+.closed-widget-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--ink, #e2effa);
+}
+.closed-widget-restore {
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(127, 212, 255, 0.4);
+    background: rgba(56, 189, 248, 0.14);
+    color: #bae6fd;
+    cursor: pointer;
+    font-size: 0.72rem;
+}
+.is-filtered-out { display: none !important; }
+
+/* Undo dismiss toast (I1) */
+.undo-dismiss-toast {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 6.5rem;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0.55rem 0.85rem;
+    border-radius: 10px;
+    background: rgba(8, 17, 31, 0.94);
+    border: 1px solid rgba(127, 212, 255, 0.38);
+    color: #e2effa;
+    font-size: 0.82rem;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.undo-dismiss-toast[hidden] { display: none !important; }
+.undo-dismiss-btn {
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(127, 212, 255, 0.6);
+    background: rgba(56, 189, 248, 0.22);
+    color: #e0f2fe;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+/* Inline retry button on failed turns (I3) */
+.system-error-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0.6rem 0.85rem;
+    border-radius: 10px;
+    background: rgba(127, 29, 29, 0.28);
+    border: 1px solid rgba(248, 113, 113, 0.45);
+}
+.turn-retry-btn {
+    padding: 0.28rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid rgba(127, 212, 255, 0.55);
+    background: rgba(56, 189, 248, 0.16);
+    color: #e0f2fe;
+    cursor: pointer;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
 
 /* ── Music player widget: compact, fluid, no-clip text ─────────────────
    container-type lets font sizes scale with the widget's own width (cqi):

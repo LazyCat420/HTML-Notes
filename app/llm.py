@@ -33,28 +33,27 @@ import time as _time
 _ENDPOINT_LAST_FAILURE: dict = {}
 
 
+def _configured_vllm_urls() -> list[str]:
+    """Collect deduplicated local vLLM URLs from config overrides."""
+    configured_urls = getattr(main, "VLLM_ENDPOINTS", None) or []
+    urls: list[str] = []
+    for u in list(configured_urls):
+        if u and u not in urls:
+            urls.append(u)
+    if not urls:
+        fallback_vllm = getattr(main, "VLLM_URL", "")
+        if fallback_vllm:
+            urls.append(fallback_vllm)
+    return urls
+
+
 async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[dict]:
     """One tool-free completion against the local vLLM, parsed as JSON.
     Rotates through available local vLLM endpoints before failing open.
     Reasoning is disabled (see NO_THINKING) — measured 15x faster on the real
     router prompt for identical decisions.
     """
-    configured_urls = getattr(main, "VLLM_ENDPOINTS", None) or []
-    # Preference, not a pin: the Jetson leads, Gold Spark backs it up, and a box
-    # is taken out by leaving its URL unset rather than by deleting the fallback
-    # (a static pin has no way back — see the SOLO_JETSON_MODE incident).
-    # 10.0.0.30:8001 is deliberately ABSENT: it serves embeddinggemma, whose
-    # /v1/chat/completions returns 404, so it could only ever cost a round-trip.
-    default_pool = [
-        getattr(main, "VLLM_URL", "http://10.0.0.30:8000"),
-        getattr(main, "VLLM_FAST_URL", "http://10.0.0.30:8000"),
-        "http://10.0.0.30:8000",
-        "http://10.0.0.141:8000",
-    ]
-    urls = []
-    for u in list(configured_urls) + default_pool:
-        if u and u not in urls:
-            urls.append(u)
+    urls = _configured_vllm_urls()
 
     # Sticky failover: a box that just ReadTimeout'd (dev workstation under a
     # build, Jetson mid-quantize) demotes itself for 60s so it stops costing

@@ -358,6 +358,9 @@ body::after {
     color: var(--hud-ink-dim) !important;
     text-transform: uppercase;
     font-size: 0.72rem !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .model-select option { background: var(--hud-panel-solid); color: var(--hud-ink); }
 
@@ -889,4 +892,10 @@ body.rail-expanded .rail-settings-drawer {
 .rail-settings-drawer .rs-sub {
     font-size: 10.5px;
     color: var(--hud-ink-dim);
+}
+@media (max-width: 640px) {
+    .command-palette .input-row {
+        clip-path: none !important;
+        border-radius: 14px !important;
+    }
 }

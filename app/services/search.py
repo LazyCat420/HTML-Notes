@@ -58,7 +58,7 @@ async def _search_shared_web(query: str, limit: int) -> list:
     html-notes used to scrape DuckDuckGo directly (Lite first, then
     scraper-service's DuckDuckGo collector). The free search engines bot-block
     this network's one public IP, and every automated search from any project
-    makes that worse (docs/WEB_SEARCH.md). The shared search keeps one cache and
+    makes that worse (see doc-client html-notes decisions). The shared search keeps one cache and
     one rate limit for every project on the network, and never scrapes.
 
     Raises when the shared search cannot answer — unreachable, rate-limited or
@@ -574,32 +574,12 @@ def _looks_like_junk_page(text: str) -> bool:
     return any(sig in head for sig in _SCRAPE_JUNK_SIGNATURES)
 
 
-def _is_public_http_url(url: str) -> bool:
-    """True only for http(s) URLs whose host resolves to PUBLIC addresses.
-
-    read_web_page / the /widgets/embed reader fetch server-side (via
-    scraper-service) with no host validation, so a crafted URL could probe
-    loopback, RFC-1918 services or the cloud metadata endpoint from the
-    scraper's network vantage point (SSRF). Resolve the host and refuse
-    private/loopback/link-local/reserved ranges before fetching."""
-    import ipaddress
-    import socket
-    try:
-        parsed = urllib.parse.urlparse(url or "")
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            return False
-        host = parsed.hostname
-        if host.lower() in ("localhost", "metadata.google.internal"):
-            return False
-        infos = socket.getaddrinfo(host, None)
-        for info in infos:
-            ip = ipaddress.ip_address(info[4][0])
-            if (ip.is_private or ip.is_loopback or ip.is_link_local
-                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-                return False
-        return bool(infos)
-    except Exception:
-        return False
+from app.services.ssrf_guard import (
+    _check_resolved_addrs,
+    _is_public_http_url,
+    _is_public_http_url_async,
+    safe_public_request,
+)
 
 
 async def read_web_page(url: str, max_chars: int = 6000) -> dict:
@@ -618,7 +598,7 @@ async def read_web_page(url: str, max_chars: int = 6000) -> dict:
     # WITHOUT an outer wait_for, so an un-capped auto (90s default) + crawl4ai
     # fallback could hang a widget build ~135s. auto's fast http phase usually
     # answers in seconds; 25s + 20s caps the worst case near 45s.
-    if not _is_public_http_url(url):
+    if not await _is_public_http_url_async(url):
         logger.warning(f"[SSRF GUARD] refused non-public URL {url!r}")
         return {"error": f"URL refused: {url}", "is_error": True}
     content = await _scrape(url, engine="auto", timeout=25.0)

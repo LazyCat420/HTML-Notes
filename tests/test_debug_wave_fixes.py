@@ -1,7 +1,6 @@
 """Guards for the 2026-07-20 debug wave.
 
-Each test was verified to FAIL before its fix landed. See DEBUG_WAVE_PLAN.md for
-the audit that reframed three of the five reported bugs.
+Each test was verified to FAIL before its fix landed (records live in doc-client).
 """
 import os
 import asyncio

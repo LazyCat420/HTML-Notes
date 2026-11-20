@@ -33,25 +33,7 @@ from tests._sources import (MESSAGE_SRC, LLM_SRC, SEARCH_SRC, SERVER_SRC,
                             trees as _server_trees)
 
 
-# ── canvas control must bypass the prism-mode guard ──────────────────────────
-
-def _guarded_by_use_lazy_agent(tree):
-    """Every node living inside an `if req.use_lazy_agent:` body."""
-    guarded = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-        test_src = ast.dump(node.test)
-        # the guard is `req.use_lazy_agent` (possibly ANDed with other terms)
-        if "use_lazy_agent" not in test_src:
-            continue
-        # `not req.use_lazy_agent` / `req.use_lazy_agent or ...` are not the guard
-        if isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not):
-            continue
-        for child in node.body:
-            guarded.extend(ast.walk(child))
-    return guarded
-
+# ── canvas control must run before router/agent cascade ──────────────────────
 
 def _calls_named(nodes, name):
     return [n for n in nodes
@@ -59,14 +41,32 @@ def _calls_named(nodes, name):
             and n.func.id == name]
 
 
-def test_clear_canvas_is_not_gated_behind_prism_mode():
-    """'close everything' regressed to a no-op when the whole fast-path cascade
-    was wrapped in the guard. The agent CANNOT clear a full canvas."""
-    tree = ast.parse(MESSAGE_SRC)
-    guarded = _guarded_by_use_lazy_agent(tree)
-    assert not _calls_named(guarded, "_stream_clear_canvas"), (
-        "_stream_clear_canvas() is inside an `if req.use_lazy_agent:` block — "
-        "in prism mode 'close everything' would silently do nothing.")
+def test_clear_canvas_precedes_router_and_executes_locally(patch_server):
+    """'close everything' must execute before LLM routing or agent streaming."""
+    from unittest.mock import AsyncMock
+    from fastapi.testclient import TestClient
+
+    clear_pos = MESSAGE_SRC.index("_stream_clear_canvas()")
+    router_pos = MESSAGE_SRC.index("route_with_llm(")
+    assert clear_pos < router_pos, "_stream_clear_canvas must intercept before route_with_llm"
+
+    patch_server("route_with_llm", AsyncMock(side_effect=AssertionError("router must not be called for clear")))
+    canvas = (
+        '<div id="dashboard-grid" class="dashboard-grid">'
+        '<div id="w-1" class="widget-container">hi</div>'
+        '</div>'
+    )
+    res = TestClient(m.app).post(
+        "/session/message",
+        json={
+            "session_id": "test-clear-canvas-prism-routing",
+            "message": "close everything",
+            "current_canvas": canvas,
+        },
+    )
+    assert res.status_code == 200
+    assert '"widget_type": "clear_all"' in res.text
+    assert 'w-1' not in (m.get_session_canvas("test-clear-canvas-prism-routing") or "")
 
 
 def test_clear_canvas_still_exists_and_is_reachable():

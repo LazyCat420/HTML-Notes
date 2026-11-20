@@ -132,14 +132,23 @@ _DB_PATH = _os.path.join(
     _os.path.dirname(_os.getenv("DATABASE_URL", "data/notes.db")) or "data",
     "crypto_cache.db")
 _db_conn = None
+_db_conn_path = None
 
 
 def _cache_db():
-    global _db_conn
+    global _db_conn, _db_conn_path
+    if _db_conn is not None and _db_conn_path != _DB_PATH:
+        try:
+            if _db_conn:
+                _db_conn.close()
+        except _sqlite3.Error as exc:
+            logger.debug("[crypto] close stale cache db: %s", exc)
+        _db_conn = None
     if _db_conn is None:
         try:
             _os.makedirs(_os.path.dirname(_DB_PATH) or ".", exist_ok=True)
             _db_conn = _sqlite3.connect(_DB_PATH, check_same_thread=False)
+            _db_conn_path = _DB_PATH
             _db_conn.execute(
                 "CREATE TABLE IF NOT EXISTS crypto_cache "
                 "(k TEXT PRIMARY KEY, v TEXT, exp REAL)")
@@ -147,6 +156,7 @@ def _cache_db():
         except Exception as e:
             logger.warning("[crypto] cache db init failed (%s) — memory only", e)
             _db_conn = False   # sentinel: don't retry every call
+            _db_conn_path = _DB_PATH
     return _db_conn or None
 
 
@@ -204,6 +214,8 @@ def _cache_put(key: str, data, ttl: float):
         try:
             import json as _json
             with _CACHE_LOCK:
+                now = _time.time()
+                db.execute("DELETE FROM crypto_cache WHERE exp < ?", (now,))
                 db.execute(
                     "INSERT OR REPLACE INTO crypto_cache (k, v, exp) VALUES (?,?,?)",
                     (key, _json.dumps(data), exp))

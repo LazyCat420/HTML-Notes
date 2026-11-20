@@ -4,8 +4,7 @@ The bug class this pins: a follow-up either stacks a duplicate or silently edits
 the WRONG (newest) widget. Reconcile and the update mechanism were never at
 fault — target SELECTION was.
 
-Every test here was verified to FAIL before the fix landed. See
-FOLLOWUP_TARGETING_PLAN.md for the measurements that drove the design.
+Every test here was verified to FAIL before the fix landed (records live in doc-client).
 """
 import os
 import pytest

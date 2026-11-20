@@ -87,33 +87,29 @@ async def test_caller_token_budget_is_honoured(patch_server):
 # ── the endpoint pool must not contain a box that cannot chat ────────────────
 
 def test_chat_pool_excludes_the_embedding_port():
-    """10.0.0.30:8001 serves embeddinggemma and has NO chat endpoint —
-    /v1/chat/completions returns 404. It was in the rotation, where it could
-    only ever cost a round-trip. HTML-Notes uses no embeddings at all."""
+    """8001 serves embeddinggemma and has NO chat endpoint —
+    /v1/chat/completions returns 404. HTML-Notes uses no embeddings at all."""
     pool = " ".join(cfg.VLLM_ENDPOINTS)
     assert "8001" not in pool, (
         f"the embeddings port is still in the CHAT pool: {cfg.VLLM_ENDPOINTS}")
-    # Read the LIST, not the file: a comment explaining why :8001 was removed
-    # must pass, while a resolvable endpoint must fail. Grepping the source
-    # cannot tell those apart.
     import ast
     tree = ast.parse(inspect.getsource(m.fast_llm_json).strip())
     literals = [n.value for n in ast.walk(tree)
                 if isinstance(n, ast.Constant) and isinstance(n.value, str)]
     live = [v for v in literals if v.startswith("http")]
-    assert live, "no endpoint literals found — has the pool moved?"
     assert not any("8001" in v for v in live), (
-        f"the hardcoded fallback pool still lists the embeddings port: {live}")
+        f"hardcoded literal still lists the embeddings port: {live}")
+    assert not any("10.0.0.30" in v for v in live), (
+        f"fast_llm_json must not hardcode legacy 10.0.0.30: {live}")
 
 
-def test_jetson_is_the_declared_default():
-    """Preference, not a pin: Gold Spark stays configured as a fallback so it
-    rejoins on its own when it recovers."""
-    assert "10.0.0.30:8000" in cfg.VLLM_URL, cfg.VLLM_URL
+def test_vllm_endpoints_default_to_internal_cluster_boxes():
+    """VLLM_URL and VLLM_ENDPOINTS default to internal local instances without .30."""
+    assert "10.0.0.30" not in cfg.VLLM_URL, cfg.VLLM_URL
+    assert cfg.VLLM_ENDPOINTS, "VLLM_ENDPOINTS must not be empty"
     assert cfg.VLLM_ENDPOINTS[0] == cfg.VLLM_URL
-    assert any("10.0.0.141" in u for u in cfg.VLLM_ENDPOINTS), (
-        "Gold Spark must remain a fallback — taking a box out is done by "
-        "leaving its URL unset, never by deleting the fallback path")
+    assert all("10.0.0.30" not in u for u in cfg.VLLM_ENDPOINTS), cfg.VLLM_ENDPOINTS
+    assert any("10.0.0.141" in u for u in cfg.VLLM_ENDPOINTS)
 
 
 def test_read_timeout_is_bounded():

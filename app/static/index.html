@@ -6,10 +6,10 @@
     <title>Canvas</title>
     <meta name="description" content="LLM-driven HTML canvas.">
     <meta name="theme-color" content="#6366f1">
-    <link rel="stylesheet" href="index.css?v=3.9">
+    <link rel="stylesheet" href="index.css?v=4.0">
     <script src="lib/dompurify.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="lib/marked.min.js"></script>
+    <script src="lib/chart.umd.min.js"></script>
     <!-- Cytoscape: renders the wallet/holder-network graph (language-graph blocks). -->
     <script src="lib/cytoscape.min.js"></script>
     <!-- Alpine.js for agentic UI generation. Tailwind no longer runs here: its
@@ -17,7 +17,7 @@
          <head> below (where the old cdn.tailwindcss.com script injected its
          <style>, measured 2026-11-03), so the cascade is unchanged. -->
     <script defer src="js/widgets.js?v=2.0"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script defer src="lib/alpine.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
     <!-- Tech monospace for HUD labels / telemetry readouts (falls back to a system
@@ -26,7 +26,7 @@
     <!-- HUD overlay theme. MUST load after index.css: it is a final override layer
          that re-skins the calm-neutral block at the tail of index.css into the
          restrained sci-fi HUD look. Class-safe / CSS-only. -->
-    <link rel="stylesheet" href="hud-theme.css?v=1.3">
+    <link rel="stylesheet" href="hud-theme.css?v=1.4">
     <!-- Apply the saved palette BEFORE first paint so a reload never flashes the
          default cyan theme. The full engine (persist, chart recolor) is in index.js. -->
     <script>
@@ -55,6 +55,21 @@
          a widget — it lives outside #live-canvas so canvas serialization and
          self-heal never touch it. Contents rendered by initAppRail (index.js). -->
     <aside id="app-rail" class="app-rail" aria-label="Your apps"></aside>
+
+    <!-- Canvas Toolbar (search / type filter / closed tray) lives outside
+         #live-canvas so liveCanvas.innerHTML updates never wipe it. -->
+    <div id="canvas-toolbar" class="canvas-toolbar" hidden>
+        <div class="canvas-search-wrap">
+            <input id="canvas-search-input" class="canvas-search-input" type="search"
+                   placeholder="Filter canvas (press /)…" aria-label="Filter canvas widgets" />
+            <button id="canvas-search-clear" class="canvas-search-clear" type="button" title="Clear filter" hidden>×</button>
+        </div>
+        <div id="canvas-type-pills" class="canvas-type-pills" role="group" aria-label="Filter by widget type"></div>
+        <div class="canvas-closed-wrap">
+            <button id="canvas-closed-btn" class="canvas-closed-btn" type="button" aria-expanded="false" hidden>Closed (0)</button>
+            <div id="closed-widgets-popover" class="closed-widgets-popover" hidden></div>
+        </div>
+    </div>
 
     <!-- Live Canvas Area -->
     <div id="live-canvas" class="live-canvas">
@@ -95,7 +110,7 @@
                     <path fill="currentColor" d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.85 14,18.71V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.77 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>
                 </svg>
             </button>
-            <button id="btn-forget" class="btn-icon" title="Forget what you remember about me">
+            <button id="btn-forget" class="btn-icon" title="Clear saved personal profile (name, location, preferences)" aria-label="Clear saved personal profile">
                 <svg viewBox="0 0 24 24">
                     <path fill="currentColor" d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4C14.1,4 16,4.8 17.4,6.1L6.1,17.4C4.8,16 4,14.1 4,12A8,8 0 0,1 12,4M12,20C9.9,20 8,19.2 6.6,17.9L17.9,6.6C19.2,8 20,9.9 20,12A8,8 0 0,1 12,20Z"/>
                 </svg>
@@ -133,7 +148,9 @@
          v3.2: in-flight envelope card + live-streaming chat bubble.
          v3.3: reverse-chronological canvas feed + adaptive auto-resize system.
          v3.4: smart content quality voting + domain burn + multi-query synthesis. -->
-    <script src="index.js?v=4.3"></script>
+    <div id="undo-dismiss-toast" class="undo-dismiss-toast" role="status" aria-live="polite" hidden></div>
+
+    <script src="index.js?v=4.4"></script>
     <!-- Masonry layout: pairs with the .dashboard-grid CSS (1px row track). Gives
          each widget a grid-row span equal to its height so varying-height widgets
          pack tightly with no whitespace, and reflows as widgets are added, removed
@@ -148,7 +165,9 @@
     (function () {
         var GAP = 20; // px vertical gap between stacked widgets
         function spanFor(el) {
-            var h = Math.ceil(el.getBoundingClientRect().height);
+            // Measure offsetHeight (immune to CRT transform: scaleY entrance) first
+            // so initial layout reserves full height instead of collapsing cards.
+            var h = Math.ceil(el.offsetHeight || el.getBoundingClientRect().height);
             if (h > 0) el.style.gridRowEnd = 'span ' + (h + GAP);
         }
         function layout() {
@@ -167,29 +186,35 @@
                 if (!w.__masonryObserved) { w.__masonryObserved = true; ro.observe(w); }
             });
         }
+        var gridObserver = null;
+        var observedGrid = null;
+        function bindGrid() {
+            var grid = document.querySelector('#dashboard-grid');
+            if (!grid || grid === observedGrid) return;
+            if (gridObserver) gridObserver.disconnect();
+            observedGrid = grid;
+            gridObserver = new MutationObserver(schedule);
+            gridObserver.observe(grid, { childList: true });
+            grid.addEventListener('animationend', schedule);
+            grid.addEventListener('transitionend', schedule);
+        }
         var pending = null;
         function schedule() {
             if (pending) return;
             pending = requestAnimationFrame(function () {
-                pending = null; observeAll(); layout();
-                // A second pass after the frame catches widgets whose height only
-                // settles once Alpine fills their x-text (stock_card, weather) or
-                // markdown/images reflow — the ResizeObserver covers most of this,
-                // but this guarantees a correct span even if a widget's size lands
-                // between observer notifications.
-                setTimeout(function () { observeAll(); layout(); }, 180);
+                pending = null; bindGrid(); observeAll(); layout();
+                setTimeout(function () { bindGrid(); observeAll(); layout(); }, 180);
             });
         }
         function start() {
             var lc = document.querySelector('#live-canvas');
             if (!lc) { setTimeout(start, 300); return; }
-            new MutationObserver(schedule).observe(lc, { childList: true, subtree: true });
-            observeAll(); layout();
+            new MutationObserver(schedule).observe(lc, { childList: true });
+            bindGrid(); observeAll(); layout();
         }
         if (document.readyState !== 'loading') start();
         else document.addEventListener('DOMContentLoaded', start);
         window.addEventListener('resize', layout);
-        // Images/iframes finishing load change widget height — relayout then.
         window.addEventListener('load', layout);
     })();
     </script>

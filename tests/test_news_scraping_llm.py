@@ -49,8 +49,10 @@ async def test_shared_news_search_defaults_empty_topic():
 @respx.mock
 async def test_fast_llm_json_extracts_from_reasoning_models():
     # Simulates Qwen / DeepSeek-R1 emitting reasoning with length finish and content in reasoning
-    respx.get("http://10.0.0.30:8000/v1/models").respond(200, json={"data": [{"id": "qwen3.6-35b"}]})
-    respx.post("http://10.0.0.30:8000/v1/chat/completions").respond(
+    from app import config as cfg
+    ep = cfg.VLLM_ENDPOINTS[0].rstrip("/")
+    respx.get(f"{ep}/v1/models").respond(200, json={"data": [{"id": "qwen3.6-35b"}]})
+    respx.post(f"{ep}/v1/chat/completions").respond(
         200,
         json={
             "choices": [{

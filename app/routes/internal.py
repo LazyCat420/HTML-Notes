@@ -5,30 +5,32 @@ sys.modules[__name__].__dict__.update(main.__dict__)
 
 router = APIRouter()
 
+async def _enforce_internal_execute_auth(request: Request = None) -> None:
+    """Fail closed on unauthenticated HTTP /internal/execute requests."""
+    global _internal_execute_auth_warned
+    expected = (await _fetch_secret("INTERNAL_EXECUTE_TOKEN") or "").strip() or os.getenv("RUNTIME_AUTH_SECRET", "").strip()
+    if request is None:
+        if not expected and not _internal_execute_auth_warned:
+            _internal_execute_auth_warned = True
+            logger.warning("[SECURITY] /internal/execute invoked in-process without INTERNAL_EXECUTE_TOKEN")
+        return
+    import hmac as _hmac
+    if not expected:
+        raise HTTPException(status_code=503, detail="INTERNAL_EXECUTE_TOKEN is not configured; /internal/execute is disabled")
+    if not _hmac.compare_digest(request.headers.get("x-internal-token", ""), expected):
+        raise HTTPException(status_code=401, detail="invalid or missing x-internal-token")
+
+
 @app.post("/internal/execute")
 async def internal_tool_execute(req: InternalToolRequest, request: Request = None):
     """
     Internal tool dispatcher. Called by lazy-agent-service when the model
     fires an html_notes_* or render_component tool call.
 
-    Auth: when INTERNAL_EXECUTE_TOKEN is configured (env or vault), the caller
-    must send it in the x-internal-token header. When it is not configured the
-    endpoint stays open for compatibility but warns once per boot — provision
-    the token in both this service's and lazy-agent-service's .env to close it.
+    Auth: requires INTERNAL_EXECUTE_TOKEN (x-internal-token header) on HTTP
+    calls and fails closed with 503 when unconfigured.
     """
-    global _internal_execute_auth_warned
-    expected = await _fetch_secret("INTERNAL_EXECUTE_TOKEN")
-    if expected:
-        import hmac as _hmac
-        supplied = request.headers.get("x-internal-token", "") if request is not None else ""
-        if not _hmac.compare_digest(supplied, expected):
-            raise HTTPException(status_code=401,
-                                detail="invalid or missing x-internal-token")
-    elif not _internal_execute_auth_warned:
-        _internal_execute_auth_warned = True
-        logger.warning("[SECURITY] /internal/execute is UNAUTHENTICATED — set "
-                       "INTERNAL_EXECUTE_TOKEN in this service's and "
-                       "lazy-agent-service's env to enforce auth")
+    await _enforce_internal_execute_auth(request)
 
     if req.tool not in _INTERNAL_EXECUTE_TOOLS:
         return {"error": f"Tool not allowed: {req.tool}", "is_error": True}
@@ -578,8 +580,14 @@ async def widget_custom(widget_id: str):
         cfg = json.loads(raw)
     except Exception:
         raise HTTPException(status_code=404, detail="corrupt custom widget")
-    return HTMLResponse(custom_document_html(widget_id, cfg),
-                        headers={"Cache-Control": "no-store"})
+    return HTMLResponse(
+        custom_document_html(widget_id, cfg),
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "sandbox allow-scripts",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/widgets/map/traffic/{z}/{x}/{y}.png", include_in_schema=False)
@@ -664,15 +672,26 @@ async def widget_embed(u: str = ""):
     return HTMLResponse(doc, headers={"Cache-Control": "public, max-age=600"})
 
 
+def _require_hn_client_request(request: Request = None) -> None:
+    """Reject cross-origin / null-origin / direct form calls against /user/memory."""
+    if request is None:
+        return
+    origin = (request.headers.get("origin") or "").strip().lower()
+    if origin == "null" or request.headers.get("x-hn-client") != "1":
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
 @router.get("/user/memory", include_in_schema=False)
-async def get_user_memory():
+async def get_user_memory(request: Request = None):
     """The persistent user profile the agent remembers (name/location/likes)."""
+    _require_hn_client_request(request)
     return database.get_user_facts()
 
 
 @router.delete("/user/memory", include_in_schema=False)
-async def forget_user():
+async def forget_user(request: Request = None):
     """Wipe the persistent user profile — the 'Forget me' settings control."""
+    _require_hn_client_request(request)
     try:
         n = database.wipe_user_facts()
         return {"ok": True, "forgotten": n}

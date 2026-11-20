@@ -393,7 +393,7 @@ async def trading_service_tickers(limit: int = 5) -> list:
     out: list = []
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            base = "http://10.0.0.16:8888/api/v1"
+            base = os.getenv("TRADING_CLIENT_URL", "http://10.0.0.16:8888").rstrip("/") + "/api/v1"
             r1, r2 = await asyncio.gather(
                 client.get(f"{base}/watchlist"),
                 client.get(f"{base}/portfolio"),

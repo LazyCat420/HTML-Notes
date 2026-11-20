@@ -31,10 +31,16 @@ still runs, it just tests production. `patch_server` rebinds the name in EVERY
 server module whose namespace holds it, so it cannot miss the one the caller
 actually resolves against.
 """
+import os
 import sys
 import pathlib
+import shutil
+import tempfile
 
 import pytest
+
+_PYTEST_BOOT_DIR = tempfile.mkdtemp(prefix="hn_pytest_boot_")
+os.environ["DATABASE_URL"] = os.path.join(_PYTEST_BOOT_DIR, "boot.db")
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -115,7 +121,7 @@ def _no_live_models(request, monkeypatch):
         return any(getattr(k, "_patches", None) for k in _tree(Mocker))
 
     async def _guard(self, request_, *a, **kw):
-        if request_.url.host in ("10.0.0.30", "10.0.0.141") and not _respx_intercepting():
+        if request_.url.host in ("10.0.0.30", "10.0.0.141", "10.0.0.37", "10.0.0.131") and not _respx_intercepting():
             raise AssertionError(
                 f"live model call to {request_.url} from a unit test — the mock "
                 "did not take. Use the patch_server fixture, or mark the test "
@@ -125,8 +131,32 @@ def _no_live_models(request, monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _guard)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_test_db(tmp_path, monkeypatch):
+    """Redirect SQLite DBs to per-test tmp_path so tests never touch data/notes.db."""
+    from app import database, crypto, content_quality
+    db_file = str(tmp_path / "test_notes.db")
+    monkeypatch.setenv("DATABASE_URL", db_file)
+    monkeypatch.setattr(database, "DATABASE_URL", db_file)
+    monkeypatch.setattr(content_quality, "DATABASE_URL", db_file)
+    monkeypatch.setattr(crypto, "_DB_PATH", str(tmp_path / "crypto_cache.db"))
+    monkeypatch.setattr(crypto, "_db_conn", None)
+    database.init_db()
+    yield
+    if crypto._db_conn:
+        try:
+            crypto._db_conn.close()
+        except Exception:
+            pass
+        crypto._db_conn = None
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: test genuinely needs a live model box")
+
+
+def pytest_unconfigure(config):
+    shutil.rmtree(_PYTEST_BOOT_DIR, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

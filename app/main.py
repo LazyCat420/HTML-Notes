@@ -54,7 +54,7 @@ _SEARCH_ENGINES = (
     # One engine: lazy-agent-service's shared keyless search (Exa), with one
     # cache and one rate limit for the whole network. html-notes no longer
     # scrapes DuckDuckGo: the search engines bot-block this network's IP, and
-    # every automated search made that worse (docs/WEB_SEARCH.md).
+    # every automated search made that worse (see doc-client html-notes decisions).
     ("shared-web", lambda q, n: _search_shared_web(q, n)),
 )
 
@@ -582,7 +582,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import PORT, LAZY_AGENT_URL, VLLM_URL, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL, MUSIC_ROUTER_BUDGET_S, MUSIC_ROUTER_REFINE_S
+from app.config import PORT, LAZY_AGENT_URL, VLLM_URL, VLLM_FAST_URL, VLLM_ENDPOINTS, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL, MUSIC_ROUTER_BUDGET_S, MUSIC_ROUTER_REFINE_S
 import asyncio
 import contextvars
 import datetime
@@ -645,6 +645,8 @@ logger = logging.getLogger(__name__)
 _session_canvas: Dict[str, str] = {}
 _session_locks: Dict[str, asyncio.Lock] = {}
 _session_inflight: Dict[str, int] = {}
+_session_dismissed_widgets: Dict[str, List[Dict[str, Any]]] = {}
+_session_lru: Dict[str, float] = {}
 
 # Canvas versions must never go BACKWARDS across a restart. A plain per-session
 # counter starting at 0 looked fine until you redeploy: the browser tab is still
@@ -2040,13 +2042,11 @@ _GROUND_CACHE_MAX = 256
 
 async def _fetch_image_data_url(client: httpx.AsyncClient, url: str,
                                 max_bytes: int = 1_800_000) -> Optional[str]:
-    """GET an image and return it as a base64 data: URL, or None. We pass images to
-    the vision model as data URLs rather than remote URLs because the model fetches
-    remote URLs server-side and many og:image CDNs block hotlinking (403/400) — a
-    data URL is judged reliably. Skips non-images and anything over `max_bytes`."""
+    """GET an image and return it as a base64 data: URL, validating public URL + redirects."""
     try:
-        resp = await client.get(url, headers={"User-Agent": _BROWSER_UA})
-        if resp.status_code != 200:
+        from app.services.search import safe_public_request
+        resp = await safe_public_request(client, "GET", url, headers={"User-Agent": _BROWSER_UA})
+        if resp is None or resp.status_code != 200:
             return None
         ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
         if not ctype.startswith("image/"):
@@ -2076,7 +2076,7 @@ async def filter_images_by_relevance(subject: str, negatives: list, items: list,
         return items
     judged = cands[:8]                       # bound the vision call
     async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=5.0),
-                                 follow_redirects=True) as client:
+                                 follow_redirects=False) as client:
         data_urls = await asyncio.gather(
             *[_fetch_image_data_url(client, it.get("image", "")) for it in judged])
     # Only images we successfully fetched can be judged; the rest fail open.

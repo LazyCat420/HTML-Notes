@@ -77,7 +77,7 @@ def test_first_engine_with_hits_wins(monkeypatch, no_backfill):
 
 def test_search_goes_only_to_the_shared_web_search():
     """The search engines bot-block this network's IP; html-notes scraping
-    DuckDuckGo made it worse for every project (docs/WEB_SEARCH.md). One engine:
+    DuckDuckGo made it worse for every project (see doc-client html-notes decisions). One engine:
     lazy-agent-service's shared keyless search."""
     names = [n for n, _ in m._SEARCH_ENGINES]
     assert names == ["shared-web"]
