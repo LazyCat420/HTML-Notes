@@ -1,17 +1,8 @@
 """The model picker in the UI — what it offers, and what it selects by default.
 
-The browser sends `provider` and `model` in the /session/message body, and the
-server's selection cascade begins `model_name = req.model`. So whatever the
-dropdown has selected SHORT-CIRCUITS the entire server-side preference: a
-client-persisted or client-defaulted choice outranks the server's.
-
-Observed 2026-09-05: the UI auto-selected GLM-5.3-FLASH-EXL3 on Gold Spark —
-a box that was head-of-line blocked — while the server had been changed to
-prefer the Jetson. The server fix was real and had no effect on a real browser
-turn, because the client never let it run.
-
-It also offered EMBEDDINGGEMMA as a selectable chat model. That endpoint returns
-404 on /v1/chat/completions; picking it cannot do anything but fail.
+/models filters non-chat models (e.g. embeddinggemma) and orders providers by
+PREFERRED_AGENT_PROVIDERS (vllm-2, vllm-4, vllm-5, vllm). The browser trusts
+that server-ranked order instead of hardcoding a legacy Jetson override.
 """
 import pathlib
 
@@ -23,25 +14,20 @@ JS = (pathlib.Path(__file__).resolve().parent.parent
       / "app" / "static" / "index.js").read_text()
 
 
-def test_client_default_provider_is_the_jetson():
-    """`let provider = "vllm-2"` hardcoded Gold Spark as the fallback provider."""
-    assert 'let provider = "vllm-2"' not in JS, (
-        "the client still hardcodes vllm-2 (Gold Spark) as its default provider")
-    assert 'let provider = "vllm"' in JS
+def test_client_default_provider_lets_server_choose():
+    """When the dropdown has no selection, client delegates provider selection to server."""
+    assert 'let provider = "vllm-2"' not in JS
+    assert 'let provider = "vllm"' not in JS
+    assert 'let provider = "";' in JS
+    assert 'provider: provider || null,' in JS
 
 
-def test_model_dropdown_prefers_the_jetson_over_gold_spark():
-    """fetchModels picked the FIRST vllm-2 option, falling back to vllm — so the
-    dropdown landed on GLM whenever Gold Spark was in the catalog at all."""
+def test_model_dropdown_trusts_server_provider_order():
+    """fetchModels picks options[0] as ranked by /models instead of overriding with 'vllm'."""
     start = JS.index("async function fetchModels()")
-    body = JS[start:start + 3000]
-    v2 = body.find('"vllm-2"')
-    v1 = body.find('"vllm"')
-    assert v1 != -1, "fetchModels no longer looks for the vllm provider"
-    if v2 != -1:
-        assert v1 < v2, (
-            "vllm-2 is still checked before vllm — the dropdown will keep "
-            "auto-selecting Gold Spark whenever it is present")
+    body = JS[start:start + 2200]
+    assert 'elements.modelSelect.options[0].selected = true;' in body
+    assert 'val.provider === "vllm"' not in body
 
 
 def test_models_endpoint_hides_models_that_cannot_chat():
@@ -55,7 +41,7 @@ def test_models_endpoint_hides_models_that_cannot_chat():
 
 @pytest.mark.asyncio
 async def test_models_endpoint_filters_embeddinggemma(patch_server):
-    """Drive the endpoint against the catalog shape the gateway really returns."""
+    """Drive the endpoint against the catalog shape the gateway returns."""
     catalog = {"textToText": {"models": {
         "vllm": [{"name": "nemotron35", "label": "nemotron35"}],
         "vllm-2": [{"name": "GLM-5.3-Flash-EXL3", "label": "GLM-5.3-Flash-EXL3"}],
@@ -80,5 +66,4 @@ async def test_models_endpoint_filters_embeddinggemma(patch_server):
     names = [m_["model"] for m_ in json.loads(resp.body)["models"]]
     assert "embeddinggemma" not in names, f"embedding model still offered: {names}"
     assert "nemotron35" in names
-    assert names[0] == "nemotron35", (
-        f"the Jetson's model must be listed FIRST so the dropdown lands on it: {names}")
+    assert names == ["GLM-5.3-Flash-EXL3", "nemotron35"], names

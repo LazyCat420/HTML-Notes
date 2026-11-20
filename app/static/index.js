@@ -3395,11 +3395,9 @@ document.addEventListener("DOMContentLoaded", () => {
         // finished being read. Same rule the exec-log already uses below.
         if (activeTurns.size <= 1) clearSpeechQueue();
 
-        // "vllm" is the Jetson (nemotron35). This was "vllm-2" — Gold Spark — which
-        // meant every browser turn asked for GLM regardless of what the server
-        // preferred, because the request body's `model` short-circuits the
-        // server's own selection. The client's default IS the effective default.
-        let provider = "vllm";
+        // Leave provider empty unless the user/dropdown picked an entry so the
+        // server discovers the live box via PREFERRED_AGENT_PROVIDERS + /v1/models.
+        let provider = "";
         let model = "";
         if (elements.modelSelect) {
             let selectValue = elements.modelSelect.value;
@@ -3510,7 +3508,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 body: JSON.stringify({
                     session_id: state.sessionId,
                     message: text,
-                    provider: provider,
+                    provider: provider || null,
                     model: model,
                     current_canvas: getCleanedCanvasHtml(),
                     // The widget this question came from, when we know it. A
@@ -4578,36 +4576,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     elements.modelSelect.appendChild(option);
                 });
                 
-                if (data.models.length > 0) {
-                    let defaultIndex = 0;
-                    const options = Array.from(elements.modelSelect.options);
-                    const vllmIndex = options.findIndex(opt => {
-                        try {
-                            const val = JSON.parse(opt.value);
-                            return val.provider === "vllm";
-                        } catch(e) {
-                            return false;
-                        }
-                    });
-                    const vllm2Index = options.findIndex(opt => {
-                        try {
-                            const val = JSON.parse(opt.value);
-                            return val.provider === "vllm-2";
-                        } catch(e) {
-                            return false;
-                        }
-                    });
-                    // Jetson ("vllm") first, Gold Spark ("vllm-2") only as a
-                    // fallback. The previous order was the reverse, so the
-                    // dropdown auto-selected GLM-5.3 whenever Gold Spark was in
-                    // the catalog at all — even while that box was head-of-line
-                    // blocked and could not serve a completion.
-                    if (vllmIndex !== -1) {
-                        defaultIndex = vllmIndex;
-                    } else if (vllm2Index !== -1) {
-                        defaultIndex = vllm2Index;
-                    }
-                    elements.modelSelect.options[defaultIndex].selected = true;
+                if (data.models.length > 0 && elements.modelSelect.options.length > 0) {
+                    // /models already returns chat-capable models ordered by
+                    // PREFERRED_AGENT_PROVIDERS (vllm-2, vllm-4, vllm-5, vllm).
+                    elements.modelSelect.options[0].selected = true;
                 }
             } else {
                 elements.modelSelect.innerHTML = '<option value="">Failed to load models</option>';
