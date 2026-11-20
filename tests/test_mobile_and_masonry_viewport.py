@@ -1,6 +1,7 @@
 """Playwright layout, mobile command-bar, masonry, vendored libs & toolbar checks."""
 import pathlib
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -91,7 +92,7 @@ def _attach_app_routes(page, external_urls: list[str], initial_widgets_html: str
 
 
 def test_mobile_400px_desktop_1024_1440_and_masonry_and_toolbar():
-    from playwright.sync_api import sync_playwright
+    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
 
     widgets_html = (
         '<div id="dashboard-grid" class="dashboard-grid">'

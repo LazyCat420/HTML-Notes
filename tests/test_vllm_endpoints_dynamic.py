@@ -86,7 +86,38 @@ def test_send_message_resolves_dynamic_v1_models_without_hardcoded_nemotron(patc
     assert res.status_code == 200
     assert agent_route.called
     sent_payload = json.loads(agent_route.calls[0].request.content.decode("utf-8"))
+    assert sent_payload["provider"] == "vllm-4"
     assert sent_payload["model"] == "qwen3-coder-32b"
+
+
+def test_send_message_overrides_mismatched_client_provider_on_fallback(patch_server):
+    import respx
+    from unittest.mock import AsyncMock
+
+    patch_server("VLLM_ENDPOINTS", ["http://10.0.0.141:8000"])
+    patch_server("VLLM_URL", "http://10.0.0.141:8000")
+    patch_server("route_with_llm", AsyncMock(return_value={"defer": True}))
+    patch_server("build_apps_prompt_block", AsyncMock(return_value=""))
+    patch_server("build_actions_prompt_block", AsyncMock(return_value=""))
+
+    with respx.mock(assert_all_mocked=False) as mock:
+        mock.get(f"{m.LAZY_AGENT_URL}/config-local").respond(503, json={})
+        mock.get("http://10.0.0.141:8000/v1/models").respond(
+            200, json={"data": [{"id": "DeepSeek-V4.1-Flash-1017"}]}
+        )
+        agent_route = mock.post(f"{m.LAZY_AGENT_URL}/agent").respond(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=f'data: {json.dumps({"type": "done"})}\n\n',
+        )
+        res = TestClient(m.app).post(
+            "/session/message",
+            json={"session_id": "sess-pair-141", "provider": "vllm", "message": "build me a custom habit tracker"},
+        )
+    assert res.status_code == 200
+    sent_payload = json.loads(agent_route.calls[0].request.content.decode("utf-8"))
+    assert sent_payload["provider"] == "vllm-2"
+    assert sent_payload["model"] == "DeepSeek-V4.1-Flash-1017"
 
 
 def test_send_message_returns_error_sse_when_no_local_vllm_model_available(patch_server):

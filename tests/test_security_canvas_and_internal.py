@@ -136,27 +136,55 @@ async def test_ssrf_guard_blocks_private_hosts_and_unsafe_redirects():
         "http://10.0.0.16:8888/",
         "http://localhost/",
         "http://169.254.169.254/latest/meta-data/",
+        "http://user:pass@93.184.216.34/",
         "file:///etc/passwd",
     ]
     for url in blocked:
         assert await _is_public_http_url_async(url) is False, url
 
-    seen_urls: list[str] = []
+    seen_urls: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen_urls.append(str(request.url))
+        seen_urls.append((request.method, str(request.url)))
         if request.url.host == "93.184.216.34" and request.url.path == "/redirect-loopback":
             return httpx.Response(302, headers={"Location": "http://127.0.0.1:8035/secret"})
+        if request.url.host == "93.184.216.34" and request.url.path == "/redirect-303":
+            return httpx.Response(303, headers={"Location": "/public"})
         return httpx.Response(200, text="ok")
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, follow_redirects=False) as hc:
+        assert await safe_public_request(hc, "GET", "https://user:pass@93.184.216.34/public") is None
         res_redirect = await safe_public_request(hc, "GET", "https://93.184.216.34/redirect-loopback")
         assert res_redirect is None
-        assert all("127.0.0.1" not in u for u in seen_urls)
+        assert all("127.0.0.1" not in u for _, u in seen_urls)
+
+        res_303 = await safe_public_request(hc, "POST", "https://93.184.216.34/redirect-303")
+        assert res_303 is not None and res_303.status_code == 200
+        assert ("GET", "https://93.184.216.34/public") in seen_urls
 
         res_ok = await safe_public_request(hc, "GET", "https://93.184.216.34/public")
         assert res_ok is not None and res_ok.status_code == 200
+
+    import socket
+    from unittest.mock import patch
+    pinned_calls: list[tuple[str, str, str | None]] = []
+
+    def hostname_handler(request: httpx.Request) -> httpx.Response:
+        pinned_calls.append((
+            str(request.url),
+            request.headers.get("host", ""),
+            (request.extensions or {}).get("sni_hostname"),
+        ))
+        return httpx.Response(200, text="pinned-ok")
+
+    with patch("app.services.ssrf_guard.socket.getaddrinfo", return_value=[
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+    ]):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(hostname_handler), follow_redirects=False) as hc:
+            res_pinned = await safe_public_request(hc, "GET", "https://example.com/chart.png")
+            assert res_pinned is not None and res_pinned.status_code == 200
+    assert pinned_calls == [("https://93.184.216.34/chart.png", "example.com", "example.com")]
 
 
 def _find_chromium_executable():
@@ -172,7 +200,7 @@ def _find_chromium_executable():
 
 
 def test_browser_dompurify_scopes_alpine_attrs_to_canvas_only():
-    from playwright.sync_api import sync_playwright
+    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
 
     index_js = (STATIC_DIR / "index.js").read_text(encoding="utf-8")
     cfg_match = re.search(

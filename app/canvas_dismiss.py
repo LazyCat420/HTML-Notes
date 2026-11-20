@@ -18,6 +18,33 @@ def sanitize_widget_id(raw_id: Any) -> str:
     return cleaned or f"widget-{uuid.uuid4().hex[:8]}"
 
 
+def resolve_stream_widget_id(
+    session_id: str,
+    widget_type: str,
+    id_prefix: str,
+    explicit_id: str | None,
+    message: str,
+    title: str,
+    *,
+    focus_id: str | None,
+    finders: dict,
+) -> str:
+    """Resolve an existing target id untouched, else sanitize a new/explicit id."""
+    existing = finders["on_canvas"](session_id, focus_id or "", widget_type)
+    if existing:
+        return existing
+    if explicit_id:
+        return sanitize_widget_id(explicit_id)
+    reused = finders["reuse_target"](session_id, widget_type, message, subject=title)
+    if reused:
+        return reused
+    if id_prefix in finders["singleton_prefixes"]:
+        by_prefix = finders["by_prefix"](session_id, id_prefix)
+        if by_prefix:
+            return by_prefix
+    return sanitize_widget_id(f"{id_prefix}-{uuid.uuid4().hex[:8]}")
+
+
 def _evictable_session(cm, sid: str) -> bool:
     """True when session `sid` has no inflight turn and no held canvas lock."""
     if cm._session_inflight.get(sid, 0) > 0:

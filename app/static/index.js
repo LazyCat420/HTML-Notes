@@ -146,6 +146,7 @@ window.WidgetManager = {
     MAX_DISMISSED: 100,
     MAX_CLOSED_STACK: 10,
     closedStack: [],
+    _dismissedTimes: {},
     _undoTimer: null,
 
     _sessionId() {
@@ -163,9 +164,23 @@ window.WidgetManager = {
     },
     getDismissed() {
         try {
-            const raw = localStorage.getItem(this._storageKey());
-            const parsed = JSON.parse(raw || '[]');
-            return Array.isArray(parsed) ? parsed.slice(-this.MAX_DISMISSED) : [];
+            const key = this._storageKey();
+            const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+            const current = Array.isArray(parsed) ? parsed : [];
+            const legacyRaw = localStorage.getItem('dismissed_widgets');
+            if (legacyRaw) {
+                try {
+                    const legacy = JSON.parse(legacyRaw);
+                    if (Array.isArray(legacy) && legacy.length) {
+                        const merged = [...legacy, ...current.filter(id => !legacy.includes(id))].slice(-this.MAX_DISMISSED);
+                        localStorage.setItem(key, JSON.stringify(merged));
+                        if (typeof localStorage.removeItem === 'function') localStorage.removeItem('dismissed_widgets');
+                        return merged;
+                    }
+                } catch {}
+                if (typeof localStorage.removeItem === 'function') localStorage.removeItem('dismissed_widgets');
+            }
+            return current.slice(-this.MAX_DISMISSED);
         } catch {
             return [];
         }
@@ -175,6 +190,16 @@ window.WidgetManager = {
             const trimmed = Array.isArray(ids) ? ids.slice(-this.MAX_DISMISSED) : [];
             localStorage.setItem(this._storageKey(), JSON.stringify(trimmed));
         } catch {}
+    },
+    unDismissIfBefore(id, cutoffMs) {
+        if (!id || typeof cutoffMs !== 'number') return false;
+        const dismissedAt = this._dismissedTimes[id] || 0;
+        if (dismissedAt >= cutoffMs) return false;
+        if (!this.isDismissed(id)) return false;
+        this._saveDismissed(this.getDismissed().filter(x => x !== id));
+        this.closedStack = this.closedStack.filter(x => x.id !== id);
+        if (window.CanvasToolbar?.refresh) window.CanvasToolbar.refresh();
+        return true;
     },
     setClosedWidgets(items) {
         this.closedStack = Array.isArray(items)
@@ -222,6 +247,7 @@ window.WidgetManager = {
         const widgetType = widgetElement.getAttribute?.('data-widget-type') || 'widget';
         const sid = this._sessionId();
         if (id) {
+            this._dismissedTimes[id] = Date.now();
             const dismissed = this.getDismissed();
             if (!dismissed.includes(id)) {
                 dismissed.push(id);
@@ -250,10 +276,19 @@ window.WidgetManager = {
                         }
                         if (Array.isArray(data.closed)) {
                             const htmlMap = new Map(this.closedStack.map(x => [x.id, x.html]));
-                            this.closedStack = data.closed.slice(0, this.MAX_CLOSED_STACK).map(item => ({
-                                ...item,
-                                html: htmlMap.get(item.id) || '',
-                            }));
+                            if (data.removed) {
+                                this.closedStack = data.closed.slice(0, this.MAX_CLOSED_STACK).map(item => ({
+                                    ...item,
+                                    html: htmlMap.get(item.id) || '',
+                                }));
+                            } else {
+                                const seen = new Set(this.closedStack.map(x => x.id));
+                                const merged = [...this.closedStack];
+                                for (const item of data.closed) {
+                                    if (!seen.has(item.id)) merged.push({ ...item, html: htmlMap.get(item.id) || '' });
+                                }
+                                this.closedStack = merged.slice(0, this.MAX_CLOSED_STACK);
+                            }
                             if (window.CanvasToolbar?.refresh) window.CanvasToolbar.refresh();
                         }
                     })
@@ -1372,9 +1407,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }, true);
         canvas.addEventListener("keydown", (e) => {
             if (e.key !== "Enter" && e.key !== " ") return;
+            if (e.target.closest?.("a[href]") && !e.target.closest?.(".hn-ask-chip")) return;
+            if (e.target.closest?.("[x-data*='musicPlayerWidget']")) return;
+            if (e.target.matches?.("input, textarea, select, button")) return;
             const t = e.target.closest?.("[data-ask]");
             if (!t || !canvas.contains(t)) return;
-            if (t.matches("input, textarea, select")) return;
             const text = t.getAttribute("data-ask");
             if (!text) return;
             e.preventDefault();
@@ -2372,7 +2409,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setTimeout(clear, 1200);
     }
 
-    function reconcileCanvas(container, rawHtml) {
+    function reconcileCanvas(container, rawHtml, opts) {
         const clean = sanitizeCanvasHtml(rawHtml);
         const doc = new DOMParser().parseFromString(clean, 'text/html');
 
@@ -2417,8 +2454,10 @@ document.addEventListener("DOMContentLoaded", () => {
         let prependAnchor = grid.firstElementChild;
         let changed = false;
         let anyNewWidget = false;
+        const turnTs = opts?.turnStartedAt;
         newWidgets.forEach(newWidget => {
             const id = newWidget.id;
+            if (id && turnTs) window.WidgetManager?.unDismissIfBefore?.(id, turnTs);
             if (id && window.WidgetManager && window.WidgetManager.isDismissed(id)) return;
 
             // No id to key on — safest to treat as new content every time.
@@ -2556,7 +2595,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Returns true if it actually painted, so the caller knows to (re)initialize
     // the widgets it just injected.
-    function renderContent(textContent, componentHtml, version) {
+    function renderContent(textContent, componentHtml, version, opts) {
         // The text content goes to TTS and Chat History.
         // We ONLY render the HTML component to the live canvas.
         if (!componentHtml || componentHtml === lastRenderedComponentHtml) return false;
@@ -2571,7 +2610,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         lastRenderedComponentHtml = componentHtml;
-        return reconcileCanvas(elements.liveCanvas, componentHtml);
+        return reconcileCanvas(elements.liveCanvas, componentHtml, opts);
     }
 
     // ─── HISTORY & PERSISTENCE LOGIC ────────────────────────────────
@@ -3330,6 +3369,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function runChatTurn(text, controller, turnOpts) {
         turnOpts = turnOpts || {};
+        const turnStartedAt = Date.now();
         let sawDoneEvent = false;
         let sawErrorEvent = false;
         // Only wipe the shared speech queue when this is the ONLY turn running.
@@ -3476,7 +3516,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (!res.ok) {
                 console.error("Error from API:", await res.text());
-                renderError("Failed to process request. See console.");
+                renderError("Failed to process request. See console.", { retryText: text, retryOpts: turnOpts });
                 statusBar.finish("error", `Request failed (${res.status})`);
                 envelope.finish("error");
                 return;
@@ -3587,7 +3627,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     // BEFORE the paint so the two animations read as one handoff.
                     envelope.handoff();
                     fullComponentHtml = data.content || "";
-                    if (renderContent(fullText, fullComponentHtml, data.version)) {
+                    if (renderContent(fullText, fullComponentHtml, data.version, { turnStartedAt })) {
                         // Initialize the moment the widget lands, not on
                         // "done". A stock_card is entirely Alpine x-text, so
                         // painted-but-uninitialized is an EMPTY SHELL — and

@@ -1068,7 +1068,7 @@ def _resolve_agent_widget_id(session_id: str, widget_type: str,
         if model_widget_id and resolved != str(model_widget_id).lstrip("#").strip():
             logger.info(f"[WIDGET TARGET] agent id {model_widget_id!r} matched no "
                         f"{widget_type} on canvas — retargeted to #{resolved}")
-        return sanitize_widget_id(resolved)
+        return resolved
     if model_widget_id:
         return sanitize_widget_id(model_widget_id)
     return f"widget-{uuid.uuid4().hex[:8]}"

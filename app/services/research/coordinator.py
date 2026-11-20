@@ -108,7 +108,8 @@ async def execute_research_stream(
                     evidence_collected.append(p_ev)
                     research_ledger.record_evidence(run.run_id, p_ev)
                 if p_cfg and not provisional_placed:
-                    widget_id = f"stock-{symbol.lower()}-{run.run_id[:6]}"
+                    from app.canvas_dismiss import sanitize_widget_id
+                    widget_id = sanitize_widget_id(f"stock-{symbol.lower()}-{run.run_id[:6]}")
                     widget_type = "data_card"
                     p_cfg["provisional"] = True
 
@@ -138,7 +139,8 @@ async def execute_research_stream(
                         research_ledger.record_evidence(run.run_id, nev)
 
                 if n_cfg and not provisional_placed:
-                    widget_id = f"news-{symbol.lower() if symbol else 'market'}-{run.run_id[:6]}"
+                    from app.canvas_dismiss import sanitize_widget_id
+                    widget_id = sanitize_widget_id(f"news-{symbol.lower() if symbol else 'market'}-{run.run_id[:6]}")
                     n_cfg["provisional"] = True
 
                     def _place_news_prov(soup):

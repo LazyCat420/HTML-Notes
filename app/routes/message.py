@@ -68,33 +68,7 @@ async def get_models():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _first_chat_model_from_endpoint(endpoint: str) -> Optional[str]:
-    """Query one vLLM /v1/models endpoint and return its first chat-capable model id."""
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{endpoint.rstrip('/')}/v1/models")
-        if resp.status_code != 200:
-            return None
-        for entry in resp.json().get("data", []):
-            mid = entry.get("id")
-            if _is_chat_capable_model(mid):
-                return mid
-    except Exception as e:
-        logger.warning(f"Failed to fetch dynamic model from {endpoint}: {e}")
-    return None
-
-
-async def _discover_fallback_vllm_model() -> Optional[str]:
-    """Resolve a live chat model id dynamically from configured VLLM_ENDPOINTS."""
-    candidate_endpoints = list(getattr(main, "VLLM_ENDPOINTS", None) or VLLM_ENDPOINTS or [])
-    vllm_primary = getattr(main, "VLLM_URL", None) or VLLM_URL
-    if vllm_primary and vllm_primary not in candidate_endpoints:
-        candidate_endpoints.insert(0, vllm_primary)
-    for ep in candidate_endpoints:
-        found = await _first_chat_model_from_endpoint(ep)
-        if found:
-            return found
-    return None
+from app.llm import discover_fallback_vllm_model as _discover_fallback_vllm_model
 
 
 @router.post("/session/message")
@@ -201,18 +175,18 @@ async def send_message(req: MessageRequest):
                 # follow-up on the same thread), else mint a fresh one. This is what
                 # stops a new data_card/scoreboard/stock_card stacking on every
                 # conversational follow-up.
-                resolved_id = (_widget_on_canvas(req.session_id, req.focus_widget_id or "",
-                                                 widget_type)
-                               or widget_id
-                               or find_reuse_target(req.session_id, widget_type, req.message,
-                                                    subject=widget_config.get("title", ""))
-                               # Role-prefix reuse, for roles whose rendered TYPE
-                               # varies between asks (traffic → map or iframe_app).
-                               # Every lookup above is type-keyed and so cannot see
-                               # across that fork. See SINGLETON_ROLE_PREFIXES.
-                               or (find_existing_widget_by_id_prefix(req.session_id, id_prefix)
-                                   if id_prefix in SINGLETON_ROLE_PREFIXES else None)
-                               or f"{id_prefix}-{uuid.uuid4().hex[:8]}")
+                from app.canvas_dismiss import resolve_stream_widget_id
+                resolved_id = resolve_stream_widget_id(
+                    req.session_id, widget_type, id_prefix, widget_id,
+                    req.message, widget_config.get("title", ""),
+                    focus_id=req.focus_widget_id,
+                    finders={
+                        "on_canvas": _widget_on_canvas,
+                        "reuse_target": find_reuse_target,
+                        "by_prefix": find_existing_widget_by_id_prefix,
+                        "singleton_prefixes": SINGLETON_ROLE_PREFIXES,
+                    },
+                )
 
                 def _append(soup):
                     # Media widgets (video, music) are players: a new one replaces
@@ -2056,9 +2030,9 @@ async def send_message(req: MessageRequest):
             except Exception as e:
                 logger.warning(f"Failed to fetch model catalog from {target_url}: {e}")
         if not model_name:
-            model_name = await _discover_fallback_vllm_model()
-            if model_name:
-                req.provider = req.provider or "vllm"
+            fallback_pair = await _discover_fallback_vllm_model()
+            if fallback_pair:
+                req.provider, model_name = fallback_pair
         if not model_name:
             async def _no_model_sse():
                 yield f'data: {json.dumps({"type": "error", "message": "No local vLLM model is currently reachable."})}\n\n'

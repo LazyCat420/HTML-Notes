@@ -47,6 +47,47 @@ def _configured_vllm_urls() -> list[str]:
     return urls
 
 
+def _provider_for_vllm_endpoint(endpoint: str) -> str:
+    """Map a local vLLM endpoint URL to its lazy-agent-service provider id."""
+    ep = str(endpoint or "")
+    if "10.0.0.141" in ep:
+        return "vllm-2"
+    if "10.0.0.131" in ep:
+        return "vllm-4"
+    if "10.0.0.37" in ep:
+        return "vllm-5"
+    return "vllm"
+
+
+async def _first_chat_model_from_endpoint(endpoint: str) -> Optional[str]:
+    """Query one vLLM /v1/models endpoint and return its first chat-capable model id."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{endpoint.rstrip('/')}/v1/models")
+        if resp.status_code != 200:
+            return None
+        for entry in resp.json().get("data", []):
+            mid = entry.get("id")
+            if _is_chat_capable_model(mid):
+                return mid
+    except Exception as e:
+        logger.warning(f"Failed to fetch dynamic model from {endpoint}: {e}")
+    return None
+
+
+async def discover_fallback_vllm_model() -> Optional[tuple[str, str]]:
+    """Resolve a live (provider_id, model_id) pair dynamically from configured VLLM_ENDPOINTS."""
+    candidate_endpoints = list(getattr(main, "VLLM_ENDPOINTS", None) or getattr(main, "VLLM_ENDPOINTS", []) or [])
+    vllm_primary = getattr(main, "VLLM_URL", "")
+    if vllm_primary and vllm_primary not in candidate_endpoints:
+        candidate_endpoints.insert(0, vllm_primary)
+    for ep in candidate_endpoints:
+        found = await _first_chat_model_from_endpoint(ep)
+        if found:
+            return _provider_for_vllm_endpoint(ep), found
+    return None
+
+
 async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[dict]:
     """One tool-free completion against the local vLLM, parsed as JSON.
     Rotates through available local vLLM endpoints before failing open.

@@ -2015,7 +2015,7 @@ def _is_chat_capable_model(model_id: str) -> bool:
 # tool_calls parsed at 0.38-0.55s, versus Gold Spark head-of-line blocked at
 # ~21 tok/s with requests sitting in "deferred". This is a PREFERENCE with a
 # fallback, not a pin — an unavailable box is skipped and rejoins on its own.
-PREFERRED_AGENT_PROVIDERS = ("vllm", "vllm-2")
+PREFERRED_AGENT_PROVIDERS = ("vllm-2", "vllm-4", "vllm-5", "vllm")
 
 
 
