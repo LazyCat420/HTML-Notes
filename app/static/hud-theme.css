@@ -1278,6 +1278,12 @@ body.rail-expanded .rail-settings-drawer {
 :root[data-theme="brute"] .app-rail .rail-settings-btn.active .rail-settings-icon {
     border-color: #ffffff !important;
     box-shadow: none !important;
+    transform: none !important;
+}
+:root[data-theme="brute"] .app-rail .rail-settings-btn:hover .rail-settings-icon svg,
+:root[data-theme="brute"] .app-rail .rail-settings-btn.active .rail-settings-icon svg {
+    transform: rotate(30deg);
+    transition: transform 0.2s ease;
 }
 :root[data-theme="brute"] .rail-settings-drawer {
     background: #111111 !important;

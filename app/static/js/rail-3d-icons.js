@@ -33,10 +33,10 @@ export function resolveRepoShape(appId) {
 }
 
 function createThreeToneGradient() {
-    // 3 stark monochrome toon stops: deep shadow (#141414), mid gray (#828282), crisp white (#f8f8f8)
+    // 3 stark monochrome toon stops: deep shadow (#121212), mid gray (#787878), crisp white (#f8f8f8)
     const data = new Uint8Array([
-        20, 20, 20, 255,
-        130, 130, 130, 255,
+        18, 18, 18, 255,
+        120, 120, 120, 255,
         248, 248, 248, 255,
     ]);
     const tex = new THREE.DataTexture(data, 3, 1, THREE.RGBAFormat);
@@ -199,11 +199,13 @@ function buildRepoGroup(shape, toonMat, edgeMat) {
 
 function createIconScene(shape, toonMat, edgeMat, phase) {
     const scene = new THREE.Scene();
-    const amb = new THREE.AmbientLight(0xffffff, 0.36);
-    const key = new THREE.DirectionalLight(0xffffff, 2.5);
-    key.position.set(-2.2, 3.0, 3.6);
-    const rim = new THREE.DirectionalLight(0xffffff, 0.55);
-    rim.position.set(2.4, -1.6, 1.4);
+    // Calibrated key/ambient ratio so MeshToonMaterial spans all 3 discrete bands
+    // (ink-black shadow, mid-gray side planes, pure white key facets) instead of clipping white.
+    const amb = new THREE.AmbientLight(0xffffff, 0.14);
+    const key = new THREE.DirectionalLight(0xffffff, 1.35);
+    key.position.set(-2.8, 2.4, 1.7);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.22);
+    rim.position.set(2.4, -1.6, 0.8);
     scene.add(amb, key, rim);
 
     const group = buildRepoGroup(shape, toonMat, edgeMat);
