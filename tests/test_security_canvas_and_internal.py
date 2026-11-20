@@ -168,13 +168,14 @@ async def test_ssrf_guard_blocks_private_hosts_and_unsafe_redirects():
 
     import socket
     from unittest.mock import patch
-    pinned_calls: list[tuple[str, str, str | None]] = []
+    pinned_calls: list[tuple[str, str, str | None, str | None]] = []
 
     def hostname_handler(request: httpx.Request) -> httpx.Response:
         pinned_calls.append((
             str(request.url),
             request.headers.get("host", ""),
             (request.extensions or {}).get("sni_hostname"),
+            request.headers.get("connection"),
         ))
         return httpx.Response(200, text="pinned-ok")
 
@@ -182,9 +183,65 @@ async def test_ssrf_guard_blocks_private_hosts_and_unsafe_redirects():
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
     ]):
         async with httpx.AsyncClient(transport=httpx.MockTransport(hostname_handler), follow_redirects=False) as hc:
-            res_pinned = await safe_public_request(hc, "GET", "https://example.com/chart.png")
+            res_pinned = await safe_public_request(hc, "GET", "https://alpha.example/chart.png")
             assert res_pinned is not None and res_pinned.status_code == 200
-    assert pinned_calls == [("https://93.184.216.34/chart.png", "example.com", "example.com")]
+            res_pinned2 = await safe_public_request(hc, "GET", "https://beta.example/chart.png")
+            assert res_pinned2 is not None and res_pinned2.status_code == 200
+    assert pinned_calls == [
+        ("https://93.184.216.34/chart.png", "alpha.example", "alpha.example", "close"),
+        ("https://93.184.216.34/chart.png", "beta.example", "beta.example", "close"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patch_server):
+    import socket
+    from unittest.mock import AsyncMock, patch
+    from app.services.search import read_web_page
+
+    called_scraper = False
+
+    async def fail_if_scrape(*a, **kw):
+        nonlocal called_scraper
+        called_scraper = True
+        return ""
+
+    patch_server("_scrape", fail_if_scrape)
+    seen: list[tuple[str, str, str | None]] = []
+    article_html = (
+        "<html><head><script>bad()</script></head>"
+        "<body><article>" + ("Clean readable article paragraph. " * 10) + "</article></body></html>"
+    )
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, method, target_url, follow_redirects=False, headers=None, extensions=None, **kw):
+            seen.append((str(target_url), (headers or {}).get("Host", ""), (extensions or {}).get("sni_hostname")))
+            if "evil" in str(headers):
+                return httpx.Response(302, headers={"Location": "http://127.0.0.1:8035/secret"})
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=article_html)
+
+    patch_server("httpx", type("_H", (), {"AsyncClient": _FakeClient})())
+    with patch("app.services.ssrf_guard.socket.getaddrinfo", return_value=[
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+    ]):
+        res = await read_web_page("https://news.example/story", max_chars=250)
+        blocked = await read_web_page("https://evil.example/bounce")
+
+    assert called_scraper is False
+    assert res.get("is_error") is not True
+    assert "Clean readable article paragraph." in res["content"]
+    assert "bad()" not in res["content"]
+    assert seen[0] == ("https://93.184.216.34/story", "news.example", "news.example")
+    assert blocked["is_error"] is True
 
 
 def _find_chromium_executable():

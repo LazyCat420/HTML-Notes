@@ -141,3 +141,39 @@ def test_send_message_returns_error_sse_when_no_local_vllm_model_available(patch
     assert res.status_code == 200
     assert "No local vLLM model is currently reachable." in res.text
     assert "nemotron35" not in res.text
+
+
+def test_configurable_endpoint_providers_skips_unmapped_hosts(patch_server):
+    import respx
+    from unittest.mock import AsyncMock
+
+    patch_server("VLLM_ENDPOINTS", ["http://10.0.0.250:8000", "http://10.0.0.99:8000"])
+    patch_server("VLLM_URL", "")
+    patch_server("VLLM_ENDPOINT_PROVIDERS", {"http://10.0.0.99:8000": "vllm-9"})
+    patch_server("route_with_llm", AsyncMock(return_value={"defer": True}))
+    patch_server("build_apps_prompt_block", AsyncMock(return_value=""))
+    patch_server("build_actions_prompt_block", AsyncMock(return_value=""))
+
+    with respx.mock(assert_all_mocked=False, assert_all_called=False) as mock:
+        mock.get(f"{m.LAZY_AGENT_URL}/config-local").respond(503, json={})
+        unmapped_route = mock.get("http://10.0.0.250:8000/v1/models").respond(
+            200, json={"data": [{"id": "wrong-host-model"}]}
+        )
+        mapped_route = mock.get("http://10.0.0.99:8000/v1/models").respond(
+            200, json={"data": [{"id": "custom-cluster-model"}]}
+        )
+        agent_route = mock.post(f"{m.LAZY_AGENT_URL}/agent").respond(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=f'data: {json.dumps({"type": "done"})}\n\n',
+        )
+        res = TestClient(m.app).post(
+            "/session/message",
+            json={"session_id": "sess-custom-map", "message": "build me a custom habit tracker"},
+        )
+    assert res.status_code == 200
+    assert unmapped_route.called is False
+    assert mapped_route.called is True
+    sent_payload = json.loads(agent_route.calls[0].request.content.decode("utf-8"))
+    assert sent_payload["provider"] == "vllm-9"
+    assert sent_payload["model"] == "custom-cluster-model"

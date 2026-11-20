@@ -47,16 +47,19 @@ def _configured_vllm_urls() -> list[str]:
     return urls
 
 
-def _provider_for_vllm_endpoint(endpoint: str) -> str:
-    """Map a local vLLM endpoint URL to its lazy-agent-service provider id."""
-    ep = str(endpoint or "")
-    if "10.0.0.141" in ep:
-        return "vllm-2"
-    if "10.0.0.131" in ep:
-        return "vllm-4"
-    if "10.0.0.37" in ep:
-        return "vllm-5"
-    return "vllm"
+def _provider_for_vllm_endpoint(endpoint: str) -> Optional[str]:
+    """Resolve gateway provider id for a configured vLLM endpoint, or None if unmapped."""
+    ep = str(endpoint or "").strip().rstrip("/")
+    if not ep:
+        return None
+    from app import config as _cfg
+    providers = getattr(main, "VLLM_ENDPOINT_PROVIDERS", None)
+    if providers is None:
+        providers = getattr(_cfg, "VLLM_ENDPOINT_PROVIDERS", {}) or {}
+    normalized = {str(k).strip().rstrip("/"): str(v).strip() for k, v in providers.items() if k and v}
+    if ep in normalized:
+        return normalized[ep]
+    return None
 
 
 async def _first_chat_model_from_endpoint(endpoint: str) -> Optional[str]:
@@ -76,15 +79,22 @@ async def _first_chat_model_from_endpoint(endpoint: str) -> Optional[str]:
 
 
 async def discover_fallback_vllm_model() -> Optional[tuple[str, str]]:
-    """Resolve a live (provider_id, model_id) pair dynamically from configured VLLM_ENDPOINTS."""
-    candidate_endpoints = list(getattr(main, "VLLM_ENDPOINTS", None) or getattr(main, "VLLM_ENDPOINTS", []) or [])
+    """Resolve a live (provider_id, model_id) pair concurrently across mapped VLLM_ENDPOINTS."""
+    candidate_endpoints = list(getattr(main, "VLLM_ENDPOINTS", None) or [])
     vllm_primary = getattr(main, "VLLM_URL", "")
     if vllm_primary and vllm_primary not in candidate_endpoints:
         candidate_endpoints.insert(0, vllm_primary)
+    probes: list[tuple[str, str]] = []
     for ep in candidate_endpoints:
-        found = await _first_chat_model_from_endpoint(ep)
+        prov = _provider_for_vllm_endpoint(ep)
+        if prov:
+            probes.append((ep, prov))
+    if not probes:
+        return None
+    models = await asyncio.gather(*(_first_chat_model_from_endpoint(ep) for ep, _ in probes))
+    for (_, prov), found in zip(probes, models):
         if found:
-            return _provider_for_vllm_endpoint(ep), found
+            return prov, found
     return None
 
 

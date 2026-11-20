@@ -2,7 +2,7 @@
 
 Every adapter returns the same SearchResult shape or raises ProviderError,
 so providers are comparable under one contract. Mirrors the normalized
-result schema proposed in docs/audit/AUDIT_2026-09-21_WEB_DATA_COLLECTION_BENCHMARK.md.
+result schema in doc-client (http://10.0.0.16:8888/documentation/projects/html-notes/).
 """
 from __future__ import annotations
 

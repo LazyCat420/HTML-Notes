@@ -10,6 +10,35 @@ VLLM_ENDPOINTS = [
         "http://10.0.0.141:8000,http://10.0.0.37:8000,http://10.0.0.131:8000"
     ).split(",") if url.strip()
 ]
+
+_DEFAULT_VLLM_ENDPOINT_PROVIDERS = {
+    "http://10.0.0.141:8000": "vllm-2",
+    "http://10.0.0.131:8000": "vllm-4",
+    "http://10.0.0.37:8000": "vllm-5",
+}
+
+
+def _parse_vllm_endpoint_providers(raw: str) -> dict[str, str]:
+    """Parse VLLM_ENDPOINT_PROVIDERS (JSON object or comma-separated url=provider pairs)."""
+    out = dict(_DEFAULT_VLLM_ENDPOINT_PROVIDERS)
+    text = (raw or "").strip()
+    if not text:
+        return out
+    if text.startswith("{"):
+        import json as _json
+        for k, v in (_json.loads(text) or {}).items():
+            if k and v:
+                out[str(k).strip().rstrip("/")] = str(v).strip()
+        return out
+    for item in text.split(","):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            if k.strip() and v.strip():
+                out[k.strip().rstrip("/")] = v.strip()
+    return out
+
+
+VLLM_ENDPOINT_PROVIDERS = _parse_vllm_endpoint_providers(os.getenv("VLLM_ENDPOINT_PROVIDERS", ""))
 # lazy-agent-service gateway (runs the agentic loop + widget tool execution).
 # Host port 5591 maps to the container's 7778. This is the ONLY agent harness
 # now — prism-service is retired for this app (2026-10-15).

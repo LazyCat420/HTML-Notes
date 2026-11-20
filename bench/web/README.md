@@ -1,7 +1,7 @@
 # bench/web — retrieval provider benchmark
 
-Implements Phases B1 (retrieval) and B4 (outage classification) of
-`docs/audit/AUDIT_2026-09-21_WEB_DATA_COLLECTION_BENCHMARK.md`.
+Implements Phases B1 (retrieval) and B4 (outage classification) tracked in
+doc-client (`http://10.0.0.16:8888/documentation/projects/html-notes/`).
 
 ## Providers
 | id | kind | status (2026-09-21, this network) |

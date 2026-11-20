@@ -110,16 +110,19 @@ async def _resolve_pinned_public_target(url: str) -> Optional[tuple[str, str, Op
 
 
 def _merge_pinned_request_kwargs(host_header: str, sni_host: Optional[str], base_kwargs: dict) -> dict:
-    """Prepare request kwargs preserving Host header and TLS sni_hostname for pinned IP connections."""
+    """Prepare request kwargs preserving Host header, SNI isolation, and TLS sni_hostname for pinned IPs."""
     req_kwargs = dict(base_kwargs)
     headers = dict(req_kwargs.get("headers") or {})
     if not any(k.lower() == "host" for k in headers):
         headers["Host"] = host_header
-    req_kwargs["headers"] = headers
     if sni_host:
+        # Prevent httpcore pooling (keyed by IP, ignoring SNI) from reusing a socket across hosts.
+        if not any(k.lower() == "connection" for k in headers):
+            headers["Connection"] = "close"
         ext = dict(req_kwargs.get("extensions") or {})
         ext.setdefault("sni_hostname", sni_host)
         req_kwargs["extensions"] = ext
+    req_kwargs["headers"] = headers
     return req_kwargs
 
 

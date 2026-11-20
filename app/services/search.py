@@ -37,11 +37,14 @@ async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -
     # something went wrong" nav chrome for many article pages (Yahoo etc.) — a
     # non-empty junk body that then became the result's snippet.
     pages = await asyncio.gather(
-        *(_scrape(r["url"], engine="auto", timeout=20.0) for r in thin),
+        *(read_web_page(r["url"], max_chars=500) for r in thin),
         return_exceptions=True,
     )
-    for result, page in zip(thin, pages):
-        if isinstance(page, BaseException) or not page:
+    for result, page_res in zip(thin, pages):
+        if isinstance(page_res, BaseException) or not isinstance(page_res, dict) or page_res.get("is_error"):
+            continue
+        page = page_res.get("content") or ""
+        if not page:
             continue
         # Keep link text, drop the link targets, collapse whitespace.
         text = _MD_LINK_RE.sub(r"\1", _MD_IMAGE_RE.sub("", page))
@@ -582,32 +585,33 @@ from app.services.ssrf_guard import (
 )
 
 
-async def read_web_page(url: str, max_chars: int = 6000) -> dict:
-    """Fetch and return the readable text of a page.
+def _extract_page_text(body: str, content_type: str) -> str:
+    """Extract readable whitespace-collapsed text from an HTML or plain-text HTTP body."""
+    raw = body or ""
+    if "html" not in (content_type or "").lower():
+        return " ".join(raw.split())
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(raw, "html.parser")
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+    return " ".join(soup.get_text(" ", strip=True).split())
 
-    Uses scraper-service's `auto` engine, which runs http (trafilatura article
-    extraction) → playwright → vision with block detection, rather than the old
-    crawl4ai-first path. crawl4ai's stealth browser returned "Oops, something
-    went wrong" chrome for Yahoo Finance article pages while a plain http GET
-    returns the full clean body — so the summaries were being written off nav
-    junk. `auto` gets the real text (usually on the fast http phase) and its
-    escalation still handles genuinely JS-heavy pages. A junk-content gate makes
-    any remaining error interstitial fall through instead of being served.
-    """
-    # Bounded timeouts: the raw web-page tool and the embed reader call this
-    # WITHOUT an outer wait_for, so an un-capped auto (90s default) + crawl4ai
-    # fallback could hang a widget build ~135s. auto's fast http phase usually
-    # answers in seconds; 25s + 20s caps the worst case near 45s.
-    if not await _is_public_http_url_async(url):
+
+async def read_web_page(url: str, max_chars: int = 6000) -> dict:
+    """Fetch and return readable page text via DNS-pinned safe_public_request."""
+    client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
+    try:
+        async with client_cls(follow_redirects=False, timeout=25.0) as client:
+            resp = await safe_public_request(client, "GET", url, headers={"User-Agent": _BROWSER_UA})
+    except Exception as exc:
+        logger.warning(f"[SSRF GUARD] read_web_page fetch error for {url!r}: {exc}")
+        return {"error": f"Could not fetch {url}", "is_error": True}
+    if resp is None:
         logger.warning(f"[SSRF GUARD] refused non-public URL {url!r}")
         return {"error": f"URL refused: {url}", "is_error": True}
-    content = await _scrape(url, engine="auto", timeout=25.0)
-    if _looks_like_junk_page(content):
-        # Last-ditch: crawl4ai occasionally renders a page auto's chain can't
-        # (heavy SPA behind no bot wall). Only worth it when auto came back junk.
-        alt = await _scrape(url, engine="crawl4ai", timeout=20.0)
-        if not _looks_like_junk_page(alt):
-            content = alt
+    if resp.status_code >= 400:
+        return {"error": f"Could not fetch {url}", "is_error": True}
+    content = _extract_page_text(resp.text, resp.headers.get("content-type", ""))
     if _looks_like_junk_page(content):
         return {"error": f"Could not fetch {url}", "is_error": True}
     return {"url": url, "content": content[:max_chars]}

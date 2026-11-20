@@ -88,14 +88,53 @@ test("component handler no longer fights top-scroll with scrollToBottom (TCK-102
   assert.ok(!compBranch.includes("scrollToBottom()"), "component branch must not call scrollToBottom()");
 });
 
-test("self-heal uses data-widget-type instead of id.includes('player') substring heuristic (TCK-1021)", () => {
+test("self-heal matches server mini_music_player widgets and ignores id substrings (TCK-1021, claude R1-F1)", () => {
   const s = indexJs.indexOf("// ─── POST-PROCESS WIDGET CONSOLE / CONTROLS");
-  const e = indexJs.indexOf("function initCanvasWidgets(", s);
-  const postProcess = indexJs.slice(s, e);
-  assert.ok(!postProcess.includes("id.includes('player')"), "must not guess music widget from 'player' in id");
-  assert.ok(!postProcess.includes("id.includes('clock')"), "must not guess clock from id substring");
-  assert.ok(!postProcess.includes("id.includes('video')"), "must not guess youtube from id substring");
-  assert.match(postProcess, /getAttribute\('data-widget-type'\)/);
+  const loopStart = indexJs.indexOf("widgets.forEach(origWidget => {", s);
+  const e = indexJs.indexOf("// 3. Self-heal youtube player widgets", loopStart);
+  const loopBody = indexJs.slice(loopStart + "widgets.forEach(origWidget => {".length, e);
+  assert.ok(!loopBody.includes("id.includes('player')"), "must not guess music widget from 'player' in id");
+  assert.ok(!loopBody.includes("id.includes('clock')"), "must not guess clock from id substring");
+  assert.ok(!loopBody.includes("id.includes('video')"), "must not guess youtube from id substring");
+
+  let replacedWith = null;
+  const attrs = new Map([
+    ["data-widget-type", "mini_music_player"],
+    ["data-widget-title", "Walkman"],
+    ["data-hn-config", '{"term":"jazz","kind":"genre"}'],
+  ]);
+  const brokenMusicNode = {
+    id: "music-1",
+    className: "widget-container",
+    children: [],
+    parentNode: { replaceChild(next) { replacedWith = next; } },
+    hasAttribute: k => attrs.has(k),
+    getAttribute: k => attrs.get(k) ?? null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  const created = {
+    id: "",
+    className: "",
+    _attrs: new Map(),
+    innerHTML: "",
+    hasAttribute(k) { return this._attrs.has(k); },
+    getAttribute(k) { return this._attrs.get(k) ?? null; },
+    setAttribute(k, v) { this._attrs.set(k, String(v)); },
+  };
+  const runSelfHeal = new Function(
+    "origWidget", "document", "musicWidgetNeedsRebuild", "recoverMusicWidgetConfig",
+    loopBody,
+  );
+  runSelfHeal(
+    brokenMusicNode,
+    { createElement: () => created },
+    () => true,
+    () => ({ term: "jazz", kind: "genre" }),
+  );
+  assert.ok(replacedWith !== null, "broken mini_music_player node must be rebuilt");
+  assert.equal(replacedWith.getAttribute("data-widget-type"), "mini_music_player");
+  assert.match(replacedWith.getAttribute("x-data"), /^musicPlayerWidget\(/);
 });
 
 test("runChatTurn cleans data-provisional in finally, distinguishes dropped streams, and attaches Retry (TCK-1027/I3)", () => {

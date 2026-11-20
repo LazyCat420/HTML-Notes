@@ -4113,7 +4113,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const xDataAttr = widget.getAttribute('x-data') || '';
             const resolvedType = widgetTypeAttr || (
                 xDataAttr.includes('clockWidget') ? 'clock'
-                : xDataAttr.includes('musicPlayerWidget') ? 'music_player'
+                : xDataAttr.includes('musicPlayerWidget') ? 'mini_music_player'
                 : xDataAttr.includes('youtubePlayerWidget') ? 'youtube'
                 : xDataAttr.includes('checklistWidget') ? 'checklist'
                 : ''
@@ -4171,7 +4171,7 @@ document.addEventListener("DOMContentLoaded", () => {
             // NOTE: this innerHTML is a hand-maintained twin of the server
             // template in app/widgets/factory.py (render_mini_music_player).
             // Structural changes there must be mirrored here.
-            if (resolvedType === 'music_player' || resolvedType === 'music') {
+            if (resolvedType === 'mini_music_player' || resolvedType === 'music_player' || resolvedType === 'music') {
                 // See MUSIC SELF-HEAL HELPERS: a healthy server-rendered node
                 // is left alone; a rebuild keeps the server's config.
                 if (musicWidgetNeedsRebuild(widget)) {
@@ -4182,7 +4182,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     for (const attr of ['data-sig', 'data-widget-type', 'data-widget-title']) {
                         if (widget.hasAttribute(attr)) newWidget.setAttribute(attr, widget.getAttribute(attr));
                     }
-                    if (!newWidget.hasAttribute('data-widget-type')) newWidget.setAttribute('data-widget-type', 'music_player');
+                    if (!newWidget.hasAttribute('data-widget-type')) newWidget.setAttribute('data-widget-type', 'mini_music_player');
                     // Height moved from a static class to a :class binding so the
                     // queue panel can expand the card — strip any stale static one.
                     newWidget.className = widget.className.replace(/\bh-\[\d+px\]\b/g, '').replace(/\s+/g, ' ').trim();
