@@ -86,21 +86,23 @@ async def test_caller_token_budget_is_honoured(patch_server):
 
 # ── the endpoint pool must not contain a box that cannot chat ────────────────
 
-def test_chat_pool_excludes_the_embedding_port():
+def test_chat_pool_excludes_the_embedding_port(monkeypatch):
     """8001 serves embeddinggemma and has NO chat endpoint —
     /v1/chat/completions returns 404. HTML-Notes uses no embeddings at all."""
     pool = " ".join(cfg.VLLM_ENDPOINTS)
     assert "8001" not in pool, (
         f"the embeddings port is still in the CHAT pool: {cfg.VLLM_ENDPOINTS}")
-    import ast
-    tree = ast.parse(inspect.getsource(m.fast_llm_json).strip())
-    literals = [n.value for n in ast.walk(tree)
-                if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-    live = [v for v in literals if v.startswith("http")]
-    assert not any("8001" in v for v in live), (
-        f"hardcoded literal still lists the embeddings port: {live}")
-    assert not any("10.0.0.30" in v for v in live), (
-        f"fast_llm_json must not hardcode legacy 10.0.0.30: {live}")
+    resolved = m._configured_vllm_urls()
+    assert resolved, "configured vLLM pool must not be empty"
+    assert not any("8001" in u for u in resolved), (
+        f"_configured_vllm_urls still includes embeddings port: {resolved}")
+    assert not any("10.0.0.30" in u for u in resolved), (
+        f"_configured_vllm_urls must not include legacy 10.0.0.30: {resolved}")
+
+    monkeypatch.setattr(m, "VLLM_URL", "http://10.0.0.37:8000")
+    overridden = m._configured_vllm_urls()
+    assert overridden[0] == "http://10.0.0.37:8000", (
+        f"overridden VLLM_URL should lead _configured_vllm_urls(): {overridden}")
 
 
 def test_vllm_endpoints_default_to_internal_cluster_boxes():

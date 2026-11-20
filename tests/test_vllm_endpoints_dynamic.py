@@ -177,3 +177,11 @@ def test_configurable_endpoint_providers_skips_unmapped_hosts(patch_server):
     sent_payload = json.loads(agent_route.calls[0].request.content.decode("utf-8"))
     assert sent_payload["provider"] == "vllm-9"
     assert sent_payload["model"] == "custom-cluster-model"
+
+
+def test_malformed_vllm_endpoint_providers_falls_back_to_defaults():
+    from app.config import _DEFAULT_VLLM_ENDPOINT_PROVIDERS, _parse_vllm_endpoint_providers
+
+    assert _parse_vllm_endpoint_providers("{bad json") == _DEFAULT_VLLM_ENDPOINT_PROVIDERS
+    assert _parse_vllm_endpoint_providers('["not", "a", "dict"]') == _DEFAULT_VLLM_ENDPOINT_PROVIDERS
+    assert _parse_vllm_endpoint_providers('{"http://10.0.0.88:8000": "vllm-8"}')["http://10.0.0.88:8000"] == "vllm-8"

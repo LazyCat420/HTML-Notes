@@ -1,14 +1,18 @@
 import os
 
+_DEFAULT_VLLM_URL = "http://10.0.0.141:8000"
 PORT = int(os.getenv("PORT", "8035"))
-VLLM_URL = os.getenv("VLLM_URL", "http://10.0.0.141:8000")
-VLLM_FAST_URL = os.getenv("VLLM_FAST_URL", "http://10.0.0.141:8000")
+VLLM_URL = os.getenv("VLLM_URL", _DEFAULT_VLLM_URL)
+VLLM_FAST_URL = os.getenv("VLLM_FAST_URL", _DEFAULT_VLLM_URL)
 # CHAT endpoints, configured via VLLM_ENDPOINTS (model ids resolved dynamically from /v1/models).
+_DEFAULT_CLUSTER_ENDPOINTS = (
+    "http://10.0.0.141:8000",
+    "http://10.0.0.37:8000",
+    "http://10.0.0.131:8000",
+)
+_default_endpoints = ",".join(dict.fromkeys(u for u in (VLLM_URL, *_DEFAULT_CLUSTER_ENDPOINTS) if u))
 VLLM_ENDPOINTS = [
-    url.strip() for url in os.getenv(
-        "VLLM_ENDPOINTS",
-        "http://10.0.0.141:8000,http://10.0.0.37:8000,http://10.0.0.131:8000"
-    ).split(",") if url.strip()
+    url.strip() for url in os.getenv("VLLM_ENDPOINTS", _default_endpoints).split(",") if url.strip()
 ]
 
 _DEFAULT_VLLM_ENDPOINT_PROVIDERS = {
@@ -24,9 +28,18 @@ def _parse_vllm_endpoint_providers(raw: str) -> dict[str, str]:
     text = (raw or "").strip()
     if not text:
         return out
-    if text.startswith("{"):
+    if text.startswith("{") or text.startswith("["):
         import json as _json
-        for k, v in (_json.loads(text) or {}).items():
+        import logging as _logging
+        try:
+            parsed = _json.loads(text)
+        except ValueError as exc:
+            _logging.getLogger(__name__).warning("Ignoring malformed VLLM_ENDPOINT_PROVIDERS: %s", exc)
+            return out
+        if not isinstance(parsed, dict):
+            _logging.getLogger(__name__).warning("Ignoring non-object VLLM_ENDPOINT_PROVIDERS")
+            return out
+        for k, v in parsed.items():
             if k and v:
                 out[str(k).strip().rstrip("/")] = str(v).strip()
         return out

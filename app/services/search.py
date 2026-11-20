@@ -33,9 +33,9 @@ async def _backfill_snippets(results: list, top_n: int = 3, min_len: int = 80) -
     if not thin:
         return
 
-    # `auto` (http→playwright→vision), not crawl4ai: crawl4ai returns "Oops,
-    # something went wrong" nav chrome for many article pages (Yahoo etc.) — a
-    # non-empty junk body that then became the result's snippet.
+    # Snippet backfill uses read_web_page (DNS-pinned safe_public_read_text with
+    # bounded HTML/text streaming and article/main extraction). Keep SSRF pinning
+    # active for every fetched candidate URL.
     pages = await asyncio.gather(
         *(read_web_page(r["url"], max_chars=500) for r in thin),
         return_exceptions=True,
@@ -581,37 +581,27 @@ from app.services.ssrf_guard import (
     _check_resolved_addrs,
     _is_public_http_url,
     _is_public_http_url_async,
+    extract_article_text as _extract_article_text,
+    safe_public_read_text,
     safe_public_request,
 )
 
 
-def _extract_page_text(body: str, content_type: str) -> str:
-    """Extract readable whitespace-collapsed text from an HTML or plain-text HTTP body."""
-    raw = body or ""
-    if "html" not in (content_type or "").lower():
-        return " ".join(raw.split())
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(raw, "html.parser")
-    for tag in soup(["script", "style", "noscript", "svg"]):
-        tag.decompose()
-    return " ".join(soup.get_text(" ", strip=True).split())
-
-
 async def read_web_page(url: str, max_chars: int = 6000) -> dict:
-    """Fetch and return readable page text via DNS-pinned safe_public_request."""
+    """Fetch and extract readable article text via DNS-pinned, size-bounded safe_public_read_text."""
     client_cls = getattr(getattr(main, "httpx", httpx), "AsyncClient", httpx.AsyncClient)
     try:
         async with client_cls(follow_redirects=False, timeout=25.0) as client:
-            resp = await safe_public_request(client, "GET", url, headers={"User-Agent": _BROWSER_UA})
+            code, ctype, body = await safe_public_read_text(client, url, max_bytes=2_097_152, headers={"User-Agent": _BROWSER_UA})
     except Exception as exc:
         logger.warning(f"[SSRF GUARD] read_web_page fetch error for {url!r}: {exc}")
         return {"error": f"Could not fetch {url}", "is_error": True}
-    if resp is None:
+    if code is None:
         logger.warning(f"[SSRF GUARD] refused non-public URL {url!r}")
         return {"error": f"URL refused: {url}", "is_error": True}
-    if resp.status_code >= 400:
+    if code >= 400:
         return {"error": f"Could not fetch {url}", "is_error": True}
-    content = _extract_page_text(resp.text, resp.headers.get("content-type", ""))
+    content = _extract_article_text(body, ctype)
     if _looks_like_junk_page(content):
         return {"error": f"Could not fetch {url}", "is_error": True}
     return {"url": url, "content": content[:max_chars]}

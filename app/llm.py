@@ -34,16 +34,17 @@ _ENDPOINT_LAST_FAILURE: dict = {}
 
 
 def _configured_vllm_urls() -> list[str]:
-    """Collect deduplicated local vLLM URLs from config overrides."""
-    configured_urls = getattr(main, "VLLM_ENDPOINTS", None) or []
+    """Collect deduplicated local vLLM URLs, honoring VLLM_URL overrides first."""
+    configured_urls = list(getattr(main, "VLLM_ENDPOINTS", None) or [])
+    vllm_primary = str(getattr(main, "VLLM_URL", "") or "").strip()
     urls: list[str] = []
-    for u in list(configured_urls):
+    if vllm_primary and (not configured_urls or vllm_primary != "http://10.0.0.141:8000"):
+        urls.append(vllm_primary)
+    for u in configured_urls:
         if u and u not in urls:
             urls.append(u)
-    if not urls:
-        fallback_vllm = getattr(main, "VLLM_URL", "")
-        if fallback_vllm:
-            urls.append(fallback_vllm)
+    if vllm_primary and vllm_primary not in urls:
+        urls.append(vllm_primary)
     return urls
 
 
@@ -80,10 +81,7 @@ async def _first_chat_model_from_endpoint(endpoint: str) -> Optional[str]:
 
 async def discover_fallback_vllm_model() -> Optional[tuple[str, str]]:
     """Resolve a live (provider_id, model_id) pair concurrently across mapped VLLM_ENDPOINTS."""
-    candidate_endpoints = list(getattr(main, "VLLM_ENDPOINTS", None) or [])
-    vllm_primary = getattr(main, "VLLM_URL", "")
-    if vllm_primary and vllm_primary not in candidate_endpoints:
-        candidate_endpoints.insert(0, vllm_primary)
+    candidate_endpoints = _configured_vllm_urls()
     probes: list[tuple[str, str]] = []
     for ep in candidate_endpoints:
         prov = _provider_for_vllm_endpoint(ep)

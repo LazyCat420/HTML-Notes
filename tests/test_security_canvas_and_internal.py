@@ -134,6 +134,7 @@ async def test_ssrf_guard_blocks_private_hosts_and_unsafe_redirects():
     blocked = [
         "http://127.0.0.1:8035/",
         "http://10.0.0.16:8888/",
+        "http://100.64.0.1/",
         "http://localhost/",
         "http://169.254.169.254/latest/meta-data/",
         "http://user:pass@93.184.216.34/",
@@ -196,7 +197,8 @@ async def test_ssrf_guard_blocks_private_hosts_and_unsafe_redirects():
 @pytest.mark.asyncio
 async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patch_server):
     import socket
-    from unittest.mock import AsyncMock, patch
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
     from app.services.search import read_web_page
 
     called_scraper = False
@@ -210,8 +212,21 @@ async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patc
     seen: list[tuple[str, str, str | None]] = []
     article_html = (
         "<html><head><script>bad()</script></head>"
-        "<body><article>" + ("Clean readable article paragraph. " * 10) + "</article></body></html>"
+        "<body><nav>Home Menu Cookie Banner Subscribe Now</nav>"
+        "<article><p>" + ("Federal Reserve holds rates steady in article text. " * 6) + "</p></article>"
+        "<footer>Copyright 2026 All Rights Reserved</footer></body></html>"
     )
+
+    class _StreamResp:
+        def __init__(self, status_code, headers, chunks):
+            self.status_code = status_code
+            self.headers = headers
+            self._chunks = chunks
+            self.encoding = "utf-8"
+
+        async def aiter_bytes(self):
+            for c in self._chunks:
+                yield c
 
     class _FakeClient:
         def __init__(self, *a, **kw):
@@ -223,11 +238,18 @@ async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patc
         async def __aexit__(self, *a):
             return False
 
-        async def request(self, method, target_url, follow_redirects=False, headers=None, extensions=None, **kw):
+        @asynccontextmanager
+        async def stream(self, method, target_url, follow_redirects=False, headers=None, extensions=None, **kw):
             seen.append((str(target_url), (headers or {}).get("Host", ""), (extensions or {}).get("sni_hostname")))
-            if "evil" in str(headers):
-                return httpx.Response(302, headers={"Location": "http://127.0.0.1:8035/secret"})
-            return httpx.Response(200, headers={"content-type": "text/html"}, text=article_html)
+            host = (headers or {}).get("Host", "")
+            if "evil" in host:
+                yield _StreamResp(302, {"location": "http://127.0.0.1:8035/secret"}, [])
+            elif "pdf" in host:
+                yield _StreamResp(200, {"content-type": "application/pdf"}, [b"%PDF-1.7"])
+            elif "huge" in host:
+                yield _StreamResp(200, {"content-type": "text/html"}, [b"x" * 1_500_000, b"y" * 1_500_000])
+            else:
+                yield _StreamResp(200, {"content-type": "text/html"}, [article_html.encode("utf-8")])
 
     patch_server("httpx", type("_H", (), {"AsyncClient": _FakeClient})())
     with patch("app.services.ssrf_guard.socket.getaddrinfo", return_value=[
@@ -235,13 +257,34 @@ async def test_read_web_page_uses_pinned_safe_request_never_scraper_service(patc
     ]):
         res = await read_web_page("https://news.example/story", max_chars=250)
         blocked = await read_web_page("https://evil.example/bounce")
+        pdf_res = await read_web_page("https://pdf.example/report.pdf")
+        huge_res = await read_web_page("https://huge.example/stream")
 
     assert called_scraper is False
     assert res.get("is_error") is not True
-    assert "Clean readable article paragraph." in res["content"]
+    assert res["content"].startswith("Federal Reserve holds rates steady")
+    assert "Cookie Banner" not in res["content"]
+    assert "Copyright 2026" not in res["content"]
     assert "bad()" not in res["content"]
     assert seen[0] == ("https://93.184.216.34/story", "news.example", "news.example")
     assert blocked["is_error"] is True
+    assert pdf_res["is_error"] is True
+    assert huge_res["is_error"] is True
+
+
+def test_canvas_domain_service_upsert_sanitizes_returned_id():
+    from app.domain.canvas.service import CanvasDomainService
+
+    svc = CanvasDomainService()
+    res = svc.upsert_widget("stock_card", "stock-brk.b", {"symbol": "BRK.B", "price": 450}, session_id="s-dom")
+    assert res["success"] is True
+    assert res["widget_id"] == "stock-brk-b"
+    assert 'id="stock-brk-b"' in res["html"]
+
+    empty_res = svc.upsert_widget("clock", "", {"title": "Clock"}, session_id="s-dom")
+    assert empty_res["success"] is True
+    assert empty_res["widget_id"] and empty_res["widget_id"] != "widget"
+    assert f'id="{empty_res["widget_id"]}"' in empty_res["html"]
 
 
 def _find_chromium_executable():

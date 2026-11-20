@@ -1,6 +1,7 @@
 import logging
 from typing import Any, Dict, Optional
 from bs4 import BeautifulSoup
+from app.canvas_dismiss import sanitize_widget_id
 from app.widgets.factory import generate_widget_html
 from app.tooling.html_notes_manifest import manifest_registry
 
@@ -19,6 +20,27 @@ class CanvasDomainService:
         self.registry = registry
         self._widget_sessions: Dict[str, str] = {}
 
+    def _resolve_target_widget_id(
+        self,
+        widget_type: str,
+        widget_id: str,
+        clean_id: str,
+        is_singleton: bool,
+        current_canvas_html: Optional[str],
+    ) -> str:
+        """Choose the sanitized target widget id, reusing an existing canvas node id when valid."""
+        target_id = clean_id
+        if not current_canvas_html:
+            return target_id
+        soup = BeautifulSoup(current_canvas_html, "html.parser")
+        existing = soup.find(attrs={"data-widget-type": widget_type}) if is_singleton else None
+        if existing is None:
+            existing = soup.find(id=clean_id) or (soup.find(id=widget_id) if widget_id else None)
+        if existing and existing.get("id"):
+            existing_id = existing.get("id")
+            return existing_id if sanitize_widget_id(existing_id) == existing_id else clean_id
+        return target_id
+
     def upsert_widget(
         self,
         widget_type: str,
@@ -32,30 +54,19 @@ class CanvasDomainService:
         """
         config = config or {}
         catalog = self.registry.get_widget_catalog()
-        
-        # Check singleton constraint if configured
-        is_singleton = False
-        for w in catalog.get("widgets", []):
-            if w.get("type") == widget_type and w.get("is_singleton"):
-                is_singleton = True
-                break
+        is_singleton = any(w.get("type") == widget_type and w.get("is_singleton") for w in catalog.get("widgets", []))
 
-        # Check cross-session widget ownership
-        if widget_id in self._widget_sessions and session_id and self._widget_sessions[widget_id] != session_id:
-            return {
-                "error": f"Unauthorized: widget '{widget_id}' belongs to another session",
-                "is_error": True,
-                "widget_type": widget_type,
-                "widget_id": widget_id
-            }
+        clean_id = sanitize_widget_id(widget_id)
+        for key in (widget_id, clean_id):
+            if key in self._widget_sessions and session_id and self._widget_sessions[key] != session_id:
+                return {
+                    "error": f"Unauthorized: widget '{widget_id}' belongs to another session",
+                    "is_error": True,
+                    "widget_type": widget_type,
+                    "widget_id": clean_id,
+                }
 
-        # If singleton and current_canvas_html is present, discover existing singleton id to update in place
-        target_id = widget_id
-        if is_singleton and current_canvas_html:
-            soup = BeautifulSoup(current_canvas_html, "html.parser")
-            existing = soup.find(attrs={"data-widget-type": widget_type}) or soup.find(id=widget_id)
-            if existing and existing.get("id"):
-                target_id = existing.get("id")
+        target_id = self._resolve_target_widget_id(widget_type, widget_id, clean_id, is_singleton, current_canvas_html)
 
         if session_id:
             self._widget_sessions[target_id] = session_id

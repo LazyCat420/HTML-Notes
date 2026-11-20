@@ -4,6 +4,14 @@ from bs4 import BeautifulSoup
 from app.canvas_manager import commit_canvas
 
 
+def _find_upsert_target(soup: BeautifulSoup, widget_id: str, payload: dict):
+    """Find an existing canvas widget node by id or singleton type for in-place replacement."""
+    existing = soup.find(id=widget_id) if widget_id else None
+    if existing is None and payload.get("is_singleton") and payload.get("widget_type"):
+        return soup.find(attrs={"data-widget-type": payload["widget_type"]})
+    return existing
+
+
 class SSEFormatter:
     """
     Standardizes Server-Sent Events (SSE) wire serialization for the browser client.
@@ -94,7 +102,7 @@ class SSEFormatter:
 
             if session_id:
                 def _mutate_upsert(soup):
-                    existing = soup.find(id=widget_id) if widget_id else None
+                    existing = _find_upsert_target(soup, widget_id, payload)
                     if existing:
                         existing.replace_with(BeautifulSoup(widget_html, "html.parser"))
                     else:
