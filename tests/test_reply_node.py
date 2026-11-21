@@ -56,7 +56,7 @@ REPLY = "Hey there. Ask me for news, weather, a stock, or a map — or say show 
 
 @pytest.mark.asyncio
 async def test_route_with_llm_returns_a_reply_verdict(patch_server):
-    async def fake(instruction, max_tokens=400):
+    async def fake(instruction, max_tokens=400, **kwargs):
         return {"reply": REPLY, "reason": "greeting", "checks": {"wants": "converse"}}
     patch_server("fast_llm_json", fake)
     plan = await m.route_with_llm("hello", "")

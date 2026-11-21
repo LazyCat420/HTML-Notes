@@ -115,7 +115,7 @@ def test_build_ask_skips_the_router_and_reaches_the_agent(patch_server):
 async def test_router_re_defers_a_build_even_when_the_model_replies(patch_server):
     """Belt and braces: if a build ask ever does reach the router and the model
     answers with a chatty reply, the verdict is overridden to defer."""
-    async def fake(instruction, max_tokens=400):
+    async def fake(instruction, max_tokens=400, **kwargs):
         return {"reply": "I can add an audio box for you. What should it play?",
                 "reason": "offer", "checks": {"wants": "see"}}
     patch_server("fast_llm_json", fake)

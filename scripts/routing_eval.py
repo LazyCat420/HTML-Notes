@@ -69,6 +69,9 @@ def score(row, got_type, got_kind, got_query, got_live=None):
 
 
 async def run_router(rows):
+    # app.llm copies app.main's globals at import; importing app.llm first left
+    # it partially initialised (ImportError on discover_fallback_vllm_model).
+    import app.main  # noqa: F401
     from app.llm import route_with_llm
     out = []
     for row in rows:

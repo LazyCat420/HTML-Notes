@@ -89,11 +89,14 @@ _ASK_TABLE = [
     ("trends", re.compile(r"(\b(what'?s|whats|what is) trending\b(?!\s+(in\s+)?(stocks?|tickers?|shares?|crypto|coins?|tokens?)))|"
                           r"\btrending (topics|now|today|right now|on the (internet|web))\b|\btop trends\b", re.I)),
     ("spark", re.compile(r"\b(?:how (?:are|is) the (?:sparks?|gpus?|dgx|vllm)\b|(?:sparks?|gpus?|dgx|vllm) (?:status|load|health|doing|busy)\b|gpu status|spark status)", re.I)),
-    ("positions", re.compile(r"\b(?:my |open |current )?positions\b|\bwhat (?:do i|am i) hold(?:ing)?\b", re.I)),
-    ("watchlist", re.compile(r"\b(?:my )?watch ?list\b", re.I)),
+    # "job positions in Seattle" is a job search, not a holdings table: a bare
+    # "positions" used to hijack it. Require a trading/portfolio frame.
+    ("positions", re.compile(r"\b(?:my|trading|stock|portfolio)(?:\s+(?:open|current))?\s+positions\b|"
+                             r"\bwhat (?:do i|am i) hold(?:ing)?\b", re.I)),
+    ("watchlist", re.compile(r"\b(?:my|stock|trading|market|portfolio)\s+watch ?list\b", re.I)),
     ("portfolio", re.compile(r"\b(?:my )?portfolio\b|\bhow(?:\s+is|'s) the (?:trading )?bot doing\b", re.I)),
     ("market_regime", re.compile(r"\bmarket regime\b|\brisk[- ]?(?:on|off)\b|\bmarket breadth\b", re.I)),
-    ("garden", re.compile(r"\b(?:smart ?garden|my garden|the garden|my plants)\b", re.I)),
+    ("garden", re.compile(r"\b(?:smart ?garden|my garden|my plants|garden status)\b", re.I)),
 ]
 
 

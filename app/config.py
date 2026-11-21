@@ -68,6 +68,10 @@ MUSIC_ROUTER_BUDGET_S = float(os.getenv("MUSIC_ROUTER_BUDGET_S", "1.5"))
 # After the budget the fallback player is already up; a router answer that
 # lands within this many seconds rebuilds that player in place (refine).
 MUSIC_ROUTER_REFINE_S = float(os.getenv("MUSIC_ROUTER_REFINE_S", "25"))
+# Per-endpoint budget for the tier-2 classify call. It used to inherit the
+# generic 20s read timeout, so a dead first endpoint cost 20s and a dead trio
+# cost 60s BEFORE the agent fallback started. Healthy routing is p50 ~2s.
+ROUTER_ENDPOINT_TIMEOUT_S = float(os.getenv("ROUTER_ENDPOINT_TIMEOUT_S", "5"))
 LAZY_AGENT_SERVICE_URL = os.getenv("LAZY_AGENT_SERVICE_URL", "http://10.0.0.16:5591")
 # Optional shared key for lazy-agent-service POST /execute/* (W3 of the harness
 # audit). Blank keeps today's keyless behaviour; when the server sets

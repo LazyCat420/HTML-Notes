@@ -15,7 +15,7 @@ from app import config_builders as cb
 
 
 def _plan(*types):
-    async def fake(instruction, max_tokens=400):
+    async def fake(instruction, max_tokens=400, **kwargs):
         return {"widgets": [{"type": t, "query": "" if t in ("news", "stock_news") else "x"}
                             for t in types],
                 "reason": "test", "checks": {}}

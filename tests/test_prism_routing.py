@@ -418,7 +418,7 @@ def test_router_prompt_asks_the_preflight_questions():
 
 @pytest.mark.asyncio
 async def test_converter_pick_is_demoted_when_checks_say_not_arithmetic(patch_server):
-    async def fake(_instruction, max_tokens=400):
+    async def fake(_instruction, max_tokens=400, **kwargs):
         return {"widgets": [{"type": "converter", "query": CHICKEN}],
                 "reason": "unit conversion",
                 "checks": {"is_arithmetic": False, "needs_fresh_data": True,
@@ -431,7 +431,7 @@ async def test_converter_pick_is_demoted_when_checks_say_not_arithmetic(patch_se
 
 @pytest.mark.asyncio
 async def test_a_real_conversion_survives_the_demotion(patch_server):
-    async def fake(_instruction, max_tokens=400):
+    async def fake(_instruction, max_tokens=400, **kwargs):
         return {"widgets": [{"type": "converter", "query": "20 usd to eur"}],
                 "reason": "currency", "checks": {"is_arithmetic": True}}
     patch_server("fast_llm_json", fake)
@@ -442,7 +442,7 @@ async def test_a_real_conversion_survives_the_demotion(patch_server):
 @pytest.mark.asyncio
 async def test_missing_checks_leave_the_plan_alone(patch_server):
     """Fail open: a model that omits `checks` must not change routing."""
-    async def fake(_instruction, max_tokens=400):
+    async def fake(_instruction, max_tokens=400, **kwargs):
         return {"widgets": [{"type": "converter", "query": "20 usd to eur"}],
                 "reason": "currency"}
     patch_server("fast_llm_json", fake)

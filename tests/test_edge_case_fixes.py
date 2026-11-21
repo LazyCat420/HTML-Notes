@@ -106,7 +106,7 @@ def test_extract_and_merge_checklist(monkeypatch):
 async def test_build_list_add_merges_without_dupes(patch_server):
     import app.main as m
 
-    async def fake_llm(_instruction, max_tokens=400):
+    async def fake_llm(_instruction, max_tokens=400, **kwargs):
         return {"items": ["feta cheese", "cucumber", "pork ribs"]}  # "pork ribs" dupes
 
     patch_server("fast_llm_json", fake_llm)
@@ -187,7 +187,7 @@ def test_persist_and_resolve_list():
 @pytest.mark.asyncio
 async def test_build_list_remove(patch_server):
     import app.main as m
-    async def fake_llm(_instruction, max_tokens=400):
+    async def fake_llm(_instruction, max_tokens=400, **kwargs):
         return {"remove": ["carrots", "broccoli"]}
     patch_server("fast_llm_json", fake_llm)
     items = [{"text": "carrots", "done": False},
@@ -202,7 +202,7 @@ async def test_build_list_remove(patch_server):
 @pytest.mark.asyncio
 async def test_build_list_remove_no_match_keeps_list(patch_server):
     import app.main as m
-    async def fake_llm(_instruction, max_tokens=400):
+    async def fake_llm(_instruction, max_tokens=400, **kwargs):
         return {"remove": []}
     patch_server("fast_llm_json", fake_llm)
     items = [{"text": "milk", "done": False}]
@@ -472,7 +472,7 @@ async def test_build_stock_news_config_writes_summaries(patch_server):
                           "og_desc": "Nvidia rose after earnings beat expectations."}],
                 "matches": [], "count": 1}
 
-    async def fake_llm(instruction, max_tokens=400):
+    async def fake_llm(instruction, max_tokens=400, **kwargs):
         return {"overview": "Nvidia rallied 5% after its earnings beat.",
                 "items": [{"index": 0, "title": "Nvidia jumps on earnings",
                            "summary": "Nvidia stock rose 5% after a strong report."}]}
@@ -599,7 +599,7 @@ async def test_route_with_llm_validates_and_filters(patch_server):
     import app.main as m
 
     async def run(fake):
-        async def fake_llm(instruction, max_tokens=400):
+        async def fake_llm(instruction, max_tokens=400, **kwargs):
             return fake
         patch_server("fast_llm_json", fake_llm)
         # An explicitly BROAD ask: the router now returns ONE widget unless the

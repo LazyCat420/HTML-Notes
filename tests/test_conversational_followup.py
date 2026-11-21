@@ -90,7 +90,7 @@ def test_followup_target_id_ignores_passive_media_players():
 async def test_route_with_llm_defers_cooking_followups(patch_server):
     # Router should ONLY emit 'reply' for greetings/thanks/chitchat.
     # Questions about domain topics like cooking/recipes must defer to the full agent.
-    async def mock_fast_llm_json(prompt, max_tokens=550):
+    async def mock_fast_llm_json(prompt, max_tokens=550, **kwargs):
         # Even if the LLM proposes a reply for a cooking question, the system should catch it or prompt should forbid it
         return {
             "reply": "Yes, Italian raw sausage is meant to be cooked before eating, but the ",

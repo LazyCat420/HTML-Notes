@@ -123,12 +123,16 @@ def test_vllm_endpoints_default_to_internal_cluster_boxes():
 def test_read_timeout_is_bounded():
     """A 90s read timeout across a 3-endpoint rotation is 270s of dead air. With
     reasoning off the p95 is under 2s; 90s only gives a hung box more rope. This
-    is exactly how one measured turn reached 201s."""
+    is exactly how one measured turn reached 201s. The timeout is now the
+    caller's budget, defaulting to 20s — no literal 90 anywhere."""
     src = inspect.getsource(m.fast_llm_json)
     import re
-    got = [float(x) for x in re.findall(r"httpx\.Timeout\(\s*([0-9.]+)", src)]
-    assert got, "no httpx.Timeout(...) found in fast_llm_json"
-    assert max(got) <= 30.0, f"read timeout still {got}"
+    assert "httpx.Timeout(" in src, "no httpx.Timeout(...) found in fast_llm_json"
+    assert "endpoint_timeout" in src, "the caller budget must feed httpx.Timeout"
+    literals = [float(x) for x in re.findall(r"httpx\.Timeout\(\s*([0-9.]+)", src)]
+    assert all(v <= 30.0 for v in literals), f"hardcoded read timeout {literals}"
+    # The default when no caller budget is given must also stay sane.
+    assert re.search(r"endpoint_timeout = 20\.0", src), src
 
 
 def _fake_httpx(client_cls):
@@ -222,3 +226,87 @@ async def test_health_reports_search_without_searching():
     finally:
         h.web_search_ex = real
         s.LAST_SEARCH.update(saved)
+
+
+# ── per-endpoint routing budget: a dead box must cost seconds, not a minute ──
+
+@pytest.mark.asyncio
+async def test_caller_endpoint_budget_is_honoured(patch_server):
+    """fast_llm_json used a blanket 20s read across a 3-endpoint rotation, so a
+    dead trio cost 60s BEFORE the agent fallback started. The caller's budget
+    must reach httpx.Timeout."""
+    seen = {}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            seen["timeout"] = kw.get("timeout")
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, **kw):
+            return _R(200, {"data": [{"id": "nemotron35"}]})
+        async def post(self, url, json=None, **kw):
+            return _R(200, {"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    class _R:
+        def __init__(self, code, body): self.status_code, self._b = code, body
+        def json(self): return self._b
+
+    patch_server("httpx", _fake_httpx(_Client))
+    await m.fast_llm_json("x", max_tokens=64, endpoint_timeout=5.0)
+    t = seen.get("timeout")
+    assert t is not None, "fast_llm_json must build httpx.Timeout from the caller budget"
+    assert t.read == 5.0, f"read budget {t.read!r} ignored endpoint_timeout=5.0"
+
+
+@pytest.mark.asyncio
+async def test_router_uses_the_short_budget(patch_server):
+    """route_with_llm is the tier-2 classify call; it must not inherit 20s."""
+    assert cfg.ROUTER_ENDPOINT_TIMEOUT_S <= 8.0
+    seen = {}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            seen["timeout"] = kw.get("timeout")
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, **kw):
+            return _R(200, {"data": [{"id": "nemotron35"}]})
+        async def post(self, url, json=None, **kw):
+            return _R(200, {"choices": [{"message": {"content": '{"defer": true}'}}]})
+
+    class _R:
+        def __init__(self, code, body): self.status_code, self._b = code, body
+        def json(self): return self._b
+
+    patch_server("httpx", _fake_httpx(_Client))
+    await m.route_with_llm("what time is it in tokyo", "")
+    assert seen["timeout"].read == cfg.ROUTER_ENDPOINT_TIMEOUT_S
+
+
+# ── /v1/models discovery must not pick a non-chat entry ──────────────────────
+
+@pytest.mark.asyncio
+async def test_model_discovery_skips_non_chat_entries(patch_server):
+    """The catalog listed embeddinggemma FIRST on one box; data[0] then went to
+    /v1/chat/completions and 404'd on every routing call."""
+    posted = {}
+
+    class _Client:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, **kw):
+            return _R(200, {"data": [{"id": "embeddinggemma"},
+                                    {"id": "nemotron35"}]})
+        async def post(self, url, json=None, **kw):
+            posted["model"] = (json or {}).get("model")
+            return _R(200, {"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    class _R:
+        def __init__(self, code, body): self.status_code, self._b = code, body
+        def json(self): return self._b
+
+    patch_server("httpx", _fake_httpx(_Client))
+    out = await m.fast_llm_json("x", max_tokens=64, endpoint_timeout=5.0)
+    assert out == {"ok": 1}
+    assert posted["model"] == "nemotron35", posted

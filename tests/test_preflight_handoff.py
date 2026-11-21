@@ -36,11 +36,22 @@ CHECKS = {"is_arithmetic": False, "needs_fresh_data": True, "wants": "answer",
 
 # ── the block itself ─────────────────────────────────────────────────────────
 
-def test_no_plan_changes_the_prompt_by_zero_bytes():
-    """On defer/None (usually the fast-LLM backend being down) the agent must
-    behave exactly as it did before this existed — one well-understood mode."""
+def test_nothing_from_the_classifier_changes_the_prompt_by_zero_bytes():
+    """When the classifier produced NOTHING (defer/None with no checks — usually
+    the fast-LLM backend being down) the agent must behave exactly as it did
+    before this existed — one well-understood mode."""
     assert m._preflight_block([], {}) == ""
-    assert m._preflight_block([], CHECKS) == ""
+
+
+def test_checks_only_defer_still_renders_the_answers():
+    """A defer that carries checks means the classifier READ the ask and the
+    canvas. Throwing that away was the seam this block exists to close, so a
+    checks-only handoff renders the answers (and says no plan was chosen)."""
+    block = m._preflight_block([], CHECKS)
+    assert "BEFORE YOU PICK A TOOL" in block
+    assert "chicken breast internal temperature" in block
+    assert "It chose no widget" in block
+    assert "how long for a 145F" not in block  # no query without a plan
 
 
 def test_block_names_the_type_the_query_and_the_tool():

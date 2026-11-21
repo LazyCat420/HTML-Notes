@@ -350,30 +350,56 @@ async def send_message(req: MessageRequest):
 
         def _stream_remove_widget():
             """Deterministically remove matching widget(s) from the canvas in ~50ms
-            without invoking the LLM agent."""
+            without invoking the LLM agent.
+
+            SAFETY: an empty target ("remove it", "delete") used to satisfy
+            `not target_tokens` and match EVERY widget, silently wiping the
+            dashboard. Now an empty target resolves the focused widget, else the
+            most recent widget on the canvas; nothing on screen means nothing is
+            touched. Matching is id/type/title with word boundaries (not a
+            substring over the rendered text, which made "clear skies in Denver"
+            delete the Denver weather card), and the turn always says what it did.
+            """
             target_text = re.sub(
-                r'\b(remove|delete|close|hide|clear|dismiss|drop|kill|stop|widget|card|window|the|it|my|a|an|get rid of)\b',
+                r'\b(remove|delete|close|hide|clear|dismiss|drop|kill|stop|'
+                r'widget|widgets|card|cards|window|panel|the|it|that|this|my|'
+                r'a|an|get rid of|please)\b',
                 '', text_clean, flags=re.I).strip()
             target_tokens = [t.lower() for t in re.findall(r'\w+', target_text) if len(t) > 1]
+            token_res = [re.compile(r'\b' + re.escape(t) + r'\b') for t in target_tokens]
+
+            def _label(w) -> str:
+                return str(w.get("data-title") or w.get("id") or "widget").strip()
 
             async def stream():
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path", "widget_type": "remove",
+                    "id_prefix": "remove", "query": req.message,
+                    "targets": target_tokens}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": "closing widget..."})}\n\n'
+                removed: list = []
 
                 def _remove_matching(soup):
-                    widgets = soup.select('.canvas-widget, .glass-card, .widget-container, [id^="widget-"], [data-widget-type]')
-                    removed = False
+                    widgets = soup.select(
+                        '.canvas-widget, .glass-card, .widget-container, '
+                        '[id^="widget-"], [data-widget-type]')
+                    if not target_tokens:
+                        # "remove it" / "close it" — one defensible target, never all.
+                        focus = str(req.focus_widget_id or "").lstrip("#").strip()
+                        chosen = soup.find(id=focus) if focus else None
+                        if chosen is None and widgets:
+                            chosen = widgets[-1]
+                        if chosen is not None:
+                            removed.append(_label(chosen))
+                            chosen.decompose()
+                        return bool(removed)
                     for w in widgets:
-                        w_id = (w.get("id") or "").lower()
-                        w_type = (w.get("data-widget-type") or "").lower()
-                        w_title = (w.get("data-title") or "").lower()
-                        w_text = w.get_text().lower()
-
-                        combined = f"{w_id} {w_type} {w_title} {w_text}"
-                        
-                        if not target_tokens or any(t in combined for t in target_tokens):
+                        hay = " ".join(str(w.get(k) or "") for k in
+                                       ("id", "data-widget-type", "data-title")).lower()
+                        if any(rx.search(hay) for rx in token_res):
+                            removed.append(_label(w))
                             w.decompose()
-                            removed = True
-                    return removed
+                    return bool(removed)
 
                 event = await commit_canvas(req.session_id, _remove_matching)
                 if event:
@@ -384,6 +410,14 @@ async def send_message(req: MessageRequest):
                         content=f"\n\n<!--CANVAS_HTML_START-->\n{get_session_canvas(req.session_id)}\n<!--CANVAS_HTML_END-->"
                     )
                     yield event
+                if removed:
+                    text = ("Closed " + ", ".join(removed) + ".") if len(removed) <= 3 else (
+                        f"Closed {len(removed)} widgets.")
+                elif target_tokens:
+                    text = f"Nothing matched “{' '.join(target_tokens)}” — the canvas is unchanged."
+                else:
+                    text = "There is no widget on the canvas to close."
+                yield f'data: {json.dumps({"type": "chunk", "content": text})}\n\n'
                 yield 'data: {"type": "done"}\n\n'
 
             return StreamingResponse(
@@ -529,6 +563,13 @@ async def send_message(req: MessageRequest):
             status = (f"switching to the {apply} theme..." if apply else "opening settings...")
 
             async def stream():
+                # Breadcrumb like every other fast path: settings used to be the
+                # one lane with no debug frame, so a misroute ("make the chart
+                # green" → repaint everything) was invisible in DevTools.
+                yield ('data: ' + json.dumps({
+                    "type": "debug", "path": "fast-path", "widget_type": "settings",
+                    "id_prefix": "settings-panel", "query": req.message,
+                    "theme": apply or ""}) + '\n\n')
                 yield f'data: {json.dumps({"type": "status", "message": status})}\n\n'
                 html = render_widget("settings", "settings-panel", cfg)
 
@@ -701,9 +742,10 @@ async def send_message(req: MessageRequest):
             )
 
         # Removal/modification intents must reach the agent (canvas_modify_dom) —
-        # never spawn a widget off keywords like "remove the clock".
-        wants_removal = bool(re.search(
-            r'\b(remove|delete|close|hide|clear|dismiss|drop|kill|stop)\b|get rid of', text_clean))
+        # never spawn a widget off keywords like "remove the clock". Anchored and
+        # narrow: a bare "clear"/"drop"/"stop" anywhere used to read "clear skies
+        # in Denver" as a canvas removal and delete widgets.
+        wants_removal = bool(REMOVAL_INTENT_RE.search(text_clean))
 
         # Media/data intents override widget-name keywords: "clock for video",
         # "video of a clock" or "news about checklists" must reach the agent,
@@ -784,8 +826,15 @@ async def send_message(req: MessageRequest):
         # the question came FROM a widget (focus_widget_id) and the ask names no
         # look-noun (theme/mode/appearance/…), the color word belongs to that
         # widget — let follow-up routing have it.
+        # A colour verb that names a WIDGET PART belongs to that widget even when
+        # the client sent no focus id ("make the chart green" repainted the whole
+        # dashboard). The look-noun veto still sends real theme asks to settings.
+        _widget_color_noun = bool(re.search(
+            r'\b(chart|graph|card|widget|line|bar|pie|series|axis|label|title|'
+            r'border|background|panel|text)\b', text_clean))
         _widget_color_edit = bool(
-            req.focus_widget_id and req.focus_widget_id != "settings-panel"
+            ((req.focus_widget_id and req.focus_widget_id != "settings-panel")
+             or _widget_color_noun)
             and re.search(r'\b(make|set|change|switch|turn)\b', text_clean)
             and not re.search(
                 r'\b(theme|themes|appearance|palette|colou?r ?scheme|colou?rway|'
@@ -936,7 +985,12 @@ async def send_message(req: MessageRequest):
         _crypto_ctx = bool(CRYPTO_WORD_RE.search(text_clean)
                            or CASHTAG_RE.search(req.message) or _has_addr
                            or _soft_crypto)
-        if _crypto_ctx and not wants_removal and not is_video_ask and not wants_music:
+        if (_crypto_ctx and not wants_removal and not is_video_ask and not wants_music
+                # "add a link to my grocery list" is a list edit — a bare "link"
+                # is also a crypto alias (Chainlink), which hijacked the turn.
+                and not LIST_EDIT_RE.search(text_clean)
+                and not NOTES_INTENT_RE.search(text_clean)
+                and not LIST_ITEM_REMOVE_RE.search(text_clean)):
             # 1. HOLDER GRAPH — "who holds PEPE", "$BONK whales", "is X a fair
             #    launch", "pump and dump wallets". The headline feature.
             if WALLET_GRAPH_RE.search(text_clean):
@@ -1173,7 +1227,12 @@ async def send_message(req: MessageRequest):
         #     picked the #1 hit every time, so a repeat ask replayed the identical
         #     video. Fast-path it AND vary among the top handful so it stays
         #     interesting. Music videos keep going to the player, not here.
-        if is_video_ask and not is_compound_ask and not wants_removal and not wants_music:
+        if (is_video_ask and not is_compound_ask and not wants_removal and not wants_music
+                # "watch the weather in Seattle" wants a forecast: "watch" alone
+                # is a weak video signal, so a weather ask needs an explicit
+                # video noun to land here.
+                and not (WEATHER_ASK_RE.search(text_clean)
+                         and not EXPLICIT_VIDEO_RE.search(text_clean))):
             vquery = clean_video_query(req.message)
             vhits = await search_youtube_videos(vquery, limit=10, rerank=True,
                                                 freshness=fresh_ask,
@@ -1223,6 +1282,7 @@ async def send_message(req: MessageRequest):
         #     path (a travel question isn't a "where is X" marker map) and OUTSIDE
         #     the is_data_ask gate so a "weather AND how long to..." still resolves.
         if (DIRECTIONS_ASK_RE.search(text_clean)
+                and not COOKING_ASK_RE.search(text_clean)
                 and not EAT_MAP_RE.search(text_clean)
                 and not wants_removal and not is_video_ask):
             # "traffic in X", "directions to Y", "from A to B" → a real Google Maps
@@ -1349,7 +1409,15 @@ async def send_message(req: MessageRequest):
             #    stopwatches, and resolves a place name to an IANA timezone.
             if (re.search(r'\bclock\b|\bwhat\'?s? ?(the )?time\b|\b(the|current) time\b'
                           r'|\btime in\b|\btimer\b|\bcountdown\b|\bstopwatch\b|\bpomodoro\b',
-                          text_clean) and not is_searching):
+                          text_clean) and not is_searching
+                    # "what time does the lakers game start" is a sports ask,
+                    # not a clock: a game/fixture word wins unless the ask is
+                    # explicitly a timer/countdown.
+                    and not (re.search(
+                        r'\b(game|match|scores?|playing|kickoff|tipoff|face ?off|'
+                        r'start time|tip[- ]?off)\b', text_clean)
+                        and not re.search(r'\b(timer|countdown|pomodoro|stopwatch)\b',
+                                          text_clean))):
                 if re.search(r'\b(timer|countdown|pomodoro)\b', text_clean):
                     secs = _parse_duration_seconds(req.message) or (
                         25 * 60 if "pomodoro" in text_clean else 60)
@@ -1604,6 +1672,11 @@ async def send_message(req: MessageRequest):
             else:
                 router_plan = await route_with_llm(req.message, turn_ctx["context_block"])
             router_checks = (router_plan or {}).get("checks") or {}
+            # Tier 2's plan survives into tier 3. On a local build we return
+            # before the agent, so this is normally empty; a defer that carries
+            # widgets (or a future verdict shape) still hands the agent the plan.
+            router_specs = [w for w in ((router_plan or {}).get("widgets") or [])
+                            if isinstance(w, dict)]
             if music_fallback and router_plan and router_plan.get("reply"):
                 # A music-shaped ask is never small talk: measured 2026-11-03
                 # (scripts/routing_eval.py) the router answered "play music" and
@@ -1691,7 +1764,7 @@ async def send_message(req: MessageRequest):
             "targets": [w.get("target") for w in (router_plan or {}).get("widgets") or []],
             "reason": (router_plan or {}).get("reason", ""),
             "checks": router_checks,
-            "hint": bool(router_specs),
+            "hint": bool(router_specs or router_checks),
         }
 
         # Start loading history
@@ -2098,6 +2171,12 @@ async def send_message(req: MessageRequest):
             render_component results for the canvas.
             """
             final_text = ""
+            # Initialised HERE, not inside the agent branch: the epilogue that
+            # releases held-back prose runs after the try, and an early failure
+            # (dead endpoint, bad context manager) skipped the branch that used
+            # to bind these, turning a connection error into UnboundLocalError.
+            saw_tool_call = False
+            pretool_buffer = ""
             # Only a mirror of the last commit, for the DB write at the end of the
             # turn. It is never used as the base for a mutation — commit_canvas
             # re-reads the live canvas under the lock, so a sibling turn's widget

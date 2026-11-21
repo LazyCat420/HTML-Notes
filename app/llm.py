@@ -99,13 +99,20 @@ async def discover_fallback_vllm_model() -> Optional[tuple[str, str]]:
     return None
 
 
-async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[dict]:
+async def fast_llm_json(instruction: str, max_tokens: int = 1024,
+                        endpoint_timeout: Optional[float] = None) -> Optional[dict]:
     """One tool-free completion against the local vLLM, parsed as JSON.
     Rotates through available local vLLM endpoints before failing open.
     Reasoning is disabled (see NO_THINKING) — measured 15x faster on the real
     router prompt for identical decisions.
-    """
+
+    `endpoint_timeout` is the caller's per-endpoint budget (default: the generic
+    20s). Tier 2 passes ROUTER_ENDPOINT_TIMEOUT_S so a dead box costs seconds,
+    not a minute, before the agent fallback."""
     urls = _configured_vllm_urls()
+    if endpoint_timeout is None:
+        endpoint_timeout = 20.0
+    endpoint_timeout = max(1.0, float(endpoint_timeout))
 
     # Sticky failover: a box that just ReadTimeout'd (dev workstation under a
     # build, Jetson mid-quantize) demotes itself for 60s so it stops costing
@@ -140,11 +147,12 @@ async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[di
 
     for target_url in urls:
         try:
-            # 20s, not 90s: with reasoning off the p95 is under 2s, and a 90s
-            # read across a 3-endpoint rotation is 270s of dead air. That is
-            # literally how one measured turn reached 201s — Jetson ReadTimeout
-            # (90s) + Gold Spark ReadTimeout (90s) + embeddinggemma 404.
-            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=3.0)) as client:
+            # The caller's budget, not a blanket 20s: tier 2 passes ~5s so a
+            # dead box costs seconds before the agent fallback. Connect stays
+            # short — a dead host should fail fast, not hold the turn.
+            async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(endpoint_timeout,
+                                          connect=min(2.0, endpoint_timeout))) as client:
                 model = _fast_model.get(target_url)
                 if not model:
                     resp = await client.get(f"{target_url}/v1/models")
@@ -153,7 +161,14 @@ async def fast_llm_json(instruction: str, max_tokens: int = 1024) -> Optional[di
                     data = resp.json().get("data", [])
                     if not data:
                         continue
-                    model = data[0]["id"]
+                    # data[0] was whatever the server listed first, which on the
+                    # gateway catalog can be an embedding/rerank model that
+                    # 404s on /v1/chat/completions. Take the first CHAT model.
+                    model = next((e.get("id") for e in data
+                                  if _is_chat_capable_model(e.get("id"))), None)
+                    if not model:
+                        logger.warning(f"fast_llm_json {target_url} advertises no chat model")
+                        continue
                     _fast_model[target_url] = model
 
                 payload = {
@@ -387,6 +402,7 @@ async def route_with_llm(message: str, context_block: str) -> Optional[dict]:
         # brace match then fails, which would silently turn every route into a
         # None -> agent fallback.
         max_tokens=550,
+        endpoint_timeout=ROUTER_ENDPOINT_TIMEOUT_S,
     )
     if not isinstance(data, dict):
         return None

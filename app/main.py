@@ -585,7 +585,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from app import database
-from app.config import _DEFAULT_VLLM_URL, PORT, LAZY_AGENT_URL, VLLM_URL, VLLM_ENDPOINTS, VLLM_ENDPOINT_PROVIDERS, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL, MUSIC_ROUTER_BUDGET_S, MUSIC_ROUTER_REFINE_S
+from app.config import _DEFAULT_VLLM_URL, PORT, LAZY_AGENT_URL, VLLM_URL, VLLM_ENDPOINTS, VLLM_ENDPOINT_PROVIDERS, LAZY_AGENT_SERVICE_URL, TTS_SERVICE_URL, MUSIC_PLAYER_URL, SCRAPER_SERVICE_URL, VAULT_SERVICE_URL, VAULT_SERVICE_TOKEN, OBSIDIAN_VAULT_DIR, PORTAL_SERVICE_URL, MUSIC_ROUTER_BUDGET_S, MUSIC_ROUTER_REFINE_S, ROUTER_ENDPOINT_TIMEOUT_S
 import asyncio
 import contextvars
 import datetime
@@ -1401,6 +1401,9 @@ def resolve_music_kind(subject: str) -> str:
 # matches, the request goes to the agent instead of keyword-spawning a widget
 # ("clock for video" is a video ask, not a clock ask).
 VIDEO_ASK_RE = re.compile(r'\b(youtube|video|videos|yt|watch|clip|clips|trailer|movie|highlights?)\b')
+# Words that explicitly NAME a video. Used to keep a weather ask that happens to
+# say "watch" ("watch the weather in Seattle") out of the YouTube lane.
+EXPLICIT_VIDEO_RE = re.compile(r'\b(video|videos|youtube|yt|clip|clips|trailer|movie|movies|highlights?)\b')
 
 # A news video must be sorted by DATE. "fifa news video" searched by relevance
 # returns whatever is most-watched for those words — a years-old recap — which is
@@ -1767,6 +1770,26 @@ CLEAR_ALL_RE = re.compile(
     r'\b(everything|every widget|all (the |my )?(widgets?|cards?)|all of (it|them)|'
     r'the (whole |entire )?(canvas|dashboard|screen)|it all)\b')
 NOTES_INTENT_RE = re.compile(r'\b(notes?|notepad|scratch ?pad|memo|jot)\b')
+# Removal of an EXISTING widget — anchored and narrow on purpose. The old
+# check matched a bare \b(clear|drop|stop)\b anywhere, so "clear skies in
+# Denver" and "drop in temperature tomorrow" were read as canvas removals and
+# deleted widgets instead of answering. Strong UI verbs may appear after a
+# polite prefix; the ambiguous verbs only count when they name a widget-ish
+# object (or stand alone).
+_REMOVAL_NOUNS = (
+    r"widget|widgets|card|cards|window|panel|list|checklist|map|timer|clock|"
+    r"reminder|music|player|video|weather|forecast|chart|graph|stock|"
+    r"scoreboard|table|it|that|this|these|those|everything|all"
+)
+REMOVAL_INTENT_RE = re.compile(
+    r"^(?:(?:please|hey|ok|okay|can you|could you|would you|will you|"
+    r"go ahead and|i want you to|i want to|just)\s+)*"
+    r"(?:"
+    r"(?:remove|delete|dismiss|hide|close|kill|get rid of)\b"
+    r"|(?:clear|drop|stop)\b(?=\s+(?:(?:the|my|that|this|it|these|those|all)\s+)?"
+    r"(?:" + _REMOVAL_NOUNS + r")\b)"
+    r"|(?:clear|drop|stop)\s*[.!]*\s*$"
+    r")", re.I)
 # Calculator / unit / currency conversion. A bare "X to Y" or "N% of M" or a
 # plain arithmetic expression opens the converter directly. Kept off the
 # stock-compare "vs" phrasing (that's the multi-ticker chart) and off anything
@@ -1850,7 +1873,7 @@ REMINDER_INTENT_RE = re.compile(
 # spinning up the ~30s agent. Deliberately narrow: it must read as a look/skin
 # change or an explicit settings request, not merely contain a color word.
 THEME_INTENT_RE = re.compile(
-    r'\b(theme|themes|appearance|palette|colou?r ?scheme|colou?rway|skin)\b'
+    r'\b(theme|themes|appearance|palette|colou?r ?scheme|colou?rway)\b'
     r'|\b(dark|light|day|night) ?mode\b'
     r'|\b(open|show|change|edit)\b[^.]*\bsettings\b'
     r'|\b(make|set|change|switch|turn)\b[^.]{0,30}\b('
@@ -1937,6 +1960,12 @@ MAP_ASK_RE = re.compile(
 DIRECTIONS_ASK_RE = re.compile(
     r'\b(directions?|how (long|far)|travel time|drive time|commute|'
     r'traffic|route to|way to|get to|getting to|how do i get)\b')
+# A cooking / food / doneness question is NOT a travel-time ask even though it
+# says "how long": "how long to boil an egg", "how long to cook a 145F chicken".
+COOKING_ASK_RE = re.compile(
+    r'\b(cook|cooking|bake|baking|boil|boiling|roast|roasting|grill|grilling|'
+    r'fry|frying|recipe|chicken|steak|egg|eggs|meat|dough|oven|doneness|'
+    r'internal temp\w*|food safety)\b', re.I)
 # Wikipedia — "open a random wikipedia page", "wikipedia article about X".
 WIKI_ASK_RE = re.compile(r'\bwiki(pedia)?\b')
 # Framing words stripped so a Wikipedia ask reduces to a page title.
@@ -3391,10 +3420,12 @@ def _preflight_block(specs: list, checks: dict) -> str:
     explicitly yield to the user's own words and to the FOLLOW-UP directive that
     comes after this block.
 
-    Returns "" for an empty plan so the caller can concatenate unconditionally —
-    on defer/None the prompt stays byte-identical to before this existed.
+    Returns "" when the classifier produced NOTHING (defer/None with no checks),
+    so a model hiccup leaves the prompt byte-identical. A defer WITH checks does
+    render them: the classifier read the ask and the canvas, and throwing that
+    away was the seam this block exists to close.
     """
-    if not specs:
+    if not specs and not checks:
         return ""
     lines = []
     if checks.get("is_arithmetic") is not None:
@@ -3422,17 +3453,27 @@ def _preflight_block(specs: list, checks: dict) -> str:
         plan.append(f'- {wtype} — query: "{query}" → {step}'
                     + (f", writing into the EXISTING widget #{tgt}" if tgt else ""))
 
+    if plan:
+        conclusion = ("It concluded:\n" + "\n".join(plan) + "\n"
+                      "Start there and reuse that query verbatim — it is the cleaned subject, "
+                      "already stripped of filler. This is a strong prior, NOT an order: if it "
+                      "plainly contradicts what the user actually wrote, ignore it and use the "
+                      "tool that fits. Do not re-plan past it and do not add widgets it did not "
+                      "name unless the ask clearly needs them. If a directive below names a "
+                      "widget id, that id wins over anything here.\n")
+    else:
+        conclusion = (
+            "It chose no widget — pick the tool that fits the ask.\n"
+            "The answers above are a strong prior, NOT an order: if they plainly "
+            "contradict what the user actually wrote, ignore them and use the tool "
+            "that fits. If a directive below names a widget id, that id wins over "
+            "anything here.\n")
+
     return (
         "\n\nBEFORE YOU PICK A TOOL\n"
         "A fast classifier read this ask and the canvas above before you did.\n"
         + ("\n".join(lines) + "\n" if lines else "")
-        + "It concluded:\n" + "\n".join(plan) + "\n"
-        "Start there and reuse that query verbatim — it is the cleaned subject, "
-        "already stripped of filler. This is a strong prior, NOT an order: if it "
-        "plainly contradicts what the user actually wrote, ignore it and use the "
-        "tool that fits. Do not re-plan past it and do not add widgets it did not "
-        "name unless the ask clearly needs them. If a directive below names a "
-        "widget id, that id wins over anything here.\n"
+        + conclusion
     )
 
 
