@@ -152,3 +152,67 @@ test("closing the new widget while it is still searching also silences the inher
     mock.timers.reset();
   }
 });
+
+// Regression 2026-11-21: the canvas repaint calls Alpine.initTree() on the
+// whole canvas, and Alpine has no "already initialized" guard — so init() ran
+// again on live widgets. For the music deck that created a SECOND Audio
+// element (the same stream heard twice, slightly offset) and a second SSE
+// stream; destroy() only paused the newest one, so the old kept playing.
+test("a second init() on the same widget is a no-op: one Audio, one stream", async () => {
+  const { factory } = loadFactory();
+  FakeAudio.constructed = 0;
+  const w = await mount(factory, "jazz");
+  assert.equal(FakeAudio.constructed, 1, "mount created one Audio");
+  const audio = w.audio;
+  const streamCount = streams.length;
+
+  await w.init();   // what window.Alpine.initTree(root) does on a repaint
+
+  assert.equal(FakeAudio.constructed, 1, "a second init must not create a second Audio");
+  assert.equal(w.audio, audio, "the widget still owns the original element");
+  assert.equal(streams.length, streamCount, "the SSE stream must not be restarted");
+});
+
+test("destroy() with the dismissed mark stops its audio and the carried music", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { factory, window } = loadFactory();
+    const oldW = await playingWidget(factory);
+    const oldAudio = oldW.audio;
+    oldW.destroy();                          // parks the audible element
+    const newW = await mount(factory, "darkwave");
+    assert.ok(newW.carry, "replacement adopted the parked music");
+    newW.audio.src = "http://svc/track/d1.mp3";
+    newW.audio.play();
+    assert.equal(newW.audio.paused, false);
+
+    newW.$el.dataset.userDismissed = "1";    // WidgetManager.dismiss marks it
+    newW.destroy();
+
+    assert.equal(newW.audio, null, "the owned element is released");
+    assert.equal(newW.carry, null, "the carry is released");
+    assert.equal(oldAudio.paused, true, "the carried music is stopped too");
+    assert.equal(oldAudio.src, "", "and its source is cleared");
+    assert.equal(window.__hnMusicCarry ?? null, null, "nothing left parked");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("destroy() without the dismissed mark stops audio when no successor adopts", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { factory, window } = loadFactory();
+    const w = await playingWidget(factory);
+    const audio = w.audio;
+    w.destroy();
+    assert.equal(audio.paused, false, "parked for a possible successor");
+    mock.timers.tick(2500);                  // past the 2 s park window
+    assert.equal(audio.paused, true, "nobody adopted it: it stops");
+    assert.equal(audio.src, "", "and its source is cleared");
+    assert.equal(w.audio, null);
+    assert.equal(window.__hnMusicCarry ?? null, null);
+  } finally {
+    mock.timers.reset();
+  }
+});

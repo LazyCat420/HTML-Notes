@@ -10,7 +10,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const widgetsJs = readFileSync(join(here, "..", "app", "static", "js", "widgets.js"), "utf8");
 
 export class FakeAudio {
-  constructor() { this.listeners = {}; this.paused = true; this._src = ""; this.volume = 1; this.currentTime = 0; }
+  // Total Audio elements constructed since the counter was last reset. The
+  // idempotent-init regression test uses it to prove a second init() does not
+  // create a second element (the echo the user heard).
+  static constructed = 0;
+  constructor() { FakeAudio.constructed++; this.listeners = {}; this.paused = true; this._src = ""; this.volume = 1; this.currentTime = 0; }
   get src() { return this._src; }
   set src(v) { this._src = v; if (!v) this.paused = true; }
   addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
