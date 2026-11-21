@@ -1545,7 +1545,6 @@ document.addEventListener("DOMContentLoaded", () => {
         btnMic: document.getElementById("btn-mic"),
         recordingStatus: document.getElementById("recording-status"),
         healthIndicator: document.getElementById("health-indicator"),
-        welcomeMessage: document.getElementById("welcome-message"),
         execLogContainer: document.getElementById("execution-log-container"),
         execLogContent: document.getElementById("execution-log-content"),
         btnToggleLog: document.getElementById("btn-toggle-log"),
@@ -1554,7 +1553,6 @@ document.addEventListener("DOMContentLoaded", () => {
         btnForget: document.getElementById("btn-forget"),
         queueBadge: document.getElementById("queue-badge"),
         turnStatusContainer: document.getElementById("turn-status-container"),
-        chatHistoryPanel: document.getElementById("chat-history-panel"),
         chatHistoryMessages: document.getElementById("chat-history-messages"),
         btnClearHistory: document.getElementById("btn-clear-history"),
         btnToggleHistory: document.getElementById("btn-toggle-history"),
@@ -2534,9 +2532,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const existing = grid.querySelector(`#${CSS.escape(id)}`);
             const prevSnapshot = widgetSourceSnapshots.get(id);
-            // Record what the server just sent as this widget's latest source,
-            // for the next reconcile's fallback comparison.
-            widgetSourceSnapshots.set(id, newWidget.cloneNode(true));
 
             if (existing) {
                 // Primary check: the server-stamped content signature. It is
@@ -2564,6 +2559,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 const outgoingText = captureWidgetText(existing);
                 teardownWidget(existing);
                 existing.replaceWith(newWidget);
+                // Record what the server just sent as this widget's latest
+                // source, for the next reconcile's fallback comparison. Cloned
+                // only here: an unchanged widget's snapshot is already right,
+                // and cloning every incoming node per paint was pure garbage.
+                widgetSourceSnapshots.set(id, newWidget.cloneNode(true));
                 flagCanvasChange(newWidget, 'is-updating');
                 // A follow-up rewrote this card in place. Print the new wording
                 // in rather than swapping it instantly, so it reads as "this
@@ -2583,6 +2583,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else {
                     grid.appendChild(newWidget);
                 }
+                widgetSourceSnapshots.set(id, newWidget.cloneNode(true));
                 anyNewWidget = true;
                 // Hold it back so it appears in time with the narration; shows
                 // immediately when nothing is going to be spoken. EXCEPT a
@@ -2598,11 +2599,15 @@ document.addEventListener("DOMContentLoaded", () => {
             changed = true;
         });
 
-        // Restore the user's saved arrangement (placing brand-new widgets at the top)
-        window.WidgetLayout.apply(grid);
+        // Restore the user's saved arrangement (placing brand-new widgets at the
+        // top). Gated on `changed`: an unchanged paint must not re-run layout,
+        // density or toolbar work.
+        if (changed) {
+            window.WidgetLayout.apply(grid);
 
-        // Auto-density & feed aging
-        if (window.CanvasDensity) window.CanvasDensity.update(grid);
+            // Auto-density & feed aging
+            if (window.CanvasDensity) window.CanvasDensity.update(grid);
+        }
 
         // Auto-scroll to top so new widgets on top are immediately visible without scrolling
         if (anyNewWidget && elements.liveCanvas) {
@@ -2617,7 +2622,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (changed && window.__masonryLayout) {
             requestAnimationFrame(window.__masonryLayout);
         }
-        if (window.CanvasToolbar && window.CanvasToolbar.refresh) {
+        if (changed && window.CanvasToolbar && window.CanvasToolbar.refresh) {
             window.CanvasToolbar.refresh();
         }
         return changed;
@@ -3383,7 +3388,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     window.HN.reconcileCanvasHtml = function (rawHtml) {
         const painted = reconcileCanvas(elements.liveCanvas, rawHtml);
-        renderDynamicComponents(elements.liveCanvas);
+        if (painted) renderDynamicComponents(elements.liveCanvas);
         return painted;
     };
     window.HN.openEventStream = openEventStream;
@@ -3665,7 +3670,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     // this covers an aborted or error-shortened turn).
                     elements.liveCanvas.querySelectorAll('[data-provisional]')
                         .forEach(el => el.removeAttribute('data-provisional'));
-                    renderDynamicComponents(elements.liveCanvas);
+                    // Only a turn that painted a component needs the post-paint
+                    // pass; a text-only turn has nothing new for it to walk.
+                    if (fullComponentHtml) renderDynamicComponents(elements.liveCanvas);
                     addLogStep("Finished generation.", "✨");
                     statusBar.finish("done");
                     envelope.finish("done");
@@ -3855,12 +3862,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         elements.liveCanvas.prepend(banner);
         setTimeout(() => banner.remove(), meta && meta.retryText ? 18000 : 10000);
-    }
-
-    function scrollToBottom() {
-        if (elements.liveCanvas) {
-            elements.liveCanvas.scrollTop = elements.liveCanvas.scrollHeight;
-        }
     }
 
     function reviveScripts(container) {
@@ -4511,15 +4512,28 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
 
-        // Force Alpine to initialize any uninitialized nodes inside container
-        if (window.Alpine && typeof window.Alpine.initTree === 'function') {
-            try {
-                window.Alpine.initTree(container);
-            } catch (err) {
-                console.warn("Failed to execute Alpine.initTree:", err);
-            }
-        }
+        initNewAlpineNodes(container);
         initCanvasWidgets(container);
+    }
+
+    // Alpine.initTree re-runs x-data init() on EVERY node it walks, including
+    // already-initialized ones — initTree has no guard. Calling it on the whole
+    // canvas re-ran each widget's init() on every paint (duplicate Audio elements,
+    // listeners, 250 ms intervals, SSE streams, double YouTube tune). Initialize
+    // only the outermost x-data roots Alpine has not seen yet; a descendant of an
+    // uninitialized root is initialized with it.
+    function initNewAlpineNodes(container) {
+        if (!window.Alpine || typeof window.Alpine.initTree !== 'function') return;
+        const targets = [];
+        container.querySelectorAll('[x-data]').forEach(node => {
+            if (node._x_dataStack) return;
+            const parent = node.parentElement && node.parentElement.closest('[x-data]');
+            if (parent && !parent._x_dataStack) return;
+            targets.push(node);
+        });
+        targets.forEach(node => {
+            try { window.Alpine.initTree(node); } catch (err) { console.warn("Failed to execute Alpine.initTree:", err); }
+        });
     }
 
     // Widgets that have already played their power-on animation, so a re-render
