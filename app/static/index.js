@@ -2782,12 +2782,6 @@ document.addEventListener("DOMContentLoaded", () => {
         // survives every reload. Remove the NODE, not just an attribute — unlike
         // a provisional widget there is no real content underneath to keep.
         temp.querySelectorAll('[data-turn-envelope]').forEach(el => el.remove());
-        
-        // (Removed 2026-11-06: the old strip of "dynamically generated"
-        // iframes inside youtubePlayerWidget. The embed iframe it targeted
-        // was template-generated from x-if="embedUrl"; the CRT card's iframe
-        // is STATIC widget content — like the walkman's — and must persist.)
-        
         // Remove dynamically generated list items in checklists (keep fallback text and close button)
         const checklistItems = temp.querySelectorAll('[x-data*="checklistWidget"] ul li');
         checklistItems.forEach(li => {
@@ -3889,7 +3883,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function applyImageFallbacks(container) {
         // Any widget image that fails to load degrades to a monogram tile
         // instead of a broken-image icon.
-        container.querySelectorAll('.widget-container img, .glass-card img, .canvas-widget img, img').forEach(img => {
+        container.querySelectorAll('img').forEach(img => {
             // CRT Turn-On image reveal animation
             if (!img._hasCrt) {
                 img._hasCrt = true;
@@ -4496,11 +4490,6 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
 
-        // (Removed 2026-11-06: the old "dynamic sibling iframe" cleanup for
-        // youtubePlayerWidget — it existed to drop template-generated embed
-        // iframes left on un-hydrated nodes. The CRT card iframe is static
-        // widget content; removing it would blank the TV on reload.)
-        
         const checklistItems = container.querySelectorAll('[x-data*="checklistWidget"] ul li');
         checklistItems.forEach(li => {
             if (!li.getAttribute('x-show') && !li.classList.contains('close-widget-btn')) {
@@ -4512,28 +4501,12 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
 
-        initNewAlpineNodes(container);
+        // Alpine owns initialization: its MutationObserver initializes every
+        // x-data node as it is inserted (verified: a widget appended to the
+        // grid gets exactly one init()). Calling Alpine.initTree() here too
+        // raced that observer and ran each widget's init() twice per paint —
+        // duplicate Audio elements, listeners, intervals and SSE streams.
         initCanvasWidgets(container);
-    }
-
-    // Alpine.initTree re-runs x-data init() on EVERY node it walks, including
-    // already-initialized ones — initTree has no guard. Calling it on the whole
-    // canvas re-ran each widget's init() on every paint (duplicate Audio elements,
-    // listeners, 250 ms intervals, SSE streams, double YouTube tune). Initialize
-    // only the outermost x-data roots Alpine has not seen yet; a descendant of an
-    // uninitialized root is initialized with it.
-    function initNewAlpineNodes(container) {
-        if (!window.Alpine || typeof window.Alpine.initTree !== 'function') return;
-        const targets = [];
-        container.querySelectorAll('[x-data]').forEach(node => {
-            if (node._x_dataStack) return;
-            const parent = node.parentElement && node.parentElement.closest('[x-data]');
-            if (parent && !parent._x_dataStack) return;
-            targets.push(node);
-        });
-        targets.forEach(node => {
-            try { window.Alpine.initTree(node); } catch (err) { console.warn("Failed to execute Alpine.initTree:", err); }
-        });
     }
 
     // Widgets that have already played their power-on animation, so a re-render
@@ -4568,11 +4541,12 @@ document.addEventListener("DOMContentLoaded", () => {
             item.style.removeProperty('left');
             item.style.removeProperty('top');
             item.style.removeProperty('width');
-            // The walkman widget's height is an Alpine :style binding that has
-            // ALREADY run by now (initTree is called just above); stripping it
-            // would leave the deck at the CSS auto height (min 180 / max 540),
-            // a 4:1 box around a 2:1 device. It is never a legacy tiler
-            // coordinate — canvas saves strip it before persisting.
+            // The walkman widget's height is an Alpine :style binding, applied
+            // by Alpine when the node initializes (the observer runs on the
+            // microtask after insertion); stripping it would leave the deck at
+            // the CSS auto height (min 180 / max 540), a 4:1 box around a 2:1
+            // device. It is never a legacy tiler coordinate — canvas saves
+            // strip it before persisting.
             // The music widget and the CRT cabinet drive their height from an
             // Alpine :style binding (tvHeight / walkmanHeight); stripping the
             // inline value here would drop them to the CSS auto height until

@@ -1015,11 +1015,6 @@ document.addEventListener('alpine:init', () => {
         currentIndex: -1,
         isPlaying: false,
         audio: null,
-        // Alpine's initTree() re-runs init() on an already-initialized root
-        // (the canvas repaint calls it on every paint). Without this guard a
-        // second init creates a second Audio (the echo), a second SSE stream,
-        // a second message listener, interval and ResizeObserver.
-        _inited: false,
         error: '',
         genreFilter: cfg.genre || '',
         // '' | 'genre' | 'artist' — routing's guess; '' means try genre first.
@@ -1136,8 +1131,6 @@ document.addEventListener('alpine:init', () => {
         },
 
         async init() {
-            if (this._inited) return;
-            this._inited = true;
             console.log(`[MusicPlayer] Init. term="${this.genreFilter}" kind="${this.kind}" base=${this.base}`);
             this.seenIds = new Set();
             this.blockedArtists = new Set();
@@ -2829,19 +2822,12 @@ document.addEventListener('alpine:init', () => {
         // just remember them (e.g. for a future state push).
         crtVolume: 100,
         crtPowerOn: true,
-        // Same re-entrancy guard as the music deck: a second initTree() pass
-        // would re-add the message/resize listeners, a second ResizeObserver
-        // and re-run resolveVideo() (a double tune).
-        _crtInited: false,
-
         get tvHeight() {
             // No drawer: the cabinet's height IS the widget's height.
             return this.tvBaseH;
         },
 
         init() {
-            if (this._crtInited) return;
-            this._crtInited = true;
             // The card is a separate document: it posts ready / embed-error /
             // channel-up / volume / power / resize; we post tune / error.
             this.crtListener = (e) => this.onCrtMessage(e);

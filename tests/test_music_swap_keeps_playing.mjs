@@ -153,26 +153,6 @@ test("closing the new widget while it is still searching also silences the inher
   }
 });
 
-// Regression 2026-11-21: the canvas repaint calls Alpine.initTree() on the
-// whole canvas, and Alpine has no "already initialized" guard — so init() ran
-// again on live widgets. For the music deck that created a SECOND Audio
-// element (the same stream heard twice, slightly offset) and a second SSE
-// stream; destroy() only paused the newest one, so the old kept playing.
-test("a second init() on the same widget is a no-op: one Audio, one stream", async () => {
-  const { factory } = loadFactory();
-  FakeAudio.constructed = 0;
-  const w = await mount(factory, "jazz");
-  assert.equal(FakeAudio.constructed, 1, "mount created one Audio");
-  const audio = w.audio;
-  const streamCount = streams.length;
-
-  await w.init();   // what window.Alpine.initTree(root) does on a repaint
-
-  assert.equal(FakeAudio.constructed, 1, "a second init must not create a second Audio");
-  assert.equal(w.audio, audio, "the widget still owns the original element");
-  assert.equal(streams.length, streamCount, "the SSE stream must not be restarted");
-});
-
 test("destroy() with the dismissed mark stops its audio and the carried music", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {

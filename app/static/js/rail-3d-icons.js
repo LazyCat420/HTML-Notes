@@ -378,7 +378,16 @@ class Rail3DManager {
         this.rafId = 0;
         const dt = Math.min(0.05, Math.max(0, (ts - this.lastTs) / 1000));
         this.lastTs = ts;
-        this._renderFrame(dt);
+        // The rail sits beside every widget: a 60 fps WebGL redraw plus a
+        // getBoundingClientRect per item per frame competes with video decode
+        // and canvas work. Idle icons only need their slow spin, so redraw at
+        // ~12 fps; a hovered item keeps the full frame rate for its fast spin.
+        const hovered = this.items.some(it => it.hovered);
+        this._idleAcc = (this._idleAcc || 0) + dt;
+        if (hovered || this._idleAcc >= 1 / 12) {
+            this._renderFrame(hovered ? dt : this._idleAcc);
+            this._idleAcc = 0;
+        }
         if (!document.hidden && this.items.length && !this.webglFailed) {
             this.rafId = requestAnimationFrame(this._boundTick);
         }
